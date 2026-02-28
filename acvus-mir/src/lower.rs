@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use acvus_ast::{
-    Expr, IndentModifier, Literal, MatchBlock, Node, ObjectExprField, ObjectPatternField, Pattern,
-    Span, Template, TupleElem, TuplePatternElem,
+    Expr, IndentModifier, IterBlock, Literal, MatchBlock, Node, ObjectExprField,
+    ObjectPatternField, Pattern, Span, Template, TupleElem, TuplePatternElem,
 };
 
 use crate::builtins::builtins;
@@ -88,6 +88,17 @@ fn apply_indent_to_nodes(nodes: &[Node], modifier: &IndentModifier) -> Vec<Node>
                 source: mb.source.clone(),
                 indent: mb.indent,
                 span: mb.span,
+            }),
+            Node::IterBlock(ib) => Node::IterBlock(acvus_ast::IterBlock {
+                pattern: ib.pattern.clone(),
+                source: ib.source.clone(),
+                body: apply_indent_to_nodes(&ib.body, modifier),
+                catch_all: ib.catch_all.as_ref().map(|ca| acvus_ast::CatchAll {
+                    body: apply_indent_to_nodes(&ca.body, modifier),
+                    tag_span: ca.tag_span,
+                }),
+                indent: ib.indent,
+                span: ib.span,
             }),
             other => other.clone(),
         })
@@ -224,6 +235,9 @@ impl Lowerer {
             }
             Node::MatchBlock(mb) => {
                 self.lower_match_block(mb);
+            }
+            Node::IterBlock(ib) => {
+                self.lower_iter_block(ib);
             }
         }
     }
@@ -812,6 +826,127 @@ impl Lowerer {
         }
 
         self.emit_inst(mb.span, InstKind::BlockLabel { label: end_label, params: vec![] });
+    }
+
+    // --- Iter block lowering ---
+
+    fn lower_iter_block(&mut self, ib: &IterBlock) {
+        // Pre-compute indent-adjusted body and catch-all body.
+        let adjusted_body: Option<Vec<Node>> = ib
+            .indent
+            .as_ref()
+            .map(|modifier| apply_indent_to_nodes(&ib.body, modifier));
+        let adjusted_catch_all_body: Option<Vec<Node>> =
+            ib.indent.as_ref().and_then(|modifier| {
+                ib.catch_all
+                    .as_ref()
+                    .map(|ca| apply_indent_to_nodes(&ca.body, modifier))
+            });
+
+        let source_reg = self.lower_expr(&ib.source);
+
+        // Initialize iterator.
+        let iter_reg = self.alloc_val();
+        self.set_val_type(iter_reg, Ty::Unit);
+        self.emit_inst(
+            ib.span,
+            InstKind::IterInit {
+                dst: iter_reg,
+                src: source_reg,
+            },
+        );
+
+        let loop_label = self.alloc_label();
+        let catch_all_label = self.alloc_label();
+        let end_label = self.alloc_label();
+
+        // Loop header.
+        self.emit_inst(
+            ib.span,
+            InstKind::BlockLabel {
+                label: loop_label,
+                params: vec![],
+            },
+        );
+
+        let value_reg = self.alloc_val();
+        let done_reg = self.alloc_val();
+        self.set_val_type(value_reg, Ty::Unit);
+        self.set_val_type(done_reg, Ty::Bool);
+        self.emit_inst(
+            ib.span,
+            InstKind::IterNext {
+                dst_value: value_reg,
+                dst_done: done_reg,
+                iter: iter_reg,
+            },
+        );
+
+        // If done, jump to catch-all.
+        let body_label = self.alloc_label();
+        self.emit_inst(
+            ib.span,
+            InstKind::JumpIf {
+                cond: done_reg,
+                then_label: catch_all_label,
+                then_args: vec![],
+                else_label: body_label,
+                else_args: vec![],
+            },
+        );
+        self.emit_inst(
+            ib.span,
+            InstKind::BlockLabel {
+                label: body_label,
+                params: vec![],
+            },
+        );
+
+        // Bind pattern (irrefutable — no test needed).
+        self.push_scope();
+        self.lower_pattern_bind(&ib.pattern, value_reg, ib.span);
+
+        // Lower body.
+        let body = adjusted_body.as_deref().unwrap_or(&ib.body);
+        self.lower_nodes(body);
+
+        self.hoist_bodyless_bindings();
+        self.pop_scope();
+
+        // Jump back to loop.
+        self.emit_inst(
+            ib.span,
+            InstKind::Jump {
+                label: loop_label,
+                args: vec![],
+            },
+        );
+
+        // Catch-all block.
+        self.emit_inst(
+            ib.span,
+            InstKind::BlockLabel {
+                label: catch_all_label,
+                params: vec![],
+            },
+        );
+        if let Some(catch_all) = &ib.catch_all {
+            self.push_scope();
+            let ca_body = adjusted_catch_all_body
+                .as_deref()
+                .unwrap_or(&catch_all.body);
+            self.lower_nodes(ca_body);
+            self.hoist_bodyless_bindings();
+            self.pop_scope();
+        }
+
+        self.emit_inst(
+            ib.span,
+            InstKind::BlockLabel {
+                label: end_label,
+                params: vec![],
+            },
+        );
     }
 
     // --- Pattern test lowering ---

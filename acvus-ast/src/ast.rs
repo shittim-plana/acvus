@@ -30,6 +30,8 @@ pub enum Node {
     /// MatchBlock with a single arm whose pattern is
     /// `Pattern::Binding { is_storage_ref: true, .. }` and an empty body.
     MatchBlock(MatchBlock),
+    /// An iteration block `{{ pattern in expr }} ... {{/}}`.
+    IterBlock(IterBlock),
 }
 
 /// A match block with one or more arms and optional catch-all.
@@ -48,6 +50,17 @@ pub struct MatchArm {
     pub pattern: Pattern,
     pub body: Vec<Node>,
     pub tag_span: Span,
+}
+
+/// An iteration block with a single irrefutable pattern.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IterBlock {
+    pub pattern: Pattern,
+    pub source: Expr,
+    pub body: Vec<Node>,
+    pub catch_all: Option<CatchAll>,
+    pub indent: Option<IndentModifier>,
+    pub span: Span,
 }
 
 /// The catch-all `{{_}}` arm.
@@ -233,6 +246,19 @@ pub enum Pattern {
         elements: Vec<TuplePatternElem>,
         span: Span,
     },
+}
+
+impl Pattern {
+    pub fn span(&self) -> Span {
+        match self {
+            Pattern::Binding { span, .. }
+            | Pattern::Literal { span, .. }
+            | Pattern::List { span, .. }
+            | Pattern::Object { span, .. }
+            | Pattern::Range { span, .. }
+            | Pattern::Tuple { span, .. } => *span,
+        }
+    }
 }
 
 /// An element in a tuple pattern.

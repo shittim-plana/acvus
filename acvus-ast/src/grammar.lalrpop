@@ -18,6 +18,7 @@ extern {
         "$ref" => Token::StorageRef(<String>),
         "true" => Token::True,
         "false" => Token::False,
+        "in" => Token::In,
         "_" => Token::Underscore,
         "+" => Token::Plus,
         "-" => Token::Minus,
@@ -52,6 +53,8 @@ extern {
 pub TagContent: TagContent = {
     <l:@L> <lhs:Expr> "=" <rhs:Expr> <r:@R> =>
         TagContent::Binding { lhs, rhs, span: Span::new(l, r) },
+    <l:@L> <lhs:Expr> "in" <rhs:Expr> <r:@R> =>
+        TagContent::Iteration { lhs, rhs, span: Span::new(l, r) },
     <e:Expr> =>
         TagContent::Expr(e),
 };

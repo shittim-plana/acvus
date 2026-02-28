@@ -168,10 +168,20 @@ fn object_pattern() {
 // ── Range ────────────────────────────────────────────────────────
 
 #[test]
-fn range_iteration() {
-    // Variable binding captures the range, then pipe to_string.
+fn range_binding() {
+    // Variable binding captures a range value.
     let ir = compile_simple(
         r#"{{ x = 0..5 }}{{ x | to_string }}"#,
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn range_iteration() {
+    // Explicit iteration with `in`.
+    let ir = compile_simple(
+        r#"{{ x in 0..3 }}{{ x | to_string }}{{/}}"#,
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -368,4 +378,60 @@ fn error_range_float_bounds() {
     let result = compile_simple("{{ x = 1.0..2.0 }}{{_}}{{/}}");
     assert!(result.is_err());
     insta::assert_snapshot!(result.unwrap_err());
+}
+
+// ── Iteration (`in`) ────────────────────────────────────────────
+
+#[test]
+fn iter_list_binding() {
+    let storage = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
+    let ir = compile_to_ir("{{ x in $items }}{{ x | to_string }}{{/}}", storage, HashMap::new()).unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn iter_object_destructure() {
+    let ir = compile_to_ir(
+        "{{ { name, } in $users }}{{ name }}{{/}}",
+        users_list_storage(),
+        HashMap::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn iter_tuple_destructure() {
+    let storage = HashMap::from([(
+        "pairs".into(),
+        Ty::List(Box::new(Ty::Tuple(vec![Ty::String, Ty::Int]))),
+    )]);
+    let ir = compile_to_ir("{{ (a, _) in $pairs }}{{ a }}{{/}}", storage, HashMap::new()).unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn iter_with_catch_all() {
+    let storage = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
+    let ir = compile_to_ir(
+        "{{ x in $items }}{{ x | to_string }}{{_}}empty{{/}}",
+        storage,
+        HashMap::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn error_iter_refutable_pattern() {
+    let storage = HashMap::from([("roles".into(), Ty::List(Box::new(Ty::String)))]);
+    let result = compile_to_ir(r#"{{ "admin" in $roles }}...{{/}}"#, storage, HashMap::new());
+    assert!(result.is_err());
+}
+
+#[test]
+fn error_iter_not_iterable() {
+    let storage = HashMap::from([("name".into(), Ty::String)]);
+    let result = compile_to_ir("{{ x in $name }}{{ x }}{{/}}", storage, HashMap::new());
+    assert!(result.is_err());
 }

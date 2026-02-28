@@ -10,6 +10,8 @@ pub enum TagContent {
     Expr(Expr),
     /// A binding: `{{ lhs = rhs }}`.
     Binding { lhs: Expr, rhs: Expr, span: Span },
+    /// An iteration: `{{ lhs in rhs }}`.
+    Iteration { lhs: Expr, rhs: Expr, span: Span },
 }
 
 /// Intermediate type for parsing list elements before splitting into head/rest/tail.

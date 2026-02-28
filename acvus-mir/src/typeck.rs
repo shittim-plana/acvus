@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use acvus_ast::{
-    BinOp, Expr, Literal, MatchBlock, Node, ObjectExprField, ObjectPatternField, Pattern, Span,
-    Template, TupleElem, TuplePatternElem,
+    BinOp, Expr, IterBlock, Literal, MatchBlock, Node, ObjectExprField, ObjectPatternField,
+    Pattern, Span, Template, TupleElem, TuplePatternElem,
 };
 
 use crate::builtins::builtins;
@@ -116,6 +116,9 @@ impl TypeChecker {
             Node::MatchBlock(mb) => {
                 self.check_match_block(mb);
             }
+            Node::IterBlock(ib) => {
+                self.check_iter_block(ib);
+            }
         }
     }
 
@@ -143,6 +146,36 @@ impl TypeChecker {
         }
 
         if let Some(catch_all) = &mb.catch_all {
+            self.push_scope();
+            self.check_nodes(&catch_all.body);
+            self.hoist_bodyless_bindings();
+            self.pop_scope();
+        }
+    }
+
+    fn check_iter_block(&mut self, ib: &IterBlock) {
+        let source_ty = self.check_expr(&ib.source);
+        let resolved = self.subst.resolve(&source_ty);
+
+        let elem_ty = match &resolved {
+            Ty::List(inner) => inner.as_ref().clone(),
+            Ty::Range => Ty::Int,
+            _ => {
+                self.error(
+                    MirErrorKind::SourceNotIterable { actual: resolved },
+                    ib.span,
+                );
+                return;
+            }
+        };
+
+        self.push_scope();
+        self.check_pattern(&ib.pattern, &elem_ty, ib.span);
+        self.check_nodes(&ib.body);
+        self.hoist_bodyless_bindings();
+        self.pop_scope();
+
+        if let Some(catch_all) = &ib.catch_all {
             self.push_scope();
             self.check_nodes(&catch_all.body);
             self.hoist_bodyless_bindings();

@@ -49,6 +49,7 @@ pub enum ParseErrorKind {
 
     // Pattern conversion errors
     InvalidPattern(String),
+    RefutablePattern,
 }
 
 impl fmt::Display for ParseErrorKind {
@@ -72,6 +73,7 @@ impl fmt::Display for ParseErrorKind {
             ParseErrorKind::UnclosedBlock => write!(f, "block not closed, expected `{{{{/}}}}`"),
             ParseErrorKind::ExpectedCloseBlock => write!(f, "expected `{{{{/}}}}`"),
             ParseErrorKind::InvalidPattern(s) => write!(f, "invalid pattern: {s}"),
+            ParseErrorKind::RefutablePattern => write!(f, "refutable pattern not allowed in `in` binding; use `=` for pattern matching"),
         }
     }
 }

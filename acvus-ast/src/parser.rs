@@ -34,6 +34,7 @@ fn node_span(node: &Node) -> Span {
         | Node::Comment { span, .. }
         | Node::InlineExpr { span, .. } => *span,
         Node::MatchBlock(mb) => mb.span,
+        Node::IterBlock(ib) => ib.span,
     }
 }
 
@@ -160,10 +161,79 @@ impl<'a> TreeBuilder<'a> {
                                 nodes.push(Node::MatchBlock(match_block));
                             }
                         }
+                        TagContent::Iteration { lhs, rhs, .. } => {
+                            let pattern = expr_to_pattern(&lhs)?;
+                            validate_irrefutable(&pattern)?;
+                            let iter_block = self.build_iter_block(pattern, rhs, tag_span)?;
+                            nodes.push(Node::IterBlock(iter_block));
+                        }
                     }
                 }
             }
         }
+    }
+
+    /// Build an iter block starting after the iteration tag has been consumed.
+    fn build_iter_block(
+        &mut self,
+        pattern: Pattern,
+        source: Expr,
+        tag_span: Span,
+    ) -> Result<IterBlock, ParseError> {
+        let block_start = tag_span.start;
+
+        // Collect body (no multi-arm support).
+        let (body, terminator) = self.build_body_until_terminator(false)?;
+
+        let (catch_all, close_span, indent) = match terminator {
+            BodyTerminator::CloseBlock(span, indent) => (None, span, indent),
+            BodyTerminator::CatchAll(catch_tag_span) => {
+                let (catch_body, next) = self.build_body_until_terminator(false)?;
+                match next {
+                    BodyTerminator::CloseBlock(close_span, indent) => {
+                        let catch_all = CatchAll {
+                            body: catch_body,
+                            tag_span: catch_tag_span,
+                        };
+                        (Some(catch_all), close_span, indent)
+                    }
+                    BodyTerminator::Eof => {
+                        return Err(ParseError::new(
+                            ParseErrorKind::UnclosedBlock,
+                            catch_tag_span,
+                        ));
+                    }
+                    _ => {
+                        return Err(ParseError::new(
+                            ParseErrorKind::ExpectedCloseBlock,
+                            catch_tag_span,
+                        ));
+                    }
+                }
+            }
+            BodyTerminator::Eof => {
+                return Err(ParseError::new(
+                    ParseErrorKind::UnclosedBlock,
+                    tag_span,
+                ));
+            }
+            BodyTerminator::MultiArm { tag_span, .. } => {
+                return Err(ParseError::new(
+                    ParseErrorKind::ExpectedCloseBlock,
+                    tag_span,
+                ));
+            }
+        };
+
+        let span = Span::new(block_start, close_span.end);
+        Ok(IterBlock {
+            pattern,
+            source,
+            body,
+            catch_all,
+            indent,
+            span,
+        })
     }
 
     /// Build a match block starting after the first arm's tag has been consumed.
@@ -307,6 +377,33 @@ fn is_pattern_expr(expr: &Expr) -> bool {
             | Expr::Object { .. }
             | Expr::Tuple { .. }
     )
+}
+
+/// Validate that a pattern is irrefutable (always matches).
+/// Only Binding, Object (with irrefutable sub-patterns), and Tuple (with irrefutable sub-patterns)
+/// are allowed. Literals, Ranges, and Lists are refutable.
+fn validate_irrefutable(pattern: &Pattern) -> Result<(), ParseError> {
+    match pattern {
+        Pattern::Binding { .. } => Ok(()),
+        Pattern::Object { fields, .. } => {
+            for f in fields {
+                validate_irrefutable(&f.pattern)?;
+            }
+            Ok(())
+        }
+        Pattern::Tuple { elements, .. } => {
+            for elem in elements {
+                if let TuplePatternElem::Pattern(p) = elem {
+                    validate_irrefutable(p)?;
+                }
+            }
+            Ok(())
+        }
+        _ => Err(ParseError::new(
+            ParseErrorKind::RefutablePattern,
+            pattern.span(),
+        )),
+    }
 }
 
 /// Convert an expression (parsed from the LHS of `=`) to a pattern.

@@ -50,6 +50,7 @@ pub enum MirErrorKind {
         source_ty: Ty,
     },
     StorageRefNotDerived(String),
+    SourceNotIterable { actual: Ty },
 
     // Lowering errors
     ArityMismatch {
@@ -61,6 +62,7 @@ pub enum MirErrorKind {
 
 impl fmt::Display for MirError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+
         match &self.kind {
             MirErrorKind::TypeMismatchBinOp { op, left, right } => {
                 write!(f, "type mismatch in `{op}`: {left} vs {right}")
@@ -106,6 +108,9 @@ impl fmt::Display for MirError {
             }
             MirErrorKind::StorageRefNotDerived(name) => {
                 write!(f, "storage ref `${name}` must be derived from an existing storage variable")
+            }
+            MirErrorKind::SourceNotIterable { actual } => {
+                write!(f, "source type `{actual}` is not iterable (expected List or Range)")
             }
             MirErrorKind::ArityMismatch {
                 func,

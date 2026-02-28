@@ -35,6 +35,8 @@ pub enum Token {
     True,
     #[token("false")]
     False,
+    #[token("in", priority = 3)]
+    In,
     #[token("_", priority = 3)]
     Underscore,
 
@@ -127,6 +129,7 @@ impl fmt::Display for Token {
             Token::StorageRef(s) => write!(f, "${s}"),
             Token::True => write!(f, "true"),
             Token::False => write!(f, "false"),
+            Token::In => write!(f, "in"),
             Token::Underscore => write!(f, "_"),
             Token::Plus => write!(f, "+"),
             Token::Minus => write!(f, "-"),
