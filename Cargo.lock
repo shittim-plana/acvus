@@ -13,16 +13,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "acvus-core"
-version = "0.1.0"
-dependencies = [
- "rust_decimal",
- "serde",
- "serde_json",
- "trait-variant",
-]
-
-[[package]]
 name = "acvus-mir"
 version = "0.1.0"
 dependencies = [
@@ -50,7 +40,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "acvus-web"
+name = "acvus-playground"
 version = "0.1.0"
 dependencies = [
  "acvus-ast",
@@ -59,6 +49,16 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "acvus-runtime"
+version = "0.1.0"
+dependencies = [
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "trait-variant",
 ]
 
 [[package]]

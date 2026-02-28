@@ -62,7 +62,7 @@
       overflow: hidden;
     }
 
-    /* ── Left column: template + context stacked ── */
+    /* ── Left column ── */
     .left-col {
       flex: 1;
       display: flex;
@@ -79,7 +79,7 @@
     .section.template { flex: 2; border-bottom: 1px solid var(--border); }
     .section.context  { flex: 1; }
 
-    /* ── Right pane: MIR output ── */
+    /* ── Right pane ── */
     .right-pane {
       flex: 1;
       display: flex;
@@ -98,7 +98,58 @@
       flex-shrink: 0;
     }
 
-    textarea {
+    /* ── Shared editor metrics ── */
+    :root {
+      --ep: 14px 16px;
+      --ef: 13px;
+      --el: 1.65;
+    }
+
+    /* ── Highlighted editor (template) ── */
+    .editor {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .editor textarea,
+    .editor .hl-layer {
+      position: absolute;
+      inset: 0;
+      padding: var(--ep);
+      font-family: var(--mono);
+      font-size: var(--ef);
+      line-height: var(--el);
+      white-space: pre-wrap;
+      word-break: break-all;
+      tab-size: 2;
+      overflow: auto;
+      border: none;
+      margin: 0;
+    }
+
+    .editor textarea {
+      background: transparent;
+      color: transparent;
+      caret-color: var(--text);
+      resize: none;
+      outline: none;
+      z-index: 1;
+    }
+
+    .editor .hl-layer {
+      color: var(--text);
+      pointer-events: none;
+      z-index: 0;
+      background: transparent;
+    }
+
+    /* highlight tokens */
+    .hl-delim { color: var(--accent); }
+    .hl-var   { color: #dcdcaa; }
+
+    /* ── Plain context textarea ── */
+    textarea.plain {
       flex: 1;
       background: transparent;
       color: var(--text);
@@ -115,6 +166,7 @@
       tab-size: 2;
     }
 
+    /* ── MIR output ── */
     pre {
       flex: 1;
       background: transparent;
@@ -157,12 +209,15 @@
   <div class="left-col">
     <div class="section template">
       <div class="pane-label">Template</div>
-      <textarea id="source" spellcheck="false"
-        placeholder="{{ x in 0..3 }}{{ x | to_string }}{{/}}"></textarea>
+      <div class="editor">
+        <pre class="hl-layer" id="source-hl" aria-hidden="true"></pre>
+        <textarea id="source" spellcheck="false"
+          placeholder="{{ x in 0..3 }}{{ x | to_string }}{{/}}"></textarea>
+      </div>
     </div>
     <div class="section context">
       <div class="pane-label">Context</div>
-      <textarea id="storage" spellcheck="false"
+      <textarea class="plain" id="storage" spellcheck="false"
         placeholder='{"name": "String", "items": {"List": "Int"}}'></textarea>
       <div class="hint">
         <code>"String"</code> <code>"Int"</code> <code>"Float"</code> <code>"Bool"</code>
@@ -180,9 +235,38 @@
 
 <script>
   const sourceEl  = document.getElementById('source');
+  const sourceHl  = document.getElementById('source-hl');
   const outputEl  = document.getElementById('output');
   const statusEl  = document.getElementById('status');
   const storageEl = document.getElementById('storage');
+
+  // ── Syntax highlighting ──────────────────────────────────────────
+
+  function escapeHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function highlightTemplate(text) {
+    const esc = escapeHtml(text);
+    return esc.replace(/\{\{([\s\S]*?)\}\}/g, (_, inner) => {
+      const innerHl = inner.replace(
+        /(\$[a-zA-Z_\u0080-\uFFFF][a-zA-Z0-9_\u0080-\uFFFF]*)/g,
+        '<span class="hl-var">$1</span>'
+      );
+      return `<span class="hl-delim">{{</span>${innerHl}<span class="hl-delim">}}</span>`;
+    });
+  }
+
+  function syncHighlight() {
+    sourceHl.innerHTML = highlightTemplate(sourceEl.value) + '\n';
+  }
+
+  sourceEl.addEventListener('scroll', () => {
+    sourceHl.scrollTop  = sourceEl.scrollTop;
+    sourceHl.scrollLeft = sourceEl.scrollLeft;
+  });
+
+  // ── Compile ──────────────────────────────────────────────────────
 
   let timer = null;
   function schedule() {
@@ -202,13 +286,8 @@
     let storage = {};
     const raw = storageEl.value.trim();
     if (raw) {
-      try {
-        const normalized = raw
-          .replace(/,\s*([}\]])/g, '$1')  // trailing commas
-          .replace(/"(int|float|bool|string)"/gi, (_, t) =>
-            `"${t[0].toUpperCase() + t.slice(1).toLowerCase()}"`);
-        storage = JSON.parse(normalized);
-      } catch {
+      try { storage = JSON.parse(raw); }
+      catch {
         setStatus('invalid context JSON', 'error');
         return;
       }
@@ -243,8 +322,10 @@
     statusEl.className = cls;
   }
 
-  sourceEl.addEventListener('input', schedule);
+  sourceEl.addEventListener('input', () => { syncHighlight(); schedule(); });
   storageEl.addEventListener('input', schedule);
+
+  syncHighlight();
 </script>
 </body>
 </html>
