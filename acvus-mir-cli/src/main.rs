@@ -30,7 +30,7 @@ enum TypeDef {
     Unit,
     Range,
     List(Box<TypeDef>),
-    Object(BTreeMap<std::string::String, TypeDef>),
+    Object(BTreeMap<String, TypeDef>),
 }
 
 impl TypeDef {
@@ -69,7 +69,7 @@ fn main() {
 
     // Read template.
     let source = if args[1] == "-" {
-        let mut buf = std::string::String::new();
+        let mut buf = String::new();
         std::io::stdin().read_to_string(&mut buf).unwrap_or_else(|e| {
             eprintln!("error: failed to read stdin: {e}");
             process::exit(1);

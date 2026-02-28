@@ -13,7 +13,7 @@ pub enum Ty {
     Unit,
     Range,
     List(Box<Ty>),
-    Object(BTreeMap<std::string::String, Ty>),
+    Object(BTreeMap<String, Ty>),
     Tuple(Vec<Ty>),
     Fn {
         params: Vec<Ty>,
