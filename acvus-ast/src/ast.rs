@@ -38,6 +38,7 @@ pub struct MatchBlock {
     pub source: Expr,
     pub arms: Vec<MatchArm>,
     pub catch_all: Option<CatchAll>,
+    pub indent: Option<IndentModifier>,
     pub span: Span,
 }
 
@@ -221,6 +222,13 @@ pub struct ObjectPatternField {
     pub key: String,
     pub pattern: Pattern,
     pub span: Span,
+}
+
+/// An indent modifier on a close block `{{/+N}}` or `{{/-N}}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndentModifier {
+    Increase(u32),
+    Decrease(u32),
 }
 
 /// The kind of range: `..`, `..=`, or `=..`.

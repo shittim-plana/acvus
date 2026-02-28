@@ -48,8 +48,8 @@ struct TreeBuilder<'a> {
 enum BodyTerminator {
     /// We've reached the end of segments.
     Eof,
-    /// We hit `{{/}}`.
-    CloseBlock(Span),
+    /// We hit `{{/}}` or `{{/+N}}` / `{{/-N}}`.
+    CloseBlock(Span, Option<IndentModifier>),
     /// We hit `{{_}}`.
     CatchAll(Span),
     /// We hit a `{{ pattern }}` multi-arm continuation (detected by `is_pattern_expr`).
@@ -80,10 +80,11 @@ impl<'a> TreeBuilder<'a> {
         loop {
             match self.peek() {
                 None => return Ok((nodes, BodyTerminator::Eof)),
-                Some(Segment::CloseBlock { span }) => {
+                Some(Segment::CloseBlock { span, indent }) => {
                     let span = *span;
+                    let indent = *indent;
                     self.advance();
-                    return Ok((nodes, BodyTerminator::CloseBlock(span)));
+                    return Ok((nodes, BodyTerminator::CloseBlock(span, indent)));
                 }
                 Some(Segment::CatchAll { span }) => {
                     let span = *span;
@@ -149,6 +150,7 @@ impl<'a> TreeBuilder<'a> {
                                         tag_span,
                                     }],
                                     catch_all: None,
+                                    indent: None,
                                     span: tag_span,
                                 };
                                 nodes.push(Node::MatchBlock(match_block));
@@ -183,24 +185,26 @@ impl<'a> TreeBuilder<'a> {
         });
 
         // Process remaining arms, catch-all, and close
-        let (catch_all, close_span) = self.continue_match_block(&mut arms, terminator, &source_expr)?;
+        let (catch_all, close_span, indent) = self.continue_match_block(&mut arms, terminator, &source_expr)?;
 
         let span = Span::new(block_start, close_span.end);
         Ok(MatchBlock {
             source: source_expr,
             arms,
             catch_all,
+            indent,
             span,
         })
     }
 
     /// Continue processing a match block after the first arm's body.
+    /// Returns `(catch_all, close_span, indent)`.
     fn continue_match_block(
         &mut self,
         arms: &mut Vec<MatchArm>,
         terminator: BodyTerminator,
         _source_expr: &Expr,
-    ) -> Result<(Option<CatchAll>, Span), ParseError> {
+    ) -> Result<(Option<CatchAll>, Span, Option<IndentModifier>), ParseError> {
         match terminator {
             BodyTerminator::Eof => {
                 let span = if let Some(arm) = arms.last() {
@@ -210,17 +214,17 @@ impl<'a> TreeBuilder<'a> {
                 };
                 Err(ParseError::new(ParseErrorKind::UnclosedBlock, span))
             }
-            BodyTerminator::CloseBlock(span) => Ok((None, span)),
+            BodyTerminator::CloseBlock(span, indent) => Ok((None, span, indent)),
             BodyTerminator::CatchAll(catch_tag_span) => {
                 // Build catch-all body, expect CloseBlock
                 let (catch_body, next_terminator) = self.build_body_until_terminator(false)?;
                 match next_terminator {
-                    BodyTerminator::CloseBlock(close_span) => {
+                    BodyTerminator::CloseBlock(close_span, indent) => {
                         let catch_all = CatchAll {
                             body: catch_body,
                             tag_span: catch_tag_span,
                         };
-                        Ok((Some(catch_all), close_span))
+                        Ok((Some(catch_all), close_span, indent))
                     }
                     BodyTerminator::Eof => Err(ParseError::new(
                         ParseErrorKind::UnclosedBlock,
@@ -653,5 +657,46 @@ mod tests {
         // handles it. Actually, our build_body discards the terminator,
         // so a stray {{/}} would cause the top-level parse to think the
         // block ended. This is a limitation we accept for now.
+    }
+
+    #[test]
+    fn parse_indent_increase() {
+        let t = parse("{{ true = x }}hello{{/+2}}").unwrap();
+        if let Node::MatchBlock(mb) = &t.body[0] {
+            assert_eq!(mb.indent, Some(IndentModifier::Increase(2)));
+        } else {
+            panic!("expected MatchBlock");
+        }
+    }
+
+    #[test]
+    fn parse_indent_decrease() {
+        let t = parse("{{ true = x }}hello{{/-1}}").unwrap();
+        if let Node::MatchBlock(mb) = &t.body[0] {
+            assert_eq!(mb.indent, Some(IndentModifier::Decrease(1)));
+        } else {
+            panic!("expected MatchBlock");
+        }
+    }
+
+    #[test]
+    fn parse_indent_none() {
+        let t = parse("{{ true = x }}hello{{/}}").unwrap();
+        if let Node::MatchBlock(mb) = &t.body[0] {
+            assert_eq!(mb.indent, None);
+        } else {
+            panic!("expected MatchBlock");
+        }
+    }
+
+    #[test]
+    fn parse_indent_with_catch_all() {
+        let t = parse("{{ true = x }}yes{{_}}no{{/+3}}").unwrap();
+        if let Node::MatchBlock(mb) = &t.body[0] {
+            assert!(mb.catch_all.is_some());
+            assert_eq!(mb.indent, Some(IndentModifier::Increase(3)));
+        } else {
+            panic!("expected MatchBlock");
+        }
     }
 }

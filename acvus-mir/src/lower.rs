@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use acvus_ast::{
-    Expr, Literal, MatchBlock, Node, ObjectExprField, ObjectPatternField, Pattern, Span, Template,
+    Expr, IndentModifier, Literal, MatchBlock, Node, ObjectExprField, ObjectPatternField, Pattern,
+    Span, Template,
 };
 
 use crate::builtins::builtins;
@@ -26,6 +27,71 @@ pub struct Lowerer {
     builtin_names: HashSet<String>,
     /// Interned text constants pool.
     texts: Vec<String>,
+}
+
+/// Adjust indentation of a text string according to an `IndentModifier`.
+/// Only lines after the first `\n` are affected; the first line is kept as-is.
+fn adjust_text_indent(text: &str, modifier: &IndentModifier) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut first = true;
+    for line in text.split('\n') {
+        if !first {
+            result.push('\n');
+        }
+        if first {
+            result.push_str(line);
+            first = false;
+            continue;
+        }
+        match modifier {
+            IndentModifier::Decrease(n) => {
+                let n = *n as usize;
+                let spaces = line.len() - line.trim_start_matches(' ').len();
+                let remove = spaces.min(n);
+                result.push_str(&line[remove..]);
+            }
+            IndentModifier::Increase(n) => {
+                let n = *n as usize;
+                for _ in 0..n {
+                    result.push(' ');
+                }
+                result.push_str(line);
+            }
+        }
+    }
+    result
+}
+
+/// Recursively apply an indent modifier to all `Node::Text` nodes in a slice.
+fn apply_indent_to_nodes(nodes: &[Node], modifier: &IndentModifier) -> Vec<Node> {
+    nodes
+        .iter()
+        .map(|node| match node {
+            Node::Text { value, span } => Node::Text {
+                value: adjust_text_indent(value, modifier),
+                span: *span,
+            },
+            Node::MatchBlock(mb) => Node::MatchBlock(MatchBlock {
+                arms: mb
+                    .arms
+                    .iter()
+                    .map(|arm| acvus_ast::MatchArm {
+                        pattern: arm.pattern.clone(),
+                        body: apply_indent_to_nodes(&arm.body, modifier),
+                        tag_span: arm.tag_span,
+                    })
+                    .collect(),
+                catch_all: mb.catch_all.as_ref().map(|ca| acvus_ast::CatchAll {
+                    body: apply_indent_to_nodes(&ca.body, modifier),
+                    tag_span: ca.tag_span,
+                }),
+                source: mb.source.clone(),
+                indent: mb.indent,
+                span: mb.span,
+            }),
+            other => other.clone(),
+        })
+        .collect()
 }
 
 impl Lowerer {
@@ -590,6 +656,19 @@ impl Lowerer {
             }
         }
 
+        // Pre-compute indent-adjusted arm bodies and catch-all body.
+        let adjusted_arm_bodies: Option<Vec<Vec<Node>>> = mb.indent.as_ref().map(|modifier| {
+            mb.arms
+                .iter()
+                .map(|arm| apply_indent_to_nodes(&arm.body, modifier))
+                .collect()
+        });
+        let adjusted_catch_all_body: Option<Vec<Node>> = mb.indent.as_ref().and_then(|modifier| {
+            mb.catch_all
+                .as_ref()
+                .map(|ca| apply_indent_to_nodes(&ca.body, modifier))
+        });
+
         let source_reg = self.lower_expr(&mb.source);
 
         // Initialize iterator over the source.
@@ -675,8 +754,12 @@ impl Lowerer {
             // Bind pattern variables.
             self.lower_pattern_bind(&arm.pattern, value_reg, arm.tag_span);
 
-            // Lower arm body.
-            self.lower_nodes(&arm.body);
+            // Lower arm body (use indent-adjusted body if available).
+            let body = adjusted_arm_bodies
+                .as_ref()
+                .map(|bodies| bodies[i].as_slice())
+                .unwrap_or(&arm.body);
+            self.lower_nodes(body);
 
             // Hoist body-less variable bindings to the outer scope.
             self.hoist_bodyless_bindings();
@@ -693,7 +776,10 @@ impl Lowerer {
         self.emit_inst(mb.span, InstKind::BlockLabel { label: catch_all_label, params: vec![] });
         if let Some(catch_all) = &mb.catch_all {
             self.push_scope();
-            self.lower_nodes(&catch_all.body);
+            let body = adjusted_catch_all_body
+                .as_deref()
+                .unwrap_or(&catch_all.body);
+            self.lower_nodes(body);
             self.hoist_bodyless_bindings();
             self.pop_scope();
         }
@@ -1273,5 +1359,75 @@ mod tests {
             .iter()
             .any(|i| matches!(&i.kind, InstKind::Call { func, .. } if func == "to_string"));
         assert!(has_call);
+    }
+
+    #[test]
+    fn adjust_text_indent_decrease() {
+        let text = "first\n    second\n      third";
+        let result = adjust_text_indent(text, &IndentModifier::Decrease(2));
+        assert_eq!(result, "first\n  second\n    third");
+    }
+
+    #[test]
+    fn adjust_text_indent_decrease_clamp() {
+        let text = "first\n second\n  third";
+        let result = adjust_text_indent(text, &IndentModifier::Decrease(4));
+        assert_eq!(result, "first\nsecond\nthird");
+    }
+
+    #[test]
+    fn adjust_text_indent_increase() {
+        let text = "first\nsecond\n  third";
+        let result = adjust_text_indent(text, &IndentModifier::Increase(3));
+        assert_eq!(result, "first\n   second\n     third");
+    }
+
+    #[test]
+    fn adjust_text_indent_first_line_untouched() {
+        let text = "  first\n  second";
+        let result = adjust_text_indent(text, &IndentModifier::Decrease(2));
+        assert_eq!(result, "  first\nsecond");
+    }
+
+    #[test]
+    fn adjust_text_indent_no_newline() {
+        let text = "  hello";
+        let result = adjust_text_indent(text, &IndentModifier::Decrease(2));
+        assert_eq!(result, "  hello");
+    }
+
+    #[test]
+    fn lower_match_block_indent_decrease() {
+        let storage = HashMap::from([("name".into(), Ty::String)]);
+        let source = "{{ true = $name == \"test\" }}\n    matched\n    here{{/-2}}";
+        let module = lower_with(source, storage, HashMap::new());
+        // Find EmitText instructions and verify the text was adjusted.
+        let texts: Vec<&str> = module
+            .main
+            .insts
+            .iter()
+            .filter_map(|i| match &i.kind {
+                InstKind::EmitText(idx) => Some(module.texts[*idx].as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.iter().any(|t| t.contains("\n  matched\n  here")));
+    }
+
+    #[test]
+    fn lower_match_block_indent_increase() {
+        let storage = HashMap::from([("name".into(), Ty::String)]);
+        let source = "{{ true = $name == \"test\" }}\nmatched{{/+4}}";
+        let module = lower_with(source, storage, HashMap::new());
+        let texts: Vec<&str> = module
+            .main
+            .insts
+            .iter()
+            .filter_map(|i| match &i.kind {
+                InstKind::EmitText(idx) => Some(module.texts[*idx].as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.iter().any(|t| t.contains("\n    matched")));
     }
 }

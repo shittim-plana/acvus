@@ -1,5 +1,6 @@
 use logos::Logos;
 
+use crate::ast::IndentModifier;
 use crate::error::{ParseError, ParseErrorKind};
 use crate::span::Span;
 use crate::token::Token;
@@ -13,8 +14,8 @@ pub enum Segment {
     Text { value: String, span: Span },
     /// A comment `{{-- ... --}}`.
     Comment { value: String, span: Span },
-    /// A close block `{{/}}`.
-    CloseBlock { span: Span },
+    /// A close block `{{/}}`, optionally with indent modifier `{{/+2}}` or `{{/-2}}`.
+    CloseBlock { span: Span, indent: Option<IndentModifier> },
     /// A catch-all `{{_}}`.
     CatchAll { span: Span },
     /// An expression tag `{{ ... }}` (content is the inner text, trimmed).
@@ -107,8 +108,8 @@ pub fn scan_template(source: &str) -> Result<Vec<Segment>, ParseError> {
                 let trimmed = inner.trim();
                 let tag_span = Span::new(tag_start, pos);
 
-                if trimmed == "/" {
-                    segments.push(Segment::CloseBlock { span: tag_span });
+                if let Some(indent) = parse_close_block(trimmed) {
+                    segments.push(Segment::CloseBlock { span: tag_span, indent: indent.1 });
                 } else if trimmed == "_" {
                     segments.push(Segment::CatchAll { span: tag_span });
                 } else {
@@ -183,6 +184,36 @@ impl<'input> Iterator for ExprTokenizer<'input> {
     }
 }
 
+/// Try to parse a trimmed tag content as a close block.
+/// Returns `Some(((), indent))` if it matches `/` optionally followed by `+N` or `-N`.
+/// Returns `None` if it's not a close block pattern.
+fn parse_close_block(trimmed: &str) -> Option<((), Option<IndentModifier>)> {
+    if !trimmed.starts_with('/') {
+        return None;
+    }
+    let rest = trimmed[1..].trim();
+    if rest.is_empty() {
+        return Some(((), None));
+    }
+    let (sign, digits) = if let Some(d) = rest.strip_prefix('+') {
+        ('+', d.trim())
+    } else if let Some(d) = rest.strip_prefix('-') {
+        ('-', d.trim())
+    } else {
+        return None;
+    };
+    if digits.is_empty() {
+        return None;
+    }
+    let n: u32 = digits.parse().ok()?;
+    let modifier = match sign {
+        '+' => IndentModifier::Increase(n),
+        '-' => IndentModifier::Decrease(n),
+        _ => unreachable!(),
+    };
+    Some(((), Some(modifier)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,7 +245,37 @@ mod tests {
     fn scan_close_block() {
         let segs = scan_template("{{/}}").unwrap();
         assert_eq!(segs.len(), 1);
-        assert!(matches!(&segs[0], Segment::CloseBlock { .. }));
+        assert!(matches!(&segs[0], Segment::CloseBlock { indent: None, .. }));
+    }
+
+    #[test]
+    fn scan_close_block_indent_increase() {
+        let segs = scan_template("{{/+2}}").unwrap();
+        assert_eq!(segs.len(), 1);
+        assert!(matches!(
+            &segs[0],
+            Segment::CloseBlock { indent: Some(IndentModifier::Increase(2)), .. }
+        ));
+    }
+
+    #[test]
+    fn scan_close_block_indent_decrease() {
+        let segs = scan_template("{{/-3}}").unwrap();
+        assert_eq!(segs.len(), 1);
+        assert!(matches!(
+            &segs[0],
+            Segment::CloseBlock { indent: Some(IndentModifier::Decrease(3)), .. }
+        ));
+    }
+
+    #[test]
+    fn scan_close_block_indent_with_spaces() {
+        let segs = scan_template("{{ / + 2 }}").unwrap();
+        assert_eq!(segs.len(), 1);
+        assert!(matches!(
+            &segs[0],
+            Segment::CloseBlock { indent: Some(IndentModifier::Increase(2)), .. }
+        ));
     }
 
     #[test]
