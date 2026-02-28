@@ -203,10 +203,7 @@
     const raw = storageEl.value.trim();
     if (raw) {
       try {
-        const normalized = raw
-          .replace(/,\s*([}\]])/g, '$1')  // trailing commas
-          .replace(/"(int|float|bool|string)"/gi, (_, t) =>
-            `"${t[0].toUpperCase() + t.slice(1).toLowerCase()}"`);
+        const normalized = raw.replace(/,\s*([}\]])/g, '$1');
         storage = JSON.parse(normalized);
       } catch {
         setStatus('invalid context JSON', 'error');
