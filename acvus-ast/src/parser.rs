@@ -305,6 +305,7 @@ fn is_pattern_expr(expr: &Expr) -> bool {
             | Expr::List { .. }
             | Expr::Range { .. }
             | Expr::Object { .. }
+            | Expr::Tuple { .. }
     )
 }
 
@@ -356,6 +357,22 @@ pub fn expr_to_pattern(expr: &Expr) -> Result<Pattern, ParseError> {
                 .collect();
             Ok(Pattern::Object {
                 fields: pattern_fields?,
+                span: *span,
+            })
+        }
+        Expr::Tuple { elements, span } => {
+            let elems: Result<Vec<_>, _> = elements
+                .iter()
+                .map(|elem| match elem {
+                    TupleElem::Wildcard(s) => Ok(TuplePatternElem::Wildcard(*s)),
+                    TupleElem::Expr(e) => {
+                        let pat = expr_to_pattern(e)?;
+                        Ok(TuplePatternElem::Pattern(pat))
+                    }
+                })
+                .collect();
+            Ok(Pattern::Tuple {
+                elements: elems?,
                 span: *span,
             })
         }

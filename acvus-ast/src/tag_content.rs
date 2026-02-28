@@ -59,13 +59,17 @@ pub fn build_list(
 pub fn expr_to_lambda(params_expr: Expr, body: Expr, span: Span) -> Expr {
     let params = match params_expr {
         Expr::Ident { name, span, .. } => vec![LambdaParam { name, span }],
-        Expr::Group { elements, .. } => elements
+        Expr::Tuple { elements, .. } => elements
             .into_iter()
-            .map(|e| match e {
-                Expr::Ident { name, span, .. } => LambdaParam { name, span },
-                other => LambdaParam {
+            .map(|elem| match elem {
+                TupleElem::Expr(Expr::Ident { name, span, .. }) => LambdaParam { name, span },
+                TupleElem::Expr(other) => LambdaParam {
                     name: format!("<invalid:{:?}>", other.span()),
                     span: other.span(),
+                },
+                TupleElem::Wildcard(span) => LambdaParam {
+                    name: "<invalid:wildcard>".into(),
+                    span,
                 },
             })
             .collect(),

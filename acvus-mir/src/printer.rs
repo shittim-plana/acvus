@@ -135,6 +135,12 @@ fn write_body(f: &mut fmt::Formatter<'_>, body: &MirBody, indent: &str) -> fmt::
                     .join(", ");
                 writeln!(f, "{} = object {{{fields_str}}}", fmt_val(*dst))?
             }
+            InstKind::MakeTuple { dst, elements } => {
+                writeln!(f, "{} = tuple ({})", fmt_val(*dst), fmt_vals(elements))?
+            }
+            InstKind::TupleIndex { dst, tuple, index } => {
+                writeln!(f, "{} = {}.{index}", fmt_val(*dst), fmt_val(*tuple))?
+            }
             InstKind::MakeRange {
                 dst,
                 start,

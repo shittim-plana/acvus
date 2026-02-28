@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use acvus_ast::{
     BinOp, Expr, Literal, MatchBlock, Node, ObjectExprField, ObjectPatternField, Pattern, Span,
-    Template,
+    Template, TupleElem, TuplePatternElem,
 };
 
 use crate::builtins::builtins;
@@ -182,8 +182,8 @@ impl TypeChecker {
     /// Other patterns match against the iterated element type.
     fn pattern_match_type(&self, pattern: &Pattern, source_ty: &Ty) -> Ty {
         match pattern {
-            Pattern::List { .. } => {
-                // List patterns destructure the source as a whole.
+            Pattern::List { .. } | Pattern::Tuple { .. } => {
+                // List/Tuple patterns destructure the source as a whole.
                 source_ty.clone()
             }
             _ => {
@@ -520,10 +520,21 @@ impl TypeChecker {
                 ty
             }
 
+            Expr::Tuple { elements, span } => {
+                let elem_types: Vec<Ty> = elements
+                    .iter()
+                    .map(|elem| match elem {
+                        TupleElem::Expr(e) => self.check_expr(e),
+                        TupleElem::Wildcard(_) => self.subst.fresh_var(),
+                    })
+                    .collect();
+                let ty = Ty::Tuple(elem_types);
+                self.record(*span, ty.clone());
+                ty
+            }
+
             Expr::Group { elements, span } => {
                 // Group is only valid as lambda param list (handled by parser).
-                // If we encounter it here, treat it as a tuple-like error or
-                // just check each element.
                 let ty = if let Some(last) = elements.last() {
                     for e in &elements[..elements.len() - 1] {
                         self.check_expr(e);
@@ -820,6 +831,36 @@ impl TypeChecker {
                 // Range bounds must be literal Ints (validated at pattern level).
                 self.check_pattern_is_int(start, span);
                 self.check_pattern_is_int(end, span);
+            }
+
+            Pattern::Tuple { elements, .. } => {
+                // Source must be Tuple with matching arity.
+                let elem_vars: Vec<Ty> = elements
+                    .iter()
+                    .map(|_| self.subst.fresh_var())
+                    .collect();
+                let tuple_ty = Ty::Tuple(elem_vars.clone());
+                if self.subst.unify(&source_resolved, &tuple_ty).is_err() {
+                    self.error(
+                        MirErrorKind::PatternTypeMismatch {
+                            pattern_ty: tuple_ty,
+                            source_ty: source_resolved,
+                        },
+                        span,
+                    );
+                    return;
+                }
+                for (i, elem) in elements.iter().enumerate() {
+                    let resolved_elem = self.subst.resolve(&elem_vars[i]);
+                    match elem {
+                        TuplePatternElem::Pattern(pat) => {
+                            self.check_pattern(pat, &resolved_elem, span);
+                        }
+                        TuplePatternElem::Wildcard(_) => {
+                            // Wildcard: no binding, skip.
+                        }
+                    }
+                }
             }
         }
     }

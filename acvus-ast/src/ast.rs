@@ -140,6 +140,19 @@ pub enum Expr {
         kind: RangeKind,
         span: Span,
     },
+    /// A tuple: `(a, b, c)` — 0 or 2+ elements.
+    /// Elements can be expressions or wildcards `_`.
+    Tuple {
+        elements: Vec<TupleElem>,
+        span: Span,
+    },
+}
+
+/// An element in a tuple expression: either a real expression or a wildcard `_`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TupleElem {
+    Expr(Expr),
+    Wildcard(Span),
 }
 
 impl Expr {
@@ -157,7 +170,8 @@ impl Expr {
             | Expr::List { span, .. }
             | Expr::Group { span, .. }
             | Expr::Object { span, .. }
-            | Expr::Range { span, .. } => *span,
+            | Expr::Range { span, .. }
+            | Expr::Tuple { span, .. } => *span,
         }
     }
 }
@@ -214,6 +228,20 @@ pub enum Pattern {
         kind: RangeKind,
         span: Span,
     },
+    /// A tuple pattern: `(a, b, c)`.
+    Tuple {
+        elements: Vec<TuplePatternElem>,
+        span: Span,
+    },
+}
+
+/// An element in a tuple pattern.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TuplePatternElem {
+    /// A sub-pattern.
+    Pattern(Pattern),
+    /// A wildcard `_` that ignores the element.
+    Wildcard(Span),
 }
 
 /// A field in an object pattern: `{ key: pattern }` or shorthand `{ name }` / `{ $name }`.

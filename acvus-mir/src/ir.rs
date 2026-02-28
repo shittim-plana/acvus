@@ -76,6 +76,15 @@ pub enum InstKind {
         end: Val,
         kind: RangeKind,
     },
+    MakeTuple {
+        dst: Val,
+        elements: Vec<Val>,
+    },
+    TupleIndex {
+        dst: Val,
+        tuple: Val,
+        index: usize,
+    },
 
     // Pattern matching (decision tree)
     TestLiteral {

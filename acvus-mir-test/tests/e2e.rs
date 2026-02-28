@@ -240,6 +240,95 @@ fn extern_async_call() {
     insta::assert_snapshot!(ir);
 }
 
+// ── Tuple ────────────────────────────────────────────────────────
+
+#[test]
+fn tuple_expression() {
+    let storage = HashMap::from([("a".into(), Ty::Int), ("b".into(), Ty::String)]);
+    let ir = compile_to_ir(
+        r#"{{ t = ($a, $b) }}{{ t | to_string }}{{_}}{{/}}"#,
+        storage,
+        HashMap::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn tuple_pattern_binding() {
+    let storage = HashMap::from([
+        ("pair".into(), Ty::Tuple(vec![Ty::String, Ty::Int])),
+    ]);
+    let ir = compile_to_ir(
+        r#"{{ (name, age) = $pair }}{{ name }}{{/}}"#,
+        storage,
+        HashMap::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn tuple_pattern_wildcard() {
+    let storage = HashMap::from([
+        ("pair".into(), Ty::Tuple(vec![Ty::String, Ty::Int])),
+    ]);
+    let ir = compile_to_ir(
+        r#"{{ (name, _) = $pair }}{{ name }}{{/}}"#,
+        storage,
+        HashMap::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn tuple_pattern_literal_match() {
+    let storage = HashMap::from([
+        ("a".into(), Ty::Int),
+        ("b".into(), Ty::Int),
+    ]);
+    let ir = compile_to_ir(
+        r#"{{ (0, 1) = ($a, $b) }}zero-one{{ (1, _) }}one-any{{_}}other{{/}}"#,
+        storage,
+        HashMap::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn tuple_nested_destructure() {
+    let storage = HashMap::from([(
+        "data".into(),
+        Ty::Tuple(vec![
+            Ty::String,
+            Ty::Object(BTreeMap::from([("x".into(), Ty::Int)])),
+        ]),
+    )]);
+    let ir = compile_to_ir(
+        r#"{{ (label, { x, }) = $data }}{{ label }}{{/}}"#,
+        storage,
+        HashMap::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn error_tuple_arity_mismatch() {
+    let storage = HashMap::from([
+        ("pair".into(), Ty::Tuple(vec![Ty::Int, Ty::Int])),
+    ]);
+    let result = compile_to_ir(
+        r#"{{ (a, b, c) = $pair }}{{ a | to_string }}{{/}}"#,
+        storage,
+        HashMap::new(),
+    );
+    assert!(result.is_err());
+    insta::assert_snapshot!(result.unwrap_err());
+}
+
 // ── Error cases ──────────────────────────────────────────────────
 
 #[test]

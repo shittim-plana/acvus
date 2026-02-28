@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use acvus_ast::{
     Expr, IndentModifier, Literal, MatchBlock, Node, ObjectExprField, ObjectPatternField, Pattern,
-    Span, Template,
+    Span, Template, TupleElem, TuplePatternElem,
 };
 
 use crate::builtins::builtins;
@@ -517,6 +517,33 @@ impl Lowerer {
                         kind: *kind,
                     },
                 );
+                dst
+            }
+
+            Expr::Tuple { elements, span } => {
+                let elem_vals: Vec<Val> = elements
+                    .iter()
+                    .map(|elem| match elem {
+                        TupleElem::Expr(e) => self.lower_expr(e),
+                        TupleElem::Wildcard(s) => {
+                            // Wildcard in expression context: produce a Unit placeholder.
+                            let dst = self.alloc_val();
+                            self.set_val_type(dst, Ty::Unit);
+                            self.emit_inst(
+                                *s,
+                                InstKind::Const {
+                                    dst,
+                                    value: Literal::Bool(false),
+                                },
+                            );
+                            dst
+                        }
+                    })
+                    .collect();
+                let dst = self.alloc_val();
+                let ty = self.type_of_span(*span);
+                self.set_val_type(dst, ty);
+                self.emit_inst(*span, InstKind::MakeTuple { dst, elements: elem_vals });
                 dst
             }
 
@@ -1050,6 +1077,58 @@ impl Lowerer {
                 );
                 dst
             }
+
+            Pattern::Tuple { elements, .. } => {
+                // Tuple length is guaranteed by the type system — always matches.
+                // Test each sub-pattern element.
+                let mut all_ok = {
+                    let r = self.alloc_val();
+                    self.set_val_type(r, Ty::Bool);
+                    self.emit_inst(
+                        span,
+                        InstKind::Const {
+                            dst: r,
+                            value: Literal::Bool(true),
+                        },
+                    );
+                    r
+                };
+
+                for (i, elem) in elements.iter().enumerate() {
+                    match elem {
+                        TuplePatternElem::Wildcard(_) => {
+                            // Skip wildcards — no test needed.
+                        }
+                        TuplePatternElem::Pattern(pat) => {
+                            let field_val = self.alloc_val();
+                            self.set_val_type(field_val, Ty::Unit);
+                            self.emit_inst(
+                                span,
+                                InstKind::TupleIndex {
+                                    dst: field_val,
+                                    tuple: src_reg,
+                                    index: i,
+                                },
+                            );
+                            let sub_ok = self.lower_pattern_test(pat, field_val, span);
+                            let combined = self.alloc_val();
+                            self.set_val_type(combined, Ty::Bool);
+                            self.emit_inst(
+                                span,
+                                InstKind::BinOp {
+                                    dst: combined,
+                                    op: acvus_ast::BinOp::Eq,
+                                    left: all_ok,
+                                    right: sub_ok,
+                                },
+                            );
+                            all_ok = combined;
+                        }
+                    }
+                }
+
+                all_ok
+            }
         }
     }
 
@@ -1153,6 +1232,29 @@ impl Lowerer {
             Pattern::Range { .. } => {
                 // No bindings in range patterns.
             }
+
+            Pattern::Tuple { elements, .. } => {
+                for (i, elem) in elements.iter().enumerate() {
+                    match elem {
+                        TuplePatternElem::Wildcard(_) => {
+                            // Skip wildcards — no binding.
+                        }
+                        TuplePatternElem::Pattern(pat) => {
+                            let field_val = self.alloc_val();
+                            self.set_val_type(field_val, Ty::Unit);
+                            self.emit_inst(
+                                span,
+                                InstKind::TupleIndex {
+                                    dst: field_val,
+                                    tuple: src_reg,
+                                    index: i,
+                                },
+                            );
+                            self.lower_pattern_bind(pat, field_val, span);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1243,6 +1345,13 @@ impl Lowerer {
             Expr::Range { start, end, .. } => {
                 self.collect_free_vars(start, bound, free, seen);
                 self.collect_free_vars(end, bound, free, seen);
+            }
+            Expr::Tuple { elements, .. } => {
+                for elem in elements {
+                    if let TupleElem::Expr(e) = elem {
+                        self.collect_free_vars(e, bound, free, seen);
+                    }
+                }
             }
             Expr::Group { elements, .. } => {
                 for e in elements {

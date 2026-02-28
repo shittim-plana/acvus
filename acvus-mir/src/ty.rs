@@ -14,6 +14,7 @@ pub enum Ty {
     Range,
     List(Box<Ty>),
     Object(BTreeMap<std::string::String, Ty>),
+    Tuple(Vec<Ty>),
     Fn {
         params: Vec<Ty>,
         ret: Box<Ty>,
@@ -41,6 +42,16 @@ impl fmt::Display for Ty {
                     write!(f, "{k}: {v}")?;
                 }
                 write!(f, "}}")
+            }
+            Ty::Tuple(elems) => {
+                write!(f, "(")?;
+                for (i, e) in elems.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{e}")?;
+                }
+                write!(f, ")")
             }
             Ty::Fn { params, ret } => {
                 write!(f, "Fn(")?;
@@ -96,6 +107,9 @@ impl TySubst {
                     .collect();
                 Ty::Object(resolved)
             }
+            Ty::Tuple(elems) => {
+                Ty::Tuple(elems.iter().map(|e| self.resolve(e)).collect())
+            }
             Ty::Fn { params, ret } => Ty::Fn {
                 params: params.iter().map(|p| self.resolve(p)).collect(),
                 ret: Box::new(self.resolve(ret)),
@@ -128,6 +142,16 @@ impl TySubst {
                     return Err((a.clone(), b.clone()));
                 }
                 self.bindings.insert(*v, other.clone());
+                Ok(())
+            }
+
+            (Ty::Tuple(ea), Ty::Tuple(eb)) => {
+                if ea.len() != eb.len() {
+                    return Err((a.clone(), b.clone()));
+                }
+                for (ta, tb) in ea.iter().zip(eb.iter()) {
+                    self.unify(ta, tb)?;
+                }
                 Ok(())
             }
 
@@ -185,6 +209,7 @@ impl TySubst {
                 }
             }
             Ty::List(inner) => self.occurs_in(var, inner),
+            Ty::Tuple(elems) => elems.iter().any(|e| self.occurs_in(var, e)),
             Ty::Object(fields) => fields.values().any(|v| self.occurs_in(var, v)),
             Ty::Fn { params, ret } => {
                 params.iter().any(|p| self.occurs_in(var, p)) || self.occurs_in(var, ret)
