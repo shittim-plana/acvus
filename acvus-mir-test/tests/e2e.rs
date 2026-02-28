@@ -1082,6 +1082,123 @@ fn pipe_map_to_string_then_filter() {
     insta::assert_snapshot!(ir);
 }
 
+// ── Edge case: local $-var captured in lambda ───────────────────
+
+#[test]
+fn lambda_capture_local_storage_ref() {
+    // $offset is NOT in initial storage — created as local $-var.
+    // Lambda must capture it correctly (not fall through to StorageLoad).
+    let storage = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
+    let ir = compile_to_ir(
+        r#"{{ $offset = 10 }}{{ x = $items | filter(i -> i > $offset) }}{{ x | to_string }}{{_}}{{/}}"#,
+        storage,
+        HashMap::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+// ── Edge case: multiple field accesses on same lambda param ─────
+
+#[test]
+fn lambda_multiple_field_access() {
+    // Lambda body accesses two fields on the same param.
+    let storage = HashMap::from([(
+        "users".into(),
+        Ty::List(Box::new(Ty::Object(BTreeMap::from([
+            ("name".into(), Ty::String),
+            ("age".into(), Ty::Int),
+        ])))),
+    )]);
+    let ir = compile_to_ir(
+        r#"{{ x = $users | map(u -> (u.name, u.age)) }}{{ x | to_string }}"#,
+        storage,
+        HashMap::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+// ── Edge case: chained field access in lambda ───────────────────
+
+#[test]
+fn lambda_chained_field_access() {
+    let storage = HashMap::from([(
+        "users".into(),
+        Ty::List(Box::new(Ty::Object(BTreeMap::from([
+            ("address".into(), Ty::Object(BTreeMap::from([
+                ("city".into(), Ty::String),
+            ]))),
+        ])))),
+    )]);
+    let ir = compile_to_ir(
+        r#"{{ x = $users | map(u -> u.address.city) }}{{ x | to_string }}"#,
+        storage,
+        HashMap::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+// ── Edge case: string concat in lambda ───────────────────────────
+
+#[test]
+fn lambda_string_concat() {
+    // Lambda param is Ty::Var; string concat (+) must resolve via unification.
+    let storage = HashMap::from([(
+        "names".into(),
+        Ty::List(Box::new(Ty::String)),
+    )]);
+    let ir = compile_to_ir(
+        r#"{{ x = $names | map(n -> n + "!") }}{{ x | to_string }}"#,
+        storage,
+        HashMap::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+// ── Edge case: filter then map with field access ────────────────
+
+#[test]
+fn pipe_filter_then_map_field() {
+    let storage = HashMap::from([(
+        "users".into(),
+        Ty::List(Box::new(Ty::Object(BTreeMap::from([
+            ("name".into(), Ty::String),
+            ("age".into(), Ty::Int),
+        ])))),
+    )]);
+    let ir = compile_to_ir(
+        r#"{{ x = $users | filter(u -> u.age > 18) | map(u -> u.name) }}{{ x | to_string }}"#,
+        storage,
+        HashMap::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+// ── Edge case: error — field access on non-object ────────────────
+
+#[test]
+fn error_field_access_on_int() {
+    let storage = HashMap::from([("n".into(), Ty::Int)]);
+    let result = compile_to_ir("{{ $n.foo | to_string }}", storage, HashMap::new());
+    assert!(result.is_err());
+    insta::assert_snapshot!(result.unwrap_err());
+}
+
+// ── Edge case: error — emit non-string with match ───────────────
+
+#[test]
+fn error_storage_write_type_mismatch() {
+    // $count is Int in storage, but trying to write a String.
+    let storage = HashMap::from([("count".into(), Ty::Int)]);
+    let result = compile_to_ir(r#"{{ $count = "hello" }}"#, storage, HashMap::new());
+    assert!(result.is_err());
+    insta::assert_snapshot!(result.unwrap_err());
+}
+
 // ── Edge case: extern function with object return ───────────────
 
 #[test]

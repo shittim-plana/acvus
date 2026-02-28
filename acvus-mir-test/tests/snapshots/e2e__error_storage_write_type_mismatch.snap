@@ -1,0 +1,5 @@
+---
+source: acvus-mir-test/tests/e2e.rs
+expression: result.unwrap_err()
+---
+[0..22] pattern type Int incompatible with source type String
