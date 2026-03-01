@@ -46,8 +46,8 @@ pub fn scan_template(source: &str) -> Result<Vec<Segment>, ParseError> {
                 let comment_start = pos;
                 loop {
                     // Try close: `--}-}` or `--}}`
-                    if pos + 1 < len && bytes[pos] == b'-' && bytes[pos + 1] == b'-' {
-                        if let Some((trim_right, close_skip)) = detect_close(bytes, pos + 2) {
+                    if pos + 1 < len && bytes[pos] == b'-' && bytes[pos + 1] == b'-'
+                        && let Some((trim_right, close_skip)) = detect_close(bytes, pos + 2) {
                             let comment_end = pos;
                             pos += 2 + close_skip; // skip `--` + close delimiter
                             let value = source[comment_start..comment_end].to_string();
@@ -58,7 +58,6 @@ pub fn scan_template(source: &str) -> Result<Vec<Segment>, ParseError> {
                             trims.push((trim_left, trim_right));
                             break;
                         }
-                    }
                     if pos >= len {
                         return Err(ParseError::new(
                             ParseErrorKind::UnclosedComment,
@@ -221,16 +220,14 @@ fn apply_whitespace_trimming(segments: &mut Vec<Segment>, trims: &[(bool, bool)]
     for i in 0..len {
         let (trim_left, trim_right) = trims[i];
 
-        if trim_left && i > 0 {
-            if let Segment::Text { value, .. } = &mut segments[i - 1] {
+        if trim_left && i > 0
+            && let Segment::Text { value, .. } = &mut segments[i - 1] {
                 *value = trim_trailing(value).to_string();
             }
-        }
-        if trim_right && i + 1 < len {
-            if let Segment::Text { value, .. } = &mut segments[i + 1] {
+        if trim_right && i + 1 < len
+            && let Segment::Text { value, .. } = &mut segments[i + 1] {
                 *value = trim_leading(value).to_string();
             }
-        }
     }
 
     // Remove empty Text segments

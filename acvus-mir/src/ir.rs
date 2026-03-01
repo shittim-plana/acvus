@@ -190,6 +190,12 @@ pub struct DebugInfo {
     pub val_origins: HashMap<ValueId, ValOrigin>,
 }
 
+impl Default for DebugInfo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DebugInfo {
     pub fn new() -> Self {
         Self {
@@ -224,6 +230,12 @@ pub struct MirBody {
     pub debug: DebugInfo,
     pub val_count: u32,
     pub label_count: u32,
+}
+
+impl Default for MirBody {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MirBody {

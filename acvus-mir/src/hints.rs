@@ -7,6 +7,12 @@ pub struct HintTable {
     pub hints: HashMap<InstIdx, Vec<Hint>>,
 }
 
+impl Default for HintTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HintTable {
     pub fn new() -> Self {
         Self {

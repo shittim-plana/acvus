@@ -46,7 +46,7 @@ impl AnalysisPass for StorageDirtyAnalysis {
                 continue;
             };
 
-            let status = analyze_store(insts, &val_def, name, *src);
+            let status = analyze_store(insts, val_def, name, *src);
             entries.insert(
                 idx,
                 StorageDirtyEntry {

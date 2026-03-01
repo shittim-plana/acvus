@@ -1,0 +1,24 @@
+---
+source: acvus-mir-test/tests/e2e.rs
+expression: ir
+---
+=== main ===
+     0 │   r0 = storage_load $items
+     1 │   r1 = call reverse(r0)
+     2 │   r2 = iter_init r1
+     3 │ L0:
+     4 │   r3, r4 = iter_next r2
+     5 │   jump_if r4 then L1 else L3
+     6 │ L3:
+     7 │   r5 = call to_string(r3)
+     8 │   emit r5
+     9 │   jump L0
+    10 │ L1:
+    11 │ L2:
+
+    ; r0 ($items) : List<Int>
+    ; r1 (reverse(...)) : List<Int>
+    ; r2 (v2) : Unit
+    ; r3 (x) : Int
+    ; r4 (v4) : Bool
+    ; r5 (to_string(...)) : String

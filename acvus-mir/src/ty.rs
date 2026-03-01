@@ -83,6 +83,12 @@ pub struct TySubst {
     next_var: u32,
 }
 
+impl Default for TySubst {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TySubst {
     pub fn new() -> Self {
         Self {
@@ -174,7 +180,7 @@ impl TySubst {
 
         match (&a, &b) {
             // Error (poison) unifies with anything — suppress cascading errors.
-            (Ty::Error, _) | (_, Ty::Error) => return Ok(()),
+            (Ty::Error, _) | (_, Ty::Error) => Ok(()),
 
             (Ty::Int, Ty::Int)
             | (Ty::Float, Ty::Float)
@@ -184,11 +190,10 @@ impl TySubst {
             | (Ty::Range, Ty::Range) => Ok(()),
 
             (Ty::Var(v), other) | (other, Ty::Var(v)) => {
-                if let Ty::Var(v2) = other {
-                    if v == v2 {
+                if let Ty::Var(v2) = other
+                    && v == v2 {
                         return Ok(());
                     }
-                }
                 if self.occurs_in(*v, other) {
                     return Err((a.clone(), b.clone()));
                 }

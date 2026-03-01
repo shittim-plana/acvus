@@ -412,9 +412,9 @@ pub fn expr_to_pattern(expr: &Expr) -> Result<Pattern, ParseError> {
         }),
         Expr::List { head, rest, tail, span } => {
             let head_pats: Result<Vec<_>, _> =
-                head.iter().map(|e| expr_to_pattern(e)).collect();
+                head.iter().map(expr_to_pattern).collect();
             let tail_pats: Result<Vec<_>, _> =
-                tail.iter().map(|e| expr_to_pattern(e)).collect();
+                tail.iter().map(expr_to_pattern).collect();
             Ok(Pattern::List {
                 head: head_pats?,
                 rest: *rest,

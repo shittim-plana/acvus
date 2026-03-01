@@ -41,6 +41,12 @@ pub struct ExternFnRegistry {
     fns: HashMap<String, (ExternFnSig, ExternFnBody)>,
 }
 
+impl Default for ExternFnRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ExternFnRegistry {
     pub fn new() -> Self {
         Self {

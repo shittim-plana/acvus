@@ -10,6 +10,12 @@ pub struct PassContext {
     results: HashMap<TypeId, Box<dyn Any>>,
 }
 
+impl Default for PassContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PassContext {
     pub fn new() -> Self {
         Self {

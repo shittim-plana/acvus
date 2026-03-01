@@ -1,13 +1,15 @@
 use crate::ty::{Ty, TySubst};
 
+/// Post-unification constraint on resolved arg types.
+/// Returns `Some(error_message)` if the constraint is violated.
+pub type BuiltinConstraint = fn(&[Ty]) -> Option<String>;
+
 pub struct BuiltinFn {
     pub name: &'static str,
     /// Returns (param_types, return_type) with fresh type variables for generics.
     pub signature: fn(&mut TySubst) -> (Vec<Ty>, Ty),
     pub is_effectful: bool,
-    /// Post-unification constraint: called with resolved arg types.
-    /// Returns `Some(error_message)` if the constraint is violated.
-    pub constraint: Option<fn(&[Ty]) -> Option<String>>,
+    pub constraint: Option<BuiltinConstraint>,
 }
 
 fn is_scalar(ty: &Ty) -> bool {

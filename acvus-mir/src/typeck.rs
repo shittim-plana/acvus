@@ -225,7 +225,8 @@ impl TypeChecker {
     }
 
     fn check_expr(&mut self, expr: &Expr) -> Ty {
-        let ty = match expr {
+        
+        match expr {
             Expr::Literal { value, span } => {
                 let ty = match value {
                     Literal::Int(_) => Ty::Int,
@@ -648,8 +649,7 @@ impl TypeChecker {
                 self.record(*span, ty.clone());
                 ty
             }
-        };
-        ty
+        }
     }
 
     fn check_func_call(&mut self, func: &Expr, args: &[Expr], call_span: Span) -> Ty {

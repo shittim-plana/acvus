@@ -451,11 +451,10 @@ impl Lowerer {
                     sub_body.val_count = sub_body.val_count.max(reg.0 + 1);
                     sub_scopes[0].insert(name.clone(), reg);
                     // Copy capture type from outer body.
-                    if let Some(outer_reg) = capture_regs.get(i) {
-                        if let Some(ty) = self.body.val_types.get(outer_reg) {
+                    if let Some(outer_reg) = capture_regs.get(i)
+                        && let Some(ty) = self.body.val_types.get(outer_reg) {
                             sub_body.val_types.insert(reg, ty.clone());
                         }
-                    }
                 }
 
                 // Params follow captures.
@@ -698,8 +697,8 @@ impl Lowerer {
 
     fn lower_match_block(&mut self, mb: &MatchBlock) {
         // Check for body-less binding shorthand (storage write or variable binding).
-        if mb.arms.len() == 1 && mb.arms[0].body.is_empty() {
-            if let Pattern::Binding {
+        if mb.arms.len() == 1 && mb.arms[0].body.is_empty()
+            && let Pattern::Binding {
                 name,
                 is_storage_ref,
                 span: pat_span,
@@ -722,7 +721,6 @@ impl Lowerer {
                 }
                 return;
             }
-        }
 
         // Pre-compute indent-adjusted arm bodies and catch-all body.
         let adjusted_arm_bodies: Option<Vec<Vec<Node>>> = mb.indent.as_ref().map(|modifier| {

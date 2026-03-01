@@ -1277,3 +1277,113 @@ fn extern_fn_object_return() {
     .unwrap();
     insta::assert_snapshot!(ir);
 }
+
+// ── New builtins ─────────────────────────────────────────────────
+
+#[test]
+fn builtin_len() {
+    let storage = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
+    let ir = compile_to_ir(
+        "{{ $items | len | to_string }}",
+        storage,
+        &ExternRegistry::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn builtin_reverse() {
+    let storage = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
+    let ir = compile_to_ir(
+        "{{ x in $items | reverse }}{{ x | to_string }}{{/}}",
+        storage,
+        &ExternRegistry::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn builtin_join() {
+    let storage = HashMap::from([("names".into(), Ty::List(Box::new(Ty::String)))]);
+    let ir = compile_to_ir(
+        r#"{{ $names | join(", ") }}"#,
+        storage,
+        &ExternRegistry::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn builtin_contains() {
+    let storage = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
+    let ir = compile_to_ir(
+        "{{ $items | contains(3) | to_string }}",
+        storage,
+        &ExternRegistry::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn builtin_find() {
+    let storage = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
+    let ir = compile_to_ir(
+        "{{ $items | find(x -> x > 10) | to_string }}",
+        storage,
+        &ExternRegistry::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn builtin_reduce() {
+    let storage = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
+    let ir = compile_to_ir(
+        "{{ $items | reduce((a, b) -> a + b) | to_string }}",
+        storage,
+        &ExternRegistry::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn builtin_fold() {
+    let storage = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
+    let ir = compile_to_ir(
+        "{{ $items | fold(0, (acc, x) -> acc + x) | to_string }}",
+        storage,
+        &ExternRegistry::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn builtin_any() {
+    let storage = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
+    let ir = compile_to_ir(
+        "{{ $items | any(x -> x > 10) | to_string }}",
+        storage,
+        &ExternRegistry::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn builtin_all() {
+    let storage = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
+    let ir = compile_to_ir(
+        "{{ $items | all(x -> x > 0) | to_string }}",
+        storage,
+        &ExternRegistry::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
