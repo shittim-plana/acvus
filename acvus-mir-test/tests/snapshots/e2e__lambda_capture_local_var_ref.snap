@@ -4,8 +4,8 @@ expression: ir
 ---
 === main ===
      0 │   r0 = const 10
-     1 │   storage_store $offset = r0
-     2 │   r1 = storage_load $items
+     1 │   var_store $offset = r0
+     2 │   r1 = context_load @items
      3 │   r2 = closure L0 []
      4 │   r3 = call filter(r1, r2)
      5 │   r4 = call len(r3)
@@ -13,14 +13,14 @@ expression: ir
      7 │   emit r5
 
     ; r0 (v0) : Int
-    ; r1 ($items) : List<Int>
+    ; r1 (@items) : List<Int>
     ; r2 (v2) : Fn(Int) -> Bool
     ; r3 (filter(...)) : List<Int>
     ; r4 (len(...)) : Int
     ; r5 (to_string(...)) : String
 
 === closure L0 (i) ===
-     0 │   r1 = storage_load $offset
+     0 │   r1 = var_load $offset
      1 │   r2 = r0 > r1
      2 │   return r2
 

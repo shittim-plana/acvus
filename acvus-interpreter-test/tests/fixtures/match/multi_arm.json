@@ -1,5 +1,5 @@
 {
-  "template": "{{ \"admin\" = $role }}admin{{ \"user\" = }}user{{_}}guest{{/}}",
-  "storage": { "role": "user" },
+  "template": "{{ \"admin\" = @role }}admin{{ \"user\" = }}user{{_}}guest{{/}}",
+  "context": { "role": "user" },
   "expected": "user"
 }

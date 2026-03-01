@@ -1,6 +1,6 @@
 {
-  "template": "{{ x = $products | filter(p -> p.price >= 100) | map(p -> p.name) }}{{ x | join(\", \") }}",
-  "storage": {
+  "template": "{{ x = @products | filter(p -> p.price >= 100) | map(p -> p.name) }}{{ x | join(\", \") }}",
+  "context": {
     "products": [
       { "name": "apple", "price": 100 },
       { "name": "banana", "price": 50 },

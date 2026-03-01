@@ -5,9 +5,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
-use acvus_interpreter::{
-    ExternFnRegistry, InMemoryStorage, Interpreter, PureValue, Storage, StorageKey,
-};
+use acvus_interpreter::{ExternFnRegistry, Interpreter, PureValue, Value};
 use acvus_mir::ty::Ty;
 
 // ── Request / Response ────────────────────────────────────────────
@@ -16,7 +14,7 @@ use acvus_mir::ty::Ty;
 struct CompileRequest {
     source: String,
     #[serde(default)]
-    storage: HashMap<String, serde_json::Value>,
+    context: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -87,26 +85,26 @@ fn pv_from_json(v: &serde_json::Value) -> Result<PureValue, String> {
 
 async fn compile_and_run(
     source: &str,
-    storage_json: HashMap<String, serde_json::Value>,
+    context_json: HashMap<String, serde_json::Value>,
 ) -> Result<(String, String), String> {
     let template =
         acvus_ast::parse(source).map_err(|e| format!("parse error: {e}"))?;
 
-    let mut storage_types: HashMap<String, Ty> = HashMap::new();
-    let mut storage_values: HashMap<String, PureValue> = HashMap::new();
+    let mut context_types: HashMap<String, Ty> = HashMap::new();
+    let mut context_values: HashMap<String, Value> = HashMap::new();
 
-    for (k, v) in &storage_json {
-        let ty = ty_from_json(v).map_err(|e| format!("storage `{k}`: {e}"))?;
-        let pv = pv_from_json(v).map_err(|e| format!("storage `{k}`: {e}"))?;
-        storage_types.insert(k.clone(), ty);
-        storage_values.insert(k.clone(), pv);
+    for (k, v) in &context_json {
+        let ty = ty_from_json(v).map_err(|e| format!("context `{k}`: {e}"))?;
+        let pv = pv_from_json(v).map_err(|e| format!("context `{k}`: {e}"))?;
+        context_types.insert(k.clone(), ty);
+        context_values.insert(k.clone(), Value::from_pure(pv));
     }
 
     let extern_fns = ExternFnRegistry::new();
     let mir_registry = extern_fns.to_mir_registry();
 
     let (module, _hints) =
-        acvus_mir::compile(&template, storage_types, &mir_registry).map_err(|errors| {
+        acvus_mir::compile(&template, context_types, &mir_registry).map_err(|errors| {
             errors
                 .iter()
                 .map(|e| format!("[{}..{}] {}", e.span.start, e.span.end, e))
@@ -116,15 +114,7 @@ async fn compile_and_run(
 
     let ir = acvus_mir::printer::dump(&module);
 
-    let mut storage = InMemoryStorage::new();
-    for (name, value) in storage_values {
-        storage
-            .set(&StorageKey::root(name), value)
-            .await
-            .map_err(|e| format!("storage init: {e:?}"))?;
-    }
-
-    let interp = Interpreter::new(module, storage, extern_fns);
+    let interp = Interpreter::new(module, context_values, extern_fns);
     let (_interp, output) = interp.execute().await;
 
     Ok((output, ir))
@@ -133,7 +123,7 @@ async fn compile_and_run(
 // ── Handlers ─────────────────────────────────────────────────────
 
 async fn handle_compile(Json(req): Json<CompileRequest>) -> Json<CompileResponse> {
-    match compile_and_run(&req.source, req.storage).await {
+    match compile_and_run(&req.source, req.context).await {
         Ok((output, ir)) => Json(CompileResponse {
             output: Some(output),
             ir: Some(ir),

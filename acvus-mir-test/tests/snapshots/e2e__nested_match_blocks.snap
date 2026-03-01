@@ -8,12 +8,12 @@ expression: ir
   T2 = "guest"
 
 === main ===
-     0 │   r0 = storage_load $role
+     0 │   r0 = context_load @role
      1 │ L2:
      2 │   r1 = test r0 == "admin"
      3 │   jump_if r1 then L3 else L1
      4 │ L3:
-     5 │   r2 = storage_load $level
+     5 │   r2 = context_load @level
      6 │ L6:
      7 │   r3 = test r2 in 1..10
      8 │   jump_if r3 then L7 else L5
@@ -28,7 +28,7 @@ expression: ir
     17 │   emit_text T2
     18 │ L0:
 
-    ; r0 ($role) : String
+    ; r0 (@role) : String
     ; r1 (v1) : Bool
-    ; r2 ($level) : Int
+    ; r2 (@level) : Int
     ; r3 (v3) : Bool

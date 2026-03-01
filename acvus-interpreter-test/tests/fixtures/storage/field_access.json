@@ -1,6 +1,6 @@
 {
-  "template": "{{ $user.name }}",
-  "storage": {
+  "template": "{{ @user.name }}",
+  "context": {
     "user": { "name": "alice", "age": 30, "email": "alice@example.com" }
   },
   "expected": "alice"

@@ -6,7 +6,7 @@ expression: ir
   T0 = "wrong length"
 
 === main ===
-     0 │   r0 = storage_load $items
+     0 │   r0 = context_load @items
      1 │ L2:
      2 │   r1 = test len(r0) == 2
      3 │   jump_if r1 then L3 else L4
@@ -33,7 +33,7 @@ expression: ir
     24 │   emit_text T0
     25 │ L0:
 
-    ; r0 ($items) : List<Int>
+    ; r0 (@items) : List<Int>
     ; r1 (v1) : Bool
     ; r2 (v2) : Int
     ; r3 (v3) : Bool

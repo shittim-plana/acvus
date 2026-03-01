@@ -9,7 +9,7 @@ expression: ir
   T3 = "other"
 
 === main ===
-     0 │   r0 = storage_load $score
+     0 │   r0 = context_load @score
      1 │ L2:
      2 │   r1 = test r0 == 0
      3 │   jump_if r1 then L5 else L3
@@ -32,7 +32,7 @@ expression: ir
     20 │   emit_text T3
     21 │ L0:
 
-    ; r0 ($score) : Int
+    ; r0 (@score) : Int
     ; r1 (v1) : Bool
     ; r2 (v2) : Bool
     ; r3 (v3) : Bool

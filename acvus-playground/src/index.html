@@ -289,23 +289,23 @@
       <div class="editor-wrap">
         <div class="hl-layer editor-font" id="source-hl" aria-hidden="true"></div>
         <textarea id="source" class="editor-font" spellcheck="false"
-          placeholder="{{ x in 0..3 }}{{ x | to_string }}{{/}}">Hello, {{ $name }}!
+          placeholder="{{ x in 0..3 }}{{ x | to_string }}{{/}}">Hello, {{ @name }}!
 
-{-{ adults = $users | filter(u -> u.age >= 20) }}
+{-{ adults = @users | filter(u -> u.age >= 20) }}
 **Adults:**
 {-{ { name, age, } in adults }}
   - {{ name }} ({{ age | to_string }})
 {-{/-2}}
 
-{-{ teens = $users | filter(u -> u.age >= 13 && u.age < 20) }}
+{-{ teens = @users | filter(u -> u.age >= 13 && u.age < 20) }}
 **Teens:**
 {-{ { name, age, } in teens }}
   - {{ name }} ({{ age | to_string }})
 {-{/-2}}
 
-Total age: {{ $users | fold(0, (acc, u) -> acc + u.age) | to_string }}
+Total age: {{ @users | fold(0, (acc, u) -> acc + u.age) | to_string }}
 
-{{ "admin" = $role }}You are **admin**.{{_}}You are guest.{{/}}</textarea>
+{{ "admin" = @role }}You are **admin**.{{_}}You are guest.{{/}}</textarea>
       </div>
     </div>
     <div class="section context">
@@ -376,6 +376,7 @@ Total age: {{ $users | fold(0, (acc, u) -> acc + u.age) | to_string }}
   const tmplInnerRules = [
     [/^\//, 't-delim'],
     [/^"(?:[^"\\]|\\.)*"/, 't-str'],
+    [/^@\w+/, 't-sto'],
     [/^\$\w+/, 't-sto'],
     [/^(?:in|match)\b/, 't-kw'],
     [/^(?:true|false)\b/, 't-bool'],
@@ -568,8 +569,9 @@ Total age: {{ $users | fold(0, (acc, u) -> acc + u.age) | to_string }}
 
   const mirTokenRules = [
     [/^"(?:[^"\\]|\\.)*"/, 'm-str'],
+    [/^@\w+/, 'm-sto'],
     [/^\$\w+/, 'm-sto'],
-    [/^(?:storage_store|storage_load|async_call|call_closure|emit_text|iter_init|iter_next|jump_if|call|await|emit|const|list|object|tuple|closure|jump|return|test|range|nop|then|else|has_key|len|in)\b/, 'm-kw'],
+    [/^(?:context_load|var_load|var_store|async_call|call_closure|emit_text|iter_init|iter_next|jump_if|call|await|emit|const|list|object|tuple|closure|jump|return|test|range|nop|then|else|has_key|len|in)\b/, 'm-kw'],
     [/^(?:true|false)\b/, 'm-bool'],
     [/^r\d+\b/, 'm-val'],
     [/^L\d+\b/, 'm-lbl'],
@@ -657,12 +659,12 @@ Total age: {{ $users | fold(0, (acc, u) -> acc + u.age) | to_string }}
       return;
     }
 
-    let storage = {};
+    let context = {};
     const raw = storageEl.value.trim();
     if (raw) {
       try {
         const normalized = raw.replace(/,\s*([}\]])/g, '$1');
-        storage = JSON.parse(normalized);
+        context = JSON.parse(normalized);
       } catch {
         setStatus('invalid context JSON', 'error');
         return;
@@ -674,7 +676,7 @@ Total age: {{ $users | fold(0, (acc, u) -> acc + u.age) | to_string }}
       const res  = await fetch('/api/compile', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source, storage }),
+        body: JSON.stringify({ source, context }),
       });
       const data = await res.json();
       if (data.error) {

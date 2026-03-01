@@ -34,7 +34,8 @@ impl AnalysisPass for ValDefMapAnalysis {
 fn dst_of(kind: &InstKind) -> Option<ValueId> {
     match kind {
         InstKind::Const { dst, .. }
-        | InstKind::StorageLoad { dst, .. }
+        | InstKind::ContextLoad { dst, .. }
+        | InstKind::VarLoad { dst, .. }
         | InstKind::BinOp { dst, .. }
         | InstKind::UnaryOp { dst, .. }
         | InstKind::FieldGet { dst, .. }
@@ -63,7 +64,7 @@ fn dst_of(kind: &InstKind) -> Option<ValueId> {
         // These don't define a new Val
         InstKind::EmitText(_)
         | InstKind::EmitValue(_)
-        | InstKind::StorageStore { .. }
+        | InstKind::VarStore { .. }
         | InstKind::Jump { .. }
         | InstKind::JumpIf { .. }
         | InstKind::Return(_)
@@ -111,10 +112,20 @@ mod tests {
     }
 
     #[test]
-    fn storage_load_mapped() {
-        let module = make_module(vec![inst(InstKind::StorageLoad {
+    fn context_load_mapped() {
+        let module = make_module(vec![inst(InstKind::ContextLoad {
             dst: ValueId(0),
             name: "user".into(),
+        })]);
+        let result = ValDefMapAnalysis.run(&module, ());
+        assert_eq!(result.0[&ValueId(0)], 0);
+    }
+
+    #[test]
+    fn var_load_mapped() {
+        let module = make_module(vec![inst(InstKind::VarLoad {
+            dst: ValueId(0),
+            name: "count".into(),
         })]);
         let result = ValDefMapAnalysis.run(&module, ());
         assert_eq!(result.0[&ValueId(0)], 0);
@@ -171,7 +182,7 @@ mod tests {
     fn non_defining_insts_skipped() {
         let module = make_module(vec![
             inst(InstKind::EmitText(0)),
-            inst(InstKind::StorageStore {
+            inst(InstKind::VarStore {
                 name: "x".into(),
                 src: ValueId(0),
             }),

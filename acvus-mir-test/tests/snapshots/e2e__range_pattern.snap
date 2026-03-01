@@ -8,7 +8,7 @@ expression: ir
   T2 = "adult"
 
 === main ===
-     0 │   r0 = storage_load $age
+     0 │   r0 = context_load @age
      1 │ L2:
      2 │   r1 = test r0 in 0..10
      3 │   jump_if r1 then L4 else L3
@@ -25,6 +25,6 @@ expression: ir
     14 │   emit_text T2
     15 │ L0:
 
-    ; r0 ($age) : Int
+    ; r0 (@age) : Int
     ; r1 (v1) : Bool
     ; r2 (v2) : Bool

@@ -1,9 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-use acvus_interpreter::{
-    ExternFnRegistry, InMemoryStorage, Interpreter, PureValue, Storage, StorageKey,
-};
+use acvus_interpreter::{ExternFnRegistry, Interpreter, PureValue, Value};
 use acvus_mir::ty::Ty;
 
 // ── Core pipeline ───────────────────────────────────────────────
@@ -11,38 +9,30 @@ use acvus_mir::ty::Ty;
 /// Parse + compile + execute, returning the output string.
 pub async fn run(
     source: &str,
-    storage_types: HashMap<String, Ty>,
-    storage_values: HashMap<String, PureValue>,
+    context_types: HashMap<String, Ty>,
+    context_values: HashMap<String, Value>,
     extern_fns: ExternFnRegistry,
 ) -> String {
     let template = acvus_ast::parse(source).expect("parse failed");
     let mir_registry = extern_fns.to_mir_registry();
     let (module, _hints) =
-        acvus_mir::compile(&template, storage_types, &mir_registry).expect("compile failed");
+        acvus_mir::compile(&template, context_types, &mir_registry).expect("compile failed");
 
-    let mut storage = InMemoryStorage::new();
-    for (name, value) in storage_values {
-        storage
-            .set(&StorageKey::root(name), value)
-            .await
-            .unwrap();
-    }
-
-    let interp = Interpreter::new(module, storage, extern_fns);
+    let interp = Interpreter::new(module, context_values, extern_fns);
     let (_interp, output) = interp.execute().await;
     output
 }
 
-/// Simple: no storage, no extern fns.
+/// Simple: no context, no extern fns.
 pub async fn run_simple(source: &str) -> String {
     run(source, HashMap::new(), HashMap::new(), ExternFnRegistry::new()).await
 }
 
-/// With storage types + values.
-pub async fn run_with_storage(
+/// With context types + values.
+pub async fn run_with_context(
     source: &str,
     types: HashMap<String, Ty>,
-    values: HashMap<String, PureValue>,
+    values: HashMap<String, Value>,
 ) -> String {
     run(source, types, values, ExternFnRegistry::new()).await
 }
@@ -54,8 +44,8 @@ pub async fn run_with_storage(
 /// Expected format:
 /// ```json
 /// {
-///   "template": "Hello, {{ $name }}!",
-///   "storage": { "name": "alice" },
+///   "template": "Hello, {{ @name }}!",
+///   "context": { "name": "alice" },
 ///   "expected": "Hello, alice!"
 /// }
 /// ```
@@ -72,19 +62,19 @@ pub async fn run_fixture(path: &Path) -> Result<(), String> {
         .as_str()
         .ok_or_else(|| format!("{}: missing 'expected'", path.display()))?;
 
-    let (types, values) = match fixture.get("storage") {
+    let (types, values) = match fixture.get("context") {
         Some(serde_json::Value::Object(fields)) => {
             let types: HashMap<String, Ty> = fields
                 .iter()
                 .map(|(k, v)| (k.clone(), ty_from_json(v)))
                 .collect();
-            let values: HashMap<String, PureValue> = fields
+            let values: HashMap<String, Value> = fields
                 .iter()
-                .map(|(k, v)| (k.clone(), pv_from_json(v)))
+                .map(|(k, v)| (k.clone(), Value::from_pure(pv_from_json(v))))
                 .collect();
             (types, values)
         }
-        Some(_) => return Err(format!("{}: 'storage' must be an object", path.display())),
+        Some(_) => return Err(format!("{}: 'context' must be an object", path.display())),
         None => (HashMap::new(), HashMap::new()),
     };
 
@@ -153,35 +143,35 @@ pub fn pv_from_json(v: &serde_json::Value) -> PureValue {
     }
 }
 
-// ── Legacy helpers (used by e2e.rs) ─────────────────────────────
+// ── Helpers (used by e2e.rs) ─────────────────────────────────
 
-pub fn int_storage(name: &str, value: i64) -> (HashMap<String, Ty>, HashMap<String, PureValue>) {
+pub fn int_context(name: &str, value: i64) -> (HashMap<String, Ty>, HashMap<String, Value>) {
     (
         HashMap::from([(name.into(), Ty::Int)]),
-        HashMap::from([(name.into(), PureValue::Int(value))]),
+        HashMap::from([(name.into(), Value::Int(value))]),
     )
 }
 
-pub fn string_storage(
+pub fn string_context(
     name: &str,
     value: &str,
-) -> (HashMap<String, Ty>, HashMap<String, PureValue>) {
+) -> (HashMap<String, Ty>, HashMap<String, Value>) {
     (
         HashMap::from([(name.into(), Ty::String)]),
-        HashMap::from([(name.into(), PureValue::String(value.into()))]),
+        HashMap::from([(name.into(), Value::String(value.into()))]),
     )
 }
 
-pub fn user_storage() -> (HashMap<String, Ty>, HashMap<String, PureValue>) {
+pub fn user_context() -> (HashMap<String, Ty>, HashMap<String, Value>) {
     let ty = Ty::Object(BTreeMap::from([
         ("name".into(), Ty::String),
         ("age".into(), Ty::Int),
         ("email".into(), Ty::String),
     ]));
-    let val = PureValue::Object(BTreeMap::from([
-        ("name".into(), PureValue::String("alice".into())),
-        ("age".into(), PureValue::Int(30)),
-        ("email".into(), PureValue::String("alice@example.com".into())),
+    let val = Value::Object(BTreeMap::from([
+        ("name".into(), Value::String("alice".into())),
+        ("age".into(), Value::Int(30)),
+        ("email".into(), Value::String("alice@example.com".into())),
     ]));
     (
         HashMap::from([("user".into(), ty)]),
@@ -189,19 +179,19 @@ pub fn user_storage() -> (HashMap<String, Ty>, HashMap<String, PureValue>) {
     )
 }
 
-pub fn users_list_storage() -> (HashMap<String, Ty>, HashMap<String, PureValue>) {
+pub fn users_list_context() -> (HashMap<String, Ty>, HashMap<String, Value>) {
     let ty = Ty::List(Box::new(Ty::Object(BTreeMap::from([
         ("name".into(), Ty::String),
         ("age".into(), Ty::Int),
     ]))));
-    let val = PureValue::List(vec![
-        PureValue::Object(BTreeMap::from([
-            ("name".into(), PureValue::String("alice".into())),
-            ("age".into(), PureValue::Int(30)),
+    let val = Value::List(vec![
+        Value::Object(BTreeMap::from([
+            ("name".into(), Value::String("alice".into())),
+            ("age".into(), Value::Int(30)),
         ])),
-        PureValue::Object(BTreeMap::from([
-            ("name".into(), PureValue::String("bob".into())),
-            ("age".into(), PureValue::Int(25)),
+        Value::Object(BTreeMap::from([
+            ("name".into(), Value::String("bob".into())),
+            ("age".into(), Value::Int(25)),
         ])),
     ]);
     (
@@ -210,9 +200,9 @@ pub fn users_list_storage() -> (HashMap<String, Ty>, HashMap<String, PureValue>)
     )
 }
 
-pub fn items_storage(items: Vec<i64>) -> (HashMap<String, Ty>, HashMap<String, PureValue>) {
+pub fn items_context(items: Vec<i64>) -> (HashMap<String, Ty>, HashMap<String, Value>) {
     let ty = Ty::List(Box::new(Ty::Int));
-    let val = PureValue::List(items.into_iter().map(PureValue::Int).collect());
+    let val = Value::List(items.into_iter().map(Value::Int).collect());
     (
         HashMap::from([("items".into(), ty)]),
         HashMap::from([("items".into(), val)]),

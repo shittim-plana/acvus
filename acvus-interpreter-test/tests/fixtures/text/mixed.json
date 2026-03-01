@@ -1,5 +1,5 @@
 {
-  "template": "Hello, {{ $name }}!",
-  "storage": { "name": "alice" },
+  "template": "Hello, {{ @name }}!",
+  "context": { "name": "alice" },
   "expected": "Hello, alice!"
 }

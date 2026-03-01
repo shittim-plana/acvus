@@ -709,12 +709,21 @@ mod tests {
     }
 
     #[test]
-    fn tokenize_storage_ref() {
+    fn tokenize_var_ref() {
         let tokens: Vec<_> = ExprTokenizer::new("$global", 0)
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(tokens.len(), 1);
-        assert!(matches!(&tokens[0].1, Token::StorageRef(s) if s == "global"));
+        assert!(matches!(&tokens[0].1, Token::VarRef(s) if s == "global"));
+    }
+
+    #[test]
+    fn tokenize_context_ref() {
+        let tokens: Vec<_> = ExprTokenizer::new("@users", 0)
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(&tokens[0].1, Token::ContextRef(s) if s == "users"));
     }
 
     #[test]

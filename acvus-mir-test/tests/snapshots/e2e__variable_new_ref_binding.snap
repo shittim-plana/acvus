@@ -4,6 +4,9 @@ expression: ir
 ---
 === main ===
      0 │   r0 = context_load @name
-     1 │   emit r0
+     1 │   var_store $result = r0
+     2 │   r1 = var_load $result
+     3 │   emit r1
 
     ; r0 (@name) : String
+    ; r1 ($result) : String

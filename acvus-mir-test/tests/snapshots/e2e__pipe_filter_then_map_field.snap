@@ -3,7 +3,7 @@ source: acvus-mir-test/tests/e2e.rs
 expression: ir
 ---
 === main ===
-     0 │   r0 = storage_load $users
+     0 │   r0 = context_load @users
      1 │   r1 = closure L0 []
      2 │   r2 = call filter(r0, r1)
      3 │   r3 = closure L1 []
@@ -12,7 +12,7 @@ expression: ir
      6 │   r6 = call join(r4, r5)
      7 │   emit r6
 
-    ; r0 ($users) : List<{age: Int, name: String}>
+    ; r0 (@users) : List<{age: Int, name: String}>
     ; r1 (v1) : Fn({age: Int, name: String}) -> Bool
     ; r2 (filter(...)) : List<{age: Int, name: String}>
     ; r3 (v3) : Fn({age: Int, name: String}) -> String

@@ -401,9 +401,9 @@ fn validate_irrefutable(pattern: &Pattern) -> Result<(), ParseError> {
 /// Convert an expression (parsed from the LHS of `=`) to a pattern.
 pub fn expr_to_pattern(expr: &Expr) -> Result<Pattern, ParseError> {
     match expr {
-        Expr::Ident { name, is_storage_ref, span } => Ok(Pattern::Binding {
+        Expr::Ident { name, ref_kind, span } => Ok(Pattern::Binding {
             name: name.clone(),
-            is_storage_ref: *is_storage_ref,
+            ref_kind: *ref_kind,
             span: *span,
         }),
         Expr::Literal { value, span } => Ok(Pattern::Literal {
@@ -511,7 +511,7 @@ mod tests {
             assert!(mb.catch_all.is_none());
             assert!(matches!(
                 &mb.arms[0].pattern,
-                Pattern::Binding { name, is_storage_ref: true, .. } if name == "global"
+                Pattern::Binding { name, ref_kind: RefKind::Variable, .. } if name == "global"
             ));
             assert!(matches!(&mb.source, Expr::Literal { value: Literal::Int(42), .. }));
         } else {
@@ -528,7 +528,7 @@ mod tests {
             assert_eq!(mb.arms.len(), 1);
             assert!(mb.arms[0].body.is_empty());
             assert!(mb.catch_all.is_none());
-            assert!(matches!(&mb.arms[0].pattern, Pattern::Binding { name, is_storage_ref: false, .. } if name == "item"));
+            assert!(matches!(&mb.arms[0].pattern, Pattern::Binding { name, ref_kind: RefKind::Value, .. } if name == "item"));
             assert!(matches!(&mb.source, Expr::Ident { name, .. } if name == "list"));
         } else {
             panic!("expected MatchBlock");
@@ -675,12 +675,12 @@ mod tests {
                 assert_eq!(fields[0].key, "value");
                 assert!(matches!(
                     &fields[0].pattern,
-                    Pattern::Binding { name, is_storage_ref: true, .. } if name == "value"
+                    Pattern::Binding { name, ref_kind: RefKind::Variable, .. } if name == "value"
                 ));
                 assert_eq!(fields[1].key, "name");
                 assert!(matches!(
                     &fields[1].pattern,
-                    Pattern::Binding { name, is_storage_ref: false, .. } if name == "name"
+                    Pattern::Binding { name, ref_kind: RefKind::Value, .. } if name == "name"
                 ));
             } else {
                 panic!("expected Object pattern");

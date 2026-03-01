@@ -3,7 +3,7 @@ source: acvus-mir-test/tests/e2e.rs
 expression: ir
 ---
 === main ===
-     0 │   r0 = storage_load $items
+     0 │   r0 = context_load @items
      1 │   r1 = iter_init r0
      2 │ L0:
      3 │   r2, r3 = iter_next r1
@@ -15,7 +15,7 @@ expression: ir
      9 │ L1:
     10 │ L2:
 
-    ; r0 ($items) : List<Int>
+    ; r0 (@items) : List<Int>
     ; r1 (v1) : Unit
     ; r2 (x) : Int
     ; r3 (v3) : Bool

@@ -7,12 +7,12 @@ use acvus_mir::ty::Ty;
 /// Parse a template and compile to MIR, returning the printed IR.
 pub fn compile_to_ir(
     source: &str,
-    storage: HashMap<String, Ty>,
+    context: HashMap<String, Ty>,
     registry: &ExternRegistry,
 ) -> Result<String, String> {
     let template = acvus_ast::parse(source).map_err(|e| format!("parse error: {e}"))?;
     let (module, _hints) =
-        acvus_mir::compile(&template, storage, registry).map_err(|errors| {
+        acvus_mir::compile(&template, context, registry).map_err(|errors| {
             errors
                 .iter()
                 .map(|e| format!("[{}..{}] {}", e.span.start, e.span.end, e))
@@ -27,8 +27,8 @@ pub fn compile_simple(source: &str) -> Result<String, String> {
     compile_to_ir(source, HashMap::new(), &ExternRegistry::new())
 }
 
-/// Common storage types for tests.
-pub fn user_storage() -> HashMap<String, Ty> {
+/// Common context types for tests.
+pub fn user_context() -> HashMap<String, Ty> {
     HashMap::from([(
         "user".into(),
         Ty::Object(BTreeMap::from([
@@ -39,7 +39,7 @@ pub fn user_storage() -> HashMap<String, Ty> {
     )])
 }
 
-pub fn users_list_storage() -> HashMap<String, Ty> {
+pub fn users_list_context() -> HashMap<String, Ty> {
     HashMap::from([(
         "users".into(),
         Ty::List(Box::new(Ty::Object(BTreeMap::from([
@@ -49,6 +49,6 @@ pub fn users_list_storage() -> HashMap<String, Ty> {
     )])
 }
 
-pub fn items_storage() -> HashMap<String, Ty> {
+pub fn items_context() -> HashMap<String, Ty> {
     HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))])
 }

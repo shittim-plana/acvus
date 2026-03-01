@@ -23,19 +23,19 @@ use crate::typeck::TypeChecker;
 /// Compile a parsed template into MIR.
 ///
 /// - `template`: the parsed AST from `acvus_ast::parse()`.
-/// - `storage_types`: types for each `$name` storage variable.
+/// - `context_types`: types for each `@name` context variable.
 /// - `registry`: external function definitions.
 ///
 /// Returns a `MirModule` and `HintTable`, or a list of errors.
 pub fn compile(
     template: &Template,
-    storage_types: HashMap<String, Ty>,
+    context_types: HashMap<String, Ty>,
     registry: &ExternRegistry,
 ) -> Result<(MirModule, HintTable), Vec<MirError>> {
-    let storage_names: HashSet<String> = storage_types.keys().cloned().collect();
-    let checker = TypeChecker::new(storage_types, registry);
+    let context_names: HashSet<String> = context_types.keys().cloned().collect();
+    let checker = TypeChecker::new(context_types, registry);
     let type_map = checker.check_template(template)?;
-    let lowerer = Lowerer::new(type_map, storage_names);
+    let lowerer = Lowerer::new(type_map, context_names);
     let (module, hints) = lowerer.lower_template(template);
     Ok((module, hints))
 }
@@ -49,11 +49,11 @@ mod tests {
 
     fn compile_src(
         source: &str,
-        storage: HashMap<String, Ty>,
+        context: HashMap<String, Ty>,
         registry: &ExternRegistry,
     ) -> Result<(MirModule, HintTable), Vec<MirError>> {
         let template = acvus_ast::parse(source).expect("parse failed");
-        compile(&template, storage, registry)
+        compile(&template, context, registry)
     }
 
     fn empty_registry() -> ExternRegistry {
@@ -73,21 +73,23 @@ mod tests {
     }
 
     #[test]
-    fn integration_storage_read_write() {
-        let storage = HashMap::from([("count".into(), Ty::Int)]);
-        let result = compile_src("{{ $count = 42 }}", storage.clone(), &empty_registry());
+    fn integration_context_read_var_write() {
+        // Variable write (no pre-declaration needed)
+        let result = compile_src("{{ $count = 42 }}", HashMap::new(), &empty_registry());
         assert!(result.is_ok());
 
-        let result = compile_src("{{ $count | to_string }}", storage, &empty_registry());
+        // Context read
+        let context = HashMap::from([("count".into(), Ty::Int)]);
+        let result = compile_src("{{ @count | to_string }}", context, &empty_registry());
         assert!(result.is_ok());
     }
 
     #[test]
     fn integration_match_with_catch_all() {
-        let storage = HashMap::from([("name".into(), Ty::String)]);
+        let context = HashMap::from([("name".into(), Ty::String)]);
         let result = compile_src(
-            r#"{{ x = $name }}{{ x }}{{_}}default{{/}}"#,
-            storage,
+            r#"{{ x = @name }}{{ x }}{{_}}default{{/}}"#,
+            context,
             &empty_registry(),
         );
         assert!(result.is_ok());
@@ -95,8 +97,8 @@ mod tests {
 
     #[test]
     fn integration_variable_binding() {
-        let storage = HashMap::from([("name".into(), Ty::String)]);
-        let result = compile_src(r#"{{ x = $name }}{{ x }}"#, storage, &empty_registry());
+        let context = HashMap::from([("name".into(), Ty::String)]);
+        let result = compile_src(r#"{{ x = @name }}{{ x }}"#, context, &empty_registry());
         assert!(result.is_ok());
     }
 
@@ -116,10 +118,10 @@ mod tests {
 
     #[test]
     fn integration_pipe_with_lambda() {
-        let storage = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
+        let context = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
         let result = compile_src(
-            r#"{{ x = $items | filter(x -> x != 0) }}{{ x | len | to_string }}{{_}}{{/}}"#,
-            storage,
+            r#"{{ x = @items | filter(x -> x != 0) }}{{ x | len | to_string }}{{_}}{{/}}"#,
+            context,
             &empty_registry(),
         );
         assert!(result.is_ok());
@@ -127,20 +129,20 @@ mod tests {
 
     #[test]
     fn integration_object_field_access() {
-        let storage = HashMap::from([(
+        let context = HashMap::from([(
             "user".into(),
             Ty::Object(BTreeMap::from([
                 ("name".into(), Ty::String),
                 ("age".into(), Ty::Int),
             ])),
         )]);
-        let result = compile_src("{{ $user.name }}", storage, &empty_registry());
+        let result = compile_src("{{ @user.name }}", context, &empty_registry());
         assert!(result.is_ok());
     }
 
     #[test]
     fn integration_nested_match() {
-        let storage = HashMap::from([(
+        let context = HashMap::from([(
             "users".into(),
             Ty::List(Box::new(Ty::Object(BTreeMap::from([
                 ("name".into(), Ty::String),
@@ -148,8 +150,8 @@ mod tests {
             ])))),
         )]);
         let result = compile_src(
-            r#"{{ { name, } = $users }}{{ name }}{{/}}"#,
-            storage,
+            r#"{{ { name, } = @users }}{{ name }}{{/}}"#,
+            context,
             &empty_registry(),
         );
         assert!(result.is_ok());
@@ -173,7 +175,7 @@ mod tests {
 
     #[test]
     fn integration_object_pattern() {
-        let storage = HashMap::from([(
+        let context = HashMap::from([(
             "data".into(),
             Ty::Object(BTreeMap::from([
                 ("name".into(), Ty::String),
@@ -181,8 +183,8 @@ mod tests {
             ])),
         )]);
         let result = compile_src(
-            r#"{{ { name, } = $data }}{{ name }}{{/}}"#,
-            storage,
+            r#"{{ { name, } = @data }}{{ name }}{{/}}"#,
+            context,
             &empty_registry(),
         );
         assert!(result.is_ok());
@@ -190,10 +192,10 @@ mod tests {
 
     #[test]
     fn integration_multi_arm() {
-        let storage = HashMap::from([("role".into(), Ty::String)]);
+        let context = HashMap::from([("role".into(), Ty::String)]);
         let result = compile_src(
-            r#"{{ "admin" = $role }}admin page{{ "user" }}user page{{_}}guest{{/}}"#,
-            storage,
+            r#"{{ "admin" = @role }}admin page{{ "user" }}user page{{_}}guest{{/}}"#,
+            context,
             &empty_registry(),
         );
         assert!(result.is_ok());
@@ -201,10 +203,10 @@ mod tests {
 
     #[test]
     fn integration_list_destructure() {
-        let storage = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
+        let context = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
         let result = compile_src(
-            r#"{{ [a, b, ..] = $items }}{{ a | to_string }}{{_}}{{/}}"#,
-            storage,
+            r#"{{ [a, b, ..] = @items }}{{ a | to_string }}{{_}}{{/}}"#,
+            context,
             &empty_registry(),
         );
         assert!(result.is_ok());

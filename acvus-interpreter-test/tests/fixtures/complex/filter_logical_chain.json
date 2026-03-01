@@ -1,6 +1,6 @@
 {
-  "template": "{{ eligible = $users | filter(u -> u.active) | filter(u -> u.age >= 18) | map(u -> u.name) }}{{ name in eligible }}{{ name }} {{/}}",
-  "storage": {
+  "template": "{{ eligible = @users | filter(u -> u.active) | filter(u -> u.age >= 18) | map(u -> u.name) }}{{ name in eligible }}{{ name }} {{/}}",
+  "context": {
     "users": [
       { "name": "alice", "age": 30, "active": true },
       { "name": "bob", "age": 17, "active": true },

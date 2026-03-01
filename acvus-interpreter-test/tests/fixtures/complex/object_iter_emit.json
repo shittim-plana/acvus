@@ -1,6 +1,6 @@
 {
-  "template": "{{ { name, age, } in $users }}{{ name }}({{ age | to_string }}) {{/}}",
-  "storage": {
+  "template": "{{ { name, age, } in @users }}{{ name }}({{ age | to_string }}) {{/}}",
+  "context": {
     "users": [
       { "name": "alice", "age": 30 },
       { "name": "bob", "age": 25 }

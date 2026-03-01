@@ -7,7 +7,7 @@ expression: ir
   T1 = "guest page"
 
 === main ===
-     0 │   r0 = storage_load $role
+     0 │   r0 = context_load @role
      1 │ L2:
      2 │   r1 = test r0 == "admin"
      3 │   jump_if r1 then L3 else L1
@@ -18,5 +18,5 @@ expression: ir
      8 │   emit_text T1
      9 │ L0:
 
-    ; r0 ($role) : String
+    ; r0 (@role) : String
     ; r1 (v1) : Bool

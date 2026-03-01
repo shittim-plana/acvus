@@ -4,6 +4,6 @@ expression: ir
 ---
 === main ===
      0 │   r0 = const 42
-     1 │   storage_store $count = r0
+     1 │   var_store $count = r0
 
     ; r0 (v0) : Int

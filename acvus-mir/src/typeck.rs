@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use acvus_ast::{
     BinOp, Expr, IterBlock, Literal, MatchBlock, Node, ObjectExprField, ObjectPatternField,
-    Pattern, Span, Template, TupleElem, TuplePatternElem,
+    Pattern, RefKind, Span, Template, TupleElem, TuplePatternElem,
 };
 
 use crate::builtins::builtins;
@@ -16,8 +16,10 @@ pub type TypeMap = HashMap<Span, Ty>;
 pub struct TypeChecker {
     /// Stack of scopes: each scope maps variable names to types.
     scopes: Vec<HashMap<String, Ty>>,
-    /// Storage variable types (provided externally).
-    storage_types: HashMap<String, Ty>,
+    /// Context variable types (`@name`, externally declared).
+    context_types: HashMap<String, Ty>,
+    /// Variable types (`$name`, inferred at first assignment).
+    variable_types: HashMap<String, Ty>,
     /// External function definitions.
     extern_registry: ExternRegistry,
     /// Unification state.
@@ -30,12 +32,13 @@ pub struct TypeChecker {
 
 impl TypeChecker {
     pub fn new(
-        storage_types: HashMap<String, Ty>,
+        context_types: HashMap<String, Ty>,
         registry: &ExternRegistry,
     ) -> Self {
         Self {
             scopes: vec![HashMap::new()],
-            storage_types,
+            context_types,
+            variable_types: HashMap::new(),
             extern_registry: registry.clone(),
             subst: TySubst::new(),
             type_map: TypeMap::new(),
@@ -240,25 +243,34 @@ impl TypeChecker {
 
             Expr::Ident {
                 name,
-                is_storage_ref,
+                ref_kind,
                 span,
             } => {
-                // $name: check storage first, then local scope.
-                // bare name: check local scope only.
-                let ty = if *is_storage_ref {
-                    self.storage_types
-                        .get(name)
-                        .cloned()
-                        .or_else(|| self.lookup_var(name))
-                        .unwrap_or_else(|| {
-                            self.error(MirErrorKind::UndefinedVariable(format!("${name}")), *span);
+                let ty = match ref_kind {
+                    RefKind::Context => {
+                        self.context_types
+                            .get(name)
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                self.error(MirErrorKind::UndefinedContext(name.clone()), *span);
+                                Ty::Error
+                            })
+                    }
+                    RefKind::Variable => {
+                        self.variable_types
+                            .get(name)
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                self.error(MirErrorKind::UndefinedVariable(format!("${name}")), *span);
+                                Ty::Error
+                            })
+                    }
+                    RefKind::Value => {
+                        self.lookup_var(name).unwrap_or_else(|| {
+                            self.error(MirErrorKind::UndefinedVariable(name.clone()), *span);
                             Ty::Error
                         })
-                } else {
-                    self.lookup_var(name).unwrap_or_else(|| {
-                        self.error(MirErrorKind::UndefinedVariable(name.clone()), *span);
-                        Ty::Error
-                    })
+                    }
                 };
                 self.record(*span, ty.clone());
                 ty
@@ -500,7 +512,7 @@ impl TypeChecker {
                     }
                     Expr::Ident {
                         name: _,
-                        is_storage_ref: false,
+                        ref_kind: RefKind::Value,
                         span: _,
                     } => {
                         let func_expr = right.as_ref().clone();
@@ -657,7 +669,7 @@ impl TypeChecker {
         let func_name = match func {
             Expr::Ident {
                 name,
-                is_storage_ref: false,
+                ref_kind: RefKind::Value,
                 ..
             } => Some(name.as_str()),
             _ => None,
@@ -829,28 +841,34 @@ impl TypeChecker {
         match pattern {
             Pattern::Binding {
                 name,
-                is_storage_ref,
+                ref_kind,
                 span: _,
             } => {
-                if *is_storage_ref {
-                    let Some(storage_ty) = self.storage_types.get(name).cloned() else {
-                        // $name not in storage → local variable definition.
-                        self.define_var(name, source_resolved);
-                        return;
-                    };
-                    // Storage write: type must match.
-                    if self.subst.unify(&source_resolved, &storage_ty).is_err() {
-                        self.error(
-                            MirErrorKind::PatternTypeMismatch {
-                                pattern_ty: storage_ty,
-                                source_ty: source_resolved,
-                            },
-                            span,
-                        );
+                match ref_kind {
+                    RefKind::Context => {
+                        // Context is read-only — cannot assign.
+                        self.error(MirErrorKind::ContextWriteAttempt(name.clone()), span);
                     }
-                } else {
-                    // Bare name capture: bind to source type.
-                    self.define_var(name, source_resolved);
+                    RefKind::Variable => {
+                        // $name: if already typed, unify; else register.
+                        if let Some(existing_ty) = self.variable_types.get(name).cloned() {
+                            if self.subst.unify(&source_resolved, &existing_ty).is_err() {
+                                self.error(
+                                    MirErrorKind::PatternTypeMismatch {
+                                        pattern_ty: existing_ty,
+                                        source_ty: source_resolved,
+                                    },
+                                    span,
+                                );
+                            }
+                        } else {
+                            self.variable_types.insert(name.clone(), source_resolved);
+                        }
+                    }
+                    RefKind::Value => {
+                        // Bare name capture: bind to source type.
+                        self.define_var(name, source_resolved);
+                    }
                 }
             }
 
@@ -1028,12 +1046,12 @@ mod tests {
         checker.check_template(&template)
     }
 
-    fn check_with_storage(
+    fn check_with_context(
         source: &str,
-        storage: HashMap<String, Ty>,
+        context: HashMap<String, Ty>,
     ) -> Result<TypeMap, Vec<MirError>> {
         let template = parse(source).expect("parse failed");
-        let checker = TypeChecker::new(storage, &ExternRegistry::new());
+        let checker = TypeChecker::new(context, &ExternRegistry::new());
         checker.check_template(&template)
     }
 
@@ -1092,10 +1110,10 @@ mod tests {
     }
 
     #[test]
-    fn storage_read() {
-        let storage = HashMap::from([("name".into(), Ty::String)]);
-        let src = "{{ $name }}";
-        assert!(check_with_storage(src, storage).is_ok());
+    fn context_read() {
+        let context = HashMap::from([("name".into(), Ty::String)]);
+        let src = "{{ @name }}";
+        assert!(check_with_context(src, context).is_ok());
     }
 
     #[test]
@@ -1106,10 +1124,9 @@ mod tests {
     }
 
     #[test]
-    fn storage_write() {
-        let storage = HashMap::from([("count".into(), Ty::Int)]);
+    fn var_write() {
         let src = "{{ $count = 42 }}";
-        assert!(check_with_storage(src, storage).is_ok());
+        assert!(check(src).is_ok());
     }
 
     #[test]
@@ -1124,54 +1141,54 @@ mod tests {
 
     #[test]
     fn builtin_to_string() {
-        let storage = HashMap::from([("count".into(), Ty::Int)]);
-        let src = "{{ $count | to_string }}";
-        assert!(check_with_storage(src, storage).is_ok());
+        let context = HashMap::from([("count".into(), Ty::Int)]);
+        let src = "{{ @count | to_string }}";
+        assert!(check_with_context(src, context).is_ok());
     }
 
     #[test]
     fn field_access() {
-        let storage = HashMap::from([(
+        let context = HashMap::from([(
             "user".into(),
             Ty::Object(BTreeMap::from([
                 ("name".into(), Ty::String),
                 ("age".into(), Ty::Int),
             ])),
         )]);
-        let src = "{{ $user.name }}";
-        assert!(check_with_storage(src, storage).is_ok());
+        let src = "{{ @user.name }}";
+        assert!(check_with_context(src, context).is_ok());
     }
 
     #[test]
     fn field_access_undefined() {
-        let storage = HashMap::from([(
+        let context = HashMap::from([(
             "user".into(),
             Ty::Object(BTreeMap::from([("name".into(), Ty::String)])),
         )]);
-        let src = "{{ $user.unknown }}";
-        let result = check_with_storage(src, storage);
+        let src = "{{ @user.unknown }}";
+        let result = check_with_context(src, context);
         assert!(result.is_err());
     }
 
     #[test]
     fn pattern_binding_captures_type() {
-        let storage = HashMap::from([("name".into(), Ty::String)]);
-        let src = "{{ x = $name }}{{ x }}{{_}}{{/}}";
-        assert!(check_with_storage(src, storage).is_ok());
+        let context = HashMap::from([("name".into(), Ty::String)]);
+        let src = "{{ x = @name }}{{ x }}{{_}}{{/}}";
+        assert!(check_with_context(src, context).is_ok());
     }
 
     #[test]
     fn list_pattern_matching() {
-        let storage = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
-        let src = "{{ [a, b, ..] = $items }}{{ a | to_string }}{{_}}{{/}}";
-        assert!(check_with_storage(src, storage).is_ok());
+        let context = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
+        let src = "{{ [a, b, ..] = @items }}{{ a | to_string }}{{_}}{{/}}";
+        assert!(check_with_context(src, context).is_ok());
     }
 
     #[test]
     fn lambda_type_check() {
-        let storage = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
-        let src = "{{ x = $items | filter(x -> x != 0) }}{{ x | len | to_string }}{{_}}{{/}}";
-        let result = check_with_storage(src, storage);
+        let context = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
+        let src = "{{ x = @items | filter(x -> x != 0) }}{{ x | len | to_string }}{{_}}{{/}}";
+        let result = check_with_context(src, context);
         assert!(result.is_ok());
     }
 }

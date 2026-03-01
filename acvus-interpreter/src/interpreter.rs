@@ -8,21 +8,17 @@ use acvus_mir::ir::{Inst, InstKind, Label, MirBody, MirModule, ValueId};
 
 use crate::builtins;
 use crate::extern_fn::ExternFnRegistry;
-use crate::storage::Storage;
-use crate::value::{FnValue, StorageKey, Value};
+use crate::value::{FnValue, Value};
 
-pub struct Interpreter<S>
-where
-    S: Storage + 'static,
-    S::Error: std::fmt::Debug,
-{
+pub struct Interpreter {
     module: MirModule,
-    storage: S,
+    context: HashMap<String, Value>,
+    variables: HashMap<String, Value>,
     extern_fns: ExternFnRegistry,
 }
 
 // ---------------------------------------------------------------------------
-// Frame — val storage + sync instruction execution
+// Frame — val store + sync instruction execution
 // ---------------------------------------------------------------------------
 
 struct Frame {
@@ -168,13 +164,9 @@ fn build_label_map(body: &MirBody) -> HashMap<Label, usize> {
 // This makes every future `Send + 'static` without unsafe.
 // ---------------------------------------------------------------------------
 
-impl<S> Interpreter<S>
-where
-    S: Storage + 'static,
-    S::Error: std::fmt::Debug,
-{
-    pub fn new(module: MirModule, storage: S, extern_fns: ExternFnRegistry) -> Self {
-        Self { module, storage, extern_fns }
+impl Interpreter {
+    pub fn new(module: MirModule, context: HashMap<String, Value>, extern_fns: ExternFnRegistry) -> Self {
+        Self { module, context, variables: HashMap::new(), extern_fns }
     }
 
     pub async fn execute(self) -> (Self, String) {
@@ -322,18 +314,22 @@ where
                     frame.iter_next(*dst_value, *dst_done, *iter);
                 }
 
-                // -- storage I/O (async) --
-                InstKind::StorageLoad { dst, name } => {
-                    let key = StorageKey::root(name);
-                    let pure = this.storage.get(&key).await
-                        .unwrap_or_else(|e| panic!("StorageLoad '{name}': {e:?}"));
-                    frame.set(*dst, Value::from_pure(pure));
+                // -- context / variable I/O --
+                InstKind::ContextLoad { dst, name } => {
+                    let v = this.context.get(name)
+                        .unwrap_or_else(|| panic!("ContextLoad: undefined context @{name}"))
+                        .clone();
+                    frame.set(*dst, v);
                 }
-                InstKind::StorageStore { name, src } => {
-                    let key = StorageKey::root(name);
+                InstKind::VarLoad { dst, name } => {
+                    let v = this.variables.get(name)
+                        .unwrap_or_else(|| panic!("VarLoad: undefined variable ${name}"))
+                        .clone();
+                    frame.set(*dst, v);
+                }
+                InstKind::VarStore { name, src } => {
                     let v = frame.take(*src);
-                    this.storage.set(&key, v.into_pure()).await
-                        .unwrap_or_else(|e| panic!("StorageStore '{name}': {e:?}"));
+                    this.variables.insert(name.clone(), v);
                 }
 
                 // -- calls (async, ownership-passing) --

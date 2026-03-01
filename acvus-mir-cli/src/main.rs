@@ -10,7 +10,7 @@ use serde::Deserialize;
 #[derive(Deserialize, Default)]
 struct Context {
     #[serde(default)]
-    storage: HashMap<String, TypeDef>,
+    context: HashMap<String, TypeDef>,
     #[serde(default)]
     extern_fns: HashMap<String, FnDef>,
 }
@@ -60,11 +60,11 @@ fn main() {
         eprintln!("Usage: acvus-mir-cli <template-file> [context.json]");
         eprintln!();
         eprintln!("  template-file   Path to .acvus template (or - for stdin)");
-        eprintln!("  context.json    Optional JSON with storage types and extern fns");
+        eprintln!("  context.json    Optional JSON with context types and extern fns");
         eprintln!();
         eprintln!("Context JSON format:");
         eprintln!(r#"  {{"#);
-        eprintln!(r#"    "storage": {{ "name": "string", "count": "int" }},"#);
+        eprintln!(r#"    "context": {{ "name": "string", "count": "int" }},"#);
         eprintln!(r#"    "extern_fns": {{ "fetch": {{ "params": ["int"], "ret": "string", "effectful": true }} }}"#);
         eprintln!(r#"  }}"#);
         process::exit(1);
@@ -99,8 +99,8 @@ fn main() {
         Context::default()
     };
 
-    let storage_types: HashMap<String, Ty> = ctx
-        .storage
+    let context_types: HashMap<String, Ty> = ctx
+        .context
         .iter()
         .map(|(k, v)| (k.clone(), v.to_ty()))
         .collect();
@@ -123,7 +123,7 @@ fn main() {
     };
 
     // Compile.
-    match acvus_mir::compile(&template, storage_types, &registry) {
+    match acvus_mir::compile(&template, context_types, &registry) {
         Ok((module, _hints)) => {
             println!("{}", dump(&module));
         }

@@ -41,7 +41,7 @@ pub enum MirErrorKind {
         object_ty: Ty,
         field: String,
     },
-    UndefinedStorage(String),
+    UndefinedContext(String),
 
     // Pattern errors
     MissingCatchAll,
@@ -49,7 +49,7 @@ pub enum MirErrorKind {
         pattern_ty: Ty,
         source_ty: Ty,
     },
-    StorageRefNotDerived(String),
+    ContextWriteAttempt(String),
     SourceNotIterable { actual: Ty },
 
     // Builtin constraint errors
@@ -94,8 +94,8 @@ impl fmt::Display for MirError {
             MirErrorKind::UndefinedField { object_ty, field } => {
                 write!(f, "no field `{field}` on type {object_ty}")
             }
-            MirErrorKind::UndefinedStorage(name) => {
-                write!(f, "undefined storage `${name}`")
+            MirErrorKind::UndefinedContext(name) => {
+                write!(f, "undefined context `@{name}`")
             }
             MirErrorKind::MissingCatchAll => {
                 write!(f, "match block must have a catch-all `{{{{_}}}}` arm")
@@ -109,8 +109,8 @@ impl fmt::Display for MirError {
                     "pattern type {pattern_ty} incompatible with source type {source_ty}"
                 )
             }
-            MirErrorKind::StorageRefNotDerived(name) => {
-                write!(f, "storage ref `${name}` must be derived from an existing storage variable")
+            MirErrorKind::ContextWriteAttempt(name) => {
+                write!(f, "context `@{name}` is read-only and cannot be assigned")
             }
             MirErrorKind::SourceNotIterable { actual } => {
                 write!(f, "source type `{actual}` is not iterable (expected List or Range)")

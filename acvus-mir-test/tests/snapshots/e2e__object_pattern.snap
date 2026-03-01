@@ -3,7 +3,7 @@ source: acvus-mir-test/tests/e2e.rs
 expression: ir
 ---
 === main ===
-     0 │   r0 = storage_load $user
+     0 │   r0 = context_load @user
      1 │ L2:
      2 │   r1 = const true
      3 │   r2 = test has_key(r0, "name")
@@ -23,7 +23,7 @@ expression: ir
     17 │ L1:
     18 │ L0:
 
-    ; r0 ($user) : {age: Int, email: String, name: String}
+    ; r0 (@user) : {age: Int, email: String, name: String}
     ; r1 (v1) : Bool
     ; r2 (v2) : Bool
     ; r3 (v3) : String

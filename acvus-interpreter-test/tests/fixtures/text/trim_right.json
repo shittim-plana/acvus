@@ -1,5 +1,5 @@
 {
-  "template": "{{ $name }-}  \n  world",
-  "storage": { "name": "hello" },
+  "template": "{{ @name }-}  \n  world",
+  "context": { "name": "hello" },
   "expected": "hello  world"
 }

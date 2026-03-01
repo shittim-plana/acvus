@@ -26,9 +26,9 @@ pub enum Node {
         span: Span,
     },
     /// A match block `{{ pattern = expr }} ... {{/}}`.
-    /// Storage writes (`{{ $name = expr }}`) are also represented as a
+    /// Variable writes (`{{ $name = expr }}`) are also represented as a
     /// MatchBlock with a single arm whose pattern is
-    /// `Pattern::Binding { is_storage_ref: true, .. }` and an empty body.
+    /// `Pattern::Binding { ref_kind: Variable, .. }` and an empty body.
     MatchBlock(MatchBlock),
     /// An iteration block `{{ pattern in expr }} ... {{/}}`.
     IterBlock(IterBlock),
@@ -73,10 +73,10 @@ pub struct CatchAll {
 /// An expression in the template language.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
-    /// A reference: `name` or `$name`.
+    /// A reference: `name`, `$name`, or `@name`.
     Ident {
         name: String,
-        is_storage_ref: bool,
+        ref_kind: RefKind,
         span: Span,
     },
     /// A literal value.
@@ -197,8 +197,9 @@ pub struct LambdaParam {
 }
 
 /// A field in an object expression.
-/// Shorthand `{ name }` → key="name", value=Ident("name").
-/// Shorthand `{ $name }` → key="name", value=Ident("name", is_storage_ref=true).
+/// Shorthand `{ name }` → key="name", value=Ident("name", Value).
+/// Shorthand `{ $name }` → key="name", value=Ident("name", Variable).
+/// Shorthand `{ @name }` → key="name", value=Ident("name", Context).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObjectExprField {
     pub key: String,
@@ -209,11 +210,10 @@ pub struct ObjectExprField {
 /// A pattern used on the LHS of `=` in a match block.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
-    /// A binding that captures a value: `item` or `$name`.
-    /// `is_storage_ref` distinguishes `$name` (storage write) from `name` (variable capture).
+    /// A binding that captures a value: `item`, `$name`, or `@name`.
     Binding {
         name: String,
-        is_storage_ref: bool,
+        ref_kind: RefKind,
         span: Span,
     },
     /// A literal pattern that filters: `true`, `"admin"`, `42`.
@@ -318,6 +318,17 @@ pub enum BinOp {
 pub enum UnaryOp {
     Neg,
     Not,
+}
+
+/// The kind of reference for an identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefKind {
+    /// A bare name: `x`.
+    Value,
+    /// A context reference: `@x` (read-only, externally injected).
+    Context,
+    /// A variable reference: `$x` (mutable local).
+    Variable,
 }
 
 /// A literal value.

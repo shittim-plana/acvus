@@ -18,45 +18,45 @@ pub enum FieldStatus {
     },
 }
 
-/// One StorageStore entry's dirty field information.
+/// One VarStore entry's dirty field information.
 #[derive(Debug, Clone)]
-pub struct StorageDirtyEntry {
+pub struct VarDirtyEntry {
     pub name: String,
     pub status: FieldStatus,
 }
 
-/// Result of StorageDirtyAnalysis — keyed by the StorageStore's instruction index.
+/// Result of VarDirtyAnalysis — keyed by the VarStore's instruction index.
 #[derive(Debug, Clone)]
-pub struct StorageDirtyTable {
-    pub entries: HashMap<InstIdx, StorageDirtyEntry>,
+pub struct VarDirtyTable {
+    pub entries: HashMap<InstIdx, VarDirtyEntry>,
 }
 
-pub struct StorageDirtyAnalysis;
+pub struct VarDirtyAnalysis;
 
-impl AnalysisPass for StorageDirtyAnalysis {
+impl AnalysisPass for VarDirtyAnalysis {
     type Required<'a> = (&'a ValDefMap,);
-    type Output = StorageDirtyTable;
+    type Output = VarDirtyTable;
 
-    fn run(&self, module: &MirModule, (val_def,): (&ValDefMap,)) -> StorageDirtyTable {
+    fn run(&self, module: &MirModule, (val_def,): (&ValDefMap,)) -> VarDirtyTable {
         let insts = &module.main.insts;
         let mut entries = HashMap::new();
 
         for (idx, inst) in insts.iter().enumerate() {
-            let InstKind::StorageStore { name, src } = &inst.kind else {
+            let InstKind::VarStore { name, src } = &inst.kind else {
                 continue;
             };
 
             let status = analyze_store(insts, val_def, name, *src);
             entries.insert(
                 idx,
-                StorageDirtyEntry {
+                VarDirtyEntry {
                     name: name.clone(),
                     status,
                 },
             );
         }
 
-        StorageDirtyTable { entries }
+        VarDirtyTable { entries }
     }
 }
 
@@ -90,7 +90,7 @@ fn analyze_store(
 }
 
 /// A field is "clean" if its value traces back to a FieldGet/ObjectGet of the same
-/// field name from a StorageLoad of the same storage key.
+/// field name from a VarLoad of the same variable name.
 fn is_clean_field(
     insts: &[acvus_mir::ir::Inst],
     val_def: &ValDefMap,
@@ -114,15 +114,15 @@ fn is_clean_field(
             key: f,
             ..
         } if f == field_name => {
-            // The object must come from StorageLoad of the same key
-            traces_to_storage_load(insts, val_def, store_name, *object)
+            // The object must come from VarLoad of the same name
+            traces_to_var_load(insts, val_def, store_name, *object)
         }
         _ => false,
     }
 }
 
-/// Check if a Val traces back to a StorageLoad of the given name.
-fn traces_to_storage_load(
+/// Check if a Val traces back to a VarLoad of the given name.
+fn traces_to_var_load(
     insts: &[acvus_mir::ir::Inst],
     val_def: &ValDefMap,
     expected_name: &str,
@@ -134,7 +134,7 @@ fn traces_to_storage_load(
 
     matches!(
         &insts[def_idx].kind,
-        InstKind::StorageLoad { name, .. } if name == expected_name
+        InstKind::VarLoad { name, .. } if name == expected_name
     )
 }
 
@@ -171,7 +171,7 @@ mod tests {
         ValDefMapAnalysis.run(module, ())
     }
 
-    /// StorageStore of a scalar (non-object) → AllDirty
+    /// VarStore of a scalar (non-object) → AllDirty
     #[test]
     fn scalar_store_is_all_dirty() {
         let module = make_module(vec![
@@ -179,23 +179,23 @@ mod tests {
                 dst: ValueId(0),
                 value: acvus_ast::Literal::Int(42),
             }),
-            inst(InstKind::StorageStore {
+            inst(InstKind::VarStore {
                 name: "x".into(),
                 src: ValueId(0),
             }),
         ]);
         let val_def = build_val_def(&module);
-        let table = StorageDirtyAnalysis.run(&module, (&val_def,));
+        let table = VarDirtyAnalysis.run(&module, (&val_def,));
         assert_eq!(table.entries[&1].status, FieldStatus::AllDirty);
     }
 
-    /// Full passthrough: StorageLoad → FieldGet each field → MakeObject → StorageStore
+    /// Full passthrough: VarLoad → FieldGet each field → MakeObject → VarStore
     /// All fields should be clean.
     #[test]
     fn full_passthrough_all_clean() {
         let module = make_module(vec![
-            // v0 = StorageLoad("user")
-            inst(InstKind::StorageLoad {
+            // v0 = VarLoad("user")
+            inst(InstKind::VarLoad {
                 dst: ValueId(0),
                 name: "user".into(),
             }),
@@ -216,14 +216,14 @@ mod tests {
                 dst: ValueId(3),
                 fields: vec![("name".into(), ValueId(1)), ("age".into(), ValueId(2))],
             }),
-            // StorageStore("user", v3)
-            inst(InstKind::StorageStore {
+            // VarStore("user", v3)
+            inst(InstKind::VarStore {
                 name: "user".into(),
                 src: ValueId(3),
             }),
         ]);
         let val_def = build_val_def(&module);
-        let table = StorageDirtyAnalysis.run(&module, (&val_def,));
+        let table = VarDirtyAnalysis.run(&module, (&val_def,));
         let entry = &table.entries[&4];
         assert_eq!(entry.name, "user");
         match &entry.status {
@@ -240,8 +240,8 @@ mod tests {
     #[test]
     fn partial_modification_mixed() {
         let module = make_module(vec![
-            // v0 = StorageLoad("user")
-            inst(InstKind::StorageLoad {
+            // v0 = VarLoad("user")
+            inst(InstKind::VarLoad {
                 dst: ValueId(0),
                 name: "user".into(),
             }),
@@ -261,14 +261,14 @@ mod tests {
                 dst: ValueId(3),
                 fields: vec![("name".into(), ValueId(1)), ("email".into(), ValueId(2))],
             }),
-            // StorageStore("user", v3)
-            inst(InstKind::StorageStore {
+            // VarStore("user", v3)
+            inst(InstKind::VarStore {
                 name: "user".into(),
                 src: ValueId(3),
             }),
         ]);
         let val_def = build_val_def(&module);
-        let table = StorageDirtyAnalysis.run(&module, (&val_def,));
+        let table = VarDirtyAnalysis.run(&module, (&val_def,));
         let entry = &table.entries[&4];
         match &entry.status {
             FieldStatus::Fields { dirty, clean } => {
@@ -281,12 +281,12 @@ mod tests {
         }
     }
 
-    /// Field from a different storage key → dirty.
+    /// Field from a different variable → dirty.
     #[test]
-    fn field_from_different_storage_is_dirty() {
+    fn field_from_different_variable_is_dirty() {
         let module = make_module(vec![
-            // v0 = StorageLoad("other")
-            inst(InstKind::StorageLoad {
+            // v0 = VarLoad("other")
+            inst(InstKind::VarLoad {
                 dst: ValueId(0),
                 name: "other".into(),
             }),
@@ -301,14 +301,14 @@ mod tests {
                 dst: ValueId(2),
                 fields: vec![("name".into(), ValueId(1))],
             }),
-            // StorageStore("user", v2)
-            inst(InstKind::StorageStore {
+            // VarStore("user", v2)
+            inst(InstKind::VarStore {
                 name: "user".into(),
                 src: ValueId(2),
             }),
         ]);
         let val_def = build_val_def(&module);
-        let table = StorageDirtyAnalysis.run(&module, (&val_def,));
+        let table = VarDirtyAnalysis.run(&module, (&val_def,));
         let entry = &table.entries[&3];
         match &entry.status {
             FieldStatus::Fields { dirty, clean } => {
@@ -329,14 +329,14 @@ mod tests {
                 func: "make_user".into(),
                 args: vec![],
             }),
-            // StorageStore("user", v0)
-            inst(InstKind::StorageStore {
+            // VarStore("user", v0)
+            inst(InstKind::VarStore {
                 name: "user".into(),
                 src: ValueId(0),
             }),
         ]);
         let val_def = build_val_def(&module);
-        let table = StorageDirtyAnalysis.run(&module, (&val_def,));
+        let table = VarDirtyAnalysis.run(&module, (&val_def,));
         assert_eq!(table.entries[&1].status, FieldStatus::AllDirty);
     }
 
@@ -344,7 +344,7 @@ mod tests {
     #[test]
     fn object_get_is_clean() {
         let module = make_module(vec![
-            inst(InstKind::StorageLoad {
+            inst(InstKind::VarLoad {
                 dst: ValueId(0),
                 name: "cfg".into(),
             }),
@@ -357,13 +357,13 @@ mod tests {
                 dst: ValueId(2),
                 fields: vec![("mode".into(), ValueId(1))],
             }),
-            inst(InstKind::StorageStore {
+            inst(InstKind::VarStore {
                 name: "cfg".into(),
                 src: ValueId(2),
             }),
         ]);
         let val_def = build_val_def(&module);
-        let table = StorageDirtyAnalysis.run(&module, (&val_def,));
+        let table = VarDirtyAnalysis.run(&module, (&val_def,));
         let entry = &table.entries[&3];
         match &entry.status {
             FieldStatus::Fields { dirty, clean } => {
@@ -378,7 +378,7 @@ mod tests {
     #[test]
     fn block_label_param_is_dirty() {
         let module = make_module(vec![
-            inst(InstKind::StorageLoad {
+            inst(InstKind::VarLoad {
                 dst: ValueId(0),
                 name: "data".into(),
             }),
@@ -391,13 +391,13 @@ mod tests {
                 dst: ValueId(2),
                 fields: vec![("value".into(), ValueId(1))],
             }),
-            inst(InstKind::StorageStore {
+            inst(InstKind::VarStore {
                 name: "data".into(),
                 src: ValueId(2),
             }),
         ]);
         let val_def = build_val_def(&module);
-        let table = StorageDirtyAnalysis.run(&module, (&val_def,));
+        let table = VarDirtyAnalysis.run(&module, (&val_def,));
         let entry = &table.entries[&3];
         match &entry.status {
             FieldStatus::Fields { dirty, clean } => {
@@ -412,7 +412,7 @@ mod tests {
     #[test]
     fn call_result_is_dirty() {
         let module = make_module(vec![
-            inst(InstKind::StorageLoad {
+            inst(InstKind::VarLoad {
                 dst: ValueId(0),
                 name: "user".into(),
             }),
@@ -430,13 +430,13 @@ mod tests {
                 dst: ValueId(3),
                 fields: vec![("name".into(), ValueId(2))],
             }),
-            inst(InstKind::StorageStore {
+            inst(InstKind::VarStore {
                 name: "user".into(),
                 src: ValueId(3),
             }),
         ]);
         let val_def = build_val_def(&module);
-        let table = StorageDirtyAnalysis.run(&module, (&val_def,));
+        let table = VarDirtyAnalysis.run(&module, (&val_def,));
         let entry = &table.entries[&4];
         match &entry.status {
             FieldStatus::Fields { dirty, clean } => {

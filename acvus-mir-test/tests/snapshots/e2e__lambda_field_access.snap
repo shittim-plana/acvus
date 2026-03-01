@@ -3,14 +3,14 @@ source: acvus-mir-test/tests/e2e.rs
 expression: ir
 ---
 === main ===
-     0 │   r0 = storage_load $users
+     0 │   r0 = context_load @users
      1 │   r1 = closure L0 []
      2 │   r2 = call map(r0, r1)
      3 │   r3 = const ","
      4 │   r4 = call join(r2, r3)
      5 │   emit r4
 
-    ; r0 ($users) : List<{age: Int, name: String}>
+    ; r0 (@users) : List<{age: Int, name: String}>
     ; r1 (v1) : Fn({age: Int, name: String}) -> String
     ; r2 (map(...)) : List<String>
     ; r3 (v3) : String

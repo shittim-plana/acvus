@@ -1,6 +1,6 @@
 {
-  "template": "{{ x = $users | map(u -> u.name) }}{{ x | join(\", \") }}",
-  "storage": {
+  "template": "{{ x = @users | map(u -> u.name) }}{{ x | join(\", \") }}",
+  "context": {
     "users": [
       { "name": "alice", "age": 30 },
       { "name": "bob", "age": 25 }

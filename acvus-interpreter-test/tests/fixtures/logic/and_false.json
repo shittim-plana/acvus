@@ -1,5 +1,5 @@
 {
-  "template": "{{ true = $a && $b }}yes{{_}}no{{/}}",
-  "storage": { "a": true, "b": false },
+  "template": "{{ true = @a && @b }}yes{{_}}no{{/}}",
+  "context": { "a": true, "b": false },
   "expected": "no"
 }

@@ -1,5 +1,5 @@
 {
-  "template": "{{ x in $items }}{{ $sum = $sum + x }}{{/}}{{ $sum | to_string }}",
-  "storage": { "items": [1, 2, 3], "sum": 0 },
+  "template": "{{ $sum = 0 }}{{ x in @items }}{{ $sum = $sum + x }}{{/}}{{ $sum | to_string }}",
+  "context": { "items": [1, 2, 3] },
   "expected": "6"
 }

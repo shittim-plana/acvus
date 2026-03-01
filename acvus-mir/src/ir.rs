@@ -24,8 +24,9 @@ pub enum InstKind {
 
     // Constants / variables
     Const { dst: ValueId, value: Literal },
-    StorageLoad { dst: ValueId, name: String },
-    StorageStore { name: String, src: ValueId },
+    ContextLoad { dst: ValueId, name: String },
+    VarLoad { dst: ValueId, name: String },
+    VarStore { name: String, src: ValueId },
 
     // Arithmetic / logic
     BinOp {
@@ -175,8 +176,10 @@ pub enum InstKind {
 pub enum ValOrigin {
     /// A named variable binding: `user`, `x`, `item`.
     Named(String),
-    /// A storage reference: `$name`.
-    Storage(String),
+    /// A context reference: `@name`.
+    Context(String),
+    /// A variable reference: `$name`.
+    Variable(String),
     /// A field access: `user.name` — (object val, field name).
     Field(ValueId, String),
     /// Result of a function call: `to_string(...)`, `fetch(...)`.
@@ -215,7 +218,8 @@ impl DebugInfo {
     pub fn label(&self, val: ValueId) -> String {
         match self.val_origins.get(&val) {
             Some(ValOrigin::Named(name)) => name.clone(),
-            Some(ValOrigin::Storage(name)) => format!("${name}"),
+            Some(ValOrigin::Context(name)) => format!("@{name}"),
+            Some(ValOrigin::Variable(name)) => format!("${name}"),
             Some(ValOrigin::Field(_, field)) => field.clone(),
             Some(ValOrigin::Call(func)) => format!("{func}(...)"),
             Some(ValOrigin::Expr) | None => format!("v{}", val.0),

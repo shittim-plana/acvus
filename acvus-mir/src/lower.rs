@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use acvus_ast::{
     Expr, IndentModifier, IterBlock, Literal, MatchBlock, Node, ObjectExprField,
-    ObjectPatternField, Pattern, Span, Template, TupleElem, TuplePatternElem,
+    ObjectPatternField, Pattern, RefKind, Span, Template, TupleElem, TuplePatternElem,
 };
 
 use crate::builtins::builtins;
@@ -17,8 +17,9 @@ pub struct Lowerer {
     scopes: Vec<HashMap<String, ValueId>>,
     /// Type map from type checker.
     type_map: TypeMap,
-    /// Storage variable names (to distinguish storage from local $-vars).
-    storage_names: HashSet<String>,
+    /// Context variable names (to emit ContextLoad for `@name`).
+    #[allow(dead_code)]
+    context_names: HashSet<String>,
     /// Closures produced during lowering.
     closures: HashMap<Label, ClosureBody>,
     /// Hint table.
@@ -106,14 +107,14 @@ fn apply_indent_to_nodes(nodes: &[Node], modifier: &IndentModifier) -> Vec<Node>
 }
 
 impl Lowerer {
-    pub fn new(type_map: TypeMap, storage_names: HashSet<String>) -> Self {
+    pub fn new(type_map: TypeMap, context_names: HashSet<String>) -> Self {
         let builtin_names: HashSet<String> =
             builtins().iter().map(|b| b.name.to_string()).collect();
         Self {
             body: MirBody::new(),
             scopes: vec![HashMap::new()],
             type_map,
-            storage_names,
+            context_names,
             closures: HashMap::new(),
             hints: HintTable::new(),
             builtin_names,
@@ -284,33 +285,53 @@ impl Lowerer {
 
             Expr::Ident {
                 name,
-                is_storage_ref,
+                ref_kind,
                 span,
             } => {
-                // Check local scope first for both storage refs and bare names.
-                if let Some(reg) = self.lookup_var(name) {
-                    return reg;
-                }
-                if *is_storage_ref {
-                    // Storage load.
-                    let dst = self.alloc_val();
-                    let ty = self.type_of_span(*span);
-                    self.set_val_type(dst, ty);
-                    self.set_origin(dst, ValOrigin::Storage(name.clone()));
-                    self.emit_inst(
-                        *span,
-                        InstKind::StorageLoad {
-                            dst,
-                            name: name.clone(),
-                        },
-                    );
-                    dst
-                } else {
-                    // Unknown variable — emit a placeholder load.
-                    // Type checker should have caught this already.
-                    let dst = self.alloc_val();
-                    self.set_val_type(dst, Ty::Unit);
-                    dst
+                match ref_kind {
+                    RefKind::Context => {
+                        // Context load — always from external context.
+                        let dst = self.alloc_val();
+                        let ty = self.type_of_span(*span);
+                        self.set_val_type(dst, ty);
+                        self.set_origin(dst, ValOrigin::Context(name.clone()));
+                        self.emit_inst(
+                            *span,
+                            InstKind::ContextLoad {
+                                dst,
+                                name: name.clone(),
+                            },
+                        );
+                        dst
+                    }
+                    RefKind::Variable => {
+                        // Check local scope first, then emit VarLoad.
+                        if let Some(reg) = self.lookup_var(name) {
+                            return reg;
+                        }
+                        let dst = self.alloc_val();
+                        let ty = self.type_of_span(*span);
+                        self.set_val_type(dst, ty);
+                        self.set_origin(dst, ValOrigin::Variable(name.clone()));
+                        self.emit_inst(
+                            *span,
+                            InstKind::VarLoad {
+                                dst,
+                                name: name.clone(),
+                            },
+                        );
+                        dst
+                    }
+                    RefKind::Value => {
+                        // Check local scope.
+                        if let Some(reg) = self.lookup_var(name) {
+                            return reg;
+                        }
+                        // Unknown variable — emit a placeholder.
+                        let dst = self.alloc_val();
+                        self.set_val_type(dst, Ty::Unit);
+                        dst
+                    }
                 }
             }
 
@@ -392,12 +413,12 @@ impl Lowerer {
                     }
                     Expr::Ident {
                         name,
-                        is_storage_ref: false,
+                        ref_kind: RefKind::Value,
                         span: id_span,
                     } => {
                         let func_expr = Expr::Ident {
                             name: name.clone(),
-                            is_storage_ref: false,
+                            ref_kind: RefKind::Value,
                             span: *id_span,
                         };
                         let new_args = vec![left.as_ref().clone()];
@@ -619,7 +640,7 @@ impl Lowerer {
         self.set_val_type(dst, ty);
 
         let func_name = match func {
-            Expr::Ident { name, is_storage_ref: false, .. } => Some(name.clone()),
+            Expr::Ident { name, ref_kind: RefKind::Value, .. } => Some(name.clone()),
             _ => None,
         };
 
@@ -696,21 +717,20 @@ impl Lowerer {
     // --- Match block lowering ---
 
     fn lower_match_block(&mut self, mb: &MatchBlock) {
-        // Check for body-less binding shorthand (storage write or variable binding).
+        // Check for body-less binding shorthand (variable write or value binding).
         if mb.arms.len() == 1 && mb.arms[0].body.is_empty()
             && let Pattern::Binding {
                 name,
-                is_storage_ref,
+                ref_kind,
                 span: pat_span,
             } = &mb.arms[0].pattern
             {
                 let src = self.lower_expr(&mb.source);
-                if *is_storage_ref {
-                    // Storage write — register name dynamically if needed.
-                    self.storage_names.insert(name.clone());
+                if *ref_kind == RefKind::Variable {
+                    // Variable write.
                     self.emit_inst(
                         *pat_span,
-                        InstKind::StorageStore {
+                        InstKind::VarStore {
                             name: name.clone(),
                             src,
                         },
@@ -935,7 +955,7 @@ impl Lowerer {
     fn lower_pattern_test(&mut self, pattern: &Pattern, src_reg: ValueId, span: Span) -> ValueId {
         match pattern {
             Pattern::Binding {
-                is_storage_ref: false,
+                ref_kind: RefKind::Value,
                 ..
             } => {
                 // Variable binding always matches.
@@ -953,21 +973,38 @@ impl Lowerer {
 
             Pattern::Binding {
                 name,
-                is_storage_ref: true,
+                ref_kind: RefKind::Variable,
                 ..
             } => {
                 let dst = self.alloc_val();
                 self.set_val_type(dst, Ty::Bool);
-                // Storage write in pattern position — always matches, store value.
-                self.storage_names.insert(name.clone());
+                // Variable write in pattern position — always matches, store value.
                 self.emit_inst(
                     span,
-                    InstKind::StorageStore {
+                    InstKind::VarStore {
                         name: name.clone(),
                         src: src_reg,
                     },
                 );
                 // Always matches.
+                self.emit_inst(
+                    span,
+                    InstKind::Const {
+                        dst,
+                        value: Literal::Bool(true),
+                    },
+                );
+                dst
+            }
+
+            Pattern::Binding {
+                ref_kind: RefKind::Context,
+                ..
+            } => {
+                // Context write is forbidden — typeck catches this.
+                // Unreachable, but emit always-true for robustness.
+                let dst = self.alloc_val();
+                self.set_val_type(dst, Ty::Bool);
                 self.emit_inst(
                     span,
                     InstKind::Const {
@@ -1265,12 +1302,12 @@ impl Lowerer {
         match pattern {
             Pattern::Binding {
                 name,
-                is_storage_ref,
+                ref_kind,
                 ..
             } => {
-                // Storage path — value already stored via pattern_test or body-less binding.
-                // No local define; lookup will fall through to storage_load.
-                if !*is_storage_ref {
+                // Variable path — value already stored via pattern_test or body-less binding.
+                // No local define; lookup will fall through to VarLoad.
+                if *ref_kind == RefKind::Value {
                     self.set_origin(src_reg, ValOrigin::Named(name.clone()));
                     self.define_var(name, src_reg);
                 }
@@ -1382,7 +1419,7 @@ impl Lowerer {
         match expr {
             Expr::Ident {
                 name,
-                is_storage_ref: false,
+                ref_kind: RefKind::Value,
                 ..
             } => {
                 if bound.contains(name) || seen.contains(name) {
@@ -1394,10 +1431,10 @@ impl Lowerer {
                 }
             }
             Expr::Ident {
-                is_storage_ref: true,
+                ref_kind: RefKind::Variable | RefKind::Context,
                 ..
             } => {
-                // Storage refs resolve via StorageLoad at runtime — no capture needed.
+                // Variable and context refs resolve via VarLoad/ContextLoad at runtime — no capture needed.
             }
             Expr::BinaryOp { left, right, .. } => {
                 self.collect_free_vars(left, bound, free, seen);
@@ -1474,14 +1511,14 @@ mod tests {
 
     fn lower_with(
         source: &str,
-        storage: HashMap<String, Ty>,
+        context: HashMap<String, Ty>,
         registry: &ExternRegistry,
     ) -> MirModule {
         let template = acvus_ast::parse(source).expect("parse failed");
-        let storage_names: HashSet<String> = storage.keys().cloned().collect();
-        let checker = TypeChecker::new(storage, registry);
+        let context_names: HashSet<String> = context.keys().cloned().collect();
+        let checker = TypeChecker::new(context, registry);
         let type_map = checker.check_template(&template).expect("type check failed");
-        let lowerer = Lowerer::new(type_map, storage_names);
+        let lowerer = Lowerer::new(type_map, context_names);
         let (module, _hints) = lowerer.lower_template(&template);
         module
     }
@@ -1509,22 +1546,21 @@ mod tests {
     }
 
     #[test]
-    fn lower_storage_write() {
-        let storage = HashMap::from([("count".into(), Ty::Int)]);
-        let module = lower_with("{{ $count = 42 }}", storage, &ExternRegistry::new());
+    fn lower_var_write() {
+        let module = lower("{{ $count = 42 }}");
         let has_store = module.main.insts.iter().any(|i| {
-            matches!(&i.kind, InstKind::StorageStore { name, .. } if name == "count")
+            matches!(&i.kind, InstKind::VarStore { name, .. } if name == "count")
         });
         assert!(has_store);
     }
 
     #[test]
     fn lower_match_block() {
-        let storage = HashMap::from([("name".into(), Ty::String)]);
+        let context = HashMap::from([("name".into(), Ty::String)]);
         // Use a non-binding pattern to trigger full match block (no iteration).
         let module = lower_with(
-            r#"{{ true = $name == "test" }}matched{{/}}"#,
-            storage,
+            r#"{{ true = @name == "test" }}matched{{/}}"#,
+            context,
             &ExternRegistry::new(),
         );
         // Match block should NOT have IterInit/IterNext — it's single-value matching.
@@ -1565,10 +1601,10 @@ mod tests {
 
     #[test]
     fn lower_builtin_call() {
-        let storage = HashMap::from([("n".into(), Ty::Int)]);
+        let context = HashMap::from([("n".into(), Ty::Int)]);
         let module = lower_with(
-            r#"{{ $n | to_string }}"#,
-            storage,
+            r#"{{ @n | to_string }}"#,
+            context,
             &ExternRegistry::new(),
         );
         let has_call = module
@@ -1616,9 +1652,9 @@ mod tests {
 
     #[test]
     fn lower_match_block_indent_decrease() {
-        let storage = HashMap::from([("name".into(), Ty::String)]);
-        let source = "{{ true = $name == \"test\" }}\n    matched\n    here{{/-2}}";
-        let module = lower_with(source, storage, &ExternRegistry::new());
+        let context = HashMap::from([("name".into(), Ty::String)]);
+        let source = "{{ true = @name == \"test\" }}\n    matched\n    here{{/-2}}";
+        let module = lower_with(source, context, &ExternRegistry::new());
         // Find EmitText instructions and verify the text was adjusted.
         let texts: Vec<&str> = module
             .main
@@ -1634,9 +1670,9 @@ mod tests {
 
     #[test]
     fn lower_match_block_indent_increase() {
-        let storage = HashMap::from([("name".into(), Ty::String)]);
-        let source = "{{ true = $name == \"test\" }}\nmatched{{/+4}}";
-        let module = lower_with(source, storage, &ExternRegistry::new());
+        let context = HashMap::from([("name".into(), Ty::String)]);
+        let source = "{{ true = @name == \"test\" }}\nmatched{{/+4}}";
+        let module = lower_with(source, context, &ExternRegistry::new());
         let texts: Vec<&str> = module
             .main
             .insts

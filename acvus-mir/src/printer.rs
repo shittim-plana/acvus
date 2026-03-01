@@ -79,11 +79,14 @@ fn write_body(f: &mut fmt::Formatter<'_>, body: &MirBody, indent: &str) -> fmt::
             InstKind::Const { dst, value } => {
                 writeln!(f, "{} = const {}", fmt_val(*dst), fmt_literal(value))?
             }
-            InstKind::StorageLoad { dst, name } => {
-                writeln!(f, "{} = storage_load ${name}", fmt_val(*dst))?
+            InstKind::ContextLoad { dst, name } => {
+                writeln!(f, "{} = context_load @{name}", fmt_val(*dst))?
             }
-            InstKind::StorageStore { name, src } => {
-                writeln!(f, "storage_store ${name} = {}", fmt_val(*src))?
+            InstKind::VarLoad { dst, name } => {
+                writeln!(f, "{} = var_load ${name}", fmt_val(*dst))?
+            }
+            InstKind::VarStore { name, src } => {
+                writeln!(f, "var_store ${name} = {}", fmt_val(*src))?
             }
 
             // Arithmetic / logic
@@ -382,11 +385,11 @@ mod tests {
 
     fn compile_and_dump(
         source: &str,
-        storage: HashMap<String, Ty>,
+        context: HashMap<String, Ty>,
         registry: &crate::extern_module::ExternRegistry,
     ) -> String {
         let template = acvus_ast::parse(source).expect("parse failed");
-        let (module, _) = crate::compile(&template, storage, registry).expect("compile failed");
+        let (module, _) = crate::compile(&template, context, registry).expect("compile failed");
         dump(&module)
     }
 
@@ -406,10 +409,10 @@ mod tests {
 
     #[test]
     fn print_arithmetic() {
-        let storage = HashMap::from([("a".into(), Ty::Int), ("b".into(), Ty::Int)]);
+        let context = HashMap::from([("a".into(), Ty::Int), ("b".into(), Ty::Int)]);
         let out = compile_and_dump(
-            "{{ x = $a + $b }}{{ x | to_string }}{{_}}{{/}}",
-            storage,
+            "{{ x = @a + @b }}{{ x | to_string }}{{_}}{{/}}",
+            context,
             &ExternRegistry::new(),
         );
         assert!(out.contains("+"));
@@ -418,11 +421,10 @@ mod tests {
 
     #[test]
     fn print_match_block() {
-        let storage = HashMap::from([("name".into(), Ty::String)]);
-        // Use a literal pattern to trigger full match block (no iteration).
+        let context = HashMap::from([("name".into(), Ty::String)]);
         let out = compile_and_dump(
-            r#"{{ true = $name == "test" }}matched{{/}}"#,
-            storage,
+            r#"{{ true = @name == "test" }}matched{{/}}"#,
+            context,
             &ExternRegistry::new(),
         );
         assert!(!out.contains("iter_init"));
@@ -433,10 +435,10 @@ mod tests {
 
     #[test]
     fn print_closure() {
-        let storage = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
+        let context = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
         let out = compile_and_dump(
-            "{{ x = $items | filter(x -> x != 0) }}{{ x | len | to_string }}{{_}}{{/}}",
-            storage,
+            "{{ x = @items | filter(x -> x != 0) }}{{ x | len | to_string }}{{_}}{{/}}",
+            context,
             &ExternRegistry::new(),
         );
         assert!(out.contains("closure L"));
@@ -462,38 +464,36 @@ mod tests {
 
     #[test]
     fn print_object_field() {
-        let storage = HashMap::from([(
+        let context = HashMap::from([(
             "user".into(),
             Ty::Object(BTreeMap::from([
                 ("name".into(), Ty::String),
                 ("age".into(), Ty::Int),
             ])),
         )]);
-        let out = compile_and_dump("{{ $user.name }}", storage, &ExternRegistry::new());
+        let out = compile_and_dump("{{ @user.name }}", context, &ExternRegistry::new());
         assert!(out.contains(".name"));
     }
 
     #[test]
-    fn print_storage_write() {
-        let storage = HashMap::from([("count".into(), Ty::Int)]);
-        let out = compile_and_dump("{{ $count = 42 }}", storage, &ExternRegistry::new());
-        assert!(out.contains("storage_store $count"));
+    fn print_var_write() {
+        let out = compile_and_dump("{{ $count = 42 }}", HashMap::new(), &ExternRegistry::new());
+        assert!(out.contains("var_store $count"));
     }
 
     #[test]
     fn snapshot_full_example() {
-        let storage = HashMap::from([(
+        let context = HashMap::from([(
             "users".into(),
             Ty::List(Box::new(Ty::Object(BTreeMap::from([
                 ("name".into(), Ty::String),
             ])))),
         )]);
         let out = compile_and_dump(
-            r#"{{ { name, } in $users }}{{ name }}{{/}}"#,
-            storage,
+            r#"{{ { name, } in @users }}{{ name }}{{/}}"#,
+            context,
             &ExternRegistry::new(),
         );
-        // Just verify it doesn't panic and produces reasonable output.
         assert!(out.contains("=== main ==="));
         assert!(out.contains("iter_init"));
         assert!(out.contains("emit"));

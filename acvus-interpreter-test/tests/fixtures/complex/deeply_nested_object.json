@@ -1,6 +1,6 @@
 {
-  "template": "{{ $data.user.address.city }}",
-  "storage": {
+  "template": "{{ @data.user.address.city }}",
+  "context": {
     "data": {
       "user": {
         "address": {

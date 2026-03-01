@@ -1,5 +1,5 @@
 {
-  "template": "hello   {-{ $name }-}   world",
-  "storage": { "name": "," },
+  "template": "hello   {-{ @name }-}   world",
+  "context": { "name": "," },
   "expected": "hello,world"
 }

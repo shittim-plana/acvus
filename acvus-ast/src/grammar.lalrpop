@@ -15,7 +15,8 @@ extern {
         "float" => Token::FloatLit(<f64>),
         "string" => Token::StringLit(<String>),
         "ident" => Token::Ident(<String>),
-        "$ref" => Token::StorageRef(<String>),
+        "$ref" => Token::VarRef(<String>),
+        "@ref" => Token::ContextRef(<String>),
         "true" => Token::True,
         "false" => Token::False,
         "in" => Token::In,
@@ -171,9 +172,11 @@ PostfixExpr: Expr = {
 // Primary expressions
 PrimaryExpr: Expr = {
     <l:@L> <name:"ident"> <r:@R> =>
-        Expr::Ident { name, is_storage_ref: false, span: Span::new(l, r) },
+        Expr::Ident { name, ref_kind: RefKind::Value, span: Span::new(l, r) },
     <l:@L> <name:"$ref"> <r:@R> =>
-        Expr::Ident { name, is_storage_ref: true, span: Span::new(l, r) },
+        Expr::Ident { name, ref_kind: RefKind::Variable, span: Span::new(l, r) },
+    <l:@L> <name:"@ref"> <r:@R> =>
+        Expr::Ident { name, ref_kind: RefKind::Context, span: Span::new(l, r) },
     <l:@L> <n:"int"> <r:@R> =>
         Expr::Literal { value: Literal::Int(n), span: Span::new(l, r) },
     <l:@L> <n:"float"> <r:@R> =>
@@ -259,13 +262,13 @@ ListElem: ListElem = {
     <l:@L> ".." <r:@R> => ListElem::Rest(Span::new(l, r)),
 };
 
-// Object field: shorthand `name` or `$name`
+// Object field: shorthand `name`, `$name`, or `@name`
 ObjectField: ObjectExprField = {
     <l:@L> <name:"ident"> <r:@R> => {
         let span = Span::new(l, r);
         ObjectExprField {
             key: name.clone(),
-            value: Expr::Ident { name, is_storage_ref: false, span },
+            value: Expr::Ident { name, ref_kind: RefKind::Value, span },
             span,
         }
     },
@@ -273,7 +276,15 @@ ObjectField: ObjectExprField = {
         let span = Span::new(l, r);
         ObjectExprField {
             key: name.clone(),
-            value: Expr::Ident { name, is_storage_ref: true, span },
+            value: Expr::Ident { name, ref_kind: RefKind::Variable, span },
+            span,
+        }
+    },
+    <l:@L> <name:"@ref"> <r:@R> => {
+        let span = Span::new(l, r);
+        ObjectExprField {
+            key: name.clone(),
+            value: Expr::Ident { name, ref_kind: RefKind::Context, span },
             span,
         }
     },

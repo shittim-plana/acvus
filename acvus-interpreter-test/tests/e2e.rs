@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use acvus_interpreter::{ExternFn, ExternFnBody, ExternFnRegistry, ExternFnSig, PureValue, Value};
+use acvus_interpreter::{ExternFn, ExternFnBody, ExternFnRegistry, ExternFnSig, Value};
 use acvus_interpreter_test::*;
 use acvus_mir::ty::Ty;
 
@@ -26,57 +26,55 @@ async fn string_concat() {
 
 #[tokio::test]
 async fn mixed_text_and_expr() {
-    let (ty, val) = string_storage("name", "alice");
+    let (ty, val) = string_context("name", "alice");
     assert_eq!(
-        run_with_storage("Hello, {{ $name }}!", ty, val).await,
+        run_with_context("Hello, {{ @name }}!", ty, val).await,
         "Hello, alice!"
     );
 }
 
-// ── Storage ──────────────────────────────────────────────────────
+// ── Context / Variables ─────────────────────────────────────────
 
 #[tokio::test]
-async fn storage_read() {
-    let (ty, val) = int_storage("count", 42);
+async fn context_read() {
+    let (ty, val) = int_context("count", 42);
     assert_eq!(
-        run_with_storage("{{ $count | to_string }}", ty, val).await,
+        run_with_context("{{ @count | to_string }}", ty, val).await,
         "42"
     );
 }
 
 #[tokio::test]
-async fn storage_write() {
-    let (ty, val) = int_storage("count", 0);
-    assert_eq!(run_with_storage("{{ $count = 42 }}", ty, val).await, "");
+async fn variable_write() {
+    assert_eq!(run_simple("{{ $count = 42 }}").await, "");
 }
 
 #[tokio::test]
-async fn storage_write_then_read() {
-    let (ty, val) = int_storage("x", 0);
+async fn variable_write_then_read() {
     assert_eq!(
-        run_with_storage("{{ $x = 42 }}{{ $x | to_string }}", ty, val).await,
+        run_simple("{{ $x = 42 }}{{ $x | to_string }}").await,
         "42"
     );
 }
 
 #[tokio::test]
-async fn storage_field_access() {
-    let (ty, val) = user_storage();
+async fn context_field_access() {
+    let (ty, val) = user_context();
     assert_eq!(
-        run_with_storage("{{ $user.name }}", ty, val).await,
+        run_with_context("{{ @user.name }}", ty, val).await,
         "alice"
     );
 }
 
 #[tokio::test]
-async fn storage_write_computed() {
+async fn variable_write_computed() {
     let types = HashMap::from([("a".into(), Ty::Int), ("b".into(), Ty::Int)]);
     let values = HashMap::from([
-        ("a".into(), PureValue::Int(10)),
-        ("b".into(), PureValue::Int(32)),
+        ("a".into(), Value::Int(10)),
+        ("b".into(), Value::Int(32)),
     ]);
     assert_eq!(
-        run_with_storage("{{ $a = $a + $b }}{{ $a | to_string }}", types, values).await,
+        run_with_context("{{ $result = @a + @b }}{{ $result | to_string }}", types, values).await,
         "42"
     );
 }
@@ -87,20 +85,20 @@ async fn storage_write_computed() {
 async fn arithmetic_to_string() {
     let types = HashMap::from([("a".into(), Ty::Int), ("b".into(), Ty::Int)]);
     let values = HashMap::from([
-        ("a".into(), PureValue::Int(3)),
-        ("b".into(), PureValue::Int(7)),
+        ("a".into(), Value::Int(3)),
+        ("b".into(), Value::Int(7)),
     ]);
     assert_eq!(
-        run_with_storage("{{ $a + $b | to_string }}", types, values).await,
+        run_with_context("{{ @a + @b | to_string }}", types, values).await,
         "10"
     );
 }
 
 #[tokio::test]
 async fn unary_negation() {
-    let (ty, val) = int_storage("n", 5);
+    let (ty, val) = int_context("n", 5);
     assert_eq!(
-        run_with_storage(r#"{{ x = -$n }}{{ x | to_string }}{{_}}{{/}}"#, ty, val).await,
+        run_with_context(r#"{{ x = -@n }}{{ x | to_string }}{{_}}{{/}}"#, ty, val).await,
         "-5"
     );
 }
@@ -108,10 +106,10 @@ async fn unary_negation() {
 #[tokio::test]
 async fn boolean_not() {
     let types = HashMap::from([("flag".into(), Ty::Bool)]);
-    let values = HashMap::from([("flag".into(), PureValue::Bool(true))]);
+    let values = HashMap::from([("flag".into(), Value::Bool(true))]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ x = !$flag }}{{ x | to_string }}{{_}}{{/}}"#,
+        run_with_context(
+            r#"{{ x = !@flag }}{{ x | to_string }}{{_}}{{/}}"#,
             types,
             values
         )
@@ -124,12 +122,12 @@ async fn boolean_not() {
 async fn comparison_operators() {
     let types = HashMap::from([("a".into(), Ty::Int), ("b".into(), Ty::Int)]);
     let values = HashMap::from([
-        ("a".into(), PureValue::Int(10)),
-        ("b".into(), PureValue::Int(5)),
+        ("a".into(), Value::Int(10)),
+        ("b".into(), Value::Int(5)),
     ]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ x = $a > $b }}{{ x | to_string }}{{_}}{{/}}"#,
+        run_with_context(
+            r#"{{ x = @a > @b }}{{ x | to_string }}{{_}}{{/}}"#,
             types,
             values
         )
@@ -142,19 +140,19 @@ async fn comparison_operators() {
 
 #[tokio::test]
 async fn simple_match_binding() {
-    let (ty, val) = string_storage("name", "alice");
+    let (ty, val) = string_context("name", "alice");
     assert_eq!(
-        run_with_storage(r#"{{ x = $name }}{{ x }}"#, ty, val).await,
+        run_with_context(r#"{{ x = @name }}{{ x }}"#, ty, val).await,
         "alice"
     );
 }
 
 #[tokio::test]
 async fn match_literal_filter_hit() {
-    let (ty, val) = string_storage("role", "admin");
+    let (ty, val) = string_context("role", "admin");
     assert_eq!(
-        run_with_storage(
-            r#"{{ "admin" = $role }}admin page{{_}}guest page{{/}}"#,
+        run_with_context(
+            r#"{{ "admin" = @role }}admin page{{_}}guest page{{/}}"#,
             ty,
             val
         )
@@ -165,10 +163,10 @@ async fn match_literal_filter_hit() {
 
 #[tokio::test]
 async fn match_literal_filter_miss() {
-    let (ty, val) = string_storage("role", "user");
+    let (ty, val) = string_context("role", "user");
     assert_eq!(
-        run_with_storage(
-            r#"{{ "admin" = $role }}admin page{{_}}guest page{{/}}"#,
+        run_with_context(
+            r#"{{ "admin" = @role }}admin page{{_}}guest page{{/}}"#,
             ty,
             val
         )
@@ -179,10 +177,10 @@ async fn match_literal_filter_miss() {
 
 #[tokio::test]
 async fn multi_arm_match() {
-    let (ty, val) = string_storage("role", "user");
+    let (ty, val) = string_context("role", "user");
     assert_eq!(
-        run_with_storage(
-            r#"{{ "admin" = $role }}admin{{ "user" = }}user{{_}}guest{{/}}"#,
+        run_with_context(
+            r#"{{ "admin" = @role }}admin{{ "user" = }}user{{_}}guest{{/}}"#,
             ty,
             val
         )
@@ -194,19 +192,19 @@ async fn multi_arm_match() {
 #[tokio::test]
 async fn match_bool_literal() {
     let types = HashMap::from([("flag".into(), Ty::Bool)]);
-    let values = HashMap::from([("flag".into(), PureValue::Bool(true))]);
+    let values = HashMap::from([("flag".into(), Value::Bool(true))]);
     assert_eq!(
-        run_with_storage(r#"{{ true = $flag }}on{{_}}off{{/}}"#, types, values).await,
+        run_with_context(r#"{{ true = @flag }}on{{_}}off{{/}}"#, types, values).await,
         "on"
     );
 }
 
 #[tokio::test]
 async fn match_binding_with_body() {
-    let (ty, val) = user_storage();
+    let (ty, val) = user_context();
     assert_eq!(
-        run_with_storage(
-            r#"{{ { name, } = $user }}{{ name }} is here{{_}}no user{{/}}"#,
+        run_with_context(
+            r#"{{ { name, } = @user }}{{ name }} is here{{_}}no user{{/}}"#,
             ty,
             val
         )
@@ -217,10 +215,10 @@ async fn match_binding_with_body() {
 
 #[tokio::test]
 async fn variable_shadowing() {
-    let (ty, val) = string_storage("name", "alice");
+    let (ty, val) = string_context("name", "alice");
     assert_eq!(
-        run_with_storage(
-            r#"{{ x = "outer" }}{{ x = $name }}{{ x }}{{_}}{{/}}"#,
+        run_with_context(
+            r#"{{ x = "outer" }}{{ x = @name }}{{ x }}{{_}}{{/}}"#,
             ty,
             val
         )
@@ -231,10 +229,10 @@ async fn variable_shadowing() {
 
 #[tokio::test]
 async fn catch_all_with_binding() {
-    let (ty, val) = string_storage("role", "viewer");
+    let (ty, val) = string_context("role", "viewer");
     assert_eq!(
-        run_with_storage(
-            r#"{{ "admin" = $role }}admin{{_}}{{ fallback = "guest" }}{{ fallback }}{{/}}"#,
+        run_with_context(
+            r#"{{ "admin" = @role }}admin{{_}}{{ fallback = "guest" }}{{ fallback }}{{/}}"#,
             ty,
             val
         )
@@ -247,12 +245,12 @@ async fn catch_all_with_binding() {
 async fn equality_as_match_source() {
     let types = HashMap::from([("a".into(), Ty::Int), ("b".into(), Ty::Int)]);
     let values = HashMap::from([
-        ("a".into(), PureValue::Int(5)),
-        ("b".into(), PureValue::Int(5)),
+        ("a".into(), Value::Int(5)),
+        ("b".into(), Value::Int(5)),
     ]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ true = $a == $b }}equal{{_}}not equal{{/}}"#,
+        run_with_context(
+            r#"{{ true = @a == @b }}equal{{_}}not equal{{/}}"#,
             types,
             values
         )
@@ -267,12 +265,12 @@ async fn equality_as_match_source() {
 async fn nested_match_blocks() {
     let types = HashMap::from([("role".into(), Ty::String), ("level".into(), Ty::Int)]);
     let values = HashMap::from([
-        ("role".into(), PureValue::String("admin".into())),
-        ("level".into(), PureValue::Int(5)),
+        ("role".into(), Value::String("admin".into())),
+        ("level".into(), Value::Int(5)),
     ]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ "admin" = $role }}{{ 1..10 = $level }}low{{_}}high{{/}}{{_}}guest{{/}}"#,
+        run_with_context(
+            r#"{{ "admin" = @role }}{{ 1..10 = @level }}low{{_}}high{{/}}{{_}}guest{{/}}"#,
             types,
             values
         )
@@ -281,23 +279,23 @@ async fn nested_match_blocks() {
     );
 }
 
-// ── Storage ref in match arm ─────────────────────────────────────
+// ── Variable ref in match arm ────────────────────────────────────
 
 #[tokio::test]
-async fn storage_new_ref_binding() {
-    let (ty, val) = string_storage("name", "alice");
+async fn variable_new_ref_binding() {
+    let (ty, val) = string_context("name", "alice");
     assert_eq!(
-        run_with_storage(r#"{{ $result = $name }}{{ $result }}"#, ty, val).await,
+        run_with_context(r#"{{ $result = @name }}{{ $result }}"#, ty, val).await,
         "alice"
     );
 }
 
 #[tokio::test]
-async fn storage_new_ref_in_match_arm() {
-    let (ty, val) = string_storage("role", "admin");
+async fn variable_new_ref_in_match_arm() {
+    let (ty, val) = string_context("role", "admin");
     assert_eq!(
-        run_with_storage(
-            r#"{{ "admin" = $role }}{{ $selected = "yes" }}{{_}}{{ $selected = "no" }}{{/}}{{ $selected }}"#,
+        run_with_context(
+            r#"{{ "admin" = @role }}{{ $selected = "yes" }}{{_}}{{ $selected = "no" }}{{/}}{{ $selected }}"#,
             ty,
             val,
         )
@@ -334,10 +332,10 @@ async fn range_inclusive_iteration() {
 
 #[tokio::test]
 async fn range_pattern_hit() {
-    let (ty, val) = int_storage("age", 5);
+    let (ty, val) = int_context("age", 5);
     assert_eq!(
-        run_with_storage(
-            r#"{{ 0..10 = $age }}child{{ 10..=19 = }}teen{{_}}adult{{/}}"#,
+        run_with_context(
+            r#"{{ 0..10 = @age }}child{{ 10..=19 = }}teen{{_}}adult{{/}}"#,
             ty,
             val
         )
@@ -348,10 +346,10 @@ async fn range_pattern_hit() {
 
 #[tokio::test]
 async fn range_pattern_miss() {
-    let (ty, val) = int_storage("age", 25);
+    let (ty, val) = int_context("age", 25);
     assert_eq!(
-        run_with_storage(
-            r#"{{ 0..10 = $age }}child{{ 10..=19 = }}teen{{_}}adult{{/}}"#,
+        run_with_context(
+            r#"{{ 0..10 = @age }}child{{ 10..=19 = }}teen{{_}}adult{{/}}"#,
             ty,
             val
         )
@@ -364,18 +362,18 @@ async fn range_pattern_miss() {
 
 #[tokio::test]
 async fn iter_list_binding() {
-    let (ty, val) = items_storage(vec![1, 2, 3]);
+    let (ty, val) = items_context(vec![1, 2, 3]);
     assert_eq!(
-        run_with_storage("{{ x in $items }}{{ x | to_string }}{{/}}", ty, val).await,
+        run_with_context("{{ x in @items }}{{ x | to_string }}{{/}}", ty, val).await,
         "123"
     );
 }
 
 #[tokio::test]
 async fn iter_object_destructure() {
-    let (ty, val) = users_list_storage();
+    let (ty, val) = users_list_context();
     assert_eq!(
-        run_with_storage("{{ { name, } in $users }}{{ name }}{{/}}", ty, val).await,
+        run_with_context("{{ { name, } in @users }}{{ name }}{{/}}", ty, val).await,
         "alicebob"
     );
 }
@@ -388,19 +386,19 @@ async fn iter_tuple_destructure() {
     )]);
     let val = HashMap::from([(
         "pairs".into(),
-        PureValue::List(vec![
-            PureValue::Tuple(vec![
-                PureValue::String("a".into()),
-                PureValue::Int(1),
+        Value::List(vec![
+            Value::Tuple(vec![
+                Value::String("a".into()),
+                Value::Int(1),
             ]),
-            PureValue::Tuple(vec![
-                PureValue::String("b".into()),
-                PureValue::Int(2),
+            Value::Tuple(vec![
+                Value::String("b".into()),
+                Value::Int(2),
             ]),
         ]),
     )]);
     assert_eq!(
-        run_with_storage("{{ (a, _) in $pairs }}{{ a }}{{/}}", ty, val).await,
+        run_with_context("{{ (a, _) in @pairs }}{{ a }}{{/}}", ty, val).await,
         "ab"
     );
 }
@@ -413,14 +411,14 @@ async fn nested_iteration() {
     )]);
     let val = HashMap::from([(
         "matrix".into(),
-        PureValue::List(vec![
-            PureValue::List(vec![PureValue::Int(1), PureValue::Int(2)]),
-            PureValue::List(vec![PureValue::Int(3), PureValue::Int(4)]),
+        Value::List(vec![
+            Value::List(vec![Value::Int(1), Value::Int(2)]),
+            Value::List(vec![Value::Int(3), Value::Int(4)]),
         ]),
     )]);
     assert_eq!(
-        run_with_storage(
-            "{{ row in $matrix }}{{ x in row }}{{ x | to_string }}{{/}}{{/}}",
+        run_with_context(
+            "{{ row in @matrix }}{{ x in row }}{{ x | to_string }}{{/}}{{/}}",
             ty,
             val
         )
@@ -430,25 +428,11 @@ async fn nested_iteration() {
 }
 
 #[tokio::test]
-async fn storage_write_in_iteration() {
-    let types = HashMap::from([
-        ("items".into(), Ty::List(Box::new(Ty::Int))),
-        ("last".into(), Ty::Int),
-    ]);
-    let values = HashMap::from([
-        (
-            "items".into(),
-            PureValue::List(vec![
-                PureValue::Int(10),
-                PureValue::Int(20),
-                PureValue::Int(30),
-            ]),
-        ),
-        ("last".into(), PureValue::Int(0)),
-    ]);
+async fn variable_write_in_iteration() {
+    let (types, values) = items_context(vec![10, 20, 30]);
     assert_eq!(
-        run_with_storage(
-            "{{ x in $items }}{{ $last = x }}{{/}}{{ $last | to_string }}",
+        run_with_context(
+            "{{ $last = 0 }}{{ x in @items }}{{ $last = x }}{{/}}{{ $last | to_string }}",
             types,
             values
         )
@@ -458,25 +442,11 @@ async fn storage_write_in_iteration() {
 }
 
 #[tokio::test]
-async fn storage_accumulate_in_loop() {
-    let types = HashMap::from([
-        ("items".into(), Ty::List(Box::new(Ty::Int))),
-        ("sum".into(), Ty::Int),
-    ]);
-    let values = HashMap::from([
-        (
-            "items".into(),
-            PureValue::List(vec![
-                PureValue::Int(1),
-                PureValue::Int(2),
-                PureValue::Int(3),
-            ]),
-        ),
-        ("sum".into(), PureValue::Int(0)),
-    ]);
+async fn variable_accumulate_in_loop() {
+    let (types, values) = items_context(vec![1, 2, 3]);
     assert_eq!(
-        run_with_storage(
-            "{{ x in $items }}{{ $sum = $sum + x }}{{/}}{{ $sum | to_string }}",
+        run_with_context(
+            "{{ $sum = 0 }}{{ x in @items }}{{ $sum = $sum + x }}{{/}}{{ $sum | to_string }}",
             types,
             values
         )
@@ -489,10 +459,10 @@ async fn storage_accumulate_in_loop() {
 
 #[tokio::test]
 async fn list_destructure_head() {
-    let (ty, val) = items_storage(vec![10, 20, 30]);
+    let (ty, val) = items_context(vec![10, 20, 30]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ [a, b, ..] = $items }}{{ a | to_string }}{{_}}empty{{/}}"#,
+        run_with_context(
+            r#"{{ [a, b, ..] = @items }}{{ a | to_string }}{{_}}empty{{/}}"#,
             ty,
             val
         )
@@ -503,10 +473,10 @@ async fn list_destructure_head() {
 
 #[tokio::test]
 async fn list_destructure_tail() {
-    let (ty, val) = items_storage(vec![10, 20, 30]);
+    let (ty, val) = items_context(vec![10, 20, 30]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ [.., a, b] = $items }}{{ a | to_string }}{{_}}empty{{/}}"#,
+        run_with_context(
+            r#"{{ [.., a, b] = @items }}{{ a | to_string }}{{_}}empty{{/}}"#,
             ty,
             val
         )
@@ -517,10 +487,10 @@ async fn list_destructure_tail() {
 
 #[tokio::test]
 async fn list_destructure_head_and_tail() {
-    let (ty, val) = items_storage(vec![1, 2, 3, 4, 5]);
+    let (ty, val) = items_context(vec![1, 2, 3, 4, 5]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ [first, .., last] = $items }}{{ first | to_string }}-{{ last | to_string }}{{_}}empty{{/}}"#,
+        run_with_context(
+            r#"{{ [first, .., last] = @items }}{{ first | to_string }}-{{ last | to_string }}{{_}}empty{{/}}"#,
             ty,
             val,
         )
@@ -531,10 +501,10 @@ async fn list_destructure_head_and_tail() {
 
 #[tokio::test]
 async fn list_exact_match_hit() {
-    let (ty, val) = items_storage(vec![10, 20]);
+    let (ty, val) = items_context(vec![10, 20]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ [a, b] = $items }}{{ a | to_string }}{{_}}wrong length{{/}}"#,
+        run_with_context(
+            r#"{{ [a, b] = @items }}{{ a | to_string }}{{_}}wrong length{{/}}"#,
             ty,
             val
         )
@@ -545,10 +515,10 @@ async fn list_exact_match_hit() {
 
 #[tokio::test]
 async fn list_exact_match_miss() {
-    let (ty, val) = items_storage(vec![10, 20, 30]);
+    let (ty, val) = items_context(vec![10, 20, 30]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ [a, b] = $items }}{{ a | to_string }}{{_}}wrong length{{/}}"#,
+        run_with_context(
+            r#"{{ [a, b] = @items }}{{ a | to_string }}{{_}}wrong length{{/}}"#,
             ty,
             val
         )
@@ -561,10 +531,10 @@ async fn list_exact_match_miss() {
 
 #[tokio::test]
 async fn object_pattern() {
-    let (ty, val) = user_storage();
+    let (ty, val) = user_context();
     assert_eq!(
-        run_with_storage(
-            r#"{{ { name, age, } = $user }}{{ name }}:{{ age | to_string }}{{/}}"#,
+        run_with_context(
+            r#"{{ { name, age, } = @user }}{{ name }}:{{ age | to_string }}{{/}}"#,
             ty,
             val
         )
@@ -587,19 +557,19 @@ async fn deeply_nested_object_access() {
     )]);
     let val = HashMap::from([(
         "data".into(),
-        PureValue::Object(BTreeMap::from([(
+        Value::Object(BTreeMap::from([(
             "user".into(),
-            PureValue::Object(BTreeMap::from([(
+            Value::Object(BTreeMap::from([(
                 "address".into(),
-                PureValue::Object(BTreeMap::from([(
+                Value::Object(BTreeMap::from([(
                     "city".into(),
-                    PureValue::String("Seoul".into()),
+                    Value::String("Seoul".into()),
                 )])),
             )])),
         )])),
     )]);
     assert_eq!(
-        run_with_storage("{{ $data.user.address.city }}", ty, val).await,
+        run_with_context("{{ @data.user.address.city }}", ty, val).await,
         "Seoul"
     );
 }
@@ -610,12 +580,12 @@ async fn deeply_nested_object_access() {
 async fn tuple_expression() {
     let types = HashMap::from([("a".into(), Ty::Int), ("b".into(), Ty::String)]);
     let values = HashMap::from([
-        ("a".into(), PureValue::Int(42)),
-        ("b".into(), PureValue::String("hello".into())),
+        ("a".into(), Value::Int(42)),
+        ("b".into(), Value::String("hello".into())),
     ]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ (x, y) = ($a, $b) }}{{ x | to_string }}, {{ y }}{{/}}"#,
+        run_with_context(
+            r#"{{ (x, y) = (@a, @b) }}{{ x | to_string }}, {{ y }}{{/}}"#,
             types,
             values
         )
@@ -629,13 +599,13 @@ async fn tuple_pattern_binding() {
     let types = HashMap::from([("pair".into(), Ty::Tuple(vec![Ty::String, Ty::Int]))]);
     let values = HashMap::from([(
         "pair".into(),
-        PureValue::Tuple(vec![
-            PureValue::String("alice".into()),
-            PureValue::Int(30),
+        Value::Tuple(vec![
+            Value::String("alice".into()),
+            Value::Int(30),
         ]),
     )]);
     assert_eq!(
-        run_with_storage(r#"{{ (name, age) = $pair }}{{ name }}{{/}}"#, types, values).await,
+        run_with_context(r#"{{ (name, age) = @pair }}{{ name }}{{/}}"#, types, values).await,
         "alice"
     );
 }
@@ -645,13 +615,13 @@ async fn tuple_pattern_wildcard() {
     let types = HashMap::from([("pair".into(), Ty::Tuple(vec![Ty::String, Ty::Int]))]);
     let values = HashMap::from([(
         "pair".into(),
-        PureValue::Tuple(vec![
-            PureValue::String("alice".into()),
-            PureValue::Int(30),
+        Value::Tuple(vec![
+            Value::String("alice".into()),
+            Value::Int(30),
         ]),
     )]);
     assert_eq!(
-        run_with_storage(r#"{{ (name, _) = $pair }}{{ name }}{{/}}"#, types, values).await,
+        run_with_context(r#"{{ (name, _) = @pair }}{{ name }}{{/}}"#, types, values).await,
         "alice"
     );
 }
@@ -660,12 +630,12 @@ async fn tuple_pattern_wildcard() {
 async fn tuple_pattern_literal_match_hit() {
     let types = HashMap::from([("a".into(), Ty::Int), ("b".into(), Ty::Int)]);
     let values = HashMap::from([
-        ("a".into(), PureValue::Int(0)),
-        ("b".into(), PureValue::Int(1)),
+        ("a".into(), Value::Int(0)),
+        ("b".into(), Value::Int(1)),
     ]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ (0, 1) = ($a, $b) }}zero-one{{ (1, _) = }}one-any{{_}}other{{/}}"#,
+        run_with_context(
+            r#"{{ (0, 1) = (@a, @b) }}zero-one{{ (1, _) = }}one-any{{_}}other{{/}}"#,
             types,
             values
         )
@@ -685,13 +655,13 @@ async fn nested_tuple_pattern() {
     )]);
     let values = HashMap::from([(
         "data".into(),
-        PureValue::Tuple(vec![
-            PureValue::Tuple(vec![PureValue::Int(1), PureValue::Int(2)]),
-            PureValue::String("hello".into()),
+        Value::Tuple(vec![
+            Value::Tuple(vec![Value::Int(1), Value::Int(2)]),
+            Value::String("hello".into()),
         ]),
     )]);
     assert_eq!(
-        run_with_storage(r#"{{ ((a, b), label) = $data }}{{ label }}{{/}}"#, types, values).await,
+        run_with_context(r#"{{ ((a, b), label) = @data }}{{ label }}{{/}}"#, types, values).await,
         "hello"
     );
 }
@@ -700,19 +670,19 @@ async fn nested_tuple_pattern() {
 
 #[tokio::test]
 async fn pipe_to_string() {
-    let (ty, val) = int_storage("n", 42);
+    let (ty, val) = int_context("n", 42);
     assert_eq!(
-        run_with_storage("{{ $n | to_string }}", ty, val).await,
+        run_with_context("{{ @n | to_string }}", ty, val).await,
         "42"
     );
 }
 
 #[tokio::test]
 async fn to_float_conversion() {
-    let (ty, val) = int_storage("n", 5);
+    let (ty, val) = int_context("n", 5);
     assert_eq!(
-        run_with_storage(
-            r#"{{ x = $n | to_float }}{{ x | to_string }}{{_}}{{/}}"#,
+        run_with_context(
+            r#"{{ x = @n | to_float }}{{ x | to_string }}{{_}}{{/}}"#,
             ty,
             val
         )
@@ -724,10 +694,10 @@ async fn to_float_conversion() {
 #[tokio::test]
 async fn to_int_conversion() {
     let types = HashMap::from([("f".into(), Ty::Float)]);
-    let values = HashMap::from([("f".into(), PureValue::Float(3.7))]);
+    let values = HashMap::from([("f".into(), Value::Float(3.7))]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ x = $f | to_int }}{{ x | to_string }}{{_}}{{/}}"#,
+        run_with_context(
+            r#"{{ x = @f | to_int }}{{ x | to_string }}{{_}}{{/}}"#,
             types,
             values
         )
@@ -740,10 +710,10 @@ async fn to_int_conversion() {
 
 #[tokio::test]
 async fn lambda_filter() {
-    let (ty, val) = items_storage(vec![0, 1, 2, 0, 3]);
+    let (ty, val) = items_context(vec![0, 1, 2, 0, 3]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ x = $items | filter(x -> x != 0) }}{{ x | map(i -> i | to_string) | join(", ") }}"#,
+        run_with_context(
+            r#"{{ x = @items | filter(x -> x != 0) }}{{ x | map(i -> i | to_string) | join(", ") }}"#,
             ty,
             val
         )
@@ -754,10 +724,10 @@ async fn lambda_filter() {
 
 #[tokio::test]
 async fn lambda_map() {
-    let (ty, val) = items_storage(vec![1, 2, 3]);
+    let (ty, val) = items_context(vec![1, 2, 3]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ x = $items | map(i -> i + 1) }}{{ x | map(i -> i | to_string) | join(", ") }}"#,
+        run_with_context(
+            r#"{{ x = @items | map(i -> i + 1) }}{{ x | map(i -> i | to_string) | join(", ") }}"#,
             ty,
             val
         )
@@ -768,10 +738,10 @@ async fn lambda_map() {
 
 #[tokio::test]
 async fn lambda_pmap() {
-    let (ty, val) = items_storage(vec![1, 2, 3]);
+    let (ty, val) = items_context(vec![1, 2, 3]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ x = $items | pmap(i -> i | to_string) }}{{ x | join(", ") }}"#,
+        run_with_context(
+            r#"{{ x = @items | pmap(i -> i | to_string) }}{{ x | join(", ") }}"#,
             ty,
             val
         )
@@ -782,10 +752,10 @@ async fn lambda_pmap() {
 
 #[tokio::test]
 async fn pipe_filter_map() {
-    let (ty, val) = items_storage(vec![0, 1, 2, 0, 3]);
+    let (ty, val) = items_context(vec![0, 1, 2, 0, 3]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ x = $items | filter(x -> x != 0) | map(x -> x | to_string) }}{{ x | join(", ") }}"#,
+        run_with_context(
+            r#"{{ x = @items | filter(x -> x != 0) | map(x -> x | to_string) }}{{ x | join(", ") }}"#,
             ty,
             val,
         )
@@ -796,10 +766,10 @@ async fn pipe_filter_map() {
 
 #[tokio::test]
 async fn triple_pipe_chain() {
-    let (ty, val) = items_storage(vec![0, 1, 2, 3]);
+    let (ty, val) = items_context(vec![0, 1, 2, 3]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ x = $items | filter(i -> i != 0) | map(i -> i + 1) | map(i -> i | to_string) }}{{ x | join(", ") }}"#,
+        run_with_context(
+            r#"{{ x = @items | filter(i -> i != 0) | map(i -> i + 1) | map(i -> i | to_string) }}{{ x | join(", ") }}"#,
             ty,
             val,
         )
@@ -810,10 +780,10 @@ async fn triple_pipe_chain() {
 
 #[tokio::test]
 async fn closure_capture_local() {
-    let (ty, val) = items_storage(vec![1, 3, 5, 7, 10]);
+    let (ty, val) = items_context(vec![1, 3, 5, 7, 10]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ threshold = 5 }}{{ x = $items | filter(i -> i > threshold) }}{{ x | map(i -> i | to_string) | join(", ") }}{{_}}{{/}}"#,
+        run_with_context(
+            r#"{{ threshold = 5 }}{{ x = @items | filter(i -> i > threshold) }}{{ x | map(i -> i | to_string) | join(", ") }}{{_}}{{/}}"#,
             ty,
             val,
         )
@@ -823,7 +793,7 @@ async fn closure_capture_local() {
 }
 
 #[tokio::test]
-async fn closure_capture_storage() {
+async fn closure_capture_context() {
     let types = HashMap::from([
         ("items".into(), Ty::List(Box::new(Ty::Int))),
         ("threshold".into(), Ty::Int),
@@ -831,17 +801,17 @@ async fn closure_capture_storage() {
     let values = HashMap::from([
         (
             "items".into(),
-            PureValue::List(vec![
-                PureValue::Int(1),
-                PureValue::Int(5),
-                PureValue::Int(10),
+            Value::List(vec![
+                Value::Int(1),
+                Value::Int(5),
+                Value::Int(10),
             ]),
         ),
-        ("threshold".into(), PureValue::Int(3)),
+        ("threshold".into(), Value::Int(3)),
     ]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ x = $items | filter(i -> i > $threshold) }}{{ x | map(i -> i | to_string) | join(", ") }}"#,
+        run_with_context(
+            r#"{{ x = @items | filter(i -> i > @threshold) }}{{ x | map(i -> i | to_string) | join(", ") }}"#,
             types,
             values
         )
@@ -852,10 +822,10 @@ async fn closure_capture_storage() {
 
 #[tokio::test]
 async fn lambda_field_access() {
-    let (ty, val) = users_list_storage();
+    let (ty, val) = users_list_context();
     assert_eq!(
-        run_with_storage(
-            r#"{{ x = $users | map(u -> u.name) }}{{ x | join(", ") }}"#,
+        run_with_context(
+            r#"{{ x = @users | map(u -> u.name) }}{{ x | join(", ") }}"#,
             ty,
             val
         )
@@ -866,10 +836,10 @@ async fn lambda_field_access() {
 
 #[tokio::test]
 async fn lambda_negate_param() {
-    let (ty, val) = items_storage(vec![1, 2, 3]);
+    let (ty, val) = items_context(vec![1, 2, 3]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ x = $items | map(i -> -i) }}{{ x | map(i -> i | to_string) | join(", ") }}"#,
+        run_with_context(
+            r#"{{ x = @items | map(i -> -i) }}{{ x | map(i -> i | to_string) | join(", ") }}"#,
             ty,
             val
         )
@@ -883,15 +853,15 @@ async fn lambda_not_param() {
     let types = HashMap::from([("flags".into(), Ty::List(Box::new(Ty::Bool)))]);
     let values = HashMap::from([(
         "flags".into(),
-        PureValue::List(vec![
-            PureValue::Bool(true),
-            PureValue::Bool(false),
-            PureValue::Bool(true),
+        Value::List(vec![
+            Value::Bool(true),
+            Value::Bool(false),
+            Value::Bool(true),
         ]),
     )]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ x = $flags | map(i -> !i) }}{{ x | map(b -> b | to_string) | join(", ") }}"#,
+        run_with_context(
+            r#"{{ x = @flags | map(i -> !i) }}{{ x | map(b -> b | to_string) | join(", ") }}"#,
             types,
             values
         )
@@ -905,14 +875,14 @@ async fn lambda_string_concat() {
     let types = HashMap::from([("names".into(), Ty::List(Box::new(Ty::String)))]);
     let values = HashMap::from([(
         "names".into(),
-        PureValue::List(vec![
-            PureValue::String("alice".into()),
-            PureValue::String("bob".into()),
+        Value::List(vec![
+            Value::String("alice".into()),
+            Value::String("bob".into()),
         ]),
     )]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ x = $names | map(n -> n + "!") }}{{ x | join(", ") }}"#,
+        run_with_context(
+            r#"{{ x = @names | map(n -> n + "!") }}{{ x | join(", ") }}"#,
             types,
             values
         )
@@ -926,14 +896,14 @@ async fn lambda_float_arithmetic() {
     let types = HashMap::from([("vals".into(), Ty::List(Box::new(Ty::Float)))]);
     let values = HashMap::from([(
         "vals".into(),
-        PureValue::List(vec![
-            PureValue::Float(1.5),
-            PureValue::Float(2.5),
+        Value::List(vec![
+            Value::Float(1.5),
+            Value::Float(2.5),
         ]),
     )]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ x = $vals | map(v -> v * 2.0) }}{{ x | map(v -> v | to_string) | join(", ") }}"#,
+        run_with_context(
+            r#"{{ x = @vals | map(v -> v * 2.0) }}{{ x | map(v -> v | to_string) | join(", ") }}"#,
             types,
             values
         )
@@ -944,10 +914,10 @@ async fn lambda_float_arithmetic() {
 
 #[tokio::test]
 async fn filter_then_map_field() {
-    let (ty, val) = users_list_storage();
+    let (ty, val) = users_list_context();
     assert_eq!(
-        run_with_storage(
-            r#"{{ x = $users | filter(u -> u.age > 18) | map(u -> u.name) }}{{ x | join(", ") }}"#,
+        run_with_context(
+            r#"{{ x = @users | filter(u -> u.age > 18) | map(u -> u.name) }}{{ x | join(", ") }}"#,
             ty,
             val,
         )
@@ -965,18 +935,18 @@ async fn multiple_closures_same_capture() {
     let values = HashMap::from([
         (
             "items".into(),
-            PureValue::List(vec![
-                PureValue::Int(-1),
-                PureValue::Int(0),
-                PureValue::Int(1),
-                PureValue::Int(2),
+            Value::List(vec![
+                Value::Int(-1),
+                Value::Int(0),
+                Value::Int(1),
+                Value::Int(2),
             ]),
         ),
-        ("offset".into(), PureValue::Int(1)),
+        ("offset".into(), Value::Int(1)),
     ]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ x = $items | map(i -> i + $offset) | filter(i -> i > 0) }}{{ x | map(i -> i | to_string) | join(", ") }}"#,
+        run_with_context(
+            r#"{{ x = @items | map(i -> i + @offset) | filter(i -> i > 0) }}{{ x | map(i -> i | to_string) | join(", ") }}"#,
             types,
             values,
         )
@@ -1014,9 +984,9 @@ impl ExternFn for DoubleIt {
 async fn extern_fn_call() {
     let mut extern_fns = ExternFnRegistry::new();
     extern_fns.register(DoubleIt);
-    let (ty, val) = int_storage("n", 21);
+    let (ty, val) = int_context("n", 21);
     let output = run(
-        r#"{{ x = double($n) }}{{ x | to_string }}{{_}}{{/}}"#,
+        r#"{{ x = double(@n) }}{{ x | to_string }}{{_}}{{/}}"#,
         ty,
         val,
         extern_fns,
@@ -1031,12 +1001,12 @@ async fn extern_fn_call() {
 async fn and_both_true() {
     let types = HashMap::from([("a".into(), Ty::Bool), ("b".into(), Ty::Bool)]);
     let values = HashMap::from([
-        ("a".into(), PureValue::Bool(true)),
-        ("b".into(), PureValue::Bool(true)),
+        ("a".into(), Value::Bool(true)),
+        ("b".into(), Value::Bool(true)),
     ]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ true = $a && $b }}yes{{_}}no{{/}}"#,
+        run_with_context(
+            r#"{{ true = @a && @b }}yes{{_}}no{{/}}"#,
             types,
             values
         )
@@ -1049,12 +1019,12 @@ async fn and_both_true() {
 async fn and_one_false() {
     let types = HashMap::from([("a".into(), Ty::Bool), ("b".into(), Ty::Bool)]);
     let values = HashMap::from([
-        ("a".into(), PureValue::Bool(true)),
-        ("b".into(), PureValue::Bool(false)),
+        ("a".into(), Value::Bool(true)),
+        ("b".into(), Value::Bool(false)),
     ]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ true = $a && $b }}yes{{_}}no{{/}}"#,
+        run_with_context(
+            r#"{{ true = @a && @b }}yes{{_}}no{{/}}"#,
             types,
             values
         )
@@ -1067,12 +1037,12 @@ async fn and_one_false() {
 async fn or_one_true() {
     let types = HashMap::from([("a".into(), Ty::Bool), ("b".into(), Ty::Bool)]);
     let values = HashMap::from([
-        ("a".into(), PureValue::Bool(false)),
-        ("b".into(), PureValue::Bool(true)),
+        ("a".into(), Value::Bool(false)),
+        ("b".into(), Value::Bool(true)),
     ]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ true = $a || $b }}yes{{_}}no{{/}}"#,
+        run_with_context(
+            r#"{{ true = @a || @b }}yes{{_}}no{{/}}"#,
             types,
             values
         )
@@ -1085,12 +1055,12 @@ async fn or_one_true() {
 async fn or_both_false() {
     let types = HashMap::from([("a".into(), Ty::Bool), ("b".into(), Ty::Bool)]);
     let values = HashMap::from([
-        ("a".into(), PureValue::Bool(false)),
-        ("b".into(), PureValue::Bool(false)),
+        ("a".into(), Value::Bool(false)),
+        ("b".into(), Value::Bool(false)),
     ]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ true = $a || $b }}yes{{_}}no{{/}}"#,
+        run_with_context(
+            r#"{{ true = @a || @b }}yes{{_}}no{{/}}"#,
             types,
             values
         )
@@ -1108,13 +1078,13 @@ async fn and_or_precedence() {
         ("c".into(), Ty::Bool),
     ]);
     let values = HashMap::from([
-        ("a".into(), PureValue::Bool(true)),
-        ("b".into(), PureValue::Bool(false)),
-        ("c".into(), PureValue::Bool(false)),
+        ("a".into(), Value::Bool(true)),
+        ("b".into(), Value::Bool(false)),
+        ("c".into(), Value::Bool(false)),
     ]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ true = $a || $b && $c }}yes{{_}}no{{/}}"#,
+        run_with_context(
+            r#"{{ true = @a || @b && @c }}yes{{_}}no{{/}}"#,
             types,
             values
         )
@@ -1126,10 +1096,10 @@ async fn and_or_precedence() {
 #[tokio::test]
 async fn and_with_comparison() {
     let types = HashMap::from([("x".into(), Ty::Int)]);
-    let values = HashMap::from([("x".into(), PureValue::Int(15))]);
+    let values = HashMap::from([("x".into(), Value::Int(15))]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ true = $x > 10 && $x < 20 }}in range{{_}}out{{/}}"#,
+        run_with_context(
+            r#"{{ true = @x > 10 && @x < 20 }}in range{{_}}out{{/}}"#,
             types,
             values
         )
@@ -1140,10 +1110,10 @@ async fn and_with_comparison() {
 
 #[tokio::test]
 async fn logical_in_filter() {
-    let (ty, val) = items_storage(vec![1, 5, 10, 15, 20, 25]);
+    let (ty, val) = items_context(vec![1, 5, 10, 15, 20, 25]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ x = $items | filter(i -> i > 5 && i < 20) }}{{ x | map(i -> i | to_string) | join(", ") }}"#,
+        run_with_context(
+            r#"{{ x = @items | filter(i -> i > 5 && i < 20) }}{{ x | map(i -> i | to_string) | join(", ") }}"#,
             ty,
             val
         )
@@ -1155,20 +1125,18 @@ async fn logical_in_filter() {
 // ── Complex scenarios ───────────────────────────────────────────
 
 #[tokio::test]
-async fn nested_match_with_storage_write() {
+async fn nested_match_with_variable_write() {
     let types = HashMap::from([
         ("role".into(), Ty::String),
         ("level".into(), Ty::Int),
-        ("result".into(), Ty::String),
     ]);
     let values = HashMap::from([
-        ("role".into(), PureValue::String("admin".into())),
-        ("level".into(), PureValue::Int(5)),
-        ("result".into(), PureValue::String("".into())),
+        ("role".into(), Value::String("admin".into())),
+        ("level".into(), Value::Int(5)),
     ]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ "admin" = $role }}{{ 0..10 = $level }}{{ $result = "low-admin" }}{{_}}{{ $result = "high-admin" }}{{/}}{{_}}{{ $result = "guest" }}{{/}}{{ $result }}"#,
+        run_with_context(
+            r#"{{ "admin" = @role }}{{ 0..10 = @level }}{{ $result = "low-admin" }}{{_}}{{ $result = "high-admin" }}{{/}}{{_}}{{ $result = "guest" }}{{/}}{{ $result }}"#,
             types,
             values
         )
@@ -1188,24 +1156,24 @@ async fn filter_map_with_object_pattern() {
     )]);
     let val = HashMap::from([(
         "products".into(),
-        PureValue::List(vec![
-            PureValue::Object(BTreeMap::from([
-                ("name".into(), PureValue::String("apple".into())),
-                ("price".into(), PureValue::Int(100)),
+        Value::List(vec![
+            Value::Object(BTreeMap::from([
+                ("name".into(), Value::String("apple".into())),
+                ("price".into(), Value::Int(100)),
             ])),
-            PureValue::Object(BTreeMap::from([
-                ("name".into(), PureValue::String("banana".into())),
-                ("price".into(), PureValue::Int(50)),
+            Value::Object(BTreeMap::from([
+                ("name".into(), Value::String("banana".into())),
+                ("price".into(), Value::Int(50)),
             ])),
-            PureValue::Object(BTreeMap::from([
-                ("name".into(), PureValue::String("cherry".into())),
-                ("price".into(), PureValue::Int(200)),
+            Value::Object(BTreeMap::from([
+                ("name".into(), Value::String("cherry".into())),
+                ("price".into(), Value::Int(200)),
             ])),
         ]),
     )]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ x = $products | filter(p -> p.price >= 100) | map(p -> p.name) }}{{ x | join(", ") }}"#,
+        run_with_context(
+            r#"{{ x = @products | filter(p -> p.price >= 100) | map(p -> p.name) }}{{ x | join(", ") }}"#,
             ty,
             val,
         )
@@ -1216,10 +1184,10 @@ async fn filter_map_with_object_pattern() {
 
 #[tokio::test]
 async fn iteration_with_match_per_item() {
-    let (ty, val) = items_storage(vec![1, 2, 3, 4, 5]);
+    let (ty, val) = items_context(vec![1, 2, 3, 4, 5]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ x in $items }}{{ 1..=3 = x }}s{{_}}b{{/}}{{/}}"#,
+        run_with_context(
+            r#"{{ x in @items }}{{ 1..=3 = x }}s{{_}}b{{/}}{{/}}"#,
             ty,
             val
         )
@@ -1229,31 +1197,29 @@ async fn iteration_with_match_per_item() {
 }
 
 #[tokio::test]
-async fn multi_storage_interaction() {
+async fn multi_context_interaction() {
     let types = HashMap::from([
         ("items".into(), Ty::List(Box::new(Ty::Int))),
         ("min".into(), Ty::Int),
         ("max".into(), Ty::Int),
-        ("count".into(), Ty::Int),
     ]);
     let values = HashMap::from([
         (
             "items".into(),
-            PureValue::List(vec![
-                PureValue::Int(3),
-                PureValue::Int(7),
-                PureValue::Int(1),
-                PureValue::Int(9),
-                PureValue::Int(4),
+            Value::List(vec![
+                Value::Int(3),
+                Value::Int(7),
+                Value::Int(1),
+                Value::Int(9),
+                Value::Int(4),
             ]),
         ),
-        ("min".into(), PureValue::Int(2)),
-        ("max".into(), PureValue::Int(8)),
-        ("count".into(), PureValue::Int(0)),
+        ("min".into(), Value::Int(2)),
+        ("max".into(), Value::Int(8)),
     ]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ filtered = $items | filter(i -> i >= $min && i <= $max) }}{{ x in filtered }}{{ $count = $count + 1 }}{{/}}{{ $count | to_string }}{{_}}{{/}}"#,
+        run_with_context(
+            r#"{{ filtered = @items | filter(i -> i >= @min && i <= @max) }}{{ $count = 0 }}{{ x in filtered }}{{ $count = $count + 1 }}{{/}}{{ $count | to_string }}{{_}}{{/}}"#,
             types,
             values,
         )
@@ -1264,10 +1230,10 @@ async fn multi_storage_interaction() {
 
 #[tokio::test]
 async fn object_destructure_in_iteration_with_emit() {
-    let (ty, val) = users_list_storage();
+    let (ty, val) = users_list_context();
     assert_eq!(
-        run_with_storage(
-            r#"{{ { name, age, } in $users }}{{ name }}({{ age | to_string }}) {{/}}"#,
+        run_with_context(
+            r#"{{ { name, age, } in @users }}{{ name }}({{ age | to_string }}) {{/}}"#,
             ty,
             val
         )
@@ -1281,18 +1247,18 @@ async fn chained_pipe_with_logical_filter() {
     let types = HashMap::from([("nums".into(), Ty::List(Box::new(Ty::Int)))]);
     let values = HashMap::from([(
         "nums".into(),
-        PureValue::List(vec![
-            PureValue::Int(-5),
-            PureValue::Int(0),
-            PureValue::Int(3),
-            PureValue::Int(7),
-            PureValue::Int(12),
-            PureValue::Int(20),
+        Value::List(vec![
+            Value::Int(-5),
+            Value::Int(0),
+            Value::Int(3),
+            Value::Int(7),
+            Value::Int(12),
+            Value::Int(20),
         ]),
     )]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ x = $nums | filter(n -> n > 0 && n < 10) | map(n -> n * n) }}{{ x | map(n -> n | to_string) | join(", ") }}"#,
+        run_with_context(
+            r#"{{ x = @nums | filter(n -> n > 0 && n < 10) | map(n -> n * n) }}{{ x | map(n -> n | to_string) | join(", ") }}"#,
             types,
             values,
         )
@@ -1303,27 +1269,21 @@ async fn chained_pipe_with_logical_filter() {
 
 #[tokio::test]
 async fn nested_list_iteration_with_accumulator() {
-    let types = HashMap::from([
-        (
-            "matrix".into(),
-            Ty::List(Box::new(Ty::List(Box::new(Ty::Int)))),
-        ),
-        ("sum".into(), Ty::Int),
-    ]);
-    let values = HashMap::from([
-        (
-            "matrix".into(),
-            PureValue::List(vec![
-                PureValue::List(vec![PureValue::Int(1), PureValue::Int(2)]),
-                PureValue::List(vec![PureValue::Int(3), PureValue::Int(4)]),
-                PureValue::List(vec![PureValue::Int(5), PureValue::Int(6)]),
-            ]),
-        ),
-        ("sum".into(), PureValue::Int(0)),
-    ]);
+    let types = HashMap::from([(
+        "matrix".into(),
+        Ty::List(Box::new(Ty::List(Box::new(Ty::Int)))),
+    )]);
+    let values = HashMap::from([(
+        "matrix".into(),
+        Value::List(vec![
+            Value::List(vec![Value::Int(1), Value::Int(2)]),
+            Value::List(vec![Value::Int(3), Value::Int(4)]),
+            Value::List(vec![Value::Int(5), Value::Int(6)]),
+        ]),
+    )]);
     assert_eq!(
-        run_with_storage(
-            "{{ row in $matrix }}{{ x in row }}{{ $sum = $sum + x }}{{/}}{{/}}{{ $sum | to_string }}",
+        run_with_context(
+            "{{ $sum = 0 }}{{ row in @matrix }}{{ x in row }}{{ $sum = $sum + x }}{{/}}{{/}}{{ $sum | to_string }}",
             types,
             values
         )
@@ -1334,10 +1294,10 @@ async fn nested_list_iteration_with_accumulator() {
 
 #[tokio::test]
 async fn map_then_iterate_with_match() {
-    let (ty, val) = items_storage(vec![1, 2, 3, 4, 5]);
+    let (ty, val) = items_context(vec![1, 2, 3, 4, 5]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ doubled = $items | map(i -> i * 2) }}{{ x in doubled }}{{ true = x > 6 }}{{ x | to_string }} {{_}}{{/}}{{/}}"#,
+        run_with_context(
+            r#"{{ doubled = @items | map(i -> i * 2) }}{{ x in doubled }}{{ true = x > 6 }}{{ x | to_string }} {{_}}{{/}}{{/}}"#,
             ty,
             val,
         )
@@ -1350,9 +1310,9 @@ async fn map_then_iterate_with_match() {
 async fn extern_fn_in_pipe_chain() {
     let mut extern_fns = ExternFnRegistry::new();
     extern_fns.register(DoubleIt);
-    let (ty, val) = items_storage(vec![1, 2, 3]);
+    let (ty, val) = items_context(vec![1, 2, 3]);
     let output = run(
-        r#"{{ x = $items | map(i -> double(i)) }}{{ x | map(i -> i | to_string) | join(", ") }}"#,
+        r#"{{ x = @items | map(i -> double(i)) }}{{ x | map(i -> i | to_string) | join(", ") }}"#,
         ty,
         val,
         extern_fns,
@@ -1373,32 +1333,32 @@ async fn complex_object_filter_format() {
     )]);
     let val = HashMap::from([(
         "users".into(),
-        PureValue::List(vec![
-            PureValue::Object(BTreeMap::from([
-                ("name".into(), PureValue::String("alice".into())),
-                ("age".into(), PureValue::Int(30)),
-                ("active".into(), PureValue::Bool(true)),
+        Value::List(vec![
+            Value::Object(BTreeMap::from([
+                ("name".into(), Value::String("alice".into())),
+                ("age".into(), Value::Int(30)),
+                ("active".into(), Value::Bool(true)),
             ])),
-            PureValue::Object(BTreeMap::from([
-                ("name".into(), PureValue::String("bob".into())),
-                ("age".into(), PureValue::Int(17)),
-                ("active".into(), PureValue::Bool(true)),
+            Value::Object(BTreeMap::from([
+                ("name".into(), Value::String("bob".into())),
+                ("age".into(), Value::Int(17)),
+                ("active".into(), Value::Bool(true)),
             ])),
-            PureValue::Object(BTreeMap::from([
-                ("name".into(), PureValue::String("carol".into())),
-                ("age".into(), PureValue::Int(25)),
-                ("active".into(), PureValue::Bool(false)),
+            Value::Object(BTreeMap::from([
+                ("name".into(), Value::String("carol".into())),
+                ("age".into(), Value::Int(25)),
+                ("active".into(), Value::Bool(false)),
             ])),
-            PureValue::Object(BTreeMap::from([
-                ("name".into(), PureValue::String("dave".into())),
-                ("age".into(), PureValue::Int(40)),
-                ("active".into(), PureValue::Bool(true)),
+            Value::Object(BTreeMap::from([
+                ("name".into(), Value::String("dave".into())),
+                ("age".into(), Value::Int(40)),
+                ("active".into(), Value::Bool(true)),
             ])),
         ]),
     )]);
     assert_eq!(
-        run_with_storage(
-            r#"{{ eligible = $users | filter(u -> u.active && u.age >= 18) | map(u -> u.name) }}{{ name in eligible }}{{ name }} {{/}}"#,
+        run_with_context(
+            r#"{{ eligible = @users | filter(u -> u.active && u.age >= 18) | map(u -> u.name) }}{{ name in eligible }}{{ name }} {{/}}"#,
             ty,
             val,
         )
@@ -1421,10 +1381,10 @@ async fn list_literal_expression() {
 
 #[tokio::test]
 async fn multi_arm_range_and_literal() {
-    let (ty, val) = int_storage("score", 0);
+    let (ty, val) = int_context("score", 0);
     assert_eq!(
-        run_with_storage(
-            r#"{{ 0 = $score }}zero{{ 1..10 = }}low{{ 10..=100 = }}high{{_}}other{{/}}"#,
+        run_with_context(
+            r#"{{ 0 = @score }}zero{{ 1..10 = }}low{{ 10..=100 = }}high{{_}}other{{/}}"#,
             ty,
             val
         )
@@ -1435,10 +1395,10 @@ async fn multi_arm_range_and_literal() {
 
 #[tokio::test]
 async fn multi_arm_range_and_literal_low() {
-    let (ty, val) = int_storage("score", 5);
+    let (ty, val) = int_context("score", 5);
     assert_eq!(
-        run_with_storage(
-            r#"{{ 0 = $score }}zero{{ 1..10 = }}low{{ 10..=100 = }}high{{_}}other{{/}}"#,
+        run_with_context(
+            r#"{{ 0 = @score }}zero{{ 1..10 = }}low{{ 10..=100 = }}high{{_}}other{{/}}"#,
             ty,
             val
         )
@@ -1449,10 +1409,10 @@ async fn multi_arm_range_and_literal_low() {
 
 #[tokio::test]
 async fn multi_arm_range_and_literal_high() {
-    let (ty, val) = int_storage("score", 50);
+    let (ty, val) = int_context("score", 50);
     assert_eq!(
-        run_with_storage(
-            r#"{{ 0 = $score }}zero{{ 1..10 = }}low{{ 10..=100 = }}high{{_}}other{{/}}"#,
+        run_with_context(
+            r#"{{ 0 = @score }}zero{{ 1..10 = }}low{{ 10..=100 = }}high{{_}}other{{/}}"#,
             ty,
             val
         )

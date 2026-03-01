@@ -45,10 +45,15 @@ pub enum Token {
     #[regex(r"[\p{L}_][\p{L}\p{N}_]*", |lex| lex.slice().to_string(), priority = 2)]
     Ident(String),
 
-    // ── Storage reference: $name ──
+    // ── Variable reference: $name ──
 
     #[regex(r"\$[\p{L}_][\p{L}\p{N}_]*", |lex| lex.slice()[1..].to_string())]
-    StorageRef(String),
+    VarRef(String),
+
+    // ── Context reference: @name ──
+
+    #[regex(r"@[\p{L}_][\p{L}\p{N}_]*", |lex| lex.slice()[1..].to_string())]
+    ContextRef(String),
 
     // ── Literals ──
 
@@ -136,7 +141,8 @@ impl fmt::Display for Token {
             Token::FloatLit(n) => write!(f, "{n}"),
             Token::StringLit(s) => write!(f, "\"{s}\""),
             Token::Ident(s) => write!(f, "{s}"),
-            Token::StorageRef(s) => write!(f, "${s}"),
+            Token::VarRef(s) => write!(f, "${s}"),
+            Token::ContextRef(s) => write!(f, "@{s}"),
             Token::True => write!(f, "true"),
             Token::False => write!(f, "false"),
             Token::In => write!(f, "in"),

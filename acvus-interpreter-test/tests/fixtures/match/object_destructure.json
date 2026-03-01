@@ -1,6 +1,6 @@
 {
-  "template": "{{ { name, } = $user }}{{ name }} is here{{_}}no user{{/}}",
-  "storage": {
+  "template": "{{ { name, } = @user }}{{ name }} is here{{_}}no user{{/}}",
+  "context": {
     "user": { "name": "alice", "age": 30, "email": "alice@example.com" }
   },
   "expected": "alice is here"
