@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
 use std::{env, fs, process};
 
+use acvus_mir::extern_module::{ExternModule, ExternRegistry};
 use acvus_mir::printer::dump;
 use acvus_mir::ty::Ty;
 use serde::Deserialize;
@@ -18,6 +19,8 @@ struct Context {
 struct FnDef {
     params: Vec<TypeDef>,
     ret: TypeDef,
+    #[serde(default)]
+    effectful: bool,
 }
 
 #[derive(Deserialize)]
@@ -62,7 +65,7 @@ fn main() {
         eprintln!("Context JSON format:");
         eprintln!(r#"  {{"#);
         eprintln!(r#"    "storage": {{ "name": "string", "count": "int" }},"#);
-        eprintln!(r#"    "extern_fns": {{ "fetch": {{ "params": ["int"], "ret": "string" }} }}"#);
+        eprintln!(r#"    "extern_fns": {{ "fetch": {{ "params": ["int"], "ret": "string", "effectful": true }} }}"#);
         eprintln!(r#"  }}"#);
         process::exit(1);
     }
@@ -102,15 +105,13 @@ fn main() {
         .map(|(k, v)| (k.clone(), v.to_ty()))
         .collect();
 
-    let extern_fns: HashMap<String, (Vec<Ty>, Ty)> = ctx
-        .extern_fns
-        .iter()
-        .map(|(k, v)| {
-            let params: Vec<Ty> = v.params.iter().map(|p| p.to_ty()).collect();
-            let ret = v.ret.to_ty();
-            (k.clone(), (params, ret))
-        })
-        .collect();
+    let mut extern_module = ExternModule::new("cli");
+    for (name, def) in &ctx.extern_fns {
+        let params: Vec<Ty> = def.params.iter().map(|p| p.to_ty()).collect();
+        extern_module.add_fn(name, params, def.ret.to_ty(), def.effectful);
+    }
+    let mut registry = ExternRegistry::new();
+    registry.register(&extern_module);
 
     // Parse.
     let template = match acvus_ast::parse(&source) {
@@ -122,7 +123,7 @@ fn main() {
     };
 
     // Compile.
-    match acvus_mir::compile(&template, storage_types, extern_fns) {
+    match acvus_mir::compile(&template, storage_types, &registry) {
         Ok((module, _hints)) => {
             println!("{}", dump(&module));
         }

@@ -4,6 +4,7 @@ use axum::{routing::{get, post}, Json, Router};
 use axum::response::Html;
 use serde::{Deserialize, Serialize};
 
+use acvus_mir::extern_module::ExternRegistry;
 use acvus_mir::ty::Ty;
 
 // ── Request / Response ────────────────────────────────────────────
@@ -79,7 +80,7 @@ fn compile_inner(
         .collect();
 
     let (module, _hints) =
-        acvus_mir::compile(&template, storage_types?, HashMap::new()).map_err(|errors| {
+        acvus_mir::compile(&template, storage_types?, &ExternRegistry::new()).map_err(|errors| {
             errors
                 .iter()
                 .map(|e| format!("[{}..{}] {}", e.span.start, e.span.end, e))

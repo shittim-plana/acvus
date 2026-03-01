@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
+use acvus_mir::extern_module::ExternRegistry;
 use acvus_mir::printer::dump;
 use acvus_mir::ty::Ty;
 
@@ -7,11 +8,11 @@ use acvus_mir::ty::Ty;
 pub fn compile_to_ir(
     source: &str,
     storage: HashMap<String, Ty>,
-    extern_fns: HashMap<String, (Vec<Ty>, Ty)>,
+    registry: &ExternRegistry,
 ) -> Result<String, String> {
     let template = acvus_ast::parse(source).map_err(|e| format!("parse error: {e}"))?;
     let (module, _hints) =
-        acvus_mir::compile(&template, storage, extern_fns).map_err(|errors| {
+        acvus_mir::compile(&template, storage, registry).map_err(|errors| {
             errors
                 .iter()
                 .map(|e| format!("[{}..{}] {}", e.span.start, e.span.end, e))
@@ -23,7 +24,7 @@ pub fn compile_to_ir(
 
 /// Shorthand: compile with empty context.
 pub fn compile_simple(source: &str) -> Result<String, String> {
-    compile_to_ir(source, HashMap::new(), HashMap::new())
+    compile_to_ir(source, HashMap::new(), &ExternRegistry::new())
 }
 
 /// Common storage types for tests.

@@ -1,5 +1,8 @@
-mod storage;
 mod error;
+mod storage;
+mod value;
+
+pub use value::{PureValue, StorageKey};
 
 pub trait Executable {
     

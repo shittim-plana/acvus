@@ -1466,21 +1466,22 @@ impl Lowerer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extern_module::ExternRegistry;
     use crate::typeck::TypeChecker;
     use std::collections::HashMap;
 
     fn lower(source: &str) -> MirModule {
-        lower_with(source, HashMap::new(), HashMap::new())
+        lower_with(source, HashMap::new(), &ExternRegistry::new())
     }
 
     fn lower_with(
         source: &str,
         storage: HashMap<String, Ty>,
-        externs: HashMap<String, (Vec<Ty>, Ty)>,
+        registry: &ExternRegistry,
     ) -> MirModule {
         let template = acvus_ast::parse(source).expect("parse failed");
         let storage_names: HashSet<String> = storage.keys().cloned().collect();
-        let checker = TypeChecker::new(storage, externs);
+        let checker = TypeChecker::new(storage, registry);
         let type_map = checker.check_template(&template).expect("type check failed");
         let lowerer = Lowerer::new(type_map, storage_names);
         let (module, _hints) = lowerer.lower_template(&template);
@@ -1512,7 +1513,7 @@ mod tests {
     #[test]
     fn lower_storage_write() {
         let storage = HashMap::from([("count".into(), Ty::Int)]);
-        let module = lower_with("{{ $count = 42 }}", storage, HashMap::new());
+        let module = lower_with("{{ $count = 42 }}", storage, &ExternRegistry::new());
         let has_store = module.main.insts.iter().any(|i| {
             matches!(&i.kind, InstKind::StorageStore { name, .. } if name == "count")
         });
@@ -1526,7 +1527,7 @@ mod tests {
         let module = lower_with(
             r#"{{ true = $name == "test" }}matched{{/}}"#,
             storage,
-            HashMap::new(),
+            &ExternRegistry::new(),
         );
         // Match block should NOT have IterInit/IterNext — it's single-value matching.
         let has_iter_init = module
@@ -1546,12 +1547,15 @@ mod tests {
 
     #[test]
     fn lower_extern_call() {
-        let externs =
-            HashMap::from([("fetch_user".into(), (vec![Ty::Int], Ty::String))]);
+        use crate::extern_module::ExternModule;
+        let mut ext = ExternModule::new("test");
+        ext.add_fn("fetch_user", vec![Ty::Int], Ty::String, false);
+        let mut registry = ExternRegistry::new();
+        registry.register(&ext);
         let module = lower_with(
             r#"{{ x = fetch_user(1) }}{{ x }}{{_}}{{/}}"#,
             HashMap::new(),
-            externs,
+            &registry,
         );
         let has_async_call = module
             .main
@@ -1567,7 +1571,7 @@ mod tests {
         let module = lower_with(
             r#"{{ $n | to_string }}"#,
             storage,
-            HashMap::new(),
+            &ExternRegistry::new(),
         );
         let has_call = module
             .main
@@ -1616,7 +1620,7 @@ mod tests {
     fn lower_match_block_indent_decrease() {
         let storage = HashMap::from([("name".into(), Ty::String)]);
         let source = "{{ true = $name == \"test\" }}\n    matched\n    here{{/-2}}";
-        let module = lower_with(source, storage, HashMap::new());
+        let module = lower_with(source, storage, &ExternRegistry::new());
         // Find EmitText instructions and verify the text was adjusted.
         let texts: Vec<&str> = module
             .main
@@ -1634,7 +1638,7 @@ mod tests {
     fn lower_match_block_indent_increase() {
         let storage = HashMap::from([("name".into(), Ty::String)]);
         let source = "{{ true = $name == \"test\" }}\nmatched{{/+4}}";
-        let module = lower_with(source, storage, HashMap::new());
+        let module = lower_with(source, storage, &ExternRegistry::new());
         let texts: Vec<&str> = module
             .main
             .insts

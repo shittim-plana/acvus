@@ -1,0 +1,143 @@
+use std::collections::HashMap;
+
+use crate::ty::Ty;
+
+/// Definition of a single external function.
+#[derive(Debug, Clone)]
+pub struct ExternFnDef {
+    pub params: Vec<Ty>,
+    pub ret: Ty,
+    pub effectful: bool,
+}
+
+/// A named collection of external function definitions.
+#[derive(Debug, Clone)]
+pub struct ExternModule {
+    pub name: String,
+    fns: HashMap<String, ExternFnDef>,
+}
+
+impl ExternModule {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            fns: HashMap::new(),
+        }
+    }
+
+    pub fn add_fn(
+        &mut self,
+        name: impl Into<String>,
+        params: Vec<Ty>,
+        ret: Ty,
+        effectful: bool,
+    ) -> &mut Self {
+        let name = name.into();
+        assert!(
+            !self.fns.contains_key(&name),
+            "duplicate function in ExternModule '{}': {name}",
+            self.name,
+        );
+        self.fns.insert(name, ExternFnDef {
+            params,
+            ret,
+            effectful,
+        });
+        self
+    }
+
+    pub fn fns(&self) -> &HashMap<String, ExternFnDef> {
+        &self.fns
+    }
+}
+
+/// Registry that merges multiple ExternModules.
+/// Panics on duplicate function names across modules.
+#[derive(Debug, Clone)]
+pub struct ExternRegistry {
+    fns: HashMap<String, ExternFnDef>,
+}
+
+impl ExternRegistry {
+    pub fn new() -> Self {
+        Self {
+            fns: HashMap::new(),
+        }
+    }
+
+    pub fn register(&mut self, module: &ExternModule) -> &mut Self {
+        for (name, def) in &module.fns {
+            assert!(
+                !self.fns.contains_key(name),
+                "duplicate extern function '{name}' (from module '{}')",
+                module.name,
+            );
+            self.fns.insert(name.clone(), def.clone());
+        }
+        self
+    }
+
+    pub fn get(&self, name: &str) -> Option<&ExternFnDef> {
+        self.fns.get(name)
+    }
+
+    pub fn fns(&self) -> &HashMap<String, ExternFnDef> {
+        &self.fns
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn register_and_lookup() {
+        let mut module = ExternModule::new("math");
+        module.add_fn("abs", vec![Ty::Int], Ty::Int, false);
+
+        let mut registry = ExternRegistry::new();
+        registry.register(&module);
+
+        let def = registry.get("abs").unwrap();
+        assert_eq!(def.params, vec![Ty::Int]);
+        assert_eq!(def.ret, Ty::Int);
+        assert!(!def.effectful);
+    }
+
+    #[test]
+    fn multiple_modules() {
+        let mut math = ExternModule::new("math");
+        math.add_fn("abs", vec![Ty::Int], Ty::Int, false);
+
+        let mut io = ExternModule::new("io");
+        io.add_fn("fetch", vec![Ty::String], Ty::String, true);
+
+        let mut registry = ExternRegistry::new();
+        registry.register(&math).register(&io);
+
+        assert!(registry.get("abs").is_some());
+        assert!(registry.get("fetch").is_some());
+        assert!(registry.get("fetch").unwrap().effectful);
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate extern function")]
+    fn duplicate_across_modules_panics() {
+        let mut a = ExternModule::new("a");
+        a.add_fn("foo", vec![], Ty::Unit, false);
+
+        let mut b = ExternModule::new("b");
+        b.add_fn("foo", vec![], Ty::Int, false);
+
+        let mut registry = ExternRegistry::new();
+        registry.register(&a).register(&b);
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate function in ExternModule")]
+    fn duplicate_within_module_panics() {
+        let mut module = ExternModule::new("test");
+        module.add_fn("foo", vec![], Ty::Unit, false);
+        module.add_fn("foo", vec![], Ty::Int, false);
+    }
+}

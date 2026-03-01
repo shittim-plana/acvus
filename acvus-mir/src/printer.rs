@@ -376,29 +376,30 @@ pub fn dump(module: &MirModule) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extern_module::{ExternModule, ExternRegistry};
     use crate::ty::Ty;
     use std::collections::{BTreeMap, HashMap};
 
     fn compile_and_dump(
         source: &str,
         storage: HashMap<String, Ty>,
-        externs: HashMap<String, (Vec<Ty>, Ty)>,
+        registry: &crate::extern_module::ExternRegistry,
     ) -> String {
         let template = acvus_ast::parse(source).expect("parse failed");
-        let (module, _) = crate::compile(&template, storage, externs).expect("compile failed");
+        let (module, _) = crate::compile(&template, storage, registry).expect("compile failed");
         dump(&module)
     }
 
     #[test]
     fn print_text_only() {
-        let out = compile_and_dump("hello world", HashMap::new(), HashMap::new());
+        let out = compile_and_dump("hello world", HashMap::new(), &ExternRegistry::new());
         assert!(out.contains("T0 = \"hello world\""));
         assert!(out.contains("emit_text T0"));
     }
 
     #[test]
     fn print_string_emit() {
-        let out = compile_and_dump(r#"{{ "hello" }}"#, HashMap::new(), HashMap::new());
+        let out = compile_and_dump(r#"{{ "hello" }}"#, HashMap::new(), &ExternRegistry::new());
         assert!(out.contains("r0 = const \"hello\""));
         assert!(out.contains("emit r0"));
     }
@@ -409,7 +410,7 @@ mod tests {
         let out = compile_and_dump(
             "{{ x = $a + $b }}{{ x | to_string }}{{_}}{{/}}",
             storage,
-            HashMap::new(),
+            &ExternRegistry::new(),
         );
         assert!(out.contains("+"));
         assert!(out.contains("call to_string"));
@@ -422,7 +423,7 @@ mod tests {
         let out = compile_and_dump(
             r#"{{ true = $name == "test" }}matched{{/}}"#,
             storage,
-            HashMap::new(),
+            &ExternRegistry::new(),
         );
         assert!(!out.contains("iter_init"));
         assert!(!out.contains("iter_next"));
@@ -436,7 +437,7 @@ mod tests {
         let out = compile_and_dump(
             "{{ x = $items | filter(x -> x != 0) }}{{ x | to_string }}{{_}}{{/}}",
             storage,
-            HashMap::new(),
+            &ExternRegistry::new(),
         );
         assert!(out.contains("closure L"));
         assert!(out.contains("=== closure"));
@@ -446,11 +447,14 @@ mod tests {
 
     #[test]
     fn print_async_call() {
-        let externs = HashMap::from([("fetch".into(), (vec![Ty::Int], Ty::String))]);
+        let mut ext = ExternModule::new("test");
+        ext.add_fn("fetch", vec![Ty::Int], Ty::String, false);
+        let mut registry = ExternRegistry::new();
+        registry.register(&ext);
         let out = compile_and_dump(
             "{{ x = fetch(1) }}{{ x }}{{_}}{{/}}",
             HashMap::new(),
-            externs,
+            &registry,
         );
         assert!(out.contains("async_call fetch"));
         assert!(out.contains("await"));
@@ -465,14 +469,14 @@ mod tests {
                 ("age".into(), Ty::Int),
             ])),
         )]);
-        let out = compile_and_dump("{{ $user.name }}", storage, HashMap::new());
+        let out = compile_and_dump("{{ $user.name }}", storage, &ExternRegistry::new());
         assert!(out.contains(".name"));
     }
 
     #[test]
     fn print_storage_write() {
         let storage = HashMap::from([("count".into(), Ty::Int)]);
-        let out = compile_and_dump("{{ $count = 42 }}", storage, HashMap::new());
+        let out = compile_and_dump("{{ $count = 42 }}", storage, &ExternRegistry::new());
         assert!(out.contains("storage_store $count"));
     }
 
@@ -487,7 +491,7 @@ mod tests {
         let out = compile_and_dump(
             r#"{{ { name, } in $users }}{{ name }}{{/}}"#,
             storage,
-            HashMap::new(),
+            &ExternRegistry::new(),
         );
         // Just verify it doesn't panic and produces reasonable output.
         assert!(out.contains("=== main ==="));

@@ -7,6 +7,7 @@ use acvus_ast::{
 
 use crate::builtins::builtins;
 use crate::error::{MirError, MirErrorKind};
+use crate::extern_module::ExternRegistry;
 use crate::ty::{Ty, TySubst};
 
 /// Maps each AST Span to its inferred type.
@@ -17,8 +18,8 @@ pub struct TypeChecker {
     scopes: Vec<HashMap<String, Ty>>,
     /// Storage variable types (provided externally).
     storage_types: HashMap<String, Ty>,
-    /// External function signatures: (param_types, return_type).
-    extern_fns: HashMap<String, (Vec<Ty>, Ty)>,
+    /// External function definitions.
+    extern_registry: ExternRegistry,
     /// Unification state.
     subst: TySubst,
     /// Accumulated type map.
@@ -30,12 +31,12 @@ pub struct TypeChecker {
 impl TypeChecker {
     pub fn new(
         storage_types: HashMap<String, Ty>,
-        extern_fns: HashMap<String, (Vec<Ty>, Ty)>,
+        registry: &ExternRegistry,
     ) -> Self {
         Self {
             scopes: vec![HashMap::new()],
             storage_types,
-            extern_fns,
+            extern_registry: registry.clone(),
             subst: TySubst::new(),
             type_map: TypeMap::new(),
             errors: Vec::new(),
@@ -705,7 +706,7 @@ impl TypeChecker {
         }
 
         // Check extern functions.
-        let Some((param_tys, ret_ty)) = self.extern_fns.get(name).cloned() else {
+        let Some(def) = self.extern_registry.get(name).cloned() else {
             // Not an extern fn — check if it's a local variable with function type.
             if let Some(var_ty) = self.lookup_var(name) {
                 let resolved = self.subst.resolve(&var_ty);
@@ -721,11 +722,11 @@ impl TypeChecker {
 
         let arg_types: Vec<Ty> = args.iter().map(|a| self.check_expr(a)).collect();
 
-        if arg_types.len() != param_tys.len() {
+        if arg_types.len() != def.params.len() {
             self.error(
                 MirErrorKind::ArityMismatch {
                     func: name.to_string(),
-                    expected: param_tys.len(),
+                    expected: def.params.len(),
                     got: arg_types.len(),
                 },
                 call_span,
@@ -733,7 +734,7 @@ impl TypeChecker {
             return Ty::Error;
         }
 
-        for (at, pt) in arg_types.iter().zip(param_tys.iter()) {
+        for (at, pt) in arg_types.iter().zip(def.params.iter()) {
             if self.subst.unify(at, pt).is_err() {
                 let ra = self.subst.resolve(at);
                 let rp = self.subst.resolve(pt);
@@ -747,7 +748,7 @@ impl TypeChecker {
             }
         }
 
-        self.subst.resolve(&ret_ty)
+        self.subst.resolve(&def.ret)
     }
 
     fn check_callable(&mut self, func_ty: &Ty, args: &[Expr], call_span: Span) -> Ty {
@@ -1010,10 +1011,11 @@ fn op_str(op: BinOp) -> &'static str {
 mod tests {
     use super::*;
     use acvus_ast::parse;
+    use crate::extern_module::{ExternModule, ExternRegistry};
 
     fn check(source: &str) -> Result<TypeMap, Vec<MirError>> {
         let template = parse(source).expect("parse failed");
-        let checker = TypeChecker::new(HashMap::new(), HashMap::new());
+        let checker = TypeChecker::new(HashMap::new(), &ExternRegistry::new());
         checker.check_template(&template)
     }
 
@@ -1022,16 +1024,16 @@ mod tests {
         storage: HashMap<String, Ty>,
     ) -> Result<TypeMap, Vec<MirError>> {
         let template = parse(source).expect("parse failed");
-        let checker = TypeChecker::new(storage, HashMap::new());
+        let checker = TypeChecker::new(storage, &ExternRegistry::new());
         checker.check_template(&template)
     }
 
     fn check_with_extern(
         source: &str,
-        extern_fns: HashMap<String, (Vec<Ty>, Ty)>,
+        registry: &ExternRegistry,
     ) -> Result<TypeMap, Vec<MirError>> {
         let template = parse(source).expect("parse failed");
-        let checker = TypeChecker::new(HashMap::new(), extern_fns);
+        let checker = TypeChecker::new(HashMap::new(), registry);
         checker.check_template(&template)
     }
 
@@ -1103,10 +1105,12 @@ mod tests {
 
     #[test]
     fn extern_fn_call() {
-        let externs =
-            HashMap::from([("fetch_user".into(), (vec![Ty::Int], Ty::String))]);
+        let mut module = ExternModule::new("test");
+        module.add_fn("fetch_user", vec![Ty::Int], Ty::String, false);
+        let mut registry = ExternRegistry::new();
+        registry.register(&module);
         let src = "{{ x = fetch_user(1) }}{{ x }}{{_}}{{/}}";
-        assert!(check_with_extern(src, externs).is_ok());
+        assert!(check_with_extern(src, &registry).is_ok());
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
+use acvus_mir::extern_module::ExternRegistry;
 use acvus_mir::ty::Ty;
 use acvus_mir_test::*;
 
@@ -26,7 +27,7 @@ fn string_concat() {
 #[test]
 fn mixed_text_and_expr() {
     let storage = HashMap::from([("name".into(), Ty::String)]);
-    let ir = compile_to_ir("Hello, {{ $name }}!", storage, HashMap::new()).unwrap();
+    let ir = compile_to_ir("Hello, {{ $name }}!", storage, &ExternRegistry::new()).unwrap();
     insta::assert_snapshot!(ir);
 }
 
@@ -35,20 +36,20 @@ fn mixed_text_and_expr() {
 #[test]
 fn storage_read() {
     let storage = HashMap::from([("count".into(), Ty::Int)]);
-    let ir = compile_to_ir("{{ $count | to_string }}", storage, HashMap::new()).unwrap();
+    let ir = compile_to_ir("{{ $count | to_string }}", storage, &ExternRegistry::new()).unwrap();
     insta::assert_snapshot!(ir);
 }
 
 #[test]
 fn storage_write() {
     let storage = HashMap::from([("count".into(), Ty::Int)]);
-    let ir = compile_to_ir("{{ $count = 42 }}", storage, HashMap::new()).unwrap();
+    let ir = compile_to_ir("{{ $count = 42 }}", storage, &ExternRegistry::new()).unwrap();
     insta::assert_snapshot!(ir);
 }
 
 #[test]
 fn storage_field_access() {
-    let ir = compile_to_ir("{{ $user.name }}", user_storage(), HashMap::new()).unwrap();
+    let ir = compile_to_ir("{{ $user.name }}", user_storage(), &ExternRegistry::new()).unwrap();
     insta::assert_snapshot!(ir);
 }
 
@@ -58,7 +59,7 @@ fn storage_field_access() {
 fn arithmetic_to_string() {
     let storage = HashMap::from([("a".into(), Ty::Int), ("b".into(), Ty::Int)]);
     let ir =
-        compile_to_ir("{{ $a + $b | to_string }}", storage, HashMap::new()).unwrap();
+        compile_to_ir("{{ $a + $b | to_string }}", storage, &ExternRegistry::new()).unwrap();
     insta::assert_snapshot!(ir);
 }
 
@@ -71,7 +72,7 @@ fn simple_match_binding() {
     let ir = compile_to_ir(
         r#"{{ x = $name }}{{ x }}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -83,7 +84,7 @@ fn match_literal_filter() {
     let ir = compile_to_ir(
         r#"{{ "admin" = $role }}admin page{{_}}guest page{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -95,7 +96,7 @@ fn multi_arm_match() {
     let ir = compile_to_ir(
         r#"{{ "admin" = $role }}admin{{ "user" = }}user{{_}}guest{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -107,7 +108,7 @@ fn iteration_over_list() {
     let ir = compile_to_ir(
         r#"{{ { name, } in $users }}{{ name }}{{/}}"#,
         users_list_storage(),
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -132,7 +133,7 @@ fn nested_match() {
     let ir = compile_to_ir(
         r#"{{ { name, posts, } in $users }}{{ { title, } in posts }}{{ title }}{{/}}{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -145,7 +146,7 @@ fn list_destructure_head() {
     let ir = compile_to_ir(
         r#"{{ [a, b, ..] = $items }}{{ a | to_string }}{{_}}empty{{/}}"#,
         items_storage(),
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -158,7 +159,7 @@ fn object_pattern() {
     let ir = compile_to_ir(
         r#"{{ { name, age, } = $user }}{{ name }}{{/}}"#,
         user_storage(),
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -192,7 +193,7 @@ fn range_pattern() {
     let ir = compile_to_ir(
         r#"{{ 0..10 = $age }}child{{ 10..=19 = }}teen{{_}}adult{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -206,7 +207,7 @@ fn pipe_filter_map() {
     let ir = compile_to_ir(
         r#"{{ x = $items | filter(x -> x != 0) | map(x -> x | to_string) }}{{ x | to_string }}"#,
         items_storage(),
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -215,7 +216,7 @@ fn pipe_filter_map() {
 #[test]
 fn pipe_to_string() {
     let storage = HashMap::from([("n".into(), Ty::Int)]);
-    let ir = compile_to_ir("{{ $n | to_string }}", storage, HashMap::new()).unwrap();
+    let ir = compile_to_ir("{{ $n | to_string }}", storage, &ExternRegistry::new()).unwrap();
     insta::assert_snapshot!(ir);
 }
 
@@ -227,7 +228,7 @@ fn lambda_in_filter() {
     let ir = compile_to_ir(
         r#"{{ x = $items | filter(x -> x != 0) }}{{ x | to_string }}"#,
         items_storage(),
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -237,12 +238,16 @@ fn lambda_in_filter() {
 
 #[test]
 fn extern_async_call() {
-    let externs = HashMap::from([("fetch_user".into(), (vec![Ty::Int], Ty::String))]);
+    use acvus_mir::extern_module::ExternModule;
+    let mut ext = ExternModule::new("test");
+    ext.add_fn("fetch_user", vec![Ty::Int], Ty::String, false);
+    let mut registry = ExternRegistry::new();
+    registry.register(&ext);
     // Variable binding is body-less.
     let ir = compile_to_ir(
         r#"{{ user = fetch_user(1) }}{{ user }}"#,
         HashMap::new(),
-        externs,
+        &registry,
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -256,7 +261,7 @@ fn tuple_expression() {
     let ir = compile_to_ir(
         r#"{{ t = ($a, $b) }}{{ t | to_string }}{{_}}{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -270,7 +275,7 @@ fn tuple_pattern_binding() {
     let ir = compile_to_ir(
         r#"{{ (name, age) = $pair }}{{ name }}{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -284,7 +289,7 @@ fn tuple_pattern_wildcard() {
     let ir = compile_to_ir(
         r#"{{ (name, _) = $pair }}{{ name }}{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -299,7 +304,7 @@ fn tuple_pattern_literal_match() {
     let ir = compile_to_ir(
         r#"{{ (0, 1) = ($a, $b) }}zero-one{{ (1, _) = }}one-any{{_}}other{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -317,7 +322,7 @@ fn tuple_nested_destructure() {
     let ir = compile_to_ir(
         r#"{{ (label, { x, }) = $data }}{{ label }}{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -331,7 +336,7 @@ fn error_tuple_arity_mismatch() {
     let result = compile_to_ir(
         r#"{{ (a, b, c) = $pair }}{{ a | to_string }}{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     );
     assert!(result.is_err());
     insta::assert_snapshot!(result.unwrap_err());
@@ -348,7 +353,7 @@ fn error_emit_non_string() {
 
 #[test]
 fn error_undefined_storage() {
-    let result = compile_to_ir("{{ $unknown | to_string }}", HashMap::new(), HashMap::new());
+    let result = compile_to_ir("{{ $unknown | to_string }}", HashMap::new(), &ExternRegistry::new());
     assert!(result.is_err());
     insta::assert_snapshot!(result.unwrap_err());
 }
@@ -358,7 +363,7 @@ fn error_undefined_variable() {
     let result = compile_to_ir(
         "{{ x = unknown }}{{_}}{{/}}",
         HashMap::new(),
-        HashMap::new(),
+        &ExternRegistry::new(),
     );
     assert!(result.is_err());
     insta::assert_snapshot!(result.unwrap_err());
@@ -383,7 +388,7 @@ fn error_range_float_bounds() {
 #[test]
 fn iter_list_binding() {
     let storage = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
-    let ir = compile_to_ir("{{ x in $items }}{{ x | to_string }}{{/}}", storage, HashMap::new()).unwrap();
+    let ir = compile_to_ir("{{ x in $items }}{{ x | to_string }}{{/}}", storage, &ExternRegistry::new()).unwrap();
     insta::assert_snapshot!(ir);
 }
 
@@ -392,7 +397,7 @@ fn iter_object_destructure() {
     let ir = compile_to_ir(
         "{{ { name, } in $users }}{{ name }}{{/}}",
         users_list_storage(),
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -404,7 +409,7 @@ fn iter_tuple_destructure() {
         "pairs".into(),
         Ty::List(Box::new(Ty::Tuple(vec![Ty::String, Ty::Int]))),
     )]);
-    let ir = compile_to_ir("{{ (a, _) in $pairs }}{{ a }}{{/}}", storage, HashMap::new()).unwrap();
+    let ir = compile_to_ir("{{ (a, _) in $pairs }}{{ a }}{{/}}", storage, &ExternRegistry::new()).unwrap();
     insta::assert_snapshot!(ir);
 }
 
@@ -414,7 +419,7 @@ fn iter_with_catch_all() {
     let ir = compile_to_ir(
         "{{ x in $items }}{{ x | to_string }}{{_}}empty{{/}}",
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -423,14 +428,14 @@ fn iter_with_catch_all() {
 #[test]
 fn error_iter_refutable_pattern() {
     let storage = HashMap::from([("roles".into(), Ty::List(Box::new(Ty::String)))]);
-    let result = compile_to_ir(r#"{{ "admin" in $roles }}...{{/}}"#, storage, HashMap::new());
+    let result = compile_to_ir(r#"{{ "admin" in $roles }}...{{/}}"#, storage, &ExternRegistry::new());
     assert!(result.is_err());
 }
 
 #[test]
 fn error_iter_not_iterable() {
     let storage = HashMap::from([("name".into(), Ty::String)]);
-    let result = compile_to_ir("{{ x in $name }}{{ x }}{{/}}", storage, HashMap::new());
+    let result = compile_to_ir("{{ x in $name }}{{ x }}{{/}}", storage, &ExternRegistry::new());
     assert!(result.is_err());
 }
 
@@ -443,7 +448,7 @@ fn storage_new_ref_binding() {
     let ir = compile_to_ir(
         r#"{{ $result = $name }}{{ $result }}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -456,7 +461,7 @@ fn storage_new_ref_in_match_arm() {
     let ir = compile_to_ir(
         r#"{{ "admin" = $role }}{{ $selected = "yes" }}{{_}}{{ $selected = "no" }}{{/}}{{ $selected }}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -474,7 +479,7 @@ fn list_of_tuples_destructure() {
     let ir = compile_to_ir(
         r#"{{ (name, age) in $pairs }}{{ name }}{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -492,7 +497,7 @@ fn list_head_with_object_elements() {
     let ir = compile_to_ir(
         r#"{{ [first, ..] = $users }}{{ first.name }}{{_}}empty{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -511,7 +516,7 @@ fn tuple_with_list_element() {
     let ir = compile_to_ir(
         r#"{{ (label, items) = $data }}{{ label }}{{ x in items }}{{ x | to_string }}{{/}}{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -525,7 +530,7 @@ fn object_literal_field_access() {
     let ir = compile_to_ir(
         r#"{{ o = { $name, } }}{{ o.name }}{{_}}{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -539,7 +544,7 @@ fn comparison_operators() {
     let ir = compile_to_ir(
         r#"{{ x = $a > $b }}{{ x | to_string }}{{_}}{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -551,7 +556,7 @@ fn unary_negation() {
     let ir = compile_to_ir(
         r#"{{ x = -$n }}{{ x | to_string }}{{_}}{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -563,7 +568,7 @@ fn boolean_not() {
     let ir = compile_to_ir(
         r#"{{ x = !$flag }}{{ x | to_string }}{{_}}{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -577,7 +582,7 @@ fn to_float_conversion() {
     let ir = compile_to_ir(
         r#"{{ x = $n | to_float }}{{ x | to_string }}{{_}}{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -589,7 +594,7 @@ fn to_int_conversion() {
     let ir = compile_to_ir(
         r#"{{ x = $f | to_int }}{{ x | to_string }}{{_}}{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -602,7 +607,7 @@ fn pmap_builtin() {
     let ir = compile_to_ir(
         r#"{{ x = $items | pmap(i -> i | to_string) }}{{ x | to_string }}"#,
         items_storage(),
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -615,7 +620,7 @@ fn list_destructure_tail() {
     let ir = compile_to_ir(
         r#"{{ [.., a, b] = $items }}{{ a | to_string }}{{_}}empty{{/}}"#,
         items_storage(),
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -629,7 +634,7 @@ fn storage_write_then_read() {
     let ir = compile_to_ir(
         r#"{{ $x = 42 }}{{ $x | to_string }}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -646,7 +651,7 @@ fn nested_iteration_with_binding() {
     let ir = compile_to_ir(
         r#"{{ row in $matrix }}{{ x in row }}{{ x | to_string }}{{/}}{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -680,7 +685,7 @@ fn deeply_nested_object_access() {
     let ir = compile_to_ir(
         r#"{{ $data.user.address.city }}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -697,7 +702,7 @@ fn closure_capture_storage() {
     let ir = compile_to_ir(
         r#"{{ x = $items | filter(i -> i > $threshold) }}{{ x | to_string }}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -711,7 +716,7 @@ fn multi_arm_range_and_literal() {
     let ir = compile_to_ir(
         r#"{{ 0 = $score }}zero{{ 1..10 = }}low{{ 10..=100 = }}high{{_}}other{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -736,7 +741,7 @@ fn lambda_map_arithmetic() {
     let ir = compile_to_ir(
         r#"{{ x = $items | map(i -> i + 1) }}{{ x | to_string }}"#,
         items_storage(),
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -748,7 +753,7 @@ fn lambda_filter_comparison() {
     let ir = compile_to_ir(
         r#"{{ x = $items | filter(i -> i > 0) }}{{ x | to_string }}"#,
         items_storage(),
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -762,7 +767,7 @@ fn closure_capture_local() {
     let ir = compile_to_ir(
         r#"{{ threshold = 5 }}{{ x = $items | filter(i -> i > threshold) }}{{ x | to_string }}{{_}}{{/}}"#,
         items_storage(),
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -776,7 +781,7 @@ fn list_exact_match() {
     let ir = compile_to_ir(
         r#"{{ [a, b] = $items }}{{ a | to_string }}{{_}}wrong length{{/}}"#,
         items_storage(),
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -790,7 +795,7 @@ fn list_destructure_head_and_tail() {
     let ir = compile_to_ir(
         r#"{{ [first, .., last] = $items }}{{ first | to_string }}{{_}}empty{{/}}"#,
         items_storage(),
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -810,7 +815,7 @@ fn nested_tuple_pattern() {
     let ir = compile_to_ir(
         r#"{{ ((a, b), label) = $data }}{{ label }}{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -824,7 +829,7 @@ fn storage_write_computed() {
     let ir = compile_to_ir(
         r#"{{ $a = $a + $b }}{{ $a | to_string }}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -838,7 +843,7 @@ fn match_binding_with_body() {
     let ir = compile_to_ir(
         r#"{{ { name, } = $user }}{{ name }} is here{{_}}no user{{/}}"#,
         user_storage(),
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -852,7 +857,7 @@ fn variable_shadowing() {
     let ir = compile_to_ir(
         r#"{{ x = "outer" }}{{ x = $name }}{{ x }}{{_}}{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -869,7 +874,7 @@ fn nested_match_blocks() {
     let ir = compile_to_ir(
         r#"{{ "admin" = $role }}{{ 1..10 = $level }}low{{_}}high{{/}}{{_}}guest{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -883,7 +888,7 @@ fn catch_all_with_binding() {
     let ir = compile_to_ir(
         r#"{{ "admin" = $role }}admin{{_}}{{ fallback = "guest" }}{{ fallback }}{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -896,7 +901,7 @@ fn triple_pipe_chain() {
     let ir = compile_to_ir(
         r#"{{ x = $items | filter(i -> i != 0) | map(i -> i + 1) | map(i -> i | to_string) }}{{ x | to_string }}"#,
         items_storage(),
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -913,7 +918,7 @@ fn storage_write_in_iteration() {
     let ir = compile_to_ir(
         r#"{{ x in $items }}{{ $last = x }}{{/}}{{ $last | to_string }}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -933,7 +938,7 @@ fn field_access_on_destructured() {
     let ir = compile_to_ir(
         r#"{{ (obj, _) = $pair }}{{ obj.name }}{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -947,7 +952,7 @@ fn equality_as_match_source() {
     let ir = compile_to_ir(
         r#"{{ true = $a == $b }}equal{{_}}not equal{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -961,7 +966,7 @@ fn lambda_negate_param() {
     let ir = compile_to_ir(
         r#"{{ x = $items | map(i -> -i) }}{{ x | to_string }}"#,
         items_storage(),
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -976,7 +981,7 @@ fn lambda_not_param() {
     let ir = compile_to_ir(
         r#"{{ x = $flags | map(i -> !i) }}{{ x | to_string }}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -990,7 +995,7 @@ fn object_destructure_match() {
     let ir = compile_to_ir(
         r#"{{ { name, age, } = $user }}{{ name }}{{ age | to_string }}{{_}}none{{/}}"#,
         user_storage(),
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -1007,7 +1012,7 @@ fn multiple_closures_same_capture() {
     let ir = compile_to_ir(
         r#"{{ x = $items | map(i -> i + $offset) | filter(i -> i > 0) }}{{ x | to_string }}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -1024,7 +1029,7 @@ fn string_equality_in_filter() {
     let ir = compile_to_ir(
         r#"{{ x = $names | filter(n -> n != "admin") }}{{ x | to_string }}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -1045,7 +1050,7 @@ fn lambda_field_access() {
     let ir = compile_to_ir(
         r#"{{ x = $users | map(u -> u.name) }}{{ x | to_string }}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -1063,7 +1068,7 @@ fn storage_accumulate_in_loop() {
     let ir = compile_to_ir(
         r#"{{ x in $items }}{{ $sum = $sum + x }}{{/}}{{ $sum | to_string }}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -1076,7 +1081,7 @@ fn pipe_map_to_string_then_filter() {
     let ir = compile_to_ir(
         r#"{{ x = $items | map(i -> i | to_string) | filter(s -> s != "0") }}{{ x | to_string }}"#,
         items_storage(),
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -1092,7 +1097,7 @@ fn lambda_capture_local_storage_ref() {
     let ir = compile_to_ir(
         r#"{{ $offset = 10 }}{{ x = $items | filter(i -> i > $offset) }}{{ x | to_string }}{{_}}{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -1113,7 +1118,7 @@ fn lambda_multiple_field_access() {
     let ir = compile_to_ir(
         r#"{{ x = $users | map(u -> (u.name, u.age)) }}{{ x | to_string }}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -1134,7 +1139,7 @@ fn lambda_chained_field_access() {
     let ir = compile_to_ir(
         r#"{{ x = $users | map(u -> u.address.city) }}{{ x | to_string }}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -1152,7 +1157,7 @@ fn lambda_string_concat() {
     let ir = compile_to_ir(
         r#"{{ x = $names | map(n -> n + "!") }}{{ x | to_string }}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -1172,7 +1177,7 @@ fn pipe_filter_then_map_field() {
     let ir = compile_to_ir(
         r#"{{ x = $users | filter(u -> u.age > 18) | map(u -> u.name) }}{{ x | to_string }}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -1183,7 +1188,7 @@ fn pipe_filter_then_map_field() {
 #[test]
 fn error_field_access_on_int() {
     let storage = HashMap::from([("n".into(), Ty::Int)]);
-    let result = compile_to_ir("{{ $n.foo | to_string }}", storage, HashMap::new());
+    let result = compile_to_ir("{{ $n.foo | to_string }}", storage, &ExternRegistry::new());
     assert!(result.is_err());
     insta::assert_snapshot!(result.unwrap_err());
 }
@@ -1194,7 +1199,7 @@ fn error_field_access_on_int() {
 fn error_storage_write_type_mismatch() {
     // $count is Int in storage, but trying to write a String.
     let storage = HashMap::from([("count".into(), Ty::Int)]);
-    let result = compile_to_ir(r#"{{ $count = "hello" }}"#, storage, HashMap::new());
+    let result = compile_to_ir(r#"{{ $count = "hello" }}"#, storage, &ExternRegistry::new());
     assert!(result.is_err());
     insta::assert_snapshot!(result.unwrap_err());
 }
@@ -1207,7 +1212,7 @@ fn lambda_float_arithmetic() {
     let ir = compile_to_ir(
         r#"{{ x = $vals | map(v -> v * 2.0) }}{{ x | to_string }}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -1221,7 +1226,7 @@ fn match_bool_literal() {
     let ir = compile_to_ir(
         r#"{{ true = $flag }}on{{_}}off{{/}}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -1241,7 +1246,7 @@ fn filter_object_field_equality() {
     let ir = compile_to_ir(
         r#"{{ x = $users | filter(u -> u.active) }}{{ x | to_string }}"#,
         storage,
-        HashMap::new(),
+        &ExternRegistry::new(),
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -1251,20 +1256,23 @@ fn filter_object_field_equality() {
 
 #[test]
 fn extern_fn_object_return() {
-    let externs = HashMap::from([(
-        "get_user".into(),
-        (
-            vec![Ty::Int],
-            Ty::Object(BTreeMap::from([
-                ("name".into(), Ty::String),
-                ("age".into(), Ty::Int),
-            ])),
-        ),
-    )]);
+    use acvus_mir::extern_module::ExternModule;
+    let mut ext = ExternModule::new("test");
+    ext.add_fn(
+        "get_user",
+        vec![Ty::Int],
+        Ty::Object(BTreeMap::from([
+            ("name".into(), Ty::String),
+            ("age".into(), Ty::Int),
+        ])),
+        false,
+    );
+    let mut registry = ExternRegistry::new();
+    registry.register(&ext);
     let ir = compile_to_ir(
         r#"{{ u = get_user(1) }}{{ u.name }}"#,
         HashMap::new(),
-        externs,
+        &registry,
     )
     .unwrap();
     insta::assert_snapshot!(ir);
