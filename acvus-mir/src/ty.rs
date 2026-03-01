@@ -19,6 +19,7 @@ pub enum Ty {
         params: Vec<Ty>,
         ret: Box<Ty>,
     },
+    Bytes,
     /// Opaque type: user-defined, identified by name. No internal structure.
     Opaque(String),
     /// Unification variable. Must not appear in final resolved types.
@@ -42,6 +43,7 @@ impl fmt::Display for Ty {
             Ty::Bool => write!(f, "Bool"),
             Ty::Unit => write!(f, "Unit"),
             Ty::Range => write!(f, "Range"),
+            Ty::Bytes => write!(f, "Bytes"),
             Ty::List(inner) => write!(f, "List<{inner}>"),
             Ty::Object(fields) => {
                 write!(f, "{{")?;
@@ -190,7 +192,8 @@ impl TySubst {
             | (Ty::String, Ty::String)
             | (Ty::Bool, Ty::Bool)
             | (Ty::Unit, Ty::Unit)
-            | (Ty::Range, Ty::Range) => Ok(()),
+            | (Ty::Range, Ty::Range)
+            | (Ty::Bytes, Ty::Bytes) => Ok(()),
 
             (Ty::Opaque(a), Ty::Opaque(b)) if a == b => Ok(()),
 

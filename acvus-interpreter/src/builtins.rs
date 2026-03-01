@@ -2,7 +2,8 @@ use crate::value::Value;
 
 pub const BUILTIN_NAMES: &[&str] = &[
     "to_string", "to_int", "to_float", "char_to_int", "int_to_char", "filter", "map", "pmap",
-    "find", "reduce", "fold", "any", "all", "len", "reverse", "join", "contains",
+    "find", "reduce", "fold", "any", "all", "len", "reverse", "join", "contains", "substring",
+    "bytes_len", "bytes_get",
 ];
 
 pub fn is_builtin(name: &str) -> bool {
@@ -21,6 +22,9 @@ pub fn call_pure(name: &str, args: Vec<Value>) -> Value {
         "reverse" => call_reverse(args),
         "join" => call_join(args),
         "contains" => call_contains(args),
+        "substring" => call_substring(args),
+        "bytes_len" => call_bytes_len(args),
+        "bytes_get" => call_bytes_get(args),
         _ => panic!("not a pure builtin: {name}"),
     }
 }
@@ -111,6 +115,39 @@ fn call_contains(args: Vec<Value>) -> Value {
     }
 }
 
+fn call_substring(args: Vec<Value>) -> Value {
+    let mut it = args.into_iter();
+    let s = it.next().unwrap();
+    let start = it.next().unwrap();
+    let len = it.next().unwrap();
+    match (s, start, len) {
+        (Value::String(s), Value::Int(start), Value::Int(len)) => {
+            let start = start.max(0) as usize;
+            let len = len.max(0) as usize;
+            let result: String = s.chars().skip(start).take(len).collect();
+            Value::String(result)
+        }
+        (s, start, len) => panic!("substring: expected (String, Int, Int), got ({s:?}, {start:?}, {len:?})"),
+    }
+}
+
+fn call_bytes_len(args: Vec<Value>) -> Value {
+    match args.into_iter().next().unwrap() {
+        Value::Bytes(b) => Value::Int(b.len() as i64),
+        v => panic!("bytes_len: expected Bytes, got {v:?}"),
+    }
+}
+
+fn call_bytes_get(args: Vec<Value>) -> Value {
+    let mut it = args.into_iter();
+    let bytes = it.next().unwrap();
+    let index = it.next().unwrap();
+    match (bytes, index) {
+        (Value::Bytes(b), Value::Int(i)) => Value::Int(b[i as usize] as i64),
+        (b, i) => panic!("bytes_get: expected (Bytes, Int), got ({b:?}, {i:?})"),
+    }
+}
+
 fn values_equal(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Int(a), Value::Int(b)) => a == b,
@@ -156,6 +193,10 @@ fn value_to_string(v: Value) -> String {
         Value::Tuple(elems) => {
             let inner: Vec<String> = elems.into_iter().map(value_to_string).collect();
             format!("({})", inner.join(", "))
+        }
+        Value::Bytes(b) => {
+            let hex: String = b.iter().map(|byte| format!("{byte:02x}")).collect();
+            format!("0x{hex}")
         }
         Value::Fn(_) => panic!("cannot convert Fn to string"),
         Value::Opaque(o) => panic!("cannot convert Opaque<{}> to string", o.type_name),

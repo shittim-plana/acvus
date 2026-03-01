@@ -405,7 +405,7 @@ impl Interpreter {
     ) -> (Self, String, Value) {
         match name {
             "to_string" | "to_int" | "to_float" | "char_to_int" | "int_to_char" | "len"
-            | "reverse" | "join" | "contains" => {
+            | "reverse" | "join" | "contains" | "substring" | "bytes_len" | "bytes_get" => {
                 (this, output, builtins::call_pure(name, args))
             }
             "filter" => Self::exec_hof_filter(this, args, output).await,
@@ -630,6 +630,7 @@ fn literal_to_value(lit: &Literal) -> Value {
         Literal::Float(f) => Value::Float(*f),
         Literal::String(s) => Value::String(s.clone()),
         Literal::Bool(b) => Value::Bool(*b),
+        Literal::Bytes(b) => Value::Bytes(b.clone()),
     }
 }
 
@@ -640,6 +641,7 @@ fn values_equal(a: &Value, b: &Value) -> bool {
         (Value::String(a), Value::String(b)) => a == b,
         (Value::Bool(a), Value::Bool(b)) => a == b,
         (Value::Unit, Value::Unit) => true,
+        (Value::Bytes(a), Value::Bytes(b)) => a == b,
         _ => false,
     }
 }
@@ -653,18 +655,18 @@ fn eval_binop(op: BinOp, left: Value, right: Value) -> Value {
             matches!(left, Value::Bool(true)) || matches!(right, Value::Bool(true)),
         ),
         BinOp::Add => match (left, right) {
-            (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+            (Value::Int(a), Value::Int(b)) => Value::Int(a.wrapping_add(b)),
             (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
             (Value::String(a), Value::String(b)) => Value::String(a + &b),
             (l, r) => panic!("Add: incompatible {l:?} + {r:?}"),
         },
         BinOp::Sub => match (left, right) {
-            (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
+            (Value::Int(a), Value::Int(b)) => Value::Int(a.wrapping_sub(b)),
             (Value::Float(a), Value::Float(b)) => Value::Float(a - b),
             (l, r) => panic!("Sub: incompatible {l:?} - {r:?}"),
         },
         BinOp::Mul => match (left, right) {
-            (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
+            (Value::Int(a), Value::Int(b)) => Value::Int(a.wrapping_mul(b)),
             (Value::Float(a), Value::Float(b)) => Value::Float(a * b),
             (l, r) => panic!("Mul: incompatible {l:?} * {r:?}"),
         },

@@ -1,313 +1,1060 @@
 use acvus_ast::{BinOp, Literal, Span};
-use acvus_mir::ir::{InstKind, ValueId};
+use acvus_mir::ir::{
+    ClosureBody, Inst, InstKind, Label, MirBody, MirModule, ValOrigin, ValueId,
+};
+use acvus_mir::ir::DebugInfo;
 use acvus_mir::ty::Ty;
 use rand::rngs::StdRng;
 use rand::Rng;
 
 use super::rewriter::PassState;
 
-/// Pre-computed encrypted text fragment.
-pub struct EncryptedFragment {
-    /// XOR-encrypted char codes.
-    pub encrypted_codes: Vec<i64>,
-    /// The XOR key for this fragment's first char.
-    pub initial_key: i64,
+// ── Multi-stage decrypt ──────────────────────────────────────────
+//
+// 3-stage pipeline: key → subkey (A) → combined (B) → string (C)
+//
+// Stage A: (Int) → Int         — 4 variants of key transform
+// Stage B: (Int, Int) → Int    — 4 variants of key combine
+// Stage C: (Bytes, Int) → String — 4 variants of final decrypt
+//
+// Each stage dispatched via closures, creating deep dependency chains.
+
+/// Labels for all 3 stages of decrypt closures, 4 variants each.
+pub struct MultiStageDecryptTable {
+    pub stage_a: [Label; 4],  // (Int) -> Int
+    pub stage_b: [Label; 4],  // (Int, Int) -> Int
+    pub stage_c: [Label; 4],  // (Bytes, Int) -> String
 }
 
-/// A single text entry split into chained fragments.
+/// Register 12 multi-stage decrypt closure bodies into the module.
+pub fn register_multistage_decrypt_closures(module: &mut MirModule) -> MultiStageDecryptTable {
+    let base_label = module.closures.keys().map(|l| l.0).max().unwrap_or(0) + 1;
+    let base_label = base_label.max(module.main.label_count);
+    for closure in module.closures.values() {
+        let _ = base_label.max(closure.body.label_count);
+    }
+
+    let mut stage_a = [Label(0); 4];
+    let mut stage_b = [Label(0); 4];
+    let mut stage_c = [Label(0); 4];
+
+    for i in 0..4u32 {
+        let label = Label(base_label + i);
+        stage_a[i as usize] = label;
+        module.closures.insert(label, make_stage_a_closure_body(i));
+    }
+    for i in 0..4u32 {
+        let label = Label(base_label + 4 + i);
+        stage_b[i as usize] = label;
+        module.closures.insert(label, make_stage_b_closure_body(i));
+    }
+    for i in 0..4u32 {
+        let label = Label(base_label + 8 + i);
+        stage_c[i as usize] = label;
+        module.closures.insert(label, make_stage_c_closure_body(i));
+    }
+
+    let max_label = base_label + 12;
+    if module.main.label_count < max_label {
+        module.main.label_count = max_label;
+    }
+
+    MultiStageDecryptTable { stage_a, stage_b, stage_c }
+}
+
+/// Get all labels from the multi-stage table (for filtering user closures).
+pub fn all_decrypt_labels(table: &MultiStageDecryptTable) -> Vec<Label> {
+    let mut v = Vec::with_capacity(12);
+    v.extend_from_slice(&table.stage_a);
+    v.extend_from_slice(&table.stage_b);
+    v.extend_from_slice(&table.stage_c);
+    v
+}
+
+// ── Stage A: transform_key ───────────────────────────────────────
+// (Int) → Int — key → subkey
+
+fn make_stage_a_closure_body(variant: u32) -> ClosureBody {
+    let mut body = MirBody::new();
+    let mut debug = DebugInfo::new();
+
+    let v_key = ValueId(0);
+    body.val_count = 1;
+    body.val_types.insert(v_key, Ty::Int);
+    debug.set(v_key, ValOrigin::Named("key".into()));
+
+    let mut next_val = 1u32;
+    let mut alloc = |ty: Ty| -> ValueId {
+        let v = ValueId(next_val);
+        next_val += 1;
+        body.val_types.insert(v, ty);
+        debug.set(v, ValOrigin::Expr);
+        v
+    };
+    let span = Span { start: 0, end: 0 };
+    let mut insts = Vec::new();
+
+    let v_65537 = alloc(Ty::Int);
+    insts.push(Inst { span, kind: InstKind::Const { dst: v_65537, value: Literal::Int(65537) }});
+
+    let v_result = match variant {
+        0 => {
+            // (key * 7 + 3) % 65537
+            let v_7 = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::Const { dst: v_7, value: Literal::Int(7) }});
+            let v_mul = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_mul, op: BinOp::Mul, left: v_key, right: v_7 }});
+            let v_3 = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::Const { dst: v_3, value: Literal::Int(3) }});
+            let v_add = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_add, op: BinOp::Add, left: v_mul, right: v_3 }});
+            let v_res = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_res, op: BinOp::Mod, left: v_add, right: v_65537 }});
+            v_res
+        }
+        1 => {
+            // ((key ^ 0xDEAD) * 11 + 17) % 65537
+            let v_dead = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::Const { dst: v_dead, value: Literal::Int(0xDEAD) }});
+            let v_xor = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_xor, op: BinOp::Xor, left: v_key, right: v_dead }});
+            let v_11 = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::Const { dst: v_11, value: Literal::Int(11) }});
+            let v_mul = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_mul, op: BinOp::Mul, left: v_xor, right: v_11 }});
+            let v_17 = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::Const { dst: v_17, value: Literal::Int(17) }});
+            let v_add = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_add, op: BinOp::Add, left: v_mul, right: v_17 }});
+            let v_res = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_res, op: BinOp::Mod, left: v_add, right: v_65537 }});
+            v_res
+        }
+        2 => {
+            // ((key >> 3) * 13 + 7) % 65537
+            let v_3 = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::Const { dst: v_3, value: Literal::Int(3) }});
+            let v_shr = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_shr, op: BinOp::Shr, left: v_key, right: v_3 }});
+            let v_13 = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::Const { dst: v_13, value: Literal::Int(13) }});
+            let v_mul = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_mul, op: BinOp::Mul, left: v_shr, right: v_13 }});
+            let v_7 = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::Const { dst: v_7, value: Literal::Int(7) }});
+            let v_add = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_add, op: BinOp::Add, left: v_mul, right: v_7 }});
+            let v_res = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_res, op: BinOp::Mod, left: v_add, right: v_65537 }});
+            v_res
+        }
+        _ => {
+            // ((key * key + 5) % 65537 + 65537) % 65537
+            let v_sq = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_sq, op: BinOp::Mul, left: v_key, right: v_key }});
+            let v_5 = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::Const { dst: v_5, value: Literal::Int(5) }});
+            let v_add = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_add, op: BinOp::Add, left: v_sq, right: v_5 }});
+            let v_m1 = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_m1, op: BinOp::Mod, left: v_add, right: v_65537 }});
+            let v_add2 = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_add2, op: BinOp::Add, left: v_m1, right: v_65537 }});
+            let v_res = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_res, op: BinOp::Mod, left: v_add2, right: v_65537 }});
+            v_res
+        }
+    };
+
+    insts.push(Inst { span, kind: InstKind::Return(v_result) });
+    body.insts = insts;
+    body.val_count = next_val;
+    body.label_count = 0;
+    body.debug = debug;
+
+    ClosureBody { capture_names: vec![], param_names: vec!["key".into()], body }
+}
+
+/// Compile-time stage A transform (mirrors closure logic).
+pub fn stage_a_transform(variant: u32, key: i64) -> i64 {
+    let m = 65537i64;
+    match variant {
+        0 => ((key.wrapping_mul(7).wrapping_add(3)) % m + m) % m,
+        1 => (((key ^ 0xDEAD).wrapping_mul(11).wrapping_add(17)) % m + m) % m,
+        2 => (((key >> 3).wrapping_mul(13).wrapping_add(7)) % m + m) % m,
+        _ => {
+            let sq = key.wrapping_mul(key);
+            ((sq.wrapping_add(5) % m) + m) % m
+        }
+    }
+}
+
+// ── Stage B: combine_keys ────────────────────────────────────────
+// (Int, Int) → Int — (subkey, key) → combined_key
+
+fn make_stage_b_closure_body(variant: u32) -> ClosureBody {
+    let mut body = MirBody::new();
+    let mut debug = DebugInfo::new();
+
+    let v_subkey = ValueId(0);
+    let v_key = ValueId(1);
+    body.val_count = 2;
+    body.val_types.insert(v_subkey, Ty::Int);
+    body.val_types.insert(v_key, Ty::Int);
+    debug.set(v_subkey, ValOrigin::Named("subkey".into()));
+    debug.set(v_key, ValOrigin::Named("key".into()));
+
+    let mut next_val = 2u32;
+    let mut alloc = |ty: Ty| -> ValueId {
+        let v = ValueId(next_val);
+        next_val += 1;
+        body.val_types.insert(v, ty);
+        debug.set(v, ValOrigin::Expr);
+        v
+    };
+    let span = Span { start: 0, end: 0 };
+    let mut insts = Vec::new();
+
+    let v_result = match variant {
+        0 => {
+            // (subkey ^ key) + 1
+            let v_xor = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_xor, op: BinOp::Xor, left: v_subkey, right: v_key }});
+            let v_1 = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::Const { dst: v_1, value: Literal::Int(1) }});
+            let v_res = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_res, op: BinOp::Add, left: v_xor, right: v_1 }});
+            v_res
+        }
+        1 => {
+            // (subkey * 3 + key * 7) % 65537
+            let v_3 = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::Const { dst: v_3, value: Literal::Int(3) }});
+            let v_mul1 = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_mul1, op: BinOp::Mul, left: v_subkey, right: v_3 }});
+            let v_7 = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::Const { dst: v_7, value: Literal::Int(7) }});
+            let v_mul2 = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_mul2, op: BinOp::Mul, left: v_key, right: v_7 }});
+            let v_add = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_add, op: BinOp::Add, left: v_mul1, right: v_mul2 }});
+            let v_m = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::Const { dst: v_m, value: Literal::Int(65537) }});
+            let v_res = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_res, op: BinOp::Mod, left: v_add, right: v_m }});
+            v_res
+        }
+        2 => {
+            // (subkey + key) ^ 0xBEEF
+            let v_add = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_add, op: BinOp::Add, left: v_subkey, right: v_key }});
+            let v_beef = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::Const { dst: v_beef, value: Literal::Int(0xBEEF) }});
+            let v_res = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_res, op: BinOp::Xor, left: v_add, right: v_beef }});
+            v_res
+        }
+        _ => {
+            // ((subkey << 3) ^ key) % 65537
+            let v_3 = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::Const { dst: v_3, value: Literal::Int(3) }});
+            let v_shl = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_shl, op: BinOp::Shl, left: v_subkey, right: v_3 }});
+            let v_xor = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_xor, op: BinOp::Xor, left: v_shl, right: v_key }});
+            let v_m = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::Const { dst: v_m, value: Literal::Int(65537) }});
+            let v_res = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp { dst: v_res, op: BinOp::Mod, left: v_xor, right: v_m }});
+            v_res
+        }
+    };
+
+    insts.push(Inst { span, kind: InstKind::Return(v_result) });
+    body.insts = insts;
+    body.val_count = next_val;
+    body.label_count = 0;
+    body.debug = debug;
+
+    ClosureBody { capture_names: vec![], param_names: vec!["subkey".into(), "key".into()], body }
+}
+
+/// Compile-time stage B combine (mirrors closure logic).
+pub fn stage_b_combine(variant: u32, subkey: i64, key: i64) -> i64 {
+    match variant {
+        0 => (subkey ^ key).wrapping_add(1),
+        1 => {
+            let m = 65537i64;
+            ((subkey.wrapping_mul(3).wrapping_add(key.wrapping_mul(7))) % m + m) % m
+        }
+        2 => (subkey.wrapping_add(key)) ^ 0xBEEF,
+        _ => {
+            let m = 65537i64;
+            (((subkey << 3) ^ key) % m + m) % m
+        }
+    }
+}
+
+// ── Stage C: decrypt_final ───────────────────────────────────────
+// (Bytes, Int) → String — final decryption using combined_key
+
+fn make_stage_c_closure_body(variant: u32) -> ClosureBody {
+    let mut body = MirBody::new();
+    let mut debug = DebugInfo::new();
+
+    let v_bytes = ValueId(0);
+    let v_key = ValueId(1);  // combined_key
+    body.val_count = 2;
+    body.val_types.insert(v_bytes, Ty::Bytes);
+    body.val_types.insert(v_key, Ty::Int);
+    debug.set(v_bytes, ValOrigin::Named("bytes".into()));
+    debug.set(v_key, ValOrigin::Named("key".into()));
+
+    let mut next_val = 2u32;
+    let mut alloc = |ty: Ty| -> ValueId {
+        let v = ValueId(next_val);
+        next_val += 1;
+        body.val_types.insert(v, ty);
+        debug.set(v, ValOrigin::Expr);
+        v
+    };
+    let span = Span { start: 0, end: 0 };
+
+    let v_len = alloc(Ty::Int);
+    let v_zero = alloc(Ty::Int);
+    let v_empty = alloc(Ty::String);
+    let v_one = alloc(Ty::Int);
+    let v_256 = alloc(Ty::Int);
+
+    let mut insts = Vec::new();
+
+    insts.push(Inst { span, kind: InstKind::Call {
+        dst: v_len, func: "bytes_len".into(), args: vec![v_bytes],
+    }});
+    insts.push(Inst { span, kind: InstKind::Const { dst: v_zero, value: Literal::Int(0) }});
+    insts.push(Inst { span, kind: InstKind::Const { dst: v_empty, value: Literal::String(String::new()) }});
+    insts.push(Inst { span, kind: InstKind::Const { dst: v_one, value: Literal::Int(1) }});
+    insts.push(Inst { span, kind: InstKind::Const { dst: v_256, value: Literal::Int(256) }});
+
+    let l_header = Label(0);
+    let l_body = Label(1);
+    let l_exit = Label(2);
+    body.label_count = 3;
+
+    let v_i = alloc(Ty::Int);
+    let v_accum = alloc(Ty::String);
+
+    insts.push(Inst { span, kind: InstKind::Jump {
+        label: l_header, args: vec![v_zero, v_empty],
+    }});
+
+    insts.push(Inst { span, kind: InstKind::BlockLabel {
+        label: l_header, params: vec![v_i, v_accum],
+    }});
+
+    let v_done = alloc(Ty::Bool);
+    insts.push(Inst { span, kind: InstKind::BinOp {
+        dst: v_done, op: BinOp::Gte, left: v_i, right: v_len,
+    }});
+
+    let v_result_param = alloc(Ty::String);
+    insts.push(Inst { span, kind: InstKind::JumpIf {
+        cond: v_done,
+        then_label: l_exit, then_args: vec![v_accum],
+        else_label: l_body, else_args: vec![v_i, v_accum],
+    }});
+
+    let v_body_i = alloc(Ty::Int);
+    let v_body_accum = alloc(Ty::String);
+    insts.push(Inst { span, kind: InstKind::BlockLabel {
+        label: l_body, params: vec![v_body_i, v_body_accum],
+    }});
+
+    let v_byte = alloc(Ty::Int);
+    insts.push(Inst { span, kind: InstKind::Call {
+        dst: v_byte, func: "bytes_get".into(), args: vec![v_bytes, v_body_i],
+    }});
+
+    // Same decrypt algorithms as before, but now operating on combined_key
+    let v_plain = match variant {
+        0 => {
+            // XOR: plain = enc ^ ((key + i) % 256)
+            let v_ki = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp {
+                dst: v_ki, op: BinOp::Add, left: v_key, right: v_body_i,
+            }});
+            let v_mod = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp {
+                dst: v_mod, op: BinOp::Mod, left: v_ki, right: v_256,
+            }});
+            let v_p = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp {
+                dst: v_p, op: BinOp::Xor, left: v_byte, right: v_mod,
+            }});
+            v_p
+        }
+        1 => {
+            // Sub: plain = (enc + ((key * (i+1)) % 256)) % 256
+            let v_i1 = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp {
+                dst: v_i1, op: BinOp::Add, left: v_body_i, right: v_one,
+            }});
+            let v_ki = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp {
+                dst: v_ki, op: BinOp::Mul, left: v_key, right: v_i1,
+            }});
+            let v_mod = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp {
+                dst: v_mod, op: BinOp::Mod, left: v_ki, right: v_256,
+            }});
+            let v_add = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp {
+                dst: v_add, op: BinOp::Add, left: v_byte, right: v_mod,
+            }});
+            let v_p = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp {
+                dst: v_p, op: BinOp::Mod, left: v_add, right: v_256,
+            }});
+            v_p
+        }
+        2 => {
+            // Rot: plain = enc ^ ((key >> (i % 8)) % 256)
+            let v_eight = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::Const { dst: v_eight, value: Literal::Int(8) }});
+            let v_im = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp {
+                dst: v_im, op: BinOp::Mod, left: v_body_i, right: v_eight,
+            }});
+            let v_shift = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp {
+                dst: v_shift, op: BinOp::Shr, left: v_key, right: v_im,
+            }});
+            let v_mod = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp {
+                dst: v_mod, op: BinOp::Mod, left: v_shift, right: v_256,
+            }});
+            let v_p = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp {
+                dst: v_p, op: BinOp::Xor, left: v_byte, right: v_mod,
+            }});
+            v_p
+        }
+        _ => {
+            // Mul: plain = enc ^ (((key * (i+1)) % 251 + 251) % 251)
+            let v_251 = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::Const { dst: v_251, value: Literal::Int(251) }});
+            let v_i1 = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp {
+                dst: v_i1, op: BinOp::Add, left: v_body_i, right: v_one,
+            }});
+            let v_ki = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp {
+                dst: v_ki, op: BinOp::Mul, left: v_key, right: v_i1,
+            }});
+            let v_m1 = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp {
+                dst: v_m1, op: BinOp::Mod, left: v_ki, right: v_251,
+            }});
+            let v_add = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp {
+                dst: v_add, op: BinOp::Add, left: v_m1, right: v_251,
+            }});
+            let v_m2 = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp {
+                dst: v_m2, op: BinOp::Mod, left: v_add, right: v_251,
+            }});
+            let v_p = alloc(Ty::Int);
+            insts.push(Inst { span, kind: InstKind::BinOp {
+                dst: v_p, op: BinOp::Xor, left: v_byte, right: v_m2,
+            }});
+            v_p
+        }
+    };
+
+    let v_char = alloc(Ty::String);
+    insts.push(Inst { span, kind: InstKind::Call {
+        dst: v_char, func: "int_to_char".into(), args: vec![v_plain],
+    }});
+
+    let v_new_accum = alloc(Ty::String);
+    insts.push(Inst { span, kind: InstKind::BinOp {
+        dst: v_new_accum, op: BinOp::Add, left: v_body_accum, right: v_char,
+    }});
+
+    let v_next_i = alloc(Ty::Int);
+    insts.push(Inst { span, kind: InstKind::BinOp {
+        dst: v_next_i, op: BinOp::Add, left: v_body_i, right: v_one,
+    }});
+
+    insts.push(Inst { span, kind: InstKind::Jump {
+        label: l_header, args: vec![v_next_i, v_new_accum],
+    }});
+
+    insts.push(Inst { span, kind: InstKind::BlockLabel {
+        label: l_exit, params: vec![v_result_param],
+    }});
+    insts.push(Inst { span, kind: InstKind::Return(v_result_param) });
+
+    body.insts = insts;
+    body.val_count = next_val;
+    body.debug = debug;
+
+    ClosureBody { capture_names: vec![], param_names: vec!["bytes".into(), "key".into()], body }
+}
+
+// ── Encryption (compile-time) ────────────────────────────────────
+
+/// Chunk size range for splitting texts. Each chunk gets its own
+/// variant + key, so a static analyzer must solve N independent
+/// decrypt algorithms per text.
+const CHUNK_MIN: usize = 32;
+const CHUNK_MAX: usize = 96;
+
+pub struct EncryptedChunk {
+    pub bytes: Vec<u8>,
+    pub key: i64,
+    // variant_a is encoded in key: (key + 1) % 4 == variant_a
+    // variant_b = subkey % 4 (derived from stage A result)
+    // variant_c = (key ^ subkey) % 4 (derived from both)
+}
+
+/// One text split into encrypted chunks.
 pub struct EncryptedText {
-    pub fragments: Vec<EncryptedFragment>,
-    /// chain_keys[i] is the initial key for fragment[i].
-    /// chain_keys[i+1] = last_plain_char_of_fragment[i] ^ salt.
-    pub chain_keys: Vec<i64>,
+    pub chunks: Vec<EncryptedChunk>,
 }
 
-/// Encrypt all text pool entries.
+/// Encrypt all text pool entries. Each text is split into chunks,
+/// each chunk with a random variant + key.
 pub fn encrypt_texts(texts: &[String], rng: &mut StdRng) -> Vec<EncryptedText> {
-    texts
-        .iter()
-        .map(|text| encrypt_single_text(text, rng))
-        .collect()
+    texts.iter().map(|text| encrypt_single(text, rng)).collect()
 }
 
-fn encrypt_single_text(text: &str, rng: &mut StdRng) -> EncryptedText {
-    if text.is_empty() {
-        return EncryptedText {
-            fragments: vec![],
-            chain_keys: vec![],
-        };
+fn encrypt_single(text: &str, rng: &mut StdRng) -> EncryptedText {
+    let plain = text.as_bytes();
+    if plain.is_empty() {
+        return EncryptedText { chunks: vec![] };
     }
 
-    let chars: Vec<char> = text.chars().collect();
-    let fragment_size = 3.max(chars.len() / 4).min(chars.len());
-    let chunks: Vec<&[char]> = chars.chunks(fragment_size).collect();
-
-    let mut fragments = Vec::new();
-    let mut chain_keys = Vec::new();
-
-    let mut next_key: i64 = rng.random_range(1..256);
-    chain_keys.push(next_key);
-
-    for chunk in &chunks {
-        let mut encrypted_codes = Vec::new();
-        let mut current_key = next_key;
-
-        for &ch in *chunk {
-            let code = ch as i64;
-            encrypted_codes.push(code ^ current_key);
-            current_key = code;
-        }
-
-        let last_code = chunk.last().map(|&c| c as i64).unwrap_or(0);
-        let salt: i64 = rng.random_range(1..256);
-        next_key = last_code ^ salt;
-
-        fragments.push(EncryptedFragment {
-            encrypted_codes,
-            initial_key: chain_keys.last().copied().unwrap(),
-        });
-        chain_keys.push(next_key);
-    }
-
-    EncryptedText {
-        fragments,
-        chain_keys,
-    }
-}
-
-/// Emit instructions that decrypt an EncryptedText and emit the result.
-pub fn emit_encrypted_text(
-    ctx: &mut PassState,
-    rng: &mut StdRng,
-    span: Span,
-    enc: &EncryptedText,
-) {
-    if enc.fragments.is_empty() {
-        return;
-    }
-
-    let mut prev_last_code: Option<ValueId> = None;
-
-    for (frag_idx, frag) in enc.fragments.iter().enumerate() {
-        let v_key = if frag_idx == 0 {
-            let v = ctx.alloc_val(Ty::Int);
-            ctx.emit(span, InstKind::Const {
-                dst: v,
-                value: Literal::Int(frag.initial_key),
-            });
-            v
+    let mut chunks = Vec::new();
+    let mut offset = 0;
+    while offset < plain.len() {
+        let remaining = plain.len() - offset;
+        let chunk_size = if remaining <= CHUNK_MAX {
+            remaining
         } else {
-            // runtime_key = prev_last_code XOR derivation_const
-            // derivation_const = frag.initial_key XOR actual_prev_last_plaintext_code
-            let prev_frag_chars_plain =
-                decrypt_fragment_plain(&enc.fragments[frag_idx - 1], &enc.chain_keys[frag_idx - 1]);
-            let prev_last_plain = *prev_frag_chars_plain.last().unwrap();
-            let derivation_const = frag.initial_key ^ prev_last_plain;
-
-            let v_derive = ctx.alloc_val(Ty::Int);
-            ctx.emit(span, InstKind::Const {
-                dst: v_derive,
-                value: Literal::Int(derivation_const),
-            });
-
-            let v = ctx.alloc_val(Ty::Int);
-            ctx.emit(span, InstKind::BinOp {
-                dst: v,
-                op: BinOp::Xor,
-                left: prev_last_code.unwrap(),
-                right: v_derive,
-            });
-            v
+            rng.random_range(CHUNK_MIN..=CHUNK_MAX)
         };
 
-        // Pick a decryption variant for this fragment.
-        let variant = rng.random_range(0u32..2);
-
-        // Variant 1: emit offset const.
-        let (offset_val, v_offset) = if variant == 1 {
-            let offset: i64 = rng.random_range(1..256);
-            let vo = ctx.alloc_val(Ty::Int);
-            ctx.emit(span, InstKind::Const { dst: vo, value: Literal::Int(offset) });
-            (offset, Some(vo))
-        } else {
-            (0, None)
+        // Pick variant_a randomly, then find key such that (key + 1) % 4 == variant_a
+        let variant_a = rng.random_range(0u32..4);
+        let key: i64 = loop {
+            let k = rng.random_range(1i64..=1_000_000);
+            if ((k + 1) as u32) % 4 == variant_a { break k; }
         };
 
-        let mut v_accum: Option<ValueId> = None;
-        let mut v_current_key = v_key;
-        let mut ct_key = frag.initial_key;
+        // Derive the 3-stage pipeline at compile time
+        let subkey = stage_a_transform(variant_a, key);
+        let variant_b = (subkey.unsigned_abs() as u32) % 4;
+        let combined = stage_b_combine(variant_b, subkey, key);
+        let variant_c = ((key ^ subkey).unsigned_abs() as u32) % 4;
 
-        for &enc_code_orig in &frag.encrypted_codes {
-            let plain_code = enc_code_orig ^ ct_key;
+        let chunk_plain = &plain[offset..offset + chunk_size];
+        let encrypted: Vec<u8> = chunk_plain
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| encrypt_byte_staged(variant_c, b, combined, i))
+            .collect();
 
-            // Re-encrypt for the chosen variant.
-            let enc_code = if variant == 1 {
-                (plain_code - offset_val) ^ ct_key
-            } else {
-                enc_code_orig
-            };
+        chunks.push(EncryptedChunk { bytes: encrypted, key });
+        offset += chunk_size;
+    }
 
-            let v_enc = ctx.alloc_val(Ty::Int);
-            ctx.emit(span, InstKind::Const {
-                dst: v_enc,
-                value: Literal::Int(enc_code),
-            });
+    EncryptedText { chunks }
+}
 
-            let v_xored = ctx.alloc_val(Ty::Int);
-            ctx.emit(span, InstKind::BinOp {
-                dst: v_xored,
-                op: BinOp::Xor,
-                left: v_enc,
-                right: v_current_key,
-            });
-
-            let v_dec = if variant == 1 {
-                let v_added = ctx.alloc_val(Ty::Int);
-                ctx.emit(span, InstKind::BinOp {
-                    dst: v_added,
-                    op: BinOp::Add,
-                    left: v_xored,
-                    right: v_offset.unwrap(),
-                });
-                v_added
-            } else {
-                v_xored
-            };
-
-            let v_char = ctx.alloc_val(Ty::String);
-            ctx.emit(span, InstKind::Call {
-                dst: v_char,
-                func: "int_to_char".into(),
-                args: vec![v_dec],
-            });
-
-            v_accum = Some(match v_accum {
-                None => v_char,
-                Some(prev) => {
-                    let v_concat = ctx.alloc_val(Ty::String);
-                    ctx.emit(span, InstKind::BinOp {
-                        dst: v_concat,
-                        op: BinOp::Add,
-                        left: prev,
-                        right: v_char,
-                    });
-                    v_concat
-                }
-            });
-
-            v_current_key = v_dec;
-            ct_key = plain_code;
+/// Encrypt a single byte using stage C's inverse (same as decrypt since XOR/mod are self-inverse).
+fn encrypt_byte_staged(variant_c: u32, plain: u8, combined_key: i64, i: usize) -> u8 {
+    match variant_c {
+        // Stage C variant 0: XOR — plain = enc ^ ((key + i) % 256) => enc = plain ^ ((key + i) % 256)
+        0 => {
+            let k = ((combined_key + i as i64) % 256).unsigned_abs() as u8;
+            plain ^ k
         }
-
-        prev_last_code = Some(v_current_key);
-
-        if let Some(v) = v_accum {
-            ctx.emit(span, InstKind::EmitValue(v));
+        // Stage C variant 1: Sub — plain = (enc + ((key * (i+1)) % 256)) % 256
+        1 => {
+            let k = (combined_key.wrapping_mul((i + 1) as i64) % 256 + 256) % 256;
+            ((plain as i64 - k) % 256 + 256) as u8
+        }
+        // Stage C variant 2: Rot — plain = enc ^ ((key >> (i % 8)) % 256)
+        2 => {
+            let k = ((combined_key >> (i % 8)) % 256).unsigned_abs() as u8;
+            plain ^ k
+        }
+        // Stage C variant 3: Mul — plain = enc ^ (((key * (i+1)) % 251 + 251) % 251)
+        _ => {
+            let k = ((combined_key.wrapping_mul((i + 1) as i64) % 251 + 251) % 251).unsigned_abs() as u8;
+            plain ^ k
         }
     }
 }
 
-/// Emit hash-key-based text decryption (branchless / straight-line).
-///
-/// Compile-time: encrypt each char as `char_code ^ (((key + i) % 256 + 256) % 256)`.
-///
-/// Runtime MIR (no control flow — CFF safe):
-///   v_key = VarLoad("__obf_key")
-///   per-char: Const(encrypted) XOR (((key + i) % 256 + 256) % 256) → int_to_char → concat
-///   EmitValue(accum)
-///
-/// This is always inside the then-branch of a hash-predicate JumpIf,
-/// so the key is guaranteed correct — no checksum needed here.
-pub fn emit_hashed_text(
-    ctx: &mut PassState,
-    _rng: &mut StdRng,
-    span: Span,
-    text: &str,
-    compile_key: i64,
-) {
-    if text.is_empty() {
-        return;
+/// Decrypt a single byte (for testing). Mirrors stage C closure logic.
+#[cfg(test)]
+fn decrypt_byte_staged(variant_c: u32, enc: u8, combined_key: i64, i: usize) -> u8 {
+    match variant_c {
+        0 => {
+            let k = ((combined_key + i as i64) % 256).unsigned_abs() as u8;
+            enc ^ k
+        }
+        1 => {
+            let k = (combined_key.wrapping_mul((i + 1) as i64) % 256 + 256) % 256;
+            ((enc as i64 + k) % 256) as u8
+        }
+        2 => {
+            let k = ((combined_key >> (i % 8)) % 256).unsigned_abs() as u8;
+            enc ^ k
+        }
+        _ => {
+            let k = ((combined_key.wrapping_mul((i + 1) as i64) % 251 + 251) % 251).unsigned_abs() as u8;
+            enc ^ k
+        }
+    }
+}
+
+// ── Factory closures (rotation-based 2-level dispatch) ───────────
+
+/// Labels for 4 factory closures (one per rotation).
+pub struct FactoryTable {
+    pub labels: [Label; 4],
+}
+
+/// Register 4 factory closures into the module. Each factory captures
+/// 4 inner closures and returns them in a rotated order.
+pub fn register_factory_closures(
+    module: &mut MirModule,
+    _inner_labels: &[Label; 4],
+    inner_fn_ty: &Ty,
+    name_prefix: &str,
+) -> FactoryTable {
+    let base_label = module.closures.keys().map(|l| l.0).max().unwrap_or(0) + 1;
+    let base_label = base_label.max(module.main.label_count);
+    for closure in module.closures.values() {
+        let _ = base_label.max(closure.body.label_count);
     }
 
-    // Compile-time: encrypt chars.
-    let chars: Vec<char> = text.chars().collect();
-    let encrypted: Vec<i64> = chars
-        .iter()
-        .enumerate()
-        .map(|(i, &ch)| {
-            let k = (((compile_key + i as i64) % 256) + 256) % 256;
-            (ch as i64) ^ k
-        })
+    let mut labels = [Label(0); 4];
+    for rotation in 0..4u32 {
+        let label = Label(base_label + rotation);
+        labels[rotation as usize] = label;
+        let body = make_factory_closure_body(rotation, inner_fn_ty);
+        module.closures.insert(label, body);
+        let _ = name_prefix; // for future debug info
+    }
+
+    let max_label = base_label + 4;
+    if module.main.label_count < max_label {
+        module.main.label_count = max_label;
+    }
+
+    FactoryTable { labels }
+}
+
+/// Build a factory closure body that captures 4 inner closures and returns
+/// them in rotated order.
+///
+/// Captures: [fn0 (Val 0), fn1 (Val 1), fn2 (Val 2), fn3 (Val 3)]
+/// Params: [seed: Int (Val 4)]
+/// Returns: List<inner_fn_ty>
+fn make_factory_closure_body(rotation: u32, inner_fn_ty: &Ty) -> ClosureBody {
+    let mut body = MirBody::new();
+    let mut debug = DebugInfo::new();
+
+    // 4 captures + 1 param = 5 vals
+    for i in 0..4u32 {
+        let v = ValueId(i);
+        body.val_types.insert(v, inner_fn_ty.clone());
+        debug.set(v, ValOrigin::Named(format!("fn{i}")));
+    }
+    let v_seed = ValueId(4);
+    body.val_types.insert(v_seed, Ty::Int);
+    debug.set(v_seed, ValOrigin::Named("seed".into()));
+    body.val_count = 5;
+
+    let mut next_val = 5u32;
+    let mut alloc = |ty: Ty| -> ValueId {
+        let v = ValueId(next_val);
+        next_val += 1;
+        body.val_types.insert(v, ty);
+        debug.set(v, ValOrigin::Expr);
+        v
+    };
+    let span = Span { start: 0, end: 0 };
+
+    // Build rotated list: [fn_{(0+r)%4}, fn_{(1+r)%4}, fn_{(2+r)%4}, fn_{(3+r)%4}]
+    let elements: Vec<ValueId> = (0..4)
+        .map(|i| ValueId((i + rotation) % 4))
         .collect();
 
-    // Runtime: load key from variable.
-    let v_key = ctx.alloc_val(Ty::Int);
-    ctx.emit(span, InstKind::VarLoad {
-        dst: v_key,
-        name: "__obf_key".into(),
+    let list_ty = Ty::List(Box::new(inner_fn_ty.clone()));
+    let v_list = alloc(list_ty);
+
+    let mut insts = Vec::new();
+    insts.push(Inst { span, kind: InstKind::MakeList {
+        dst: v_list, elements,
+    }});
+    insts.push(Inst { span, kind: InstKind::Return(v_list) });
+
+    body.insts = insts;
+    body.val_count = next_val;
+    body.label_count = 0;
+    body.debug = debug;
+
+    ClosureBody {
+        capture_names: vec!["fn0".into(), "fn1".into(), "fn2".into(), "fn3".into()],
+        param_names: vec!["seed".into()],
+        body,
+    }
+}
+
+/// Get all factory labels for filtering.
+pub fn all_factory_labels(ft: &FactoryTable) -> Vec<Label> {
+    ft.labels.to_vec()
+}
+
+// ── Emit helpers (MIR generation) ────────────────────────────────
+
+/// Emit the 2-level dispatch meta table for a single stage.
+///
+/// Creates: 4 inner MakeClosure + 4 factory MakeClosure (each capturing all 4 inner) + MakeList of factories.
+/// Returns the meta table ValueId (List<factory_fn>).
+pub fn emit_factory_dispatch_setup(
+    ctx: &mut PassState,
+    span: Span,
+    inner_labels: &[Label; 4],
+    factory_table: &FactoryTable,
+    inner_fn_ty: &Ty,
+) -> ValueId {
+    // Make 4 inner closures
+    let mut inner_vals = Vec::with_capacity(4);
+    for &label in inner_labels {
+        let v = ctx.alloc_val(inner_fn_ty.clone());
+        ctx.emit(span, InstKind::MakeClosure {
+            dst: v, body: label, captures: vec![],
+        });
+        inner_vals.push(v);
+    }
+
+    // Factory fn type: (Int) → List<inner_fn_ty>
+    let factory_fn_ty = Ty::Fn {
+        params: vec![Ty::Int],
+        ret: Box::new(Ty::List(Box::new(inner_fn_ty.clone()))),
+    };
+
+    // Make 4 factory closures, each capturing all 4 inner closures
+    let mut factory_vals = Vec::with_capacity(4);
+    for &label in &factory_table.labels {
+        let v = ctx.alloc_val(factory_fn_ty.clone());
+        ctx.emit(span, InstKind::MakeClosure {
+            dst: v, body: label, captures: inner_vals.clone(),
+        });
+        factory_vals.push(v);
+    }
+
+    // Meta table: List of factory closures
+    let meta_ty = Ty::List(Box::new(factory_fn_ty));
+    let v_meta = ctx.alloc_val(meta_ty);
+    ctx.emit(span, InstKind::MakeList {
+        dst: v_meta, elements: factory_vals,
     });
 
-    let v_256 = ctx.alloc_val(Ty::Int);
-    ctx.emit(span, InstKind::Const { dst: v_256, value: Literal::Int(256) });
+    v_meta
+}
+
+/// Emit 2-level dispatch: factory_idx → factory call → inner_idx → actual call.
+///
+/// Returns the result ValueId.
+fn emit_two_level_dispatch(
+    ctx: &mut PassState,
+    span: Span,
+    meta_table: ValueId,
+    factory_idx: ValueId,
+    seed: ValueId,
+    inner_idx: ValueId,
+    inner_fn_ty: &Ty,
+    args: Vec<ValueId>,
+    result_ty: &Ty,
+) -> ValueId {
+    // Factory fn type
+    let factory_fn_ty = Ty::Fn {
+        params: vec![Ty::Int],
+        ret: Box::new(Ty::List(Box::new(inner_fn_ty.clone()))),
+    };
+
+    // v_factory = ListGet(meta_table, factory_idx)
+    let v_factory = ctx.alloc_val(factory_fn_ty);
+    ctx.emit(span, InstKind::ListGet {
+        dst: v_factory, list: meta_table, index: factory_idx,
+    });
+
+    // v_inner_table = CallClosure(v_factory, [seed])
+    let inner_table_ty = Ty::List(Box::new(inner_fn_ty.clone()));
+    let v_inner_table = ctx.alloc_val(inner_table_ty);
+    ctx.emit(span, InstKind::CallClosure {
+        dst: v_inner_table, closure: v_factory, args: vec![seed],
+    });
+
+    // v_fn = ListGet(v_inner_table, inner_idx)
+    let v_fn = ctx.alloc_val(inner_fn_ty.clone());
+    ctx.emit(span, InstKind::ListGet {
+        dst: v_fn, list: v_inner_table, index: inner_idx,
+    });
+
+    // v_result = CallClosure(v_fn, args)
+    let v_result = ctx.alloc_val(result_ty.clone());
+    ctx.emit(span, InstKind::CallClosure {
+        dst: v_result, closure: v_fn, args,
+    });
+
+    v_result
+}
+
+/// Emit the full 3-stage multi-stage decrypt call for one chunk.
+///
+/// Stage A: key → subkey (via factory dispatch on stage_a meta table)
+/// Stage B: (subkey, key) → combined (via factory dispatch on stage_b meta table)
+/// Stage C: (bytes, combined) → String (via factory dispatch on stage_c meta table)
+///
+/// Entanglement: uses `__entangle` VarLoad to adjust key for stage A dispatch index.
+fn emit_multistage_decrypt_call(
+    ctx: &mut PassState,
+    span: Span,
+    bytes: &[u8],
+    key: i64,
+    meta_a: ValueId,
+    meta_b: ValueId,
+    meta_c: ValueId,
+    v_four: ValueId,
+    use_entangle: bool,
+) -> ValueId {
+    let v_bytes = ctx.alloc_val(Ty::Bytes);
+    ctx.emit(span, InstKind::Const {
+        dst: v_bytes, value: Literal::Bytes(bytes.to_vec()),
+    });
+
+    let v_key = ctx.alloc_val(Ty::Int);
+    ctx.emit(span, InstKind::Const {
+        dst: v_key, value: Literal::Int(key),
+    });
+
+    // Seed for factory calls (constant, unused by current factories but required param)
+    let v_seed = ctx.alloc_val(Ty::Int);
+    ctx.emit(span, InstKind::Const {
+        dst: v_seed, value: Literal::Int(0),
+    });
+
+    // ── Stage A dispatch index ──
+    // With entanglement: idx_a = (key + __entangle) % 4  (entangle=1, so key+1)
+    // Without: idx_a = (key + 1) % 4
+    let v_key_adj = if use_entangle {
+        let v_entangle = ctx.alloc_val(Ty::Int);
+        ctx.emit(span, InstKind::VarLoad {
+            dst: v_entangle, name: "__entangle".into(),
+        });
+        let v_adj = ctx.alloc_val(Ty::Int);
+        ctx.emit(span, InstKind::BinOp {
+            dst: v_adj, op: BinOp::Add, left: v_key, right: v_entangle,
+        });
+        v_adj
+    } else {
+        let v_one = ctx.alloc_val(Ty::Int);
+        ctx.emit(span, InstKind::Const { dst: v_one, value: Literal::Int(1) });
+        let v_adj = ctx.alloc_val(Ty::Int);
+        ctx.emit(span, InstKind::BinOp {
+            dst: v_adj, op: BinOp::Add, left: v_key, right: v_one,
+        });
+        v_adj
+    };
+
+    let v_idx_a = ctx.alloc_val(Ty::Int);
+    ctx.emit(span, InstKind::BinOp {
+        dst: v_idx_a, op: BinOp::Mod, left: v_key_adj, right: v_four,
+    });
+
+    // Precompute variant_a, factory_idx_a, and inner_idx_a at compile time
+    let variant_a = ((key + 1) as u32) % 4;
+    // factory rotation == factory_idx == variant_a, so inner_idx = (variant_a - variant_a + 4) % 4 = 0
+    let inner_idx_a = 0u32;
+
+    // We need the inner_idx as a constant for rotation compensation
+    let v_inner_a = ctx.alloc_val(Ty::Int);
+    ctx.emit(span, InstKind::Const {
+        dst: v_inner_a, value: Literal::Int(inner_idx_a as i64),
+    });
+
+    let stage_a_fn_ty = Ty::Fn { params: vec![Ty::Int], ret: Box::new(Ty::Int) };
+    let v_subkey = emit_two_level_dispatch(
+        ctx, span, meta_a, v_idx_a, v_seed, v_inner_a,
+        &stage_a_fn_ty, vec![v_key], &Ty::Int,
+    );
+
+    // ── Stage B dispatch index ──
+    // idx_b = subkey % 4
+    let v_idx_b = ctx.alloc_val(Ty::Int);
+    ctx.emit(span, InstKind::BinOp {
+        dst: v_idx_b, op: BinOp::Mod, left: v_subkey, right: v_four,
+    });
+
+    // Compile-time: compute inner_idx_b from rotation compensation
+    let subkey = stage_a_transform(variant_a, key);
+    let variant_b = (subkey.unsigned_abs() as u32) % 4;
+    let factory_idx_b = variant_b; // subkey % 4 == variant_b
+    let inner_idx_b = (variant_b as i32 - factory_idx_b as i32).rem_euclid(4) as u32; // always 0
+
+    let v_inner_b = ctx.alloc_val(Ty::Int);
+    ctx.emit(span, InstKind::Const {
+        dst: v_inner_b, value: Literal::Int(inner_idx_b as i64),
+    });
+
+    let stage_b_fn_ty = Ty::Fn { params: vec![Ty::Int, Ty::Int], ret: Box::new(Ty::Int) };
+    let v_combined = emit_two_level_dispatch(
+        ctx, span, meta_b, v_idx_b, v_seed, v_inner_b,
+        &stage_b_fn_ty, vec![v_subkey, v_key], &Ty::Int,
+    );
+
+    // ── Stage C dispatch index ──
+    // idx_c = (key ^ subkey) % 4  — but subkey is runtime, so we use BinOp
+    let v_xor_ks = ctx.alloc_val(Ty::Int);
+    ctx.emit(span, InstKind::BinOp {
+        dst: v_xor_ks, op: BinOp::Xor, left: v_key, right: v_subkey,
+    });
+    let v_idx_c = ctx.alloc_val(Ty::Int);
+    ctx.emit(span, InstKind::BinOp {
+        dst: v_idx_c, op: BinOp::Mod, left: v_xor_ks, right: v_four,
+    });
+
+    // Compile-time rotation compensation for stage C
+    let variant_c = ((key ^ subkey).unsigned_abs() as u32) % 4;
+    let factory_idx_c = variant_c;
+    let inner_idx_c = (variant_c as i32 - factory_idx_c as i32).rem_euclid(4) as u32; // always 0
+
+    let v_inner_c = ctx.alloc_val(Ty::Int);
+    ctx.emit(span, InstKind::Const {
+        dst: v_inner_c, value: Literal::Int(inner_idx_c as i64),
+    });
+
+    let stage_c_fn_ty = Ty::Fn { params: vec![Ty::Bytes, Ty::Int], ret: Box::new(Ty::String) };
+    emit_two_level_dispatch(
+        ctx, span, meta_c, v_idx_c, v_seed, v_inner_c,
+        &stage_c_fn_ty, vec![v_bytes, v_combined], &Ty::String,
+    )
+}
+
+/// Emit encrypted text decryption using 3-stage multi-stage pipeline.
+pub fn emit_encrypted_text(
+    ctx: &mut PassState,
+    span: Span,
+    enc: &EncryptedText,
+    meta_a: ValueId,
+    meta_b: ValueId,
+    meta_c: ValueId,
+    v_four: ValueId,
+    use_entangle: bool,
+) {
+    if enc.chunks.is_empty() {
+        return;
+    }
 
     let mut v_accum: Option<ValueId> = None;
-
-    for (i, &enc_code) in encrypted.iter().enumerate() {
-        let v_enc = ctx.alloc_val(Ty::Int);
-        ctx.emit(span, InstKind::Const { dst: v_enc, value: Literal::Int(enc_code) });
-
-        let v_i = ctx.alloc_val(Ty::Int);
-        ctx.emit(span, InstKind::Const { dst: v_i, value: Literal::Int(i as i64) });
-
-        let v_ki = ctx.alloc_val(Ty::Int);
-        ctx.emit(span, InstKind::BinOp { dst: v_ki, op: BinOp::Add, left: v_key, right: v_i });
-
-        let v_m1 = ctx.alloc_val(Ty::Int);
-        ctx.emit(span, InstKind::BinOp { dst: v_m1, op: BinOp::Mod, left: v_ki, right: v_256 });
-
-        let v_a1 = ctx.alloc_val(Ty::Int);
-        ctx.emit(span, InstKind::BinOp { dst: v_a1, op: BinOp::Add, left: v_m1, right: v_256 });
-
-        let v_k = ctx.alloc_val(Ty::Int);
-        ctx.emit(span, InstKind::BinOp { dst: v_k, op: BinOp::Mod, left: v_a1, right: v_256 });
-
-        let v_dec = ctx.alloc_val(Ty::Int);
-        ctx.emit(span, InstKind::BinOp { dst: v_dec, op: BinOp::Xor, left: v_enc, right: v_k });
-
-        let v_char = ctx.alloc_val(Ty::String);
-        ctx.emit(span, InstKind::Call { dst: v_char, func: "int_to_char".into(), args: vec![v_dec] });
-
+    for chunk in &enc.chunks {
+        let v_part = emit_multistage_decrypt_call(
+            ctx, span, &chunk.bytes, chunk.key,
+            meta_a, meta_b, meta_c, v_four, use_entangle,
+        );
         v_accum = Some(match v_accum {
-            None => v_char,
+            None => v_part,
             Some(prev) => {
                 let v_concat = ctx.alloc_val(Ty::String);
                 ctx.emit(span, InstKind::BinOp {
-                    dst: v_concat,
-                    op: BinOp::Add,
-                    left: prev,
-                    right: v_char,
+                    dst: v_concat, op: BinOp::Add, left: prev, right: v_part,
                 });
                 v_concat
             }
         });
     }
 
-    if let Some(v) = v_accum {
-        ctx.emit(span, InstKind::EmitValue(v));
-    }
+    ctx.emit(span, InstKind::EmitValue(v_accum.unwrap()));
 }
 
-/// Helper: decrypt a fragment at compile time to get plaintext char codes.
-fn decrypt_fragment_plain(frag: &EncryptedFragment, initial_key: &i64) -> Vec<i64> {
-    let mut result = Vec::new();
-    let mut key = *initial_key;
-    for &enc in &frag.encrypted_codes {
-        let plain = enc ^ key;
-        result.push(plain);
-        key = plain;
+/// Emit hash-key-based text decryption with 3-stage multi-stage pipeline.
+///
+/// Uses `__obf_key` variable as the key.
+pub fn emit_hashed_text(
+    ctx: &mut PassState,
+    rng: &mut StdRng,
+    span: Span,
+    text: &str,
+    compile_key: i64,
+    meta_a: ValueId,
+    meta_b: ValueId,
+    meta_c: ValueId,
+    v_four: ValueId,
+    use_entangle: bool,
+) {
+    if text.is_empty() {
+        return;
     }
-    result
+
+    // For hashed text, key is loaded from __obf_key at runtime.
+    // We know at compile time what compile_key is, so we can precompute the 3-stage pipeline.
+    let variant_a = ((compile_key + 1) as u32) % 4;
+    let subkey = stage_a_transform(variant_a, compile_key);
+    let variant_b = (subkey.unsigned_abs() as u32) % 4;
+    let combined = stage_b_combine(variant_b, subkey, compile_key);
+    let variant_c = ((compile_key ^ subkey).unsigned_abs() as u32) % 4;
+
+    let plain = text.as_bytes();
+    let mut v_accum: Option<ValueId> = None;
+    let mut offset = 0;
+
+    while offset < plain.len() {
+        let remaining = plain.len() - offset;
+        let chunk_size = if remaining <= CHUNK_MAX {
+            remaining
+        } else {
+            rng.random_range(CHUNK_MIN..=CHUNK_MAX)
+        };
+
+        let chunk_plain = &plain[offset..offset + chunk_size];
+        let encrypted: Vec<u8> = chunk_plain
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| encrypt_byte_staged(variant_c, b, combined, i))
+            .collect();
+
+        // Use the multi-stage pipeline with __obf_key
+        let v_part = emit_multistage_decrypt_call(
+            ctx, span, &encrypted, compile_key,
+            meta_a, meta_b, meta_c, v_four, use_entangle,
+        );
+
+        v_accum = Some(match v_accum {
+            None => v_part,
+            Some(prev) => {
+                let v_concat = ctx.alloc_val(Ty::String);
+                ctx.emit(span, InstKind::BinOp {
+                    dst: v_concat, op: BinOp::Add, left: prev, right: v_part,
+                });
+                v_concat
+            }
+        });
+
+        offset += chunk_size;
+    }
+
+    ctx.emit(span, InstKind::EmitValue(v_accum.unwrap()));
 }
+
+// ── Tests ────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -315,28 +1062,100 @@ mod tests {
     use rand::SeedableRng;
 
     #[test]
-    fn encrypt_decrypt_roundtrip() {
-        let mut rng = StdRng::seed_from_u64(42);
-        let texts = vec!["hello world".to_string(), "foo".to_string()];
-        let encrypted = encrypt_texts(&texts, &mut rng);
-
-        for (i, text) in texts.iter().enumerate() {
-            let enc = &encrypted[i];
-            let mut decrypted = String::new();
-            for (fi, frag) in enc.fragments.iter().enumerate() {
-                let plain_codes = decrypt_fragment_plain(frag, &enc.chain_keys[fi]);
-                for code in plain_codes {
-                    decrypted.push(char::from_u32(code as u32).unwrap());
-                }
-            }
-            assert_eq!(&decrypted, text);
+    fn stage_a_transform_all_variants() {
+        for variant in 0..4u32 {
+            let key = 12345i64;
+            let result = stage_a_transform(variant, key);
+            assert!(result >= 0 && result < 65537, "stage_a variant {variant} out of range: {result}");
         }
     }
 
     #[test]
-    fn empty_text() {
+    fn stage_b_combine_all_variants() {
+        for variant in 0..4u32 {
+            let subkey = 42i64;
+            let key = 12345i64;
+            let _result = stage_b_combine(variant, subkey, key);
+            // Just ensure no panics
+        }
+    }
+
+    #[test]
+    fn encrypt_decrypt_roundtrip_staged_all_variants() {
+        for variant_c in 0..4u32 {
+            let text = "hello world! 🌍";
+            let combined_key: i64 = 12345;
+            let plain = text.as_bytes();
+            let encrypted: Vec<u8> = plain
+                .iter()
+                .enumerate()
+                .map(|(i, &b)| encrypt_byte_staged(variant_c, b, combined_key, i))
+                .collect();
+
+            let decrypted: Vec<u8> = encrypted
+                .iter()
+                .enumerate()
+                .map(|(i, &enc)| decrypt_byte_staged(variant_c, enc, combined_key, i))
+                .collect();
+
+            assert_eq!(plain, &decrypted[..], "stage_c variant {variant_c} roundtrip failed");
+        }
+    }
+
+    #[test]
+    fn full_3stage_roundtrip() {
+        // Simulate the full 3-stage pipeline
+        let key = 777i64;
+        let variant_a = ((key + 1) as u32) % 4;
+        let subkey = stage_a_transform(variant_a, key);
+        let variant_b = (subkey.unsigned_abs() as u32) % 4;
+        let combined = stage_b_combine(variant_b, subkey, key);
+        let variant_c = ((key ^ subkey).unsigned_abs() as u32) % 4;
+
+        let text = "test 3-stage decrypt";
+        let plain = text.as_bytes();
+        let encrypted: Vec<u8> = plain
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| encrypt_byte_staged(variant_c, b, combined, i))
+            .collect();
+
+        let decrypted: Vec<u8> = encrypted
+            .iter()
+            .enumerate()
+            .map(|(i, &enc)| decrypt_byte_staged(variant_c, enc, combined, i))
+            .collect();
+
+        assert_eq!(plain, &decrypted[..]);
+    }
+
+    #[test]
+    fn encrypt_texts_produces_chunks() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let texts = vec!["hello".to_string(), "world".to_string(), "".to_string()];
+        let results = encrypt_texts(&texts, &mut rng);
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].chunks.len(), 1);
+        assert_eq!(results[0].chunks[0].bytes.len(), 5);
+        assert_eq!(results[1].chunks.len(), 1);
+        assert_eq!(results[1].chunks[0].bytes.len(), 5);
+        assert!(results[2].chunks.is_empty());
+    }
+
+    #[test]
+    fn empty_text_produces_no_chunks() {
         let mut rng = StdRng::seed_from_u64(0);
-        let encrypted = encrypt_texts(&["".to_string()], &mut rng);
-        assert!(encrypted[0].fragments.is_empty());
+        let results = encrypt_texts(&["".to_string()], &mut rng);
+        assert!(results[0].chunks.is_empty());
+    }
+
+    #[test]
+    fn long_text_produces_multiple_chunks() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let text = "a".repeat(200);
+        let results = encrypt_texts(&[text.clone()], &mut rng);
+        assert!(results[0].chunks.len() >= 2, "200-byte text should produce multiple chunks");
+        let total: usize = results[0].chunks.iter().map(|c| c.bytes.len()).sum();
+        assert_eq!(total, 200);
     }
 }

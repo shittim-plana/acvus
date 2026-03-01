@@ -278,5 +278,32 @@ pub fn builtins() -> Vec<BuiltinFn> {
             is_effectful: false,
             constraint: None,
         },
+        BuiltinFn {
+            name: "substring",
+            signature: |_| {
+                // substring: (String, Int, Int) -> String
+                (vec![Ty::String, Ty::Int, Ty::Int], Ty::String)
+            },
+            is_effectful: false,
+            constraint: None,
+        },
+        BuiltinFn {
+            name: "bytes_len",
+            signature: |_| {
+                // bytes_len: (Bytes) -> Int
+                (vec![Ty::Bytes], Ty::Int)
+            },
+            is_effectful: false,
+            constraint: None,
+        },
+        BuiltinFn {
+            name: "bytes_get",
+            signature: |_| {
+                // bytes_get: (Bytes, Int) -> Int
+                (vec![Ty::Bytes, Ty::Int], Ty::Int)
+            },
+            is_effectful: false,
+            constraint: None,
+        },
     ]
 }

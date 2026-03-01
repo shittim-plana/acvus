@@ -236,6 +236,7 @@ impl TypeChecker {
                     Literal::Float(_) => Ty::Float,
                     Literal::String(_) => Ty::String,
                     Literal::Bool(_) => Ty::Bool,
+                    Literal::Bytes(_) => Ty::Bytes,
                 };
                 self.record(*span, ty.clone());
                 ty
@@ -896,6 +897,7 @@ impl TypeChecker {
                     Literal::Float(_) => Ty::Float,
                     Literal::String(_) => Ty::String,
                     Literal::Bool(_) => Ty::Bool,
+                    Literal::Bytes(_) => Ty::Bytes,
                 };
                 if self.subst.unify(&source_resolved, &pat_ty).is_err() {
                     self.error(
@@ -1022,6 +1024,7 @@ impl TypeChecker {
                     Literal::String(_) => Ty::String,
                     Literal::Bool(_) => Ty::Bool,
                     Literal::Int(_) => unreachable!(),
+                    Literal::Bytes(_) => Ty::Bytes,
                 };
                 self.error(MirErrorKind::RangeBoundsNotInt { actual: ty }, span);
             }

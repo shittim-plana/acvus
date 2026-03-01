@@ -136,6 +136,11 @@ fn main() {
                 module = acvus_mir_pass::TransformPass::transform(
                     &pass, module, (),
                 );
+
+                use acvus_mir_pass::optimize::ConstDedupPass;
+                module = acvus_mir_pass::TransformPass::transform(
+                    &ConstDedupPass, module, (),
+                );
             }
             println!("{}", dump(&module));
         }

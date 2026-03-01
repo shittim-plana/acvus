@@ -344,4 +344,5 @@ pub enum Literal {
     Int(i64),
     Float(f64),
     Bool(bool),
+    Bytes(Vec<u8>),
 }

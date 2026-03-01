@@ -18,6 +18,10 @@ fn fmt_literal(lit: &Literal) -> String {
         Literal::Float(f) => format!("{f:?}"),
         Literal::String(s) => format!("{s:?}"),
         Literal::Bool(b) => b.to_string(),
+        Literal::Bytes(bytes) => {
+            let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+            format!("0x{hex}")
+        }
     }
 }
 
