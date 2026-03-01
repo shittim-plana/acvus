@@ -10,21 +10,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Copy manifests first for layer-cached dependency fetch
 COPY Cargo.toml Cargo.lock ./
-COPY acvus-ast/Cargo.toml           acvus-ast/Cargo.toml
-COPY acvus-mir/Cargo.toml           acvus-mir/Cargo.toml
-COPY acvus-mir-cli/Cargo.toml       acvus-mir-cli/Cargo.toml
-COPY acvus-mir-test/Cargo.toml      acvus-mir-test/Cargo.toml
-COPY acvus-interpreter/Cargo.toml   acvus-interpreter/Cargo.toml
-COPY acvus-playground/Cargo.toml    acvus-playground/Cargo.toml
+COPY acvus-ast/Cargo.toml              acvus-ast/Cargo.toml
+COPY acvus-mir/Cargo.toml              acvus-mir/Cargo.toml
+COPY acvus-mir-cli/Cargo.toml          acvus-mir-cli/Cargo.toml
+COPY acvus-mir-test/Cargo.toml         acvus-mir-test/Cargo.toml
+COPY acvus-interpreter/Cargo.toml      acvus-interpreter/Cargo.toml
+COPY acvus-interpreter-test/Cargo.toml acvus-interpreter-test/Cargo.toml
+COPY acvus-mir-pass/Cargo.toml         acvus-mir-pass/Cargo.toml
+COPY acvus-playground/Cargo.toml       acvus-playground/Cargo.toml
 
 # Stub source files so `cargo fetch` / dep compilation succeeds
 RUN mkdir -p acvus-ast/src acvus-mir/src acvus-mir-cli/src \
-             acvus-mir-test/tests acvus-interpreter/src acvus-playground/src && \
+             acvus-mir-test/tests acvus-mir-pass/src \
+             acvus-interpreter/src acvus-interpreter-test/src \
+             acvus-interpreter-test/tests \
+             acvus-playground/src && \
     echo 'fn main(){}' > acvus-ast/src/lib.rs && \
     echo 'fn main(){}' > acvus-mir/src/lib.rs && \
     echo 'fn main(){}' > acvus-mir-cli/src/main.rs && \
     echo ''            > acvus-mir-test/tests/e2e.rs && \
+    echo 'fn main(){}' > acvus-mir-pass/src/lib.rs && \
     echo 'fn main(){}' > acvus-interpreter/src/lib.rs && \
+    echo 'fn main(){}' > acvus-interpreter-test/src/lib.rs && \
+    echo 'fn main(){}' > acvus-interpreter-test/tests/fixtures.rs && \
     echo 'fn main(){}' > acvus-playground/src/main.rs && \
     touch acvus-playground/src/index.html
 
