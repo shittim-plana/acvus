@@ -311,8 +311,8 @@ async fn storage_new_ref_in_match_arm() {
 #[tokio::test]
 async fn range_binding() {
     assert_eq!(
-        run_simple(r#"{{ x = 0..5 }}{{ x | to_string }}"#).await,
-        "0..5"
+        run_simple(r#"{{ x in 0..5 }}{{ x | to_string }}{{/}}"#).await,
+        "01234"
     );
 }
 
@@ -615,12 +615,12 @@ async fn tuple_expression() {
     ]);
     assert_eq!(
         run_with_storage(
-            r#"{{ t = ($a, $b) }}{{ t | to_string }}{{_}}{{/}}"#,
+            r#"{{ (x, y) = ($a, $b) }}{{ x | to_string }}, {{ y }}{{/}}"#,
             types,
             values
         )
         .await,
-        "(42, hello)"
+        "42, hello"
     );
 }
 
@@ -743,12 +743,12 @@ async fn lambda_filter() {
     let (ty, val) = items_storage(vec![0, 1, 2, 0, 3]);
     assert_eq!(
         run_with_storage(
-            r#"{{ x = $items | filter(x -> x != 0) }}{{ x | to_string }}"#,
+            r#"{{ x = $items | filter(x -> x != 0) }}{{ x | map(i -> i | to_string) | join(", ") }}"#,
             ty,
             val
         )
         .await,
-        "[1, 2, 3]"
+        "1, 2, 3"
     );
 }
 
@@ -757,12 +757,12 @@ async fn lambda_map() {
     let (ty, val) = items_storage(vec![1, 2, 3]);
     assert_eq!(
         run_with_storage(
-            r#"{{ x = $items | map(i -> i + 1) }}{{ x | to_string }}"#,
+            r#"{{ x = $items | map(i -> i + 1) }}{{ x | map(i -> i | to_string) | join(", ") }}"#,
             ty,
             val
         )
         .await,
-        "[2, 3, 4]"
+        "2, 3, 4"
     );
 }
 
@@ -771,12 +771,12 @@ async fn lambda_pmap() {
     let (ty, val) = items_storage(vec![1, 2, 3]);
     assert_eq!(
         run_with_storage(
-            r#"{{ x = $items | pmap(i -> i | to_string) }}{{ x | to_string }}"#,
+            r#"{{ x = $items | pmap(i -> i | to_string) }}{{ x | join(", ") }}"#,
             ty,
             val
         )
         .await,
-        "[1, 2, 3]"
+        "1, 2, 3"
     );
 }
 
@@ -785,12 +785,12 @@ async fn pipe_filter_map() {
     let (ty, val) = items_storage(vec![0, 1, 2, 0, 3]);
     assert_eq!(
         run_with_storage(
-            r#"{{ x = $items | filter(x -> x != 0) | map(x -> x | to_string) }}{{ x | to_string }}"#,
+            r#"{{ x = $items | filter(x -> x != 0) | map(x -> x | to_string) }}{{ x | join(", ") }}"#,
             ty,
             val,
         )
         .await,
-        "[1, 2, 3]"
+        "1, 2, 3"
     );
 }
 
@@ -799,12 +799,12 @@ async fn triple_pipe_chain() {
     let (ty, val) = items_storage(vec![0, 1, 2, 3]);
     assert_eq!(
         run_with_storage(
-            r#"{{ x = $items | filter(i -> i != 0) | map(i -> i + 1) | map(i -> i | to_string) }}{{ x | to_string }}"#,
+            r#"{{ x = $items | filter(i -> i != 0) | map(i -> i + 1) | map(i -> i | to_string) }}{{ x | join(", ") }}"#,
             ty,
             val,
         )
         .await,
-        "[2, 3, 4]"
+        "2, 3, 4"
     );
 }
 
@@ -813,12 +813,12 @@ async fn closure_capture_local() {
     let (ty, val) = items_storage(vec![1, 3, 5, 7, 10]);
     assert_eq!(
         run_with_storage(
-            r#"{{ threshold = 5 }}{{ x = $items | filter(i -> i > threshold) }}{{ x | to_string }}{{_}}{{/}}"#,
+            r#"{{ threshold = 5 }}{{ x = $items | filter(i -> i > threshold) }}{{ x | map(i -> i | to_string) | join(", ") }}{{_}}{{/}}"#,
             ty,
             val,
         )
         .await,
-        "[7, 10]"
+        "7, 10"
     );
 }
 
@@ -841,12 +841,12 @@ async fn closure_capture_storage() {
     ]);
     assert_eq!(
         run_with_storage(
-            r#"{{ x = $items | filter(i -> i > $threshold) }}{{ x | to_string }}"#,
+            r#"{{ x = $items | filter(i -> i > $threshold) }}{{ x | map(i -> i | to_string) | join(", ") }}"#,
             types,
             values
         )
         .await,
-        "[5, 10]"
+        "5, 10"
     );
 }
 
@@ -855,12 +855,12 @@ async fn lambda_field_access() {
     let (ty, val) = users_list_storage();
     assert_eq!(
         run_with_storage(
-            r#"{{ x = $users | map(u -> u.name) }}{{ x | to_string }}"#,
+            r#"{{ x = $users | map(u -> u.name) }}{{ x | join(", ") }}"#,
             ty,
             val
         )
         .await,
-        "[alice, bob]"
+        "alice, bob"
     );
 }
 
@@ -869,12 +869,12 @@ async fn lambda_negate_param() {
     let (ty, val) = items_storage(vec![1, 2, 3]);
     assert_eq!(
         run_with_storage(
-            r#"{{ x = $items | map(i -> -i) }}{{ x | to_string }}"#,
+            r#"{{ x = $items | map(i -> -i) }}{{ x | map(i -> i | to_string) | join(", ") }}"#,
             ty,
             val
         )
         .await,
-        "[-1, -2, -3]"
+        "-1, -2, -3"
     );
 }
 
@@ -891,12 +891,12 @@ async fn lambda_not_param() {
     )]);
     assert_eq!(
         run_with_storage(
-            r#"{{ x = $flags | map(i -> !i) }}{{ x | to_string }}"#,
+            r#"{{ x = $flags | map(i -> !i) }}{{ x | map(b -> b | to_string) | join(", ") }}"#,
             types,
             values
         )
         .await,
-        "[false, true, false]"
+        "false, true, false"
     );
 }
 
@@ -912,12 +912,12 @@ async fn lambda_string_concat() {
     )]);
     assert_eq!(
         run_with_storage(
-            r#"{{ x = $names | map(n -> n + "!") }}{{ x | to_string }}"#,
+            r#"{{ x = $names | map(n -> n + "!") }}{{ x | join(", ") }}"#,
             types,
             values
         )
         .await,
-        "[alice!, bob!]"
+        "alice!, bob!"
     );
 }
 
@@ -933,12 +933,12 @@ async fn lambda_float_arithmetic() {
     )]);
     assert_eq!(
         run_with_storage(
-            r#"{{ x = $vals | map(v -> v * 2.0) }}{{ x | to_string }}"#,
+            r#"{{ x = $vals | map(v -> v * 2.0) }}{{ x | map(v -> v | to_string) | join(", ") }}"#,
             types,
             values
         )
         .await,
-        "[3, 5]"
+        "3, 5"
     );
 }
 
@@ -947,12 +947,12 @@ async fn filter_then_map_field() {
     let (ty, val) = users_list_storage();
     assert_eq!(
         run_with_storage(
-            r#"{{ x = $users | filter(u -> u.age > 18) | map(u -> u.name) }}{{ x | to_string }}"#,
+            r#"{{ x = $users | filter(u -> u.age > 18) | map(u -> u.name) }}{{ x | join(", ") }}"#,
             ty,
             val,
         )
         .await,
-        "[alice, bob]"
+        "alice, bob"
     );
 }
 
@@ -976,12 +976,12 @@ async fn multiple_closures_same_capture() {
     ]);
     assert_eq!(
         run_with_storage(
-            r#"{{ x = $items | map(i -> i + $offset) | filter(i -> i > 0) }}{{ x | to_string }}"#,
+            r#"{{ x = $items | map(i -> i + $offset) | filter(i -> i > 0) }}{{ x | map(i -> i | to_string) | join(", ") }}"#,
             types,
             values,
         )
         .await,
-        "[1, 2, 3]"
+        "1, 2, 3"
     );
 }
 
@@ -1143,12 +1143,12 @@ async fn logical_in_filter() {
     let (ty, val) = items_storage(vec![1, 5, 10, 15, 20, 25]);
     assert_eq!(
         run_with_storage(
-            r#"{{ x = $items | filter(i -> i > 5 && i < 20) }}{{ x | to_string }}"#,
+            r#"{{ x = $items | filter(i -> i > 5 && i < 20) }}{{ x | map(i -> i | to_string) | join(", ") }}"#,
             ty,
             val
         )
         .await,
-        "[10, 15]"
+        "10, 15"
     );
 }
 
@@ -1205,12 +1205,12 @@ async fn filter_map_with_object_pattern() {
     )]);
     assert_eq!(
         run_with_storage(
-            r#"{{ x = $products | filter(p -> p.price >= 100) | map(p -> p.name) }}{{ x | to_string }}"#,
+            r#"{{ x = $products | filter(p -> p.price >= 100) | map(p -> p.name) }}{{ x | join(", ") }}"#,
             ty,
             val,
         )
         .await,
-        "[apple, cherry]"
+        "apple, cherry"
     );
 }
 
@@ -1292,12 +1292,12 @@ async fn chained_pipe_with_logical_filter() {
     )]);
     assert_eq!(
         run_with_storage(
-            r#"{{ x = $nums | filter(n -> n > 0 && n < 10) | map(n -> n * n) }}{{ x | to_string }}"#,
+            r#"{{ x = $nums | filter(n -> n > 0 && n < 10) | map(n -> n * n) }}{{ x | map(n -> n | to_string) | join(", ") }}"#,
             types,
             values,
         )
         .await,
-        "[9, 49]"
+        "9, 49"
     );
 }
 
@@ -1352,13 +1352,13 @@ async fn extern_fn_in_pipe_chain() {
     extern_fns.register(DoubleIt);
     let (ty, val) = items_storage(vec![1, 2, 3]);
     let output = run(
-        r#"{{ x = $items | map(i -> double(i)) }}{{ x | to_string }}"#,
+        r#"{{ x = $items | map(i -> double(i)) }}{{ x | map(i -> i | to_string) | join(", ") }}"#,
         ty,
         val,
         extern_fns,
     )
     .await;
-    assert_eq!(output, "[2, 4, 6]");
+    assert_eq!(output, "2, 4, 6");
 }
 
 #[tokio::test]
@@ -1412,8 +1412,8 @@ async fn complex_object_filter_format() {
 #[tokio::test]
 async fn list_literal_expression() {
     assert_eq!(
-        run_simple(r#"{{ x = [1, 2, 3] }}{{ x | to_string }}{{_}}{{/}}"#).await,
-        "[1, 2, 3]"
+        run_simple(r#"{{ x = [1, 2, 3] }}{{ x | map(i -> i | to_string) | join(", ") }}{{_}}{{/}}"#).await,
+        "1, 2, 3"
     );
 }
 
