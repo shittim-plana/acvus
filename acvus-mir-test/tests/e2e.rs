@@ -169,9 +169,9 @@ fn object_pattern() {
 
 #[test]
 fn range_binding() {
-    // Variable binding captures a range value.
+    // Variable binding captures a range value; iterate to emit scalar elements.
     let ir = compile_simple(
-        r#"{{ x = 0..5 }}{{ x | to_string }}"#,
+        r#"{{ x in 0..5 }}{{ x | to_string }}{{/}}"#,
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -205,7 +205,7 @@ fn range_pattern() {
 fn pipe_filter_map() {
     // Variable binding is body-less.
     let ir = compile_to_ir(
-        r#"{{ x = $items | filter(x -> x != 0) | map(x -> x | to_string) }}{{ x | to_string }}"#,
+        r#"{{ x = $items | filter(x -> x != 0) | map(x -> x + 1) }}{{ x | len | to_string }}"#,
         items_storage(),
         &ExternRegistry::new(),
     )
@@ -226,7 +226,7 @@ fn pipe_to_string() {
 fn lambda_in_filter() {
     // Variable binding is body-less.
     let ir = compile_to_ir(
-        r#"{{ x = $items | filter(x -> x != 0) }}{{ x | to_string }}"#,
+        r#"{{ x = $items | filter(x -> x != 0) }}{{ x | len | to_string }}"#,
         items_storage(),
         &ExternRegistry::new(),
     )
@@ -259,7 +259,7 @@ fn extern_async_call() {
 fn tuple_expression() {
     let storage = HashMap::from([("a".into(), Ty::Int), ("b".into(), Ty::String)]);
     let ir = compile_to_ir(
-        r#"{{ t = ($a, $b) }}{{ t | to_string }}{{_}}{{/}}"#,
+        r#"{{ (a, b) = ($a, $b) }}{{ a | to_string }}{{ b }}{{_}}{{/}}"#,
         storage,
         &ExternRegistry::new(),
     )
@@ -605,7 +605,7 @@ fn to_int_conversion() {
 #[test]
 fn pmap_builtin() {
     let ir = compile_to_ir(
-        r#"{{ x = $items | pmap(i -> i | to_string) }}{{ x | to_string }}"#,
+        r#"{{ x = $items | pmap(i -> i + 1) }}{{ x | len | to_string }}"#,
         items_storage(),
         &ExternRegistry::new(),
     )
@@ -700,7 +700,7 @@ fn closure_capture_storage() {
         ("threshold".into(), Ty::Int),
     ]);
     let ir = compile_to_ir(
-        r#"{{ x = $items | filter(i -> i > $threshold) }}{{ x | to_string }}"#,
+        r#"{{ x = $items | filter(i -> i > $threshold) }}{{ x | len | to_string }}"#,
         storage,
         &ExternRegistry::new(),
     )
@@ -727,7 +727,7 @@ fn multi_arm_range_and_literal() {
 #[test]
 fn list_literal_expression() {
     let ir = compile_simple(
-        r#"{{ x = [1, 2, 3] }}{{ x | to_string }}{{_}}{{/}}"#,
+        r#"{{ x = [1, 2, 3] }}{{ x | len | to_string }}{{_}}{{/}}"#,
     )
     .unwrap();
     insta::assert_snapshot!(ir);
@@ -739,7 +739,7 @@ fn list_literal_expression() {
 fn lambda_map_arithmetic() {
     // Lambda param type resolved via unification: map(List<Int>, x -> x + 1)
     let ir = compile_to_ir(
-        r#"{{ x = $items | map(i -> i + 1) }}{{ x | to_string }}"#,
+        r#"{{ x = $items | map(i -> i + 1) }}{{ x | len | to_string }}"#,
         items_storage(),
         &ExternRegistry::new(),
     )
@@ -751,7 +751,7 @@ fn lambda_map_arithmetic() {
 fn lambda_filter_comparison() {
     // Lambda param type resolved via unification: filter(List<Int>, x -> x > 0)
     let ir = compile_to_ir(
-        r#"{{ x = $items | filter(i -> i > 0) }}{{ x | to_string }}"#,
+        r#"{{ x = $items | filter(i -> i > 0) }}{{ x | len | to_string }}"#,
         items_storage(),
         &ExternRegistry::new(),
     )
@@ -765,7 +765,7 @@ fn lambda_filter_comparison() {
 fn closure_capture_local() {
     // Closure captures local variable (not storage).
     let ir = compile_to_ir(
-        r#"{{ threshold = 5 }}{{ x = $items | filter(i -> i > threshold) }}{{ x | to_string }}{{_}}{{/}}"#,
+        r#"{{ threshold = 5 }}{{ x = $items | filter(i -> i > threshold) }}{{ x | len | to_string }}{{_}}{{/}}"#,
         items_storage(),
         &ExternRegistry::new(),
     )
@@ -899,7 +899,7 @@ fn catch_all_with_binding() {
 #[test]
 fn triple_pipe_chain() {
     let ir = compile_to_ir(
-        r#"{{ x = $items | filter(i -> i != 0) | map(i -> i + 1) | map(i -> i | to_string) }}{{ x | to_string }}"#,
+        r#"{{ x = $items | filter(i -> i != 0) | map(i -> i + 1) | map(i -> i * 2) }}{{ x | len | to_string }}"#,
         items_storage(),
         &ExternRegistry::new(),
     )
@@ -964,7 +964,7 @@ fn equality_as_match_source() {
 fn lambda_negate_param() {
     // Lambda param has Ty::Var initially; -i must resolve via unification.
     let ir = compile_to_ir(
-        r#"{{ x = $items | map(i -> -i) }}{{ x | to_string }}"#,
+        r#"{{ x = $items | map(i -> -i) }}{{ x | len | to_string }}"#,
         items_storage(),
         &ExternRegistry::new(),
     )
@@ -979,7 +979,7 @@ fn lambda_not_param() {
     // Lambda param has Ty::Var initially; !i must resolve via unification.
     let storage = HashMap::from([("flags".into(), Ty::List(Box::new(Ty::Bool)))]);
     let ir = compile_to_ir(
-        r#"{{ x = $flags | map(i -> !i) }}{{ x | to_string }}"#,
+        r#"{{ x = $flags | map(i -> !i) }}{{ x | len | to_string }}"#,
         storage,
         &ExternRegistry::new(),
     )
@@ -1010,7 +1010,7 @@ fn multiple_closures_same_capture() {
         ("offset".into(), Ty::Int),
     ]);
     let ir = compile_to_ir(
-        r#"{{ x = $items | map(i -> i + $offset) | filter(i -> i > 0) }}{{ x | to_string }}"#,
+        r#"{{ x = $items | map(i -> i + $offset) | filter(i -> i > 0) }}{{ x | len | to_string }}"#,
         storage,
         &ExternRegistry::new(),
     )
@@ -1027,7 +1027,7 @@ fn string_equality_in_filter() {
         Ty::List(Box::new(Ty::String)),
     )]);
     let ir = compile_to_ir(
-        r#"{{ x = $names | filter(n -> n != "admin") }}{{ x | to_string }}"#,
+        r#"{{ x = $names | filter(n -> n != "admin") }}{{ x | join(",") }}"#,
         storage,
         &ExternRegistry::new(),
     )
@@ -1048,7 +1048,7 @@ fn lambda_field_access() {
         ])))),
     )]);
     let ir = compile_to_ir(
-        r#"{{ x = $users | map(u -> u.name) }}{{ x | to_string }}"#,
+        r#"{{ x = $users | map(u -> u.name) }}{{ x | join(",") }}"#,
         storage,
         &ExternRegistry::new(),
     )
@@ -1079,7 +1079,7 @@ fn storage_accumulate_in_loop() {
 #[test]
 fn pipe_map_to_string_then_filter() {
     let ir = compile_to_ir(
-        r#"{{ x = $items | map(i -> i | to_string) | filter(s -> s != "0") }}{{ x | to_string }}"#,
+        r#"{{ x = $items | map(i -> i + 1) | filter(i -> i != 0) }}{{ x | len | to_string }}"#,
         items_storage(),
         &ExternRegistry::new(),
     )
@@ -1095,7 +1095,7 @@ fn lambda_capture_local_storage_ref() {
     // Lambda must capture it correctly (not fall through to StorageLoad).
     let storage = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
     let ir = compile_to_ir(
-        r#"{{ $offset = 10 }}{{ x = $items | filter(i -> i > $offset) }}{{ x | to_string }}{{_}}{{/}}"#,
+        r#"{{ $offset = 10 }}{{ x = $items | filter(i -> i > $offset) }}{{ x | len | to_string }}{{_}}{{/}}"#,
         storage,
         &ExternRegistry::new(),
     )
@@ -1116,7 +1116,7 @@ fn lambda_multiple_field_access() {
         ])))),
     )]);
     let ir = compile_to_ir(
-        r#"{{ x = $users | map(u -> (u.name, u.age)) }}{{ x | to_string }}"#,
+        r#"{{ x = $users | map(u -> (u.name, u.age)) }}{{ x | len | to_string }}"#,
         storage,
         &ExternRegistry::new(),
     )
@@ -1137,7 +1137,7 @@ fn lambda_chained_field_access() {
         ])))),
     )]);
     let ir = compile_to_ir(
-        r#"{{ x = $users | map(u -> u.address.city) }}{{ x | to_string }}"#,
+        r#"{{ x = $users | map(u -> u.address.city) }}{{ x | join(",") }}"#,
         storage,
         &ExternRegistry::new(),
     )
@@ -1155,7 +1155,7 @@ fn lambda_string_concat() {
         Ty::List(Box::new(Ty::String)),
     )]);
     let ir = compile_to_ir(
-        r#"{{ x = $names | map(n -> n + "!") }}{{ x | to_string }}"#,
+        r#"{{ x = $names | map(n -> n + "!") }}{{ x | join(",") }}"#,
         storage,
         &ExternRegistry::new(),
     )
@@ -1175,7 +1175,7 @@ fn pipe_filter_then_map_field() {
         ])))),
     )]);
     let ir = compile_to_ir(
-        r#"{{ x = $users | filter(u -> u.age > 18) | map(u -> u.name) }}{{ x | to_string }}"#,
+        r#"{{ x = $users | filter(u -> u.age > 18) | map(u -> u.name) }}{{ x | join(",") }}"#,
         storage,
         &ExternRegistry::new(),
     )
@@ -1210,7 +1210,7 @@ fn error_storage_write_type_mismatch() {
 fn lambda_float_arithmetic() {
     let storage = HashMap::from([("vals".into(), Ty::List(Box::new(Ty::Float)))]);
     let ir = compile_to_ir(
-        r#"{{ x = $vals | map(v -> v * 2.0) }}{{ x | to_string }}"#,
+        r#"{{ x = $vals | map(v -> v * 2.0) }}{{ x | len | to_string }}"#,
         storage,
         &ExternRegistry::new(),
     )
@@ -1244,7 +1244,7 @@ fn filter_object_field_equality() {
         ])))),
     )]);
     let ir = compile_to_ir(
-        r#"{{ x = $users | filter(u -> u.active) }}{{ x | to_string }}"#,
+        r#"{{ x = $users | filter(u -> u.active) }}{{ x | len | to_string }}"#,
         storage,
         &ExternRegistry::new(),
     )

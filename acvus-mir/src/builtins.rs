@@ -5,6 +5,23 @@ pub struct BuiltinFn {
     /// Returns (param_types, return_type) with fresh type variables for generics.
     pub signature: fn(&mut TySubst) -> (Vec<Ty>, Ty),
     pub is_effectful: bool,
+    /// Post-unification constraint: called with resolved arg types.
+    /// Returns `Some(error_message)` if the constraint is violated.
+    pub constraint: Option<fn(&[Ty]) -> Option<String>>,
+}
+
+fn is_scalar(ty: &Ty) -> bool {
+    matches!(ty, Ty::Int | Ty::Float | Ty::String | Ty::Bool)
+}
+
+fn require_scalar(args: &[Ty]) -> Option<String> {
+    match &args[0] {
+        ty if is_scalar(ty) => None,
+        Ty::Var(_) | Ty::Error => None, // not yet resolved or error — skip
+        ty => Some(format!(
+            "`to_string` requires a scalar type (Int, Float, Bool, String), got {ty}",
+        )),
+    }
 }
 
 pub fn builtins() -> Vec<BuiltinFn> {
@@ -26,6 +43,7 @@ pub fn builtins() -> Vec<BuiltinFn> {
                 )
             },
             is_effectful: false,
+            constraint: None,
         },
         BuiltinFn {
             name: "map",
@@ -45,6 +63,7 @@ pub fn builtins() -> Vec<BuiltinFn> {
                 )
             },
             is_effectful: false,
+            constraint: None,
         },
         BuiltinFn {
             name: "pmap",
@@ -64,6 +83,7 @@ pub fn builtins() -> Vec<BuiltinFn> {
                 )
             },
             is_effectful: false,
+            constraint: None,
         },
         BuiltinFn {
             name: "to_string",
@@ -73,6 +93,7 @@ pub fn builtins() -> Vec<BuiltinFn> {
                 (vec![t], Ty::String)
             },
             is_effectful: false,
+            constraint: Some(require_scalar),
         },
         BuiltinFn {
             name: "to_float",
@@ -81,6 +102,7 @@ pub fn builtins() -> Vec<BuiltinFn> {
                 (vec![Ty::Int], Ty::Float)
             },
             is_effectful: false,
+            constraint: None,
         },
         BuiltinFn {
             name: "to_int",
@@ -89,6 +111,7 @@ pub fn builtins() -> Vec<BuiltinFn> {
                 (vec![Ty::Float], Ty::Int)
             },
             is_effectful: false,
+            constraint: None,
         },
         BuiltinFn {
             name: "find",
@@ -107,6 +130,7 @@ pub fn builtins() -> Vec<BuiltinFn> {
                 )
             },
             is_effectful: false,
+            constraint: None,
         },
         BuiltinFn {
             name: "reduce",
@@ -125,6 +149,7 @@ pub fn builtins() -> Vec<BuiltinFn> {
                 )
             },
             is_effectful: false,
+            constraint: None,
         },
         BuiltinFn {
             name: "fold",
@@ -145,6 +170,7 @@ pub fn builtins() -> Vec<BuiltinFn> {
                 )
             },
             is_effectful: false,
+            constraint: None,
         },
         BuiltinFn {
             name: "any",
@@ -163,6 +189,7 @@ pub fn builtins() -> Vec<BuiltinFn> {
                 )
             },
             is_effectful: false,
+            constraint: None,
         },
         BuiltinFn {
             name: "all",
@@ -181,6 +208,7 @@ pub fn builtins() -> Vec<BuiltinFn> {
                 )
             },
             is_effectful: false,
+            constraint: None,
         },
         BuiltinFn {
             name: "len",
@@ -190,6 +218,7 @@ pub fn builtins() -> Vec<BuiltinFn> {
                 (vec![Ty::List(Box::new(t))], Ty::Int)
             },
             is_effectful: false,
+            constraint: None,
         },
         BuiltinFn {
             name: "reverse",
@@ -202,6 +231,7 @@ pub fn builtins() -> Vec<BuiltinFn> {
                 )
             },
             is_effectful: false,
+            constraint: None,
         },
         BuiltinFn {
             name: "join",
@@ -213,6 +243,7 @@ pub fn builtins() -> Vec<BuiltinFn> {
                 )
             },
             is_effectful: false,
+            constraint: None,
         },
         BuiltinFn {
             name: "contains",
@@ -225,6 +256,7 @@ pub fn builtins() -> Vec<BuiltinFn> {
                 )
             },
             is_effectful: false,
+            constraint: None,
         },
     ]
 }

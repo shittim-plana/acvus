@@ -702,6 +702,14 @@ impl TypeChecker {
                     }
                 }
 
+                if let Some(check) = b.constraint {
+                    let resolved_args: Vec<Ty> =
+                        arg_types.iter().map(|t| self.subst.resolve(t)).collect();
+                    if let Some(msg) = check(&resolved_args) {
+                        self.error(MirErrorKind::BuiltinConstraint(msg), call_span);
+                    }
+                }
+
                 return self.subst.resolve(&ret_ty);
             }
         }
@@ -1162,11 +1170,7 @@ mod tests {
     #[test]
     fn lambda_type_check() {
         let storage = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
-        let src = "{{ x = $items | filter(x -> x != 0) }}{{ x | to_string }}{{_}}{{/}}";
-        // filter returns List<Int>, but emitting List<Int> directly requires to_string.
-        // Actually x here is each iteration item, which is List<Int>. Let's adjust.
-        // Actually "x = ..." creates a match block iterating over the result.
-        // The result of filter is List<Int>, each element is Int.
+        let src = "{{ x = $items | filter(x -> x != 0) }}{{ x | len | to_string }}{{_}}{{/}}";
         let result = check_with_storage(src, storage);
         assert!(result.is_ok());
     }

@@ -6,13 +6,15 @@ expression: ir
      0 │   r0 = storage_load $users
      1 │   r1 = closure L0 []
      2 │   r2 = call map(r0, r1)
-     3 │   r3 = call to_string(r2)
-     4 │   emit r3
+     3 │   r3 = const ","
+     4 │   r4 = call join(r2, r3)
+     5 │   emit r4
 
     ; r0 ($users) : List<{age: Int, name: String}>
     ; r1 (v1) : Fn({age: Int, name: String}) -> String
     ; r2 (map(...)) : List<String>
-    ; r3 (to_string(...)) : String
+    ; r3 (v3) : String
+    ; r4 (join(...)) : String
 
 === closure L0 (u) ===
      0 │   r1 = r0.name

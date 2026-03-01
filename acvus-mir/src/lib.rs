@@ -118,7 +118,7 @@ mod tests {
     fn integration_pipe_with_lambda() {
         let storage = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
         let result = compile_src(
-            r#"{{ x = $items | filter(x -> x != 0) }}{{ x | to_string }}{{_}}{{/}}"#,
+            r#"{{ x = $items | filter(x -> x != 0) }}{{ x | len | to_string }}{{_}}{{/}}"#,
             storage,
             &empty_registry(),
         );
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn integration_range_expression() {
         let result = compile_src(
-            "{{ x = 0..10 }}{{ x | to_string }}{{_}}{{/}}",
+            "{{ x in 0..10 }}{{ x | to_string }}{{/}}",
             HashMap::new(),
             &empty_registry(),
         );

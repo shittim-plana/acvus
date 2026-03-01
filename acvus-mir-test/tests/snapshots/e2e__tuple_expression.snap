@@ -1,16 +1,40 @@
 ---
 source: acvus-mir-test/tests/e2e.rs
-assertion_line: 254
 expression: ir
 ---
 === main ===
      0 │   r0 = storage_load $a
      1 │   r1 = storage_load $b
      2 │   r2 = tuple (r0, r1)
-     3 │   r3 = call to_string(r2)
-     4 │   emit r3
+     3 │ L2:
+     4 │   r3 = const true
+     5 │   r4 = r2.0
+     6 │   r5 = const true
+     7 │   r6 = r3 && r5
+     8 │   r7 = r2.1
+     9 │   r8 = const true
+    10 │   r9 = r6 && r8
+    11 │   jump_if r9 then L3 else L1
+    12 │ L3:
+    13 │   r10 = r2.0
+    14 │   r11 = r2.1
+    15 │   r12 = call to_string(r10)
+    16 │   emit r12
+    17 │   emit r11
+    18 │   jump L0
+    19 │ L1:
+    20 │ L0:
 
     ; r0 ($a) : Int
     ; r1 ($b) : String
     ; r2 (v2) : (Int, String)
-    ; r3 (to_string(...)) : String
+    ; r3 (v3) : Bool
+    ; r4 (v4) : Int
+    ; r5 (v5) : Bool
+    ; r6 (v6) : Bool
+    ; r7 (v7) : String
+    ; r8 (v8) : Bool
+    ; r9 (v9) : Bool
+    ; r10 (a) : Int
+    ; r11 (b) : String
+    ; r12 (to_string(...)) : String

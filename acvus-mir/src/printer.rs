@@ -435,7 +435,7 @@ mod tests {
     fn print_closure() {
         let storage = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
         let out = compile_and_dump(
-            "{{ x = $items | filter(x -> x != 0) }}{{ x | to_string }}{{_}}{{/}}",
+            "{{ x = $items | filter(x -> x != 0) }}{{ x | len | to_string }}{{_}}{{/}}",
             storage,
             &ExternRegistry::new(),
         );

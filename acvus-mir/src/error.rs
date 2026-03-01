@@ -52,6 +52,9 @@ pub enum MirErrorKind {
     StorageRefNotDerived(String),
     SourceNotIterable { actual: Ty },
 
+    // Builtin constraint errors
+    BuiltinConstraint(String),
+
     // Lowering errors
     ArityMismatch {
         func: String,
@@ -111,6 +114,9 @@ impl fmt::Display for MirError {
             }
             MirErrorKind::SourceNotIterable { actual } => {
                 write!(f, "source type `{actual}` is not iterable (expected List or Range)")
+            }
+            MirErrorKind::BuiltinConstraint(msg) => {
+                write!(f, "{msg}")
             }
             MirErrorKind::ArityMismatch {
                 func,
