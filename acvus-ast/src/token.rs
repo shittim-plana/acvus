@@ -128,6 +128,8 @@ pub enum Token {
     RBrace,
     #[token(",")]
     Comma,
+    #[token(":")]
+    Colon,
 
     // ── Format string segments (emitted by ExprTokenizer, not by logos) ──
 
@@ -177,6 +179,7 @@ impl fmt::Display for Token {
             Token::LBrace => write!(f, "{{"),
             Token::RBrace => write!(f, "}}"),
             Token::Comma => write!(f, ","),
+            Token::Colon => write!(f, ":"),
             Token::FmtStringStart(s) => write!(f, "fmt_start({s:?})"),
             Token::FmtStringMid(s) => write!(f, "fmt_mid({s:?})"),
             Token::FmtStringEnd(s) => write!(f, "fmt_end({s:?})"),

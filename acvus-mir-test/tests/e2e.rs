@@ -1381,3 +1381,47 @@ fn builtin_all() {
     .unwrap();
     insta::assert_snapshot!(ir);
 }
+
+// ── Context Call ────────────────────────────────────────────────
+
+#[test]
+fn context_call_simple() {
+    let context = HashMap::from([("node".into(), Ty::String)]);
+    let ir = compile_to_ir(
+        r#"{{ @node { key: "value", } }}"#,
+        context,
+        &ExternRegistry::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn context_call_shorthand() {
+    let context = HashMap::from([
+        ("node".into(), Ty::String),
+        ("other".into(), Ty::String),
+    ]);
+    let ir = compile_to_ir(
+        "{{ $var = 42 }}{{ @node { $var, @other, } }}",
+        context,
+        &ExternRegistry::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn context_call_expr() {
+    let context = HashMap::from([
+        ("node".into(), Ty::String),
+        ("items".into(), Ty::List(Box::new(Ty::Int))),
+    ]);
+    let ir = compile_to_ir(
+        "{{ @node { count: @items | len, } }}",
+        context,
+        &ExternRegistry::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}

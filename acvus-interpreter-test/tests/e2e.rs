@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use acvus_interpreter::{ExternFn, ExternFnBody, ExternFnRegistry, ExternFnSig, Value};
 use acvus_interpreter_test::*;
 #[allow(unused_imports)]
-use acvus_interpreter_test::{run_obfuscated, run_simple_obfuscated};
+use acvus_interpreter_test::{run_capturing_context_calls, run_obfuscated, run_simple_obfuscated};
 use acvus_mir::ty::Ty;
 
 // ── Text & literals ──────────────────────────────────────────────
@@ -1715,3 +1715,78 @@ async fn obf_boolean_logic_in_match() {
     );
 }
 
+// ── Context Call ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn context_call_bindings_carried() {
+    let types = HashMap::from([
+        ("node".into(), Ty::String),
+        ("items".into(), Ty::List(Box::new(Ty::Int))),
+    ]);
+    let values = HashMap::from([
+        ("node".into(), Value::String("resolved".into())),
+        ("items".into(), Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)])),
+    ]);
+    let result = run_capturing_context_calls(
+        "{{ @node { count: @items | len, } }}",
+        types,
+        values,
+    )
+    .await;
+    assert_eq!(result.output, "resolved");
+    assert_eq!(result.calls.len(), 1);
+    assert_eq!(result.calls[0].0, "node");
+    assert!(matches!(result.calls[0].1.get("count"), Some(Value::Int(3))));
+}
+
+#[tokio::test]
+async fn context_call_multiple_bindings() {
+    let types = HashMap::from([
+        ("target".into(), Ty::String),
+        ("name".into(), Ty::String),
+    ]);
+    let values = HashMap::from([
+        ("target".into(), Value::String("done".into())),
+        ("name".into(), Value::String("alice".into())),
+    ]);
+    let result = run_capturing_context_calls(
+        r#"{{ @target { greeting: "hello", @name, } }}"#,
+        types,
+        values,
+    )
+    .await;
+    assert_eq!(result.output, "done");
+    assert_eq!(result.calls.len(), 1);
+    let bindings = &result.calls[0].1;
+    assert!(matches!(bindings.get("greeting"), Some(Value::String(s)) if s == "hello"));
+    assert!(matches!(bindings.get("name"), Some(Value::String(s)) if s == "alice"));
+}
+
+#[tokio::test]
+async fn context_call_variable_shorthand() {
+    let types = HashMap::from([("node".into(), Ty::String)]);
+    let values = HashMap::from([("node".into(), Value::String("ok".into()))]);
+    let result = run_capturing_context_calls(
+        "{{ $x = 42 }}{{ @node { $x, } }}",
+        types,
+        values,
+    )
+    .await;
+    assert_eq!(result.output, "ok");
+    assert_eq!(result.calls.len(), 1);
+    assert!(matches!(result.calls[0].1.get("x"), Some(Value::Int(42))));
+}
+
+#[tokio::test]
+async fn context_call_no_bindings_not_captured() {
+    let types = HashMap::from([("data".into(), Ty::String)]);
+    let values = HashMap::from([("data".into(), Value::String("hi".into()))]);
+    let result = run_capturing_context_calls(
+        "{{ @data }}",
+        types,
+        values,
+    )
+    .await;
+    assert_eq!(result.output, "hi");
+    assert!(result.calls.is_empty());
+}

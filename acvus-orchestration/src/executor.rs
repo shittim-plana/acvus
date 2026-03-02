@@ -260,6 +260,9 @@ where
                 state.resume_key = Some(next_key);
             }
             Stepped::NeedContext(need) => {
+                if !need.bindings().is_empty() {
+                    panic!("context call with bindings not supported in DAG executor");
+                }
                 let name = need.name().to_string();
                 if let Some(output) = storage.get(&name) {
                     state.resume_key = Some(need.into_key(output_to_value(&output)));

@@ -111,10 +111,15 @@ fn remap_uses(kind: &mut InstKind, remap: &HashMap<ValueId, ValueId>) {
     match kind {
         // No uses
         InstKind::Const { .. }
-        | InstKind::ContextLoad { .. }
         | InstKind::VarLoad { .. }
         | InstKind::BlockLabel { .. }
         | InstKind::Nop => {}
+
+        InstKind::ContextLoad { bindings, .. } => {
+            for (_, v) in bindings.iter_mut() {
+                remap_val(v, remap);
+            }
+        }
 
         // Single use
         InstKind::Yield(v) | InstKind::Return(v) => remap_val(v, remap),

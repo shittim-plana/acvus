@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -16,6 +17,7 @@ struct Shared {
     yielded: bool,
     producer_waker: Option<Waker>,
     context_request: Option<String>,
+    context_bindings: HashMap<String, Value>,
     context_response: Option<Value>,
     context_requested: bool,
 }
@@ -41,6 +43,15 @@ impl YieldHandle {
         ContextFuture {
             shared: Arc::clone(&self.shared),
             name: Some(name),
+            bindings: HashMap::new(),
+        }
+    }
+
+    pub fn request_context_with(&self, name: String, bindings: HashMap<String, Value>) -> ContextFuture {
+        ContextFuture {
+            shared: Arc::clone(&self.shared),
+            name: Some(name),
+            bindings,
         }
     }
 }
@@ -79,6 +90,7 @@ impl Future for YieldFuture {
 pub struct ContextFuture {
     shared: Arc<Mutex<Shared>>,
     name: Option<String>,
+    bindings: HashMap<String, Value>,
 }
 
 impl Future for ContextFuture {
@@ -90,6 +102,7 @@ impl Future for ContextFuture {
 
         if let Some(name) = this.name.take() {
             shared.context_request = Some(name);
+            shared.context_bindings = std::mem::take(&mut this.bindings);
             shared.context_requested = true;
             shared.producer_waker = Some(cx.waker().clone());
             Poll::Pending
@@ -132,11 +145,20 @@ impl EmitStepped {
 
 pub struct NeedContextStepped {
     name: String,
+    bindings: HashMap<String, Value>,
 }
 
 impl NeedContextStepped {
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    pub fn bindings(&self) -> &HashMap<String, Value> {
+        &self.bindings
+    }
+
+    pub fn into_parts(self) -> (String, HashMap<String, Value>) {
+        (self.name, self.bindings)
     }
 
     pub fn into_key(self, value: Value) -> ResumeKey {
@@ -190,7 +212,8 @@ impl Coroutine {
                 if shared.context_requested {
                     shared.context_requested = false;
                     let name = shared.context_request.take().unwrap();
-                    Stepped::NeedContext(NeedContextStepped { name })
+                    let bindings = std::mem::take(&mut shared.context_bindings);
+                    Stepped::NeedContext(NeedContextStepped { name, bindings })
                 } else if shared.yielded {
                     shared.yielded = false;
                     let value = shared.value.take().unwrap();
@@ -220,6 +243,7 @@ where
         yielded: false,
         producer_waker: None,
         context_request: None,
+        context_bindings: HashMap::new(),
         context_response: None,
         context_requested: false,
     }));

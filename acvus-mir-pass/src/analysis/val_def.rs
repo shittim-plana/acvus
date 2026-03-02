@@ -115,6 +115,7 @@ mod tests {
         let module = make_module(vec![inst(InstKind::ContextLoad {
             dst: ValueId(0),
             name: "user".into(),
+            bindings: Vec::new(),
         })]);
         let result = ValDefMapAnalysis.run(&module, ());
         assert_eq!(result.0[&ValueId(0)], 0);

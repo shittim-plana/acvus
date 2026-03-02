@@ -690,6 +690,21 @@ impl TypeChecker {
                 self.record(*span, ty.clone());
                 ty
             }
+
+            Expr::ContextCall { name, bindings, span } => {
+                let result_ty = match self.context_types.get(name) {
+                    Some(ty) => ty.clone(),
+                    None => {
+                        self.error(MirErrorKind::UndefinedContext(name.clone()), *span);
+                        Ty::Error
+                    }
+                };
+                for (_, expr) in bindings {
+                    self.check_expr(expr);
+                }
+                self.record(*span, result_ty.clone());
+                result_ty
+            }
         }
     }
 

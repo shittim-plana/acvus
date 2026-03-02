@@ -149,6 +149,32 @@ fn compile_template(
     })
 }
 
+/// Compile multiple node specs, merging their output types into context automatically.
+///
+/// `injected_types` are externally declared context types (from project.toml).
+/// Each node name is also added as `Ty::String` context.
+pub fn compile_nodes(
+    specs: &[NodeSpec],
+    base_dir: &Path,
+    injected_types: &HashMap<String, Ty>,
+    registry: &ExternRegistry,
+) -> Result<Vec<CompiledNode>, Vec<OrchError>> {
+    let mut context_types = injected_types.clone();
+    for spec in specs {
+        context_types.insert(spec.name.clone(), Ty::String);
+    }
+
+    let mut nodes = Vec::new();
+    let mut errors = Vec::new();
+    for spec in specs {
+        match compile_node(spec, base_dir, &context_types, registry) {
+            Ok(node) => nodes.push(node),
+            Err(errs) => errors.extend(errs),
+        }
+    }
+    if errors.is_empty() { Ok(nodes) } else { Err(errors) }
+}
+
 /// Extract all context keys referenced by `ContextLoad` instructions in a module.
 fn extract_context_keys(module: &MirModule) -> HashSet<String> {
     let mut keys = HashSet::new();

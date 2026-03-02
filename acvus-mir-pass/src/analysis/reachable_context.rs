@@ -335,10 +335,12 @@ mod tests {
             inst(InstKind::ContextLoad {
                 dst: ValueId(0),
                 name: "user".into(),
+                bindings: Vec::new(),
             }),
             inst(InstKind::ContextLoad {
                 dst: ValueId(1),
                 name: "role".into(),
+                bindings: Vec::new(),
             }),
         ]);
         let val_def = build_val_def(&module);
@@ -353,10 +355,12 @@ mod tests {
             inst(InstKind::ContextLoad {
                 dst: ValueId(0),
                 name: "user".into(),
+                bindings: Vec::new(),
             }),
             inst(InstKind::ContextLoad {
                 dst: ValueId(1),
                 name: "role".into(),
+                bindings: Vec::new(),
             }),
         ]);
         let val_def = build_val_def(&module);
@@ -380,6 +384,7 @@ mod tests {
             inst(InstKind::ContextLoad {
                 dst: ValueId(0),
                 name: "mode".into(),
+                bindings: Vec::new(),
             }),
             inst(InstKind::TestLiteral {
                 dst: ValueId(1),
@@ -400,6 +405,7 @@ mod tests {
             inst(InstKind::ContextLoad {
                 dst: ValueId(2),
                 name: "query".into(),
+                bindings: Vec::new(),
             }),
             inst(InstKind::Return(ValueId(2))),
             inst(InstKind::BlockLabel {
@@ -409,6 +415,7 @@ mod tests {
             inst(InstKind::ContextLoad {
                 dst: ValueId(3),
                 name: "fallback".into(),
+                bindings: Vec::new(),
             }),
             inst(InstKind::Return(ValueId(3))),
         ]);
@@ -429,6 +436,7 @@ mod tests {
             inst(InstKind::ContextLoad {
                 dst: ValueId(0),
                 name: "mode".into(),
+                bindings: Vec::new(),
             }),
             inst(InstKind::TestLiteral {
                 dst: ValueId(1),
@@ -449,6 +457,7 @@ mod tests {
             inst(InstKind::ContextLoad {
                 dst: ValueId(2),
                 name: "query".into(),
+                bindings: Vec::new(),
             }),
             inst(InstKind::Return(ValueId(2))),
             inst(InstKind::BlockLabel {
@@ -458,6 +467,7 @@ mod tests {
             inst(InstKind::ContextLoad {
                 dst: ValueId(3),
                 name: "fallback".into(),
+                bindings: Vec::new(),
             }),
             inst(InstKind::Return(ValueId(3))),
         ]);
@@ -477,6 +487,7 @@ mod tests {
             inst(InstKind::ContextLoad {
                 dst: ValueId(0),
                 name: "mode".into(),
+                bindings: Vec::new(),
             }),
             inst(InstKind::TestLiteral {
                 dst: ValueId(1),
@@ -497,6 +508,7 @@ mod tests {
             inst(InstKind::ContextLoad {
                 dst: ValueId(2),
                 name: "query".into(),
+                bindings: Vec::new(),
             }),
             inst(InstKind::Return(ValueId(2))),
             inst(InstKind::BlockLabel {
@@ -506,6 +518,7 @@ mod tests {
             inst(InstKind::ContextLoad {
                 dst: ValueId(3),
                 name: "fallback".into(),
+                bindings: Vec::new(),
             }),
             inst(InstKind::Return(ValueId(3))),
         ]);
@@ -533,6 +546,7 @@ mod tests {
             inst(InstKind::ContextLoad {
                 dst: ValueId(0),
                 name: "role".into(),
+                bindings: Vec::new(),
             }),
             inst(InstKind::TestLiteral {
                 dst: ValueId(1),
@@ -554,6 +568,7 @@ mod tests {
             inst(InstKind::ContextLoad {
                 dst: ValueId(2),
                 name: "level".into(),
+                bindings: Vec::new(),
             }),
             inst(InstKind::Jump { label: Label(0), args: vec![] }),
             // L1: else branch
@@ -564,6 +579,7 @@ mod tests {
             inst(InstKind::ContextLoad {
                 dst: ValueId(3),
                 name: "guest_data".into(),
+                bindings: Vec::new(),
             }),
             inst(InstKind::Jump { label: Label(0), args: vec![] }),
             // L0: merge
@@ -588,6 +604,7 @@ mod tests {
             inst(InstKind::ContextLoad {
                 dst: ValueId(0),
                 name: "level".into(),
+                bindings: Vec::new(),
             }),
             inst(InstKind::TestRange {
                 dst: ValueId(1),
@@ -610,6 +627,7 @@ mod tests {
             inst(InstKind::ContextLoad {
                 dst: ValueId(2),
                 name: "low_data".into(),
+                bindings: Vec::new(),
             }),
             inst(InstKind::Return(ValueId(2))),
             inst(InstKind::BlockLabel {
@@ -619,6 +637,7 @@ mod tests {
             inst(InstKind::ContextLoad {
                 dst: ValueId(3),
                 name: "high_data".into(),
+                bindings: Vec::new(),
             }),
             inst(InstKind::Return(ValueId(3))),
         ]);
@@ -648,6 +667,7 @@ mod tests {
             inst(InstKind::ContextLoad {
                 dst: ValueId(0),
                 name: "role".into(),
+                bindings: Vec::new(),
             }),
             // Test "admin"
             inst(InstKind::TestLiteral {
@@ -670,6 +690,7 @@ mod tests {
             inst(InstKind::ContextLoad {
                 dst: ValueId(2),
                 name: "admin_data".into(),
+                bindings: Vec::new(),
             }),
             inst(InstKind::Jump { label: Label(99), args: vec![] }),
             // L20: next test
@@ -697,6 +718,7 @@ mod tests {
             inst(InstKind::ContextLoad {
                 dst: ValueId(4),
                 name: "user_data".into(),
+                bindings: Vec::new(),
             }),
             inst(InstKind::Jump { label: Label(99), args: vec![] }),
             // L40: default arm
@@ -707,6 +729,7 @@ mod tests {
             inst(InstKind::ContextLoad {
                 dst: ValueId(5),
                 name: "default_data".into(),
+                bindings: Vec::new(),
             }),
             inst(InstKind::Jump { label: Label(99), args: vec![] }),
             // L99: merge

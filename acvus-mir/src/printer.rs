@@ -164,8 +164,21 @@ fn write_body(
 
             // Constants — all skipped above, unreachable here.
             InstKind::Const { .. } => unreachable!(),
-            InstKind::ContextLoad { dst, name } => {
-                writeln!(f, "{} = context_load @{name}", fmt_val(*dst))?
+            InstKind::ContextLoad { dst, name, bindings } => {
+                if bindings.is_empty() {
+                    writeln!(f, "{} = context_load @{name}", fmt_val(*dst))?
+                } else {
+                    let args: Vec<String> = bindings
+                        .iter()
+                        .map(|(k, v)| format!("{k}: {}", fmt_use(*v, &consts, &texts)))
+                        .collect();
+                    writeln!(
+                        f,
+                        "{} = context_call @{name} {{ {} }}",
+                        fmt_val(*dst),
+                        args.join(", ")
+                    )?
+                }
             }
             InstKind::VarLoad { dst, name } => {
                 writeln!(f, "{} = var_load ${name}", fmt_val(*dst))?

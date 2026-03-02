@@ -159,6 +159,12 @@ pub enum Expr {
         elements: Vec<TupleElem>,
         span: Span,
     },
+    /// Context call with bindings: `@name { key: expr, ... }`.
+    ContextCall {
+        name: String,
+        bindings: Vec<(String, Expr)>,
+        span: Span,
+    },
 }
 
 /// An element in a tuple expression: either a real expression or a wildcard `_`.
@@ -184,7 +190,8 @@ impl Expr {
             | Expr::Group { span, .. }
             | Expr::Object { span, .. }
             | Expr::Range { span, .. }
-            | Expr::Tuple { span, .. } => *span,
+            | Expr::Tuple { span, .. }
+            | Expr::ContextCall { span, .. } => *span,
         }
     }
 }

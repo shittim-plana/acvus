@@ -9,7 +9,7 @@ mod executor;
 
 pub use error::{OrchError, OrchErrorKind};
 pub use dsl::{NodeSpec, MessageSpec, ToolDecl};
-pub use compile::{compile_node, CompiledNode, CompiledBlock, CompiledMessage};
+pub use compile::{compile_node, compile_nodes, CompiledNode, CompiledBlock, CompiledMessage};
 pub use storage::{Storage, HashMapStorage};
 pub use message::{Message, ToolCall, ToolResult, ModelResponse, ToolSpec, Output};
 pub use provider::{Fetch, HttpRequest, ApiKind, ProviderConfig, build_request, parse_response};

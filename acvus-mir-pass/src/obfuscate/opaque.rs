@@ -647,7 +647,7 @@ mod tests {
         let mut insts = vec![
             Inst {
                 span: span(),
-                kind: InstKind::ContextLoad { dst: rv, name: "count".into() },
+                kind: InstKind::ContextLoad { dst: rv, name: "count".into(), bindings: Vec::new() },
             },
         ];
         for i in 1..8u32 {

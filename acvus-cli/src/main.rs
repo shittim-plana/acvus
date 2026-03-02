@@ -1,17 +1,17 @@
 mod project;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process;
 
-use acvus_interpreter::{ExternFnRegistry, Interpreter, Value};
+use acvus_interpreter::{ExternFnRegistry, Interpreter, NeedContextStepped, ResumeKey, Stepped, Value};
 use acvus_mir::extern_module::ExternRegistry;
 use acvus_mir::ty::Ty;
 use acvus_orchestration::{
-    build_dag, build_request, compile_node, output_to_value, parse_response, ApiKind,
-    CompiledBlock, CompiledMessage, Executor, Fetch, HashMapStorage, HttpRequest, Message,
-    ModelResponse, NodeSpec, Output, ProviderConfig, Storage, ToolSpec,
+    build_dag, build_request, compile_nodes, output_to_value, parse_response,
+    ApiKind, CompiledBlock, CompiledMessage, Executor, Fetch, HashMapStorage, HttpRequest,
+    Message, ModelResponse, NodeSpec, Output, ProviderConfig, Storage, ToolSpec,
 };
 use futures::future::BoxFuture;
 
@@ -59,27 +59,178 @@ where
     }
 }
 
-async fn render_block(
-    block: &CompiledBlock,
-    all_context_keys: &HashSet<String>,
+// ---------------------------------------------------------------------------
+// Coroutine-driven rendering with demand-driven dependency resolution
+// ---------------------------------------------------------------------------
+
+struct RenderCtx<'a> {
+    nodes: &'a [acvus_orchestration::CompiledNode],
+    name_to_idx: &'a HashMap<&'a str, usize>,
+    providers: &'a HashMap<String, ProviderConfig>,
+    fetch: &'a HttpFetch,
+}
+
+enum BlockDriveResult {
+    Done(String),
+    NeedContext(NeedContextStepped),
+}
+
+/// Drive a coroutine until it completes or needs an unavailable context.
+fn drive_block(
+    coroutine: &mut acvus_interpreter::Coroutine,
+    mut key: ResumeKey,
+    output: &mut String,
     storage: &HashMapStorage,
-) -> String {
-    let context_values: HashMap<String, Value> = all_context_keys
-        .iter()
-        .filter_map(|k| storage.get(k).map(|v| (k.clone(), output_to_value(&v))))
-        .collect();
-    let interp = Interpreter::new(block.module.clone(), ExternFnRegistry::new());
-    interp.execute_to_string(context_values).await
+    local: &HashMap<String, Value>,
+) -> BlockDriveResult {
+    loop {
+        match coroutine.resume(key) {
+            Stepped::Emit(emit) => {
+                let (value, next_key) = emit.into_parts();
+                match value {
+                    Value::String(s) => output.push_str(&s),
+                    other => panic!("expected String, got {other:?}"),
+                }
+                key = next_key;
+            }
+            Stepped::NeedContext(need) => {
+                if !need.bindings().is_empty() {
+                    return BlockDriveResult::NeedContext(need);
+                }
+                let name = need.name().to_string();
+                if let Some(value) = local.get(&name) {
+                    key = need.into_key(value.clone());
+                } else if let Some(out) = storage.get(&name) {
+                    key = need.into_key(output_to_value(&out));
+                } else {
+                    return BlockDriveResult::NeedContext(need);
+                }
+            }
+            Stepped::Done => {
+                return BlockDriveResult::Done(std::mem::take(output));
+            }
+        }
+    }
+}
+
+/// Render a block, resolving missing dependencies on-demand.
+///
+/// `local` provides per-invocation context (e.g. iterator @type/@text)
+/// that takes priority over storage.
+fn render_with_deps<'a>(
+    block: &'a CompiledBlock,
+    storage: &'a mut HashMapStorage,
+    local: HashMap<String, Value>,
+    ctx: &'a RenderCtx<'a>,
+) -> BoxFuture<'a, String> {
+    Box::pin(async move {
+        let interp = Interpreter::new(block.module.clone(), ExternFnRegistry::new());
+        let (mut coroutine, key) = interp.execute();
+        let mut output = String::new();
+
+        let mut result = drive_block(&mut coroutine, key, &mut output, storage, &local);
+        loop {
+            match result {
+                BlockDriveResult::Done(text) => return text,
+                BlockDriveResult::NeedContext(need) => {
+                    let name = need.name().to_string();
+                    let bindings = need.bindings().clone();
+                    if !bindings.is_empty() {
+                        if let Some(&idx) = ctx.name_to_idx.get(name.as_str()) {
+                            resolve_node(idx, storage, ctx, bindings).await;
+                        }
+                        let value = storage
+                            .get(&name)
+                            .map(|o| output_to_value(&o))
+                            .unwrap_or_else(|| panic!("unresolved context: @{name}"));
+                        let key = need.into_key(value);
+                        result = drive_block(&mut coroutine, key, &mut output, storage, &local);
+                    } else {
+                        if let Some(&idx) = ctx.name_to_idx.get(name.as_str()) {
+                            if storage.get(&name).is_none() {
+                                resolve_node(idx, storage, ctx, HashMap::new()).await;
+                            }
+                        }
+                        let value = storage
+                            .get(&name)
+                            .map(|o| output_to_value(&o))
+                            .unwrap_or_else(|| panic!("unresolved context: @{name}"));
+                        let key = need.into_key(value);
+                        result = drive_block(&mut coroutine, key, &mut output, storage, &local);
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// Run a dependency node: render all blocks + call model, store result.
+///
+/// `local` provides per-invocation context bindings (from context call).
+fn resolve_node<'a>(
+    idx: usize,
+    storage: &'a mut HashMapStorage,
+    ctx: &'a RenderCtx<'a>,
+    local: HashMap<String, Value>,
+) -> BoxFuture<'a, ()> {
+    Box::pin(async move {
+        let node = &ctx.nodes[idx];
+
+        let mut messages = Vec::new();
+        for msg in &node.messages {
+            let block = match msg {
+                CompiledMessage::Block(block) => block,
+                CompiledMessage::Iterator { .. } => continue,
+            };
+            let text = render_with_deps(block, storage, local.clone(), ctx).await;
+            messages.push(Message::text(&block.role, text));
+        }
+
+        let provider_config = ctx
+            .providers
+            .get(&node.provider)
+            .unwrap_or_else(|| panic!("unknown provider: {}", node.provider))
+            .clone();
+
+        let tools: Vec<ToolSpec> = node
+            .tools
+            .iter()
+            .map(|t| ToolSpec {
+                name: t.name.clone(),
+                description: String::new(),
+                params: t.params.clone(),
+            })
+            .collect();
+
+        let request = build_request(&provider_config, &node.model, &messages, &tools);
+        let json = ctx
+            .fetch
+            .fetch(&request)
+            .await
+            .unwrap_or_else(|e| panic!("fetch error for node {}: {e}", node.name));
+        let response = parse_response(&provider_config.api, &json)
+            .unwrap_or_else(|e| panic!("parse error for node {}: {e}", node.name));
+
+        match response {
+            ModelResponse::Text(text) => {
+                storage.set(node.name.clone(), Output::Text(text));
+            }
+            ModelResponse::ToolCalls(_) => {
+                panic!("tool calls in dependency node {} not supported", node.name);
+            }
+        }
+    })
 }
 
 /// Expand an iterator entry into messages.
 ///
 /// If the iterator has a template, each item's `@type` and `@text` are injected
-/// as context and rendered through the template. Otherwise items pass through as-is.
+/// as local context and rendered through the template with dep resolution.
 async fn expand_iterator(
     key: &str,
     block: Option<&CompiledBlock>,
-    storage: &HashMapStorage,
+    storage: &mut HashMapStorage,
+    ctx: &RenderCtx<'_>,
 ) -> Vec<Message> {
     let items = match storage.get(key) {
         Some(Output::Json(serde_json::Value::Array(arr))) => arr,
@@ -92,14 +243,11 @@ async fn expand_iterator(
         let text = item["text"].as_str().unwrap_or("");
 
         if let Some(block) = block {
-            let mut context_values: HashMap<String, Value> = HashMap::new();
-            context_values.insert("type".into(), Value::String(role.to_string()));
-            context_values.insert("text".into(), Value::String(text.to_string()));
-            let interp = Interpreter::new(
-                block.module.clone(),
-                ExternFnRegistry::new(),
-            );
-            let rendered = interp.execute_to_string(context_values).await;
+            let local = HashMap::from([
+                ("type".into(), Value::String(role.to_string())),
+                ("text".into(), Value::String(text.to_string())),
+            ]);
+            let rendered = render_with_deps(block, storage, local, ctx).await;
             messages.push(Message::text(role, rendered));
         } else {
             messages.push(Message::text(role, text));
@@ -107,6 +255,10 @@ async fn expand_iterator(
     }
     messages
 }
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 
 #[tokio::main]
 async fn main() {
@@ -134,14 +286,14 @@ async fn main() {
         process::exit(1);
     });
 
-    // Build context types: TOML context values + node names as String
-    let mut context_types: HashMap<String, Ty> = spec
+    // Build context types from TOML declarations
+    let context_types: HashMap<String, Ty> = spec
         .context
         .iter()
         .map(|(k, v)| (k.clone(), toml_to_ty(v)))
         .collect();
 
-    // First pass: collect node names into context_types
+    // Load node specs
     let mut node_specs = Vec::new();
     for node_file in &spec.nodes {
         let node_src = std::fs::read_to_string(project_dir.join(node_file)).unwrap_or_else(|e| {
@@ -152,25 +304,20 @@ async fn main() {
             eprintln!("failed to parse {node_file}: {e}");
             process::exit(1);
         });
-        context_types.insert(node_spec.name.clone(), Ty::String);
         node_specs.push(node_spec);
     }
 
-    // Compile nodes
+    // Compile nodes (node output types merged internally)
     let registry = ExternRegistry::new();
-    let mut compiled_nodes = Vec::new();
-
-    for node_spec in &node_specs {
-        match compile_node(node_spec, &project_dir, &context_types, &registry) {
-            Ok(node) => compiled_nodes.push(node),
-            Err(errors) => {
-                for e in &errors {
-                    eprintln!("compile error: {e}");
-                }
-                process::exit(1);
+    let compiled_nodes = match compile_nodes(&node_specs, &project_dir, &context_types, &registry) {
+        Ok(nodes) => nodes,
+        Err(errors) => {
+            for e in &errors {
+                eprintln!("compile error: {e}");
             }
+            process::exit(1);
         }
-    }
+    };
 
     // Build DAG
     let dag = match build_dag(&compiled_nodes) {
@@ -219,6 +366,19 @@ async fn main() {
     let fetch = HttpFetch { client: reqwest::Client::new() };
 
     if interactive {
+        let name_to_idx: HashMap<&str, usize> = compiled_nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.name.as_str(), i))
+            .collect();
+
+        let ctx = RenderCtx {
+            nodes: &compiled_nodes,
+            name_to_idx: &name_to_idx,
+            providers: &providers,
+            fetch: &fetch,
+        };
+
         let node = &compiled_nodes[0];
 
         let has_iterator = node
@@ -255,11 +415,11 @@ async fn main() {
             .position(|m| matches!(m, CompiledMessage::Iterator { .. }))
             .unwrap();
 
-        // Render static prefix once
+        // Render static prefix once (deps resolved on-demand)
         let mut static_messages: Vec<Message> = Vec::new();
         for msg in &node.messages[..first_iter] {
             if let CompiledMessage::Block(block) = msg {
-                let text = render_block(block, &node.all_context_keys, &storage).await;
+                let text = render_with_deps(block, &mut storage, HashMap::new(), &ctx).await;
                 static_messages.push(Message::text(&block.role, text));
             }
         }
@@ -267,12 +427,10 @@ async fn main() {
         let dynamic_msgs = &node.messages[first_iter..];
 
         // Auto-detect per-turn keys: context keys not in initial storage, not node names
-        let node_names: HashSet<&str> =
-            compiled_nodes.iter().map(|n| n.name.as_str()).collect();
         let per_turn_keys: Vec<String> = node
             .all_context_keys
             .iter()
-            .filter(|k| !node_names.contains(k.as_str()) && storage.get(k).is_none())
+            .filter(|k| !name_to_idx.contains_key(k.as_str()) && storage.get(k).is_none())
             .cloned()
             .collect();
 
@@ -305,12 +463,12 @@ async fn main() {
                 match msg {
                     CompiledMessage::Iterator { key, block } => {
                         let expanded =
-                            expand_iterator(key, block.as_ref(), &storage).await;
+                            expand_iterator(key, block.as_ref(), &mut storage, &ctx).await;
                         messages.extend(expanded);
                     }
                     CompiledMessage::Block(block) => {
                         let text =
-                            render_block(block, &node.all_context_keys, &storage).await;
+                            render_with_deps(block, &mut storage, HashMap::new(), &ctx).await;
                         let message = Message::text(&block.role, text);
                         messages.push(message.clone());
                         new_messages.push(message);

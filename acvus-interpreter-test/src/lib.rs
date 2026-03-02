@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-use acvus_interpreter::{ExternFnRegistry, Interpreter, PureValue, Value};
+use acvus_interpreter::{ExternFnRegistry, Interpreter, PureValue, Stepped, Value};
 use acvus_mir::ty::Ty;
 
 // ── Core pipeline ───────────────────────────────────────────────
@@ -66,6 +66,59 @@ pub async fn run_with_context(
     values: HashMap<String, Value>,
 ) -> String {
     run(source, types, values, ExternFnRegistry::new()).await
+}
+
+/// Context call result: the yielded NeedContext info.
+#[derive(Debug)]
+pub struct ContextCallResult {
+    pub output: String,
+    pub calls: Vec<(String, HashMap<String, Value>)>,
+}
+
+/// Run a template and capture context calls with their bindings.
+///
+/// When a NeedContext with bindings is encountered, the bindings are recorded
+/// and the context is resolved from `values` by name. This allows testing
+/// that context call bindings are properly carried through the coroutine.
+pub async fn run_capturing_context_calls(
+    source: &str,
+    types: HashMap<String, Ty>,
+    values: HashMap<String, Value>,
+) -> ContextCallResult {
+    let template = acvus_ast::parse(source).expect("parse failed");
+    let (module, _hints) =
+        acvus_mir::compile(&template, types, &ExternFnRegistry::new().to_mir_registry())
+            .expect("compile failed");
+    let interp = Interpreter::new(module, ExternFnRegistry::new());
+    let (mut coroutine, mut key) = interp.execute();
+    let mut output = String::new();
+    let mut calls = Vec::new();
+    loop {
+        match coroutine.resume(key) {
+            Stepped::Emit(emit) => {
+                let (value, next_key) = emit.into_parts();
+                match value {
+                    Value::String(s) => output.push_str(&s),
+                    other => panic!("expected String, got {other:?}"),
+                }
+                key = next_key;
+            }
+            Stepped::NeedContext(need) => {
+                let name = need.name().to_string();
+                let bindings = need.bindings().clone();
+                if !bindings.is_empty() {
+                    calls.push((name.clone(), bindings));
+                }
+                let v = values
+                    .get(&name)
+                    .unwrap_or_else(|| panic!("undefined context @{name}"))
+                    .clone();
+                key = need.into_key(v);
+            }
+            Stepped::Done => break,
+        }
+    }
+    ContextCallResult { output, calls }
 }
 
 // ── Fixture runner ──────────────────────────────────────────────

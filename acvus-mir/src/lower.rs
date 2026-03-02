@@ -286,6 +286,7 @@ impl Lowerer {
                             InstKind::ContextLoad {
                                 dst,
                                 name: name.clone(),
+                                bindings: Vec::new(),
                             },
                         );
                         dst
@@ -615,6 +616,26 @@ impl Lowerer {
                     return dst;
                 };
                 self.lower_expr(last)
+            }
+
+            Expr::ContextCall { name, bindings, span } => {
+                let binding_vals: Vec<(String, ValueId)> = bindings
+                    .iter()
+                    .map(|(k, expr)| (k.clone(), self.lower_expr(expr)))
+                    .collect();
+                let dst = self.alloc_val();
+                let ty = self.type_of_span(*span);
+                self.set_val_type(dst, ty);
+                self.set_origin(dst, ValOrigin::Context(name.clone()));
+                self.emit_inst(
+                    *span,
+                    InstKind::ContextLoad {
+                        dst,
+                        name: name.clone(),
+                        bindings: binding_vals,
+                    },
+                );
+                dst
             }
         }
     }
@@ -1480,6 +1501,11 @@ impl Lowerer {
                 }
             }
             Expr::Literal { .. } => {}
+            Expr::ContextCall { bindings, .. } => {
+                for (_, e) in bindings {
+                    self.collect_free_vars(e, bound, free, seen);
+                }
+            }
         }
     }
 }

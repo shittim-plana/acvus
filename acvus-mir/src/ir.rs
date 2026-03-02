@@ -23,7 +23,7 @@ pub enum InstKind {
 
     // Constants / variables
     Const { dst: ValueId, value: Literal },
-    ContextLoad { dst: ValueId, name: String },
+    ContextLoad { dst: ValueId, name: String, bindings: Vec<(String, ValueId)> },
     VarLoad { dst: ValueId, name: String },
     VarStore { name: String, src: ValueId },
 

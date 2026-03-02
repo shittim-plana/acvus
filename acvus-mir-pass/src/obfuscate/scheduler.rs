@@ -194,10 +194,12 @@ fn used_vals(kind: &InstKind) -> Vec<ValueId> {
         InstKind::Jump { args, .. } => args.clone(),
         InstKind::Return(v) => vec![*v],
         InstKind::Const { .. }
-        | InstKind::ContextLoad { .. }
         | InstKind::VarLoad { .. }
         | InstKind::BlockLabel { .. }
         | InstKind::Nop => vec![],
+        InstKind::ContextLoad { bindings, .. } => {
+            bindings.iter().map(|(_, v)| *v).collect()
+        }
     }
 }
 
