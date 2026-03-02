@@ -87,6 +87,7 @@ mod tests {
             all_context_keys: context_keys.into_iter().map(Into::into).collect(),
             strategy: Default::default(),
             key_module: None,
+            output_module: None,
         }
     }
 

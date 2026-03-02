@@ -1,0 +1,3 @@
+Analyze the sentiment of the following text. Output a single word: positive, negative, or neutral.
+
+{{ @input }}

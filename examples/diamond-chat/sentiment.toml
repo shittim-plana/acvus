@@ -1,0 +1,10 @@
+name = "sentiment"
+provider = "gemini"
+model = "gemini-2.5-flash"
+
+[strategy]
+mode = "always"
+
+[[messages]]
+role = "user"
+template = "sentiment_prompt.acvus"

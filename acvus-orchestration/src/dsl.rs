@@ -13,6 +13,9 @@ pub struct NodeSpec {
     #[serde(default)]
     pub messages: Vec<MessageSpec>,
     pub strategy: Strategy,
+    /// Output template — rendered after the model responds.
+    /// Used to post-process the result through downstream nodes.
+    pub output: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

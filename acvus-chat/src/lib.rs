@@ -313,6 +313,17 @@ where
             .position(|m| matches!(m, CompiledMessage::Iterator { .. }))
             .unwrap();
 
+        // Seed context metadata for the main node
+        let ctx_prefix = format!("context.{}", node.name);
+        storage.set(
+            format!("{ctx_prefix}.model"),
+            Output::Text(node.model.clone()),
+        );
+        storage.set(
+            format!("{ctx_prefix}.provider"),
+            Output::Text(node.provider.clone()),
+        );
+
         let mut key_cache = HashMap::new();
 
         let ctx = RenderCtx {
@@ -455,10 +466,20 @@ where
             );
         }
 
+        let final_output = if let Some(output_block) = &nodes[0].output_module {
+            storage.set(nodes[0].name.clone(), Output::Text(response_text));
+            let rendered =
+                render_with_deps(output_block, storage, HashMap::new(), &ctx, key_cache).await;
+            storage.remove(&nodes[0].name);
+            rendered
+        } else {
+            response_text
+        };
+
         for key in &self.per_turn_keys {
             storage.remove(key);
         }
 
-        response_text
+        final_output
     }
 }

@@ -1,0 +1,10 @@
+name = "translate_kr"
+provider = "gemini"
+model = "gemini-2.5-flash"
+
+[strategy]
+mode = "always"
+
+[[messages]]
+role = "user"
+template = "translate_kr_prompt.acvus"

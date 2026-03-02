@@ -21,6 +21,7 @@ pub struct CompiledNode {
     pub all_context_keys: HashSet<String>,
     pub strategy: Strategy,
     pub key_module: Option<CompiledBlock>,
+    pub output_module: Option<CompiledBlock>,
 }
 
 /// A compiled message entry.
@@ -136,6 +137,18 @@ pub fn compile_node(
             None
         };
 
+    let output_module = if let Some(output_tmpl) = &spec.output {
+        match compile_template(base_dir, output_tmpl, 0, context_types, registry) {
+            Ok(block) => {
+                all_context_keys.extend(block.context_keys.iter().cloned());
+                Some(block)
+            }
+            Err(e) => return Err(vec![e]),
+        }
+    } else {
+        None
+    };
+
     Ok(CompiledNode {
         name: spec.name.clone(),
         provider: spec.provider.clone(),
@@ -145,6 +158,7 @@ pub fn compile_node(
         all_context_keys,
         strategy: spec.strategy.clone(),
         key_module,
+        output_module,
     })
 }
 
