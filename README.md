@@ -1,6 +1,6 @@
 # acvus
 
-A template engine for LLM orchestration. Templates compile to typed intermediate representation, execute as a DAG, and run anywhere — no runtime dependency required.
+A template engine for multi modal orchestration. Templates compile to typed intermediate representation, execute as a DAG, and run anywhere — no runtime dependency required.
 
 ## What it does
 
@@ -47,7 +47,7 @@ my-project/
   project.toml        # providers, context, node file list
   summarizer.toml     # node definition
   reviewer.toml       # node definition
-  system.acvus         # template
+  system.acvus        # template
   user.acvus
 ```
 

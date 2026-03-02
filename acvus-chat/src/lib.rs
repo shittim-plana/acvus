@@ -7,7 +7,7 @@ use acvus_interpreter::{ExternFnRegistry, Interpreter, NeedContextStepped, Resum
 use acvus_orchestration::{
     build_cache_request, build_request, parse_cache_response, parse_response, CompiledBlock,
     CompiledMessage, CompiledNode, Fetch, HashMapStorage, Message, ModelResponse, NodeKind,
-    ProviderConfig, Storage, StrategyMode, ToolSpec,
+    ProviderConfig, Storage, StrategyMode, ToolDecl, ToolSpec,
 };
 
 type Fut<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
@@ -78,11 +78,122 @@ fn resolve_index(idx: i64, len: usize) -> usize {
     }
 }
 
+fn item_fields(item: &Value) -> (&str, &str) {
+    match item {
+        Value::Object(obj) => {
+            let typ = match obj.get("type") {
+                Some(Value::String(s)) => s.as_str(),
+                _ => "user",
+            };
+            let text = match obj.get("text") {
+                Some(Value::String(s)) => s.as_str(),
+                _ => "",
+            };
+            (typ, text)
+        }
+        _ => ("user", ""),
+    }
+}
+
+fn update_history(
+    storage: &mut HashMapStorage,
+    iterator_keys: &[String],
+    new_messages: &[Message],
+    response_text: &str,
+) {
+    for iter_key in iterator_keys {
+        let mut history = storage
+            .get(iter_key)
+            .and_then(|arc| match Arc::unwrap_or_clone(arc) {
+                Value::List(items) => Some(items),
+                _ => None,
+            })
+            .unwrap_or_default();
+        for msg in new_messages {
+            history.push(Value::Object(BTreeMap::from([
+                ("type".into(), Value::String(msg.role.clone())),
+                ("text".into(), Value::String(msg.content.clone())),
+            ])));
+        }
+        history.push(Value::Object(BTreeMap::from([
+            ("type".into(), Value::String("assistant".into())),
+            ("text".into(), Value::String(response_text.to_string())),
+        ])));
+        storage.set(iter_key.clone(), Value::List(history));
+    }
+}
+
+fn tool_specs(tools: &[ToolDecl]) -> Vec<ToolSpec> {
+    tools
+        .iter()
+        .map(|t| ToolSpec {
+            name: t.name.clone(),
+            description: String::new(),
+            params: t.params.clone(),
+        })
+        .collect()
+}
+
 impl<'a, F, R> RenderCtx<'a, F, R>
 where
     F: Fetch,
     R: AsyncFn(String) -> Value + Sync,
 {
+    async fn resolve_context(
+        &self,
+        name: &str,
+        bindings: HashMap<String, Value>,
+        storage: &mut HashMapStorage,
+        key_cache: &mut HashMap<String, String>,
+        turn_local: &mut HashMap<String, Value>,
+    ) -> Value {
+        if !bindings.is_empty() {
+            if let Some(&idx) = self.name_to_idx.get(name) {
+                self.resolve_node(idx, storage, bindings, key_cache, turn_local)
+                    .await;
+            }
+            return storage
+                .get(name)
+                .map(Arc::unwrap_or_clone)
+                .unwrap_or_else(|| panic!("unresolved context: @{name}"));
+        }
+
+        if let Some(&idx) = self.name_to_idx.get(name) {
+            if storage.get(name).is_none() {
+                self.resolve_node(idx, storage, HashMap::new(), key_cache, turn_local)
+                    .await;
+            }
+        }
+        if let Some(arc) = storage.get(name) {
+            Arc::unwrap_or_clone(arc)
+        } else if let Some(cached) = turn_local.get(name) {
+            cached.clone()
+        } else {
+            let resolved = (self.resolver)(name.to_string()).await;
+            turn_local.insert(name.to_string(), resolved.clone());
+            resolved
+        }
+    }
+
+    async fn resolve_cached_content(
+        &self,
+        cache_key: &str,
+        storage: &mut HashMapStorage,
+        key_cache: &mut HashMap<String, String>,
+        turn_local: &mut HashMap<String, Value>,
+    ) -> Option<String> {
+        if storage.get(cache_key).is_none() {
+            if let Some(&idx) = self.name_to_idx.get(cache_key) {
+                self.resolve_node(idx, storage, HashMap::new(), key_cache, turn_local)
+                    .await;
+            }
+        }
+        storage.get(cache_key).and_then(|arc| match &*arc {
+            Value::String(s) => Some(s.clone()),
+            _ => None,
+        })
+    }
+
     fn render_with_deps(
         &'a self,
         block: &'a CompiledBlock,
@@ -104,42 +215,13 @@ where
                     BlockDriveResult::NeedContext(need) => {
                         let name = need.name().to_string();
                         let bindings = need.bindings().clone();
-                        if !bindings.is_empty() {
-                            if let Some(&idx) = self.name_to_idx.get(&name) {
-                                self.resolve_node(idx, storage, bindings, key_cache, turn_local)
-                                    .await;
-                            }
-                            let value = storage
-                                .get(&name)
-                                .map(Arc::unwrap_or_clone)
-                                .unwrap_or_else(|| panic!("unresolved context: @{name}"));
-                            let key = need.into_key(value);
-                            result = drive_block(
-                                &mut coroutine, key, &mut output, storage, &local, turn_local,
-                            );
-                        } else {
-                            if let Some(&idx) = self.name_to_idx.get(&name) {
-                                if storage.get(&name).is_none() {
-                                    self.resolve_node(
-                                        idx, storage, HashMap::new(), key_cache, turn_local,
-                                    )
-                                    .await;
-                                }
-                            }
-                            let value = if let Some(arc) = storage.get(&name) {
-                                Arc::unwrap_or_clone(arc)
-                            } else if let Some(cached) = turn_local.get(&name) {
-                                cached.clone()
-                            } else {
-                                let resolved = (self.resolver)(name.clone()).await;
-                                turn_local.insert(name, resolved.clone());
-                                resolved
-                            };
-                            let key = need.into_key(value);
-                            result = drive_block(
-                                &mut coroutine, key, &mut output, storage, &local, turn_local,
-                            );
-                        }
+                        let value = self
+                            .resolve_context(&name, bindings, storage, key_cache, turn_local)
+                            .await;
+                        let key = need.into_key(value);
+                        result = drive_block(
+                            &mut coroutine, key, &mut output, storage, &local, turn_local,
+                        );
                     }
                 }
             }
@@ -210,15 +292,7 @@ where
                     storage.set(node.name.clone(), Value::String(cache_name));
                 }
                 NodeKind::Llm => {
-                    let tools: Vec<ToolSpec> = node
-                        .tools
-                        .iter()
-                        .map(|t| ToolSpec {
-                            name: t.name.clone(),
-                            description: String::new(),
-                            params: t.params.clone(),
-                        })
-                        .collect();
+                    let tools = tool_specs(&node.tools);
 
                     let request = build_request(
                         &provider_config, &node.model, &messages, &tools, &node.generation, None,
@@ -276,21 +350,8 @@ where
 
         let mut messages = Vec::new();
         for item in items {
-            let (item_type, item_text) = match item {
-                Value::Object(obj) => (
-                    match obj.get("type") {
-                        Some(Value::String(s)) => s.as_str(),
-                        _ => "user",
-                    },
-                    match obj.get("text") {
-                        Some(Value::String(s)) => s.as_str(),
-                        _ => "",
-                    },
-                ),
-                _ => ("user", ""),
-            };
+            let (item_type, item_text) = item_fields(item);
             let role = role_override.as_deref().unwrap_or(item_type);
-            let text = item_text;
 
             if let Some(block) = block {
                 let local = if let Some(bind_name) = bind {
@@ -298,7 +359,7 @@ where
                 } else {
                     HashMap::from([
                         ("type".into(), Value::String(role.to_string())),
-                        ("text".into(), Value::String(text.to_string())),
+                        ("text".into(), Value::String(item_text.to_string())),
                     ])
                 };
                 let rendered = self
@@ -306,7 +367,7 @@ where
                     .await;
                 messages.push(Message::text(role, rendered));
             } else {
-                messages.push(Message::text(role, text));
+                messages.push(Message::text(role, item_text));
             }
         }
         messages
@@ -365,15 +426,7 @@ where
             .unwrap_or_else(|| panic!("unknown provider: {}", node.provider))
             .clone();
 
-        let tools: Vec<ToolSpec> = node
-            .tools
-            .iter()
-            .map(|t| ToolSpec {
-                name: t.name.clone(),
-                description: String::new(),
-                params: t.params.clone(),
-            })
-            .collect();
+        let tools = tool_specs(&node.tools);
 
         let first_iter_idx = node
             .messages
@@ -466,20 +519,12 @@ where
 
         let ctx = RenderCtx { nodes, name_to_idx, providers, fetch, extern_fns, resolver };
 
-        // Resolve cache_key through context system
-        let cached_content = if let Some(ref cache_key) = nodes[0].cache_key {
-            if storage.get(cache_key).is_none() {
-                if let Some(&idx) = name_to_idx.get(cache_key.as_str()) {
-                    ctx.resolve_node(idx, storage, HashMap::new(), key_cache, &mut turn_local)
-                        .await;
-                }
+        let cached_content = match nodes[0].cache_key {
+            Some(ref cache_key) => {
+                ctx.resolve_cached_content(cache_key, storage, key_cache, &mut turn_local)
+                    .await
             }
-            storage.get(cache_key).and_then(|arc| match &*arc {
-                Value::String(s) => Some(s.clone()),
-                _ => None,
-            })
-        } else {
-            None
+            None => None,
         };
 
         let mut messages = self.static_messages.clone();
@@ -530,26 +575,7 @@ where
             ModelResponse::ToolCalls(_) => panic!("tool calls not supported in chat mode yet"),
         };
 
-        for iter_key in &self.iterator_keys {
-            let mut history = storage
-                .get(iter_key)
-                .and_then(|arc| match Arc::unwrap_or_clone(arc) {
-                    Value::List(items) => Some(items),
-                    _ => None,
-                })
-                .unwrap_or_default();
-            for msg in &new_messages {
-                history.push(Value::Object(BTreeMap::from([
-                    ("type".into(), Value::String(msg.role.clone())),
-                    ("text".into(), Value::String(msg.content.clone())),
-                ])));
-            }
-            history.push(Value::Object(BTreeMap::from([
-                ("type".into(), Value::String("assistant".into())),
-                ("text".into(), Value::String(response_text.clone())),
-            ])));
-            storage.set(iter_key.clone(), Value::List(history));
-        }
+        update_history(storage, &self.iterator_keys, &new_messages, &response_text);
 
         storage.set(nodes[0].name.clone(), Value::String(response_text));
         let rendered = ctx
