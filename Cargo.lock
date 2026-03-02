@@ -111,7 +111,6 @@ dependencies = [
  "acvus-mir",
  "acvus-mir-pass",
  "futures",
- "serde",
  "serde_json",
  "tokio",
  "trait-variant",

@@ -1,3 +1,4 @@
+mod node;
 mod project;
 
 use std::collections::HashMap;
@@ -9,9 +10,10 @@ use acvus_interpreter::{ExternFnRegistry, Value};
 use acvus_mir::extern_module::ExternRegistry;
 use acvus_mir::ty::Ty;
 use acvus_orchestration::{
-    compile_nodes, resolve_template, ApiKind, Fetch, HashMapStorage, HttpRequest, NodeSpec,
+    compile_nodes, compile_template, ApiKind, Fetch, HashMapStorage, HttpRequest,
     ProviderConfig,
 };
+use node::NodeDef;
 use project::{toml_to_ty, ProjectSpec};
 
 #[derive(Clone)]
@@ -85,15 +87,19 @@ async fn main() {
             eprintln!("failed to read {node_file}: {e}");
             process::exit(1);
         });
-        let node_spec: NodeSpec = toml::from_str(&node_src).unwrap_or_else(|e| {
+        let node_def: NodeDef = toml::from_str(&node_src).unwrap_or_else(|e| {
             eprintln!("failed to parse {node_file}: {e}");
+            process::exit(1);
+        });
+        let node_spec = node::resolve_node(node_def, &project_dir).unwrap_or_else(|e| {
+            eprintln!("failed to resolve {node_file}: {e}");
             process::exit(1);
         });
         node_specs.push(node_spec);
     }
 
     let registry = ExternRegistry::new();
-    let compiled_nodes = match compile_nodes(&node_specs, &project_dir, &context_types, &registry) {
+    let compiled_nodes = match compile_nodes(&node_specs, &context_types, &registry) {
         Ok(nodes) => nodes,
         Err(errors) => {
             for e in &errors {
@@ -136,24 +142,31 @@ async fn main() {
 
     let fetch = HttpFetch { client: reqwest::Client::new() };
 
-    // Compile output template if specified in project.toml
-    let output_module = if spec.output.is_some() || spec.inline_output.is_some() {
-        match resolve_template(
-            &project_dir,
-            spec.output.as_deref(),
-            spec.inline_output.as_deref(),
-            0,
-            &context_types,
-            &registry,
-        ) {
-            Ok(block) => Some(block),
-            Err(e) => {
-                eprintln!("output template error: {e}");
-                process::exit(1);
-            }
-        }
+    // Compile output template (required)
+    let output_source = if let Some(path) = &spec.output {
+        let full = project_dir.join(path);
+        std::fs::read_to_string(&full).unwrap_or_else(|e| {
+            eprintln!("failed to read output template '{}': {e}", full.display());
+            process::exit(1);
+        })
+    } else if let Some(inline) = &spec.inline_output {
+        inline.clone()
     } else {
-        None
+        eprintln!("project.toml must specify 'output' or 'inline_output'");
+        process::exit(1);
+    };
+
+    // Output template can reference node names as context keys
+    let mut output_context_types = context_types.clone();
+    for ns in &node_specs {
+        output_context_types.insert(ns.name.clone(), Ty::String);
+    }
+    let output_module = match compile_template(&output_source, 0, &output_context_types, &registry) {
+        Ok(block) => block,
+        Err(e) => {
+            eprintln!("output template error: {e}");
+            process::exit(1);
+        }
     };
 
     let extern_fns = ExternFnRegistry::new();

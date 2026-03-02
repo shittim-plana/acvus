@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
 
 use acvus_mir::extern_module::ExternRegistry;
 use acvus_mir::ir::{InstKind, MirModule};
@@ -159,161 +158,8 @@ impl CompiledNode {
     }
 }
 
-/// Compile a node spec into a `CompiledNode`.
-///
-/// Each message's template file is loaded from `base_dir`, parsed, and compiled.
-/// Context keys are extracted from MIR `ContextLoad` instructions.
-pub fn compile_node(
-    spec: &NodeSpec,
-    base_dir: &Path,
-    context_types: &HashMap<String, Ty>,
-    registry: &ExternRegistry,
-) -> Result<CompiledNode, Vec<OrchError>> {
-    let mut compiled_messages = Vec::new();
-    let mut all_context_keys = HashSet::new();
-    let mut errors = Vec::new();
-
-    for (i, msg) in spec.messages.iter().enumerate() {
-        match msg {
-            MessageSpec::Block { role, template, inline_template } => {
-                let result = resolve_template(
-                    base_dir, template.as_deref(), inline_template.as_deref(),
-                    i, context_types, registry,
-                );
-                match result {
-                    Ok(block) => {
-                        all_context_keys.extend(block.context_keys.iter().cloned());
-                        compiled_messages.push(CompiledMessage::Block(CompiledBlock {
-                            role: role.clone(),
-                            ..block
-                        }));
-                    }
-                    Err(e) => errors.push(e),
-                }
-            }
-            MessageSpec::Iterator { iterator, template, inline_template, slice, bind, role } => {
-                let key = iterator.0.clone();
-
-                let tmpl_source = template.as_deref().or(inline_template.as_deref());
-                let block = if tmpl_source.is_some() {
-                    let mut iter_types = context_types.clone();
-                    if let Some(bind_name) = bind {
-                        iter_types.insert(
-                            bind_name.clone(),
-                            Ty::Object(BTreeMap::from([
-                                ("type".into(), Ty::String),
-                                ("text".into(), Ty::String),
-                            ])),
-                        );
-                    } else {
-                        iter_types.insert("type".into(), Ty::String);
-                        iter_types.insert("text".into(), Ty::String);
-                    }
-
-                    let result = resolve_template(
-                        base_dir, template.as_deref(), inline_template.as_deref(),
-                        i, &iter_types, registry,
-                    );
-                    match result {
-                        Ok(block) => Some(block),
-                        Err(e) => {
-                            errors.push(e);
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-
-                compiled_messages.push(CompiledMessage::Iterator {
-                    key,
-                    block,
-                    slice: slice.clone(),
-                    bind: bind.clone(),
-                    role: role.clone(),
-                });
-            }
-        }
-    }
-
-    if !errors.is_empty() {
-        return Err(errors);
-    }
-
-    // Compile key template for if-modified strategy
-    let key_module =
-        if matches!(spec.strategy.mode, StrategyMode::IfModified) {
-            if let Some(key_tmpl) = &spec.strategy.key {
-                match compile_template(base_dir, key_tmpl, 0, context_types, registry) {
-                    Ok(block) => Some(block),
-                    Err(e) => {
-                        return Err(vec![e]);
-                    }
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-    let cache_key = spec.cache_key.as_ref().map(|r| {
-        all_context_keys.insert(r.0.clone());
-        r.0.clone()
-    });
-
-    Ok(CompiledNode {
-        name: spec.name.clone(),
-        kind: spec.kind.clone(),
-        provider: spec.provider.clone(),
-        model: spec.model.clone(),
-        tools: spec.tools.clone(),
-        messages: compiled_messages,
-        all_context_keys,
-        strategy: spec.strategy.clone(),
-        generation: spec.generation.clone(),
-        key_module,
-        cache_key,
-    })
-}
-
-/// Resolve a template from either a file path or inline source.
-pub fn resolve_template(
-    base_dir: &Path,
-    file: Option<&str>,
-    inline: Option<&str>,
-    block_idx: usize,
-    context_types: &HashMap<String, Ty>,
-    registry: &ExternRegistry,
-) -> Result<CompiledBlock, OrchError> {
-    match (file, inline) {
-        (Some(path), _) => compile_template(base_dir, path, block_idx, context_types, registry),
-        (None, Some(src)) => compile_source(src, block_idx, context_types, registry),
-        (None, None) => Err(OrchError::new(OrchErrorKind::TemplateParse {
-            block: block_idx,
-            error: "no template or inline_template provided".into(),
-        })),
-    }
-}
-
-fn compile_template(
-    base_dir: &Path,
-    template: &str,
-    block_idx: usize,
-    context_types: &HashMap<String, Ty>,
-    registry: &ExternRegistry,
-) -> Result<CompiledBlock, OrchError> {
-    let path = base_dir.join(template);
-    let source = std::fs::read_to_string(&path).map_err(|e| {
-        OrchError::new(OrchErrorKind::TemplateLoad {
-            path: path.display().to_string(),
-            error: e.to_string(),
-        })
-    })?;
-    compile_source(&source, block_idx, context_types, registry)
-}
-
-fn compile_source(
+/// Compile a template source string into a `CompiledBlock`.
+pub fn compile_template(
     source: &str,
     block_idx: usize,
     context_types: &HashMap<String, Ty>,
@@ -346,13 +192,117 @@ fn compile_source(
     })
 }
 
+/// Compile a node spec into a `CompiledNode`.
+///
+/// Each message's `source` field is compiled directly — no file I/O.
+pub fn compile_node(
+    spec: &NodeSpec,
+    context_types: &HashMap<String, Ty>,
+    registry: &ExternRegistry,
+) -> Result<CompiledNode, Vec<OrchError>> {
+    let mut compiled_messages = Vec::new();
+    let mut all_context_keys = HashSet::new();
+    let mut errors = Vec::new();
+
+    for (i, msg) in spec.messages.iter().enumerate() {
+        match msg {
+            MessageSpec::Block { role, source } => {
+                match compile_template(source, i, context_types, registry) {
+                    Ok(block) => {
+                        all_context_keys.extend(block.context_keys.iter().cloned());
+                        compiled_messages.push(CompiledMessage::Block(CompiledBlock {
+                            role: role.clone(),
+                            ..block
+                        }));
+                    }
+                    Err(e) => errors.push(e),
+                }
+            }
+            MessageSpec::Iterator { key, source, slice, bind, role } => {
+                let block = if let Some(src) = source {
+                    let mut iter_types = context_types.clone();
+                    if let Some(bind_name) = bind {
+                        iter_types.insert(
+                            bind_name.clone(),
+                            Ty::Object(BTreeMap::from([
+                                ("type".into(), Ty::String),
+                                ("text".into(), Ty::String),
+                            ])),
+                        );
+                    } else {
+                        iter_types.insert("type".into(), Ty::String);
+                        iter_types.insert("text".into(), Ty::String);
+                    }
+
+                    match compile_template(src, i, &iter_types, registry) {
+                        Ok(block) => Some(block),
+                        Err(e) => {
+                            errors.push(e);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                compiled_messages.push(CompiledMessage::Iterator {
+                    key: key.clone(),
+                    block,
+                    slice: slice.clone(),
+                    bind: bind.clone(),
+                    role: role.clone(),
+                });
+            }
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    // Compile key template for if-modified strategy
+    let key_module =
+        if matches!(spec.strategy.mode, StrategyMode::IfModified) {
+            if let Some(key_src) = &spec.strategy.key_source {
+                match compile_template(key_src, 0, context_types, registry) {
+                    Ok(block) => Some(block),
+                    Err(e) => {
+                        return Err(vec![e]);
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+    let cache_key = spec.cache_key.as_ref().map(|k| {
+        all_context_keys.insert(k.clone());
+        k.clone()
+    });
+
+    Ok(CompiledNode {
+        name: spec.name.clone(),
+        kind: spec.kind.clone(),
+        provider: spec.provider.clone(),
+        model: spec.model.clone(),
+        tools: spec.tools.clone(),
+        messages: compiled_messages,
+        all_context_keys,
+        strategy: spec.strategy.clone(),
+        generation: spec.generation.clone(),
+        key_module,
+        cache_key,
+    })
+}
+
 /// Compile multiple node specs, merging their output types into context automatically.
 ///
 /// `injected_types` are externally declared context types (from project.toml).
 /// Each node name is also added as `Ty::String` context.
 pub fn compile_nodes(
     specs: &[NodeSpec],
-    base_dir: &Path,
     injected_types: &HashMap<String, Ty>,
     registry: &ExternRegistry,
 ) -> Result<Vec<CompiledNode>, Vec<OrchError>> {
@@ -364,7 +314,7 @@ pub fn compile_nodes(
     let mut nodes = Vec::new();
     let mut errors = Vec::new();
     for spec in specs {
-        match compile_node(spec, base_dir, &context_types, registry) {
+        match compile_node(spec, &context_types, registry) {
             Ok(node) => nodes.push(node),
             Err(errs) => errors.extend(errs),
         }

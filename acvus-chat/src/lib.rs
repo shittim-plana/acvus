@@ -36,6 +36,7 @@ fn drive_block(
     output: &mut String,
     storage: &HashMapStorage,
     local: &HashMap<String, Value>,
+    turn_local: &HashMap<String, Value>,
 ) -> BlockDriveResult {
     loop {
         match coroutine.resume(key) {
@@ -53,6 +54,8 @@ fn drive_block(
                 }
                 let name = need.name().to_string();
                 if let Some(value) = local.get(&name) {
+                    key = need.into_key(value.clone());
+                } else if let Some(value) = turn_local.get(&name) {
                     key = need.into_key(value.clone());
                 } else if let Some(arc) = storage.get(&name) {
                     key = need.into_key(Arc::unwrap_or_clone(arc));
@@ -86,13 +89,15 @@ where
         storage: &'a mut HashMapStorage,
         local: HashMap<String, Value>,
         key_cache: &'a mut HashMap<String, String>,
+        turn_local: &'a mut HashMap<String, Value>,
     ) -> Fut<'a, String> {
         Box::pin(async move {
             let interp = Interpreter::new(block.module.clone(), self.extern_fns.clone());
             let (mut coroutine, key) = interp.execute();
             let mut output = String::new();
 
-            let mut result = drive_block(&mut coroutine, key, &mut output, storage, &local);
+            let mut result =
+                drive_block(&mut coroutine, key, &mut output, storage, &local, turn_local);
             loop {
                 match result {
                     BlockDriveResult::Done(text) => return text,
@@ -101,30 +106,39 @@ where
                         let bindings = need.bindings().clone();
                         if !bindings.is_empty() {
                             if let Some(&idx) = self.name_to_idx.get(&name) {
-                                self.resolve_node(idx, storage, bindings, key_cache).await;
+                                self.resolve_node(idx, storage, bindings, key_cache, turn_local)
+                                    .await;
                             }
                             let value = storage
                                 .get(&name)
                                 .map(Arc::unwrap_or_clone)
                                 .unwrap_or_else(|| panic!("unresolved context: @{name}"));
                             let key = need.into_key(value);
-                            result =
-                                drive_block(&mut coroutine, key, &mut output, storage, &local);
+                            result = drive_block(
+                                &mut coroutine, key, &mut output, storage, &local, turn_local,
+                            );
                         } else {
                             if let Some(&idx) = self.name_to_idx.get(&name) {
                                 if storage.get(&name).is_none() {
-                                    self.resolve_node(idx, storage, HashMap::new(), key_cache)
-                                        .await;
+                                    self.resolve_node(
+                                        idx, storage, HashMap::new(), key_cache, turn_local,
+                                    )
+                                    .await;
                                 }
                             }
                             let value = if let Some(arc) = storage.get(&name) {
                                 Arc::unwrap_or_clone(arc)
+                            } else if let Some(cached) = turn_local.get(&name) {
+                                cached.clone()
                             } else {
-                                (self.resolver)(name.clone()).await
+                                let resolved = (self.resolver)(name.clone()).await;
+                                turn_local.insert(name, resolved.clone());
+                                resolved
                             };
                             let key = need.into_key(value);
-                            result =
-                                drive_block(&mut coroutine, key, &mut output, storage, &local);
+                            result = drive_block(
+                                &mut coroutine, key, &mut output, storage, &local, turn_local,
+                            );
                         }
                     }
                 }
@@ -138,14 +152,16 @@ where
         storage: &'a mut HashMapStorage,
         local: HashMap<String, Value>,
         key_cache: &'a mut HashMap<String, String>,
+        turn_local: &'a mut HashMap<String, Value>,
     ) -> Fut<'a, ()> {
         Box::pin(async move {
             let node = &self.nodes[idx];
 
             if matches!(node.strategy.mode, StrategyMode::IfModified) {
                 if let Some(key_block) = &node.key_module {
-                    let current_key =
-                        self.render_with_deps(key_block, storage, local.clone(), key_cache).await;
+                    let current_key = self
+                        .render_with_deps(key_block, storage, local.clone(), key_cache, turn_local)
+                        .await;
                     if key_cache
                         .get(&node.name)
                         .map(|k| k == &current_key)
@@ -163,8 +179,9 @@ where
                     CompiledMessage::Block(block) => block,
                     CompiledMessage::Iterator { .. } => continue,
                 };
-                let text =
-                    self.render_with_deps(block, storage, local.clone(), key_cache).await;
+                let text = self
+                    .render_with_deps(block, storage, local.clone(), key_cache, turn_local)
+                    .await;
                 messages.push(Message::text(&block.role, text));
             }
 
@@ -236,6 +253,7 @@ where
         role_override: &Option<String>,
         storage: &'a mut HashMapStorage,
         key_cache: &'a mut HashMap<String, String>,
+        turn_local: &'a mut HashMap<String, Value>,
     ) -> Vec<Message> {
         let stored = storage.get(key);
         let all_items = match stored.as_deref() {
@@ -283,8 +301,9 @@ where
                         ("text".into(), Value::String(text.to_string())),
                     ])
                 };
-                let rendered =
-                    self.render_with_deps(block, storage, local, key_cache).await;
+                let rendered = self
+                    .render_with_deps(block, storage, local, key_cache, turn_local)
+                    .await;
                 messages.push(Message::text(role, rendered));
             } else {
                 messages.push(Message::text(role, text));
@@ -308,11 +327,10 @@ pub struct ChatEngine<F> {
     key_cache: HashMap<String, String>,
     static_messages: Vec<Message>,
     first_iter_idx: usize,
-    per_turn_keys: Vec<String>,
     iterator_keys: Vec<String>,
     provider_config: ProviderConfig,
     tools: Vec<ToolSpec>,
-    output_module: Option<CompiledBlock>,
+    output_module: CompiledBlock,
 }
 
 impl<F> ChatEngine<F>
@@ -325,7 +343,7 @@ where
         fetch: F,
         extern_fns: ExternFnRegistry,
         mut storage: HashMapStorage,
-        output_module: Option<CompiledBlock>,
+        output_module: CompiledBlock,
     ) -> Self {
         let name_to_idx: HashMap<String, usize> = nodes
             .iter()
@@ -375,6 +393,7 @@ where
         );
 
         let mut key_cache = HashMap::new();
+        let mut turn_local = HashMap::new();
 
         let noop = |_: String| async { Value::Unit };
         let ctx = RenderCtx {
@@ -389,19 +408,14 @@ where
         let mut static_messages = Vec::new();
         for msg in &nodes[0].messages[..first_iter_idx] {
             if let CompiledMessage::Block(block) = msg {
-                let text =
-                    ctx.render_with_deps(block, &mut storage, HashMap::new(), &mut key_cache)
-                        .await;
+                let text = ctx
+                    .render_with_deps(
+                        block, &mut storage, HashMap::new(), &mut key_cache, &mut turn_local,
+                    )
+                    .await;
                 static_messages.push(Message::text(&block.role, text));
             }
         }
-
-        let per_turn_keys: Vec<String> = node
-            .all_context_keys
-            .iter()
-            .filter(|k| !name_to_idx.contains_key(*k) && storage.get(k).is_none())
-            .cloned()
-            .collect();
 
         let iterator_keys: Vec<String> = nodes[0].messages[first_iter_idx..]
             .iter()
@@ -421,16 +435,11 @@ where
             key_cache,
             static_messages,
             first_iter_idx,
-            per_turn_keys,
             iterator_keys,
             provider_config,
             tools,
             output_module,
         }
-    }
-
-    pub fn per_turn_keys(&self) -> &[String] {
-        &self.per_turn_keys
     }
 
     pub async fn turn<R>(&mut self, resolver: &R) -> String
@@ -443,6 +452,8 @@ where
                 self.storage.remove(&self.nodes[i].name);
             }
         }
+
+        let mut turn_local = HashMap::new();
 
         // Split borrows: immutable refs for ctx, mutable refs for storage/key_cache
         let nodes = &self.nodes;
@@ -459,7 +470,8 @@ where
         let cached_content = if let Some(ref cache_key) = nodes[0].cache_key {
             if storage.get(cache_key).is_none() {
                 if let Some(&idx) = name_to_idx.get(cache_key.as_str()) {
-                    ctx.resolve_node(idx, storage, HashMap::new(), key_cache).await;
+                    ctx.resolve_node(idx, storage, HashMap::new(), key_cache, &mut turn_local)
+                        .await;
                 }
             }
             storage.get(cache_key).and_then(|arc| match &*arc {
@@ -478,13 +490,19 @@ where
             match msg {
                 CompiledMessage::Iterator { key, block, slice, bind, role } => {
                     let expanded = ctx
-                        .expand_iterator(key, block.as_ref(), slice, bind, role, storage, key_cache)
+                        .expand_iterator(
+                            key, block.as_ref(), slice, bind, role, storage, key_cache,
+                            &mut turn_local,
+                        )
                         .await;
                     messages.extend(expanded);
                 }
                 CompiledMessage::Block(block) => {
-                    let text =
-                        ctx.render_with_deps(block, storage, HashMap::new(), key_cache).await;
+                    let text = ctx
+                        .render_with_deps(
+                            block, storage, HashMap::new(), key_cache, &mut turn_local,
+                        )
+                        .await;
                     let message = Message::text(&block.role, text);
                     messages.push(message.clone());
                     new_messages.push(message);
@@ -533,20 +551,13 @@ where
             storage.set(iter_key.clone(), Value::List(history));
         }
 
-        let final_output = if let Some(output_block) = &self.output_module {
-            storage.set(nodes[0].name.clone(), Value::String(response_text));
-            let rendered =
-                ctx.render_with_deps(output_block, storage, HashMap::new(), key_cache).await;
-            storage.remove(&nodes[0].name);
-            rendered
-        } else {
-            response_text
-        };
-
-        for key in &self.per_turn_keys {
-            storage.remove(key);
-        }
-
-        final_output
+        storage.set(nodes[0].name.clone(), Value::String(response_text));
+        let rendered = ctx
+            .render_with_deps(
+                &self.output_module, storage, HashMap::new(), key_cache, &mut turn_local,
+            )
+            .await;
+        storage.remove(&nodes[0].name);
+        rendered
     }
 }

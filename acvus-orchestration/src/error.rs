@@ -12,9 +12,6 @@ pub enum OrchErrorKind {
     // Config
     InvalidConfig(String),
 
-    // Template loading
-    TemplateLoad { path: String, error: String },
-
     // Compile
     TemplateParse { block: usize, error: String },
     TemplateCompile { block: usize, errors: Vec<MirError> },
@@ -39,9 +36,6 @@ impl fmt::Display for OrchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
             OrchErrorKind::InvalidConfig(msg) => write!(f, "invalid config: {msg}"),
-            OrchErrorKind::TemplateLoad { path, error } => {
-                write!(f, "failed to load template '{path}': {error}")
-            }
             OrchErrorKind::TemplateParse { block, error } => {
                 write!(f, "template parse error in block {block}: {error}")
             }
