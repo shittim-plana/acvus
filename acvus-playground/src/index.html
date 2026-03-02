@@ -168,7 +168,7 @@
       border: none;
       margin: 0;
       color: var(--text);
-      scrollbar-width: none;          /* Firefox */
+      scrollbar-width: none;
     }
     .editor-wrap .hl-layer::-webkit-scrollbar { display: none; }
 
@@ -186,7 +186,7 @@
       resize: none;
       padding: 14px 16px;
       overflow: auto;
-      scrollbar-width: none;          /* Firefox */
+      scrollbar-width: none;
     }
     .editor-wrap textarea::-webkit-scrollbar { display: none; }
 
@@ -199,7 +199,7 @@
       color: transparent;
     }
 
-    /* ── MIR output ── */
+    /* ── Output panes ── */
     pre {
       flex: 1;
       background: transparent;
@@ -217,66 +217,6 @@
 
     pre.is-error { color: var(--error); }
 
-    /* ── Markdown output ── */
-    .output-md {
-      flex: 1;
-      padding: 14px 16px;
-      overflow: auto;
-      color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      font-size: 14px;
-      line-height: 1.7;
-    }
-    .output-md.is-error {
-      color: var(--error);
-      font-family: var(--mono);
-      font-size: 13px;
-      white-space: pre-wrap;
-    }
-    .output-md h1, .output-md h2, .output-md h3,
-    .output-md h4, .output-md h5, .output-md h6 {
-      color: var(--accent);
-      margin: 1em 0 0.4em;
-      line-height: 1.3;
-    }
-    .output-md h1 { font-size: 1.5em; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
-    .output-md h2 { font-size: 1.25em; border-bottom: 1px solid var(--border); padding-bottom: 0.2em; }
-    .output-md h3 { font-size: 1.1em; }
-    .output-md h4, .output-md h5, .output-md h6 { font-size: 1em; }
-    .output-md p { margin: 0.5em 0; }
-    .output-md ul, .output-md ol { margin: 0.5em 0; padding-left: 1.8em; }
-    .output-md li { margin: 0.2em 0; }
-    .output-md code {
-      background: rgba(255,255,255,0.06);
-      padding: 0.15em 0.35em;
-      border-radius: 3px;
-      font-family: var(--mono);
-      font-size: 0.9em;
-      color: #e06c75;
-    }
-    .output-md pre {
-      background: rgba(255,255,255,0.04);
-      padding: 12px;
-      border-radius: 4px;
-      margin: 0.5em 0;
-      overflow-x: auto;
-    }
-    .output-md pre code {
-      background: none;
-      padding: 0;
-      color: var(--text);
-    }
-    .output-md blockquote {
-      border-left: 3px solid var(--border);
-      padding-left: 12px;
-      color: var(--muted);
-      margin: 0.5em 0;
-    }
-    .output-md hr { border: none; border-top: 1px solid var(--border); margin: 1em 0; }
-    .output-md strong { color: #fff; }
-    .output-md a { color: var(--accent); text-decoration: none; }
-    .output-md a:hover { text-decoration: underline; }
-
     .hint {
       padding: 5px 12px 7px;
       font-size: 11px;
@@ -291,7 +231,7 @@
       font-family: var(--mono);
     }
 
-    /* ── MIR syntax colors ── */
+    /* ── Syntax colors ── */
     .m-h    { color: var(--accent); font-weight: 600; }
     .m-kw   { color: var(--syn-kw); }
     .m-val  { color: var(--syn-val); }
@@ -304,7 +244,6 @@
     .m-cmt  { color: var(--syn-cmt); font-style: italic; }
     .m-ln   { color: var(--syn-ln); }
 
-    /* ── Template syntax colors ── */
     .t-delim { color: var(--syn-delim); font-weight: 600; }
     .t-kw    { color: var(--syn-kw); }
     .t-sto   { color: var(--syn-sto); }
@@ -316,7 +255,6 @@
     .t-op    { color: var(--syn-op); }
     .t-raw   { color: #888; }
 
-    /* ── Markdown syntax colors ── */
     .md-h    { color: var(--accent); font-weight: 600; }
     .md-b    { font-weight: 600; color: var(--text); }
     .md-i    { font-style: italic; color: var(--text); }
@@ -326,7 +264,6 @@
     .md-bq   { color: var(--muted); font-style: italic; }
     .md-hr   { color: var(--muted); }
 
-    /* ── JSON syntax colors ── */
     .j-key  { color: var(--syn-val); }
     .j-str  { color: var(--syn-str); }
     .j-num  { color: var(--syn-num); }
@@ -372,19 +309,19 @@
       <button class="active" data-tab="output">Output</button>
       <button data-tab="mir">MIR</button>
     </div>
-    <div id="output-pane" class="output-md"></div>
+    <pre id="output-pane"></pre>
     <pre id="mir-pane" style="display:none"></pre>
   </div>
 </div>
 
 <script>
-  const sourceEl    = document.getElementById('source');
-  const outputPane  = document.getElementById('output-pane');
-  const mirPane     = document.getElementById('mir-pane');
-  const statusEl    = document.getElementById('status');
-  const storageEl   = document.getElementById('storage');
-  const sourceHl    = document.getElementById('source-hl');
-  const storageHl   = document.getElementById('storage-hl');
+  const sourceEl   = document.getElementById('source');
+  const outputPane = document.getElementById('output-pane');
+  const mirPane    = document.getElementById('mir-pane');
+  const statusEl   = document.getElementById('status');
+  const storageEl  = document.getElementById('storage');
+  const sourceHl   = document.getElementById('source-hl');
+  const storageHl  = document.getElementById('storage-hl');
 
   // ── Tab switching ──
 
@@ -399,10 +336,33 @@
     });
   });
 
-  // ── HTML escape ──
+  // ── Shared tokenizer ──
 
   function esc(s) {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function tokenize(text, rules) {
+    let result = '';
+    let rest = text;
+    while (rest.length > 0) {
+      let matched = false;
+      for (const [re, cls] of rules) {
+        const m = rest.match(re);
+        if (m) {
+          const tok = esc(m[0]);
+          result += cls ? `<span class="${cls}">${tok}</span>` : tok;
+          rest = rest.slice(m[0].length);
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        result += esc(rest[0]);
+        rest = rest.slice(1);
+      }
+    }
+    return result;
   }
 
   // ── Template syntax highlighting ──
@@ -428,29 +388,6 @@
     [/^./, null],
   ];
 
-  function highlightTmplInner(text) {
-    let result = '';
-    let rest = text;
-    while (rest.length > 0) {
-      let matched = false;
-      for (const [re, cls] of tmplInnerRules) {
-        const m = rest.match(re);
-        if (m) {
-          const tok = esc(m[0]);
-          result += cls ? `<span class="${cls}">${tok}</span>` : tok;
-          rest = rest.slice(m[0].length);
-          matched = true;
-          break;
-        }
-      }
-      if (!matched) {
-        result += esc(rest[0]);
-        rest = rest.slice(1);
-      }
-    }
-    return result;
-  }
-
   function highlightTemplate(text) {
     let result = '';
     let i = 0;
@@ -467,14 +404,13 @@
         i += openDelim.length;
         let inner = '';
         while (i < text.length) {
-          // Detect closing: }-} or }}
           if (text[i] === '}' && text[i+1] === '-' && text[i+2] === '}') {
-            result += highlightTmplInner(inner);
+            result += tokenize(inner, tmplInnerRules);
             result += '<span class="t-delim">}-}</span>';
             i += 3;
             break;
           } else if (text[i] === '}' && text[i+1] === '}') {
-            result += highlightTmplInner(inner);
+            result += tokenize(inner, tmplInnerRules);
             result += '<span class="t-delim">}}</span>';
             i += 2;
             break;
@@ -493,11 +429,10 @@
         result += highlightMarkdown(raw);
       }
     }
-    // Trailing newline so highlight layer matches textarea height
     return result + '\n';
   }
 
-  // ── Markdown highlighting (raw text outside {{ }}) ──
+  // ── Markdown highlighting ──
 
   const mdLineStartRules = [
     [/^#{1,6} [^\n]*/, 'md-h'],
@@ -544,7 +479,7 @@
     return result;
   }
 
-  // ── JSON highlighting (context pane) ──
+  // ── JSON highlighting ──
 
   const jsonRules = [
     [/^"(?:[^"\\]|\\.)*"\s*(?=:)/, 'j-key'],
@@ -558,26 +493,7 @@
   ];
 
   function highlightJson(text) {
-    let result = '';
-    let rest = text;
-    while (rest.length > 0) {
-      let matched = false;
-      for (const [re, cls] of jsonRules) {
-        const m = rest.match(re);
-        if (m) {
-          const tok = esc(m[0]);
-          result += cls ? `<span class="${cls}">${tok}</span>` : tok;
-          rest = rest.slice(m[0].length);
-          matched = true;
-          break;
-        }
-      }
-      if (!matched) {
-        result += esc(rest[0]);
-        rest = rest.slice(1);
-      }
-    }
-    return result + '\n';
+    return tokenize(text, jsonRules) + '\n';
   }
 
   // ── Sync highlights ──
@@ -618,46 +534,20 @@
     [/^./, null],
   ];
 
-  function mirTokenize(text) {
-    let result = '';
-    let rest = text;
-    while (rest.length > 0) {
-      let matched = false;
-      for (const [re, cls] of mirTokenRules) {
-        const m = rest.match(re);
-        if (m) {
-          const tok = esc(m[0]);
-          result += cls ? `<span class="${cls}">${tok}</span>` : tok;
-          rest = rest.slice(m[0].length);
-          matched = true;
-          break;
-        }
-      }
-      if (!matched) {
-        result += esc(rest[0]);
-        rest = rest.slice(1);
-      }
-    }
-    return result;
-  }
-
   function highlightMir(raw) {
     return raw.split('\n').map(mirLine).join('\n');
   }
 
   function mirLine(line) {
-    // Section headers: === ... ===
     if (line.startsWith('===')) {
       return '<span class="m-h">' + esc(line) + '</span>';
     }
 
-    // Comment / type annotation lines: starts with whitespace + ;
     const cmatch = line.match(/^(\s+)(;.+)$/);
     if (cmatch) {
       return cmatch[1] + '<span class="m-cmt">' + esc(cmatch[2]) + '</span>';
     }
 
-    // Text table entries: "  T0 = "value""
     const tmatch = line.match(/^(\s+)(T\d+)(\s*=\s*)(".*")$/);
     if (tmatch) {
       return tmatch[1]
@@ -666,110 +556,12 @@
         + '<span class="m-str">' + esc(tmatch[4]) + '</span>';
     }
 
-    // Instruction lines: line-number │ instruction
     const imatch = line.match(/^(\s*\d+\s*│\s*)(.*)$/);
     if (imatch) {
-      return '<span class="m-ln">' + esc(imatch[1]) + '</span>' + mirTokenize(imatch[2]);
+      return '<span class="m-ln">' + esc(imatch[1]) + '</span>' + tokenize(imatch[2], mirTokenRules);
     }
 
     return esc(line);
-  }
-
-  // ── Lightweight Markdown renderer ──
-
-  function renderMarkdown(text) {
-    // Escape HTML
-    const e = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-
-    // Inline formatting
-    function inlineMd(line) {
-      let s = e(line);
-      // code spans
-      s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
-      // bold
-      s = s.replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>');
-      // italic
-      s = s.replace(/(?<!\*)\*(?!\*)([^*]+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>');
-      // links [text](url)
-      s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
-      return s;
-    }
-
-    const lines = text.split('\n');
-    let html = '';
-    let i = 0;
-    let inList = false;
-    let listTag = '';
-
-    function closeList() {
-      if (inList) { html += `</${listTag}>`; inList = false; }
-    }
-
-    while (i < lines.length) {
-      const line = lines[i];
-
-      // Headings
-      const hm = line.match(/^(#{1,6}) (.+)$/);
-      if (hm) {
-        closeList();
-        const lvl = hm[1].length;
-        html += `<h${lvl}>${inlineMd(hm[2])}</h${lvl}>`;
-        i++; continue;
-      }
-
-      // HR
-      if (/^(\*\*\*|---|___)/.test(line.trim())) {
-        closeList();
-        html += '<hr>';
-        i++; continue;
-      }
-
-      // Unordered list
-      const ulm = line.match(/^(\s*)[-*+] (.+)$/);
-      if (ulm) {
-        if (!inList || listTag !== 'ul') { closeList(); html += '<ul>'; inList = true; listTag = 'ul'; }
-        html += `<li>${inlineMd(ulm[2])}</li>`;
-        i++; continue;
-      }
-
-      // Ordered list
-      const olm = line.match(/^(\s*)\d+\. (.+)$/);
-      if (olm) {
-        if (!inList || listTag !== 'ol') { closeList(); html += '<ol>'; inList = true; listTag = 'ol'; }
-        html += `<li>${inlineMd(olm[2])}</li>`;
-        i++; continue;
-      }
-
-      closeList();
-
-      // Blockquote
-      if (line.startsWith('> ')) {
-        html += `<blockquote>${inlineMd(line.slice(2))}</blockquote>`;
-        i++; continue;
-      }
-
-      // Empty line
-      if (line.trim() === '') {
-        i++; continue;
-      }
-
-      // Paragraph: collect consecutive non-special lines
-      let para = '';
-      while (i < lines.length && lines[i].trim() !== '' &&
-             !lines[i].match(/^#{1,6} /) &&
-             !lines[i].match(/^[-*+] /) &&
-             !lines[i].match(/^\d+\. /) &&
-             !lines[i].startsWith('> ') &&
-             !/^(\*\*\*|---|___)/.test(lines[i].trim())) {
-        if (para) para += ' ';
-        para += lines[i];
-        i++;
-      }
-      html += `<p>${inlineMd(para)}</p>`;
-    }
-
-    closeList();
-    return html;
   }
 
   // ── Compilation ──
@@ -784,7 +576,7 @@
     const source = sourceEl.value;
     if (!source.trim()) {
       outputPane.innerHTML = '';
-      outputPane.className = 'output-md';
+      outputPane.className = '';
       mirPane.innerHTML = '';
       mirPane.className = '';
       setStatus('ready', '');
@@ -813,13 +605,13 @@
       const data = await res.json();
       if (data.error) {
         outputPane.textContent = data.error;
-        outputPane.className = 'output-md is-error';
+        outputPane.className = 'is-error';
         mirPane.textContent = data.error;
         mirPane.className = 'is-error';
         setStatus('error', 'error');
       } else {
-        outputPane.innerHTML = renderMarkdown(data.output ?? '');
-        outputPane.className = 'output-md';
+        outputPane.innerHTML = highlightMarkdown(data.output ?? '');
+        outputPane.className = '';
         mirPane.innerHTML = highlightMir(data.ir ?? '');
         mirPane.className = '';
         setStatus('ok', 'ok');
@@ -827,7 +619,7 @@
     } catch (e) {
       const msg = 'server unreachable: ' + e.message;
       outputPane.textContent = msg;
-      outputPane.className = 'output-md is-error';
+      outputPane.className = 'is-error';
       mirPane.textContent = msg;
       mirPane.className = 'is-error';
       setStatus('error', 'error');
@@ -1121,7 +913,7 @@ The turn ends mid-moment—without conclusion, without response-prompting, witho
     "침묵": 0
   }, null, 2);
 
-  // ── Init: highlight + compile the default sample ──
+  // ── Init ──
   syncSourceHighlight();
   syncStorageHighlight();
   doCompile();
