@@ -2,10 +2,18 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
+/// Node kind — determines how the node is executed.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum NodeKind {
+    Llm,
+}
+
 /// Node specification parsed from TOML.
 #[derive(Debug, Clone, Deserialize)]
 pub struct NodeSpec {
     pub name: String,
+    pub kind: NodeKind,
     pub provider: String,
     pub model: String,
     #[serde(default)]

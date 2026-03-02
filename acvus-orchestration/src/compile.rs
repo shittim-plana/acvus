@@ -7,13 +7,14 @@ use acvus_mir::ty::Ty;
 use acvus_mir_pass::AnalysisPass;
 use acvus_mir_pass::analysis::val_def::{ValDefMap, ValDefMapAnalysis};
 
-use crate::dsl::{GenerationParams, MessageSpec, NodeSpec, Strategy, StrategyMode, ToolDecl};
+use crate::dsl::{GenerationParams, MessageSpec, NodeKind, NodeSpec, Strategy, StrategyMode, ToolDecl};
 use crate::error::{OrchError, OrchErrorKind};
 
 /// A compiled orchestration node.
 #[derive(Debug, Clone)]
 pub struct CompiledNode {
     pub name: String,
+    pub kind: NodeKind,
     pub provider: String,
     pub model: String,
     pub tools: Vec<ToolDecl>,
@@ -162,6 +163,7 @@ pub fn compile_node(
 
     Ok(CompiledNode {
         name: spec.name.clone(),
+        kind: spec.kind.clone(),
         provider: spec.provider.clone(),
         model: spec.model.clone(),
         tools: spec.tools.clone(),

@@ -1,4 +1,5 @@
 name = "translate_eng"
+kind = "llm"
 provider = "gemini"
 model = "gemini-2.5-flash"
 

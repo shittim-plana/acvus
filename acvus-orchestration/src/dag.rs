@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::compile::CompiledNode;
+use crate::dsl::NodeKind;
 use crate::error::{OrchError, OrchErrorKind};
 
 /// Dependency graph for orchestration nodes.
@@ -80,6 +81,7 @@ mod tests {
     fn make_node(name: &str, context_keys: Vec<&str>) -> CompiledNode {
         CompiledNode {
             name: name.into(),
+            kind: crate::dsl::NodeKind::Llm,
             provider: "test".into(),
             model: "m".into(),
             tools: vec![],
