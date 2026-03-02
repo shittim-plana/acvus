@@ -713,11 +713,11 @@ impl TypeChecker {
 
         // Check builtins first.
         for b in builtins() {
-            if b.name != name {
+            if b.name() != name {
                 continue;
             }
 
-            let (param_tys, ret_ty) = (b.signature)(&mut self.subst);
+            let (param_tys, ret_ty) = b.signature(&mut self.subst);
             let arg_types: Vec<Ty> = args.iter().map(|a| self.check_expr(a)).collect();
 
             if arg_types.len() != param_tys.len() {
@@ -744,7 +744,7 @@ impl TypeChecker {
                 }
             }
 
-            if let Some(check) = b.constraint {
+            if let Some(check) = b.constraint() {
                 let resolved_args: Vec<Ty> =
                     arg_types.iter().map(|t| self.subst.resolve(t)).collect();
                 if let Some(msg) = check(&resolved_args) {

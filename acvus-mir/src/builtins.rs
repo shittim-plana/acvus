@@ -4,12 +4,11 @@ use crate::ty::{Ty, TySubst};
 /// Returns `Some(error_message)` if the constraint is violated.
 pub type BuiltinConstraint = fn(&[Ty]) -> Option<String>;
 
-pub struct BuiltinFn {
-    pub name: &'static str,
-    /// Returns (param_types, return_type) with fresh type variables for generics.
-    pub signature: fn(&mut TySubst) -> (Vec<Ty>, Ty),
-    pub is_effectful: bool,
-    pub constraint: Option<BuiltinConstraint>,
+pub trait BuiltinSig {
+    fn name(&self) -> &'static str;
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty);
+    fn is_effectful(&self) -> bool { false }
+    fn constraint(&self) -> Option<BuiltinConstraint> { None }
 }
 
 fn is_scalar(ty: &Ty) -> bool {
@@ -36,303 +35,283 @@ fn require_to_int(args: &[Ty]) -> Option<String> {
     }
 }
 
-pub fn builtins() -> Vec<BuiltinFn> {
+// -- unit structs ---------------------------------------------------------
+
+pub struct Filter;
+impl BuiltinSig for Filter {
+    fn name(&self) -> &'static str { "filter" }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        (
+            vec![
+                Ty::List(Box::new(t.clone())),
+                Ty::Fn { params: vec![t.clone()], ret: Box::new(Ty::Bool) },
+            ],
+            Ty::List(Box::new(t)),
+        )
+    }
+}
+
+pub struct Map;
+impl BuiltinSig for Map {
+    fn name(&self) -> &'static str { "map" }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        let u = subst.fresh_var();
+        (
+            vec![
+                Ty::List(Box::new(t.clone())),
+                Ty::Fn { params: vec![t], ret: Box::new(u.clone()) },
+            ],
+            Ty::List(Box::new(u)),
+        )
+    }
+}
+
+pub struct Pmap;
+impl BuiltinSig for Pmap {
+    fn name(&self) -> &'static str { "pmap" }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        let u = subst.fresh_var();
+        (
+            vec![
+                Ty::List(Box::new(t.clone())),
+                Ty::Fn { params: vec![t], ret: Box::new(u.clone()) },
+            ],
+            Ty::List(Box::new(u)),
+        )
+    }
+}
+
+pub struct ToString;
+impl BuiltinSig for ToString {
+    fn name(&self) -> &'static str { "to_string" }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        (vec![t], Ty::String)
+    }
+    fn constraint(&self) -> Option<BuiltinConstraint> { Some(require_scalar) }
+}
+
+pub struct ToFloat;
+impl BuiltinSig for ToFloat {
+    fn name(&self) -> &'static str { "to_float" }
+    fn signature(&self, _subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        (vec![Ty::Int], Ty::Float)
+    }
+}
+
+pub struct ToInt;
+impl BuiltinSig for ToInt {
+    fn name(&self) -> &'static str { "to_int" }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        (vec![t], Ty::Int)
+    }
+    fn constraint(&self) -> Option<BuiltinConstraint> { Some(require_to_int) }
+}
+
+pub struct Find;
+impl BuiltinSig for Find {
+    fn name(&self) -> &'static str { "find" }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        (
+            vec![
+                Ty::List(Box::new(t.clone())),
+                Ty::Fn { params: vec![t.clone()], ret: Box::new(Ty::Bool) },
+            ],
+            t,
+        )
+    }
+}
+
+pub struct Reduce;
+impl BuiltinSig for Reduce {
+    fn name(&self) -> &'static str { "reduce" }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        (
+            vec![
+                Ty::List(Box::new(t.clone())),
+                Ty::Fn { params: vec![t.clone(), t.clone()], ret: Box::new(t.clone()) },
+            ],
+            t,
+        )
+    }
+}
+
+pub struct Fold;
+impl BuiltinSig for Fold {
+    fn name(&self) -> &'static str { "fold" }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        let u = subst.fresh_var();
+        (
+            vec![
+                Ty::List(Box::new(t.clone())),
+                u.clone(),
+                Ty::Fn { params: vec![u.clone(), t], ret: Box::new(u.clone()) },
+            ],
+            u,
+        )
+    }
+}
+
+pub struct Any;
+impl BuiltinSig for Any {
+    fn name(&self) -> &'static str { "any" }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        (
+            vec![
+                Ty::List(Box::new(t.clone())),
+                Ty::Fn { params: vec![t], ret: Box::new(Ty::Bool) },
+            ],
+            Ty::Bool,
+        )
+    }
+}
+
+pub struct All;
+impl BuiltinSig for All {
+    fn name(&self) -> &'static str { "all" }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        (
+            vec![
+                Ty::List(Box::new(t.clone())),
+                Ty::Fn { params: vec![t], ret: Box::new(Ty::Bool) },
+            ],
+            Ty::Bool,
+        )
+    }
+}
+
+pub struct Len;
+impl BuiltinSig for Len {
+    fn name(&self) -> &'static str { "len" }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        (vec![Ty::List(Box::new(t))], Ty::Int)
+    }
+}
+
+pub struct Reverse;
+impl BuiltinSig for Reverse {
+    fn name(&self) -> &'static str { "reverse" }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        (
+            vec![Ty::List(Box::new(t.clone()))],
+            Ty::List(Box::new(t)),
+        )
+    }
+}
+
+pub struct Join;
+impl BuiltinSig for Join {
+    fn name(&self) -> &'static str { "join" }
+    fn signature(&self, _subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        (
+            vec![Ty::List(Box::new(Ty::String)), Ty::String],
+            Ty::String,
+        )
+    }
+}
+
+pub struct CharToInt;
+impl BuiltinSig for CharToInt {
+    fn name(&self) -> &'static str { "char_to_int" }
+    fn signature(&self, _subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        (vec![Ty::String], Ty::Int)
+    }
+}
+
+pub struct IntToChar;
+impl BuiltinSig for IntToChar {
+    fn name(&self) -> &'static str { "int_to_char" }
+    fn signature(&self, _subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        (vec![Ty::Int], Ty::String)
+    }
+}
+
+pub struct Contains;
+impl BuiltinSig for Contains {
+    fn name(&self) -> &'static str { "contains" }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        (
+            vec![Ty::List(Box::new(t.clone())), t],
+            Ty::Bool,
+        )
+    }
+}
+
+pub struct Substring;
+impl BuiltinSig for Substring {
+    fn name(&self) -> &'static str { "substring" }
+    fn signature(&self, _subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        (vec![Ty::String, Ty::Int, Ty::Int], Ty::String)
+    }
+}
+
+pub struct LenStr;
+impl BuiltinSig for LenStr {
+    fn name(&self) -> &'static str { "len_str" }
+    fn signature(&self, _subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        (vec![Ty::String], Ty::Int)
+    }
+}
+
+pub struct ToBytes;
+impl BuiltinSig for ToBytes {
+    fn name(&self) -> &'static str { "to_bytes" }
+    fn signature(&self, _subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        (vec![Ty::String], Ty::bytes())
+    }
+}
+
+pub struct ToUtf8;
+impl BuiltinSig for ToUtf8 {
+    fn name(&self) -> &'static str { "to_utf8" }
+    fn signature(&self, _subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        (vec![Ty::bytes()], Ty::String)
+    }
+}
+
+pub struct ToUtf8Lossy;
+impl BuiltinSig for ToUtf8Lossy {
+    fn name(&self) -> &'static str { "to_utf8_lossy" }
+    fn signature(&self, _subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        (vec![Ty::bytes()], Ty::String)
+    }
+}
+
+pub fn builtins() -> Vec<&'static dyn BuiltinSig> {
     vec![
-        BuiltinFn {
-            name: "filter",
-            signature: |subst| {
-                // filter: (List<T>, Fn(T) -> Bool) -> List<T>
-                let t = subst.fresh_var();
-                (
-                    vec![
-                        Ty::List(Box::new(t.clone())),
-                        Ty::Fn {
-                            params: vec![t.clone()],
-                            ret: Box::new(Ty::Bool),
-                        },
-                    ],
-                    Ty::List(Box::new(t)),
-                )
-            },
-            is_effectful: false,
-            constraint: None,
-        },
-        BuiltinFn {
-            name: "map",
-            signature: |subst| {
-                // map: (List<T>, Fn(T) -> U) -> List<U>
-                let t = subst.fresh_var();
-                let u = subst.fresh_var();
-                (
-                    vec![
-                        Ty::List(Box::new(t.clone())),
-                        Ty::Fn {
-                            params: vec![t],
-                            ret: Box::new(u.clone()),
-                        },
-                    ],
-                    Ty::List(Box::new(u)),
-                )
-            },
-            is_effectful: false,
-            constraint: None,
-        },
-        BuiltinFn {
-            name: "pmap",
-            signature: |subst| {
-                // pmap: (List<T>, Fn(T) -> U) -> List<U>
-                let t = subst.fresh_var();
-                let u = subst.fresh_var();
-                (
-                    vec![
-                        Ty::List(Box::new(t.clone())),
-                        Ty::Fn {
-                            params: vec![t],
-                            ret: Box::new(u.clone()),
-                        },
-                    ],
-                    Ty::List(Box::new(u)),
-                )
-            },
-            is_effectful: false,
-            constraint: None,
-        },
-        BuiltinFn {
-            name: "to_string",
-            signature: |subst| {
-                // to_string: (T) -> String
-                let t = subst.fresh_var();
-                (vec![t], Ty::String)
-            },
-            is_effectful: false,
-            constraint: Some(require_scalar),
-        },
-        BuiltinFn {
-            name: "to_float",
-            signature: |_| {
-                // to_float: (Int) -> Float
-                (vec![Ty::Int], Ty::Float)
-            },
-            is_effectful: false,
-            constraint: None,
-        },
-        BuiltinFn {
-            name: "to_int",
-            signature: |subst| {
-                // to_int: (Float | Byte) -> Int
-                let t = subst.fresh_var();
-                (vec![t], Ty::Int)
-            },
-            is_effectful: false,
-            constraint: Some(require_to_int),
-        },
-        BuiltinFn {
-            name: "find",
-            signature: |subst| {
-                // find: (List<T>, Fn(T) -> Bool) -> T
-                let t = subst.fresh_var();
-                (
-                    vec![
-                        Ty::List(Box::new(t.clone())),
-                        Ty::Fn {
-                            params: vec![t.clone()],
-                            ret: Box::new(Ty::Bool),
-                        },
-                    ],
-                    t,
-                )
-            },
-            is_effectful: false,
-            constraint: None,
-        },
-        BuiltinFn {
-            name: "reduce",
-            signature: |subst| {
-                // reduce: (List<T>, Fn(T, T) -> T) -> T
-                let t = subst.fresh_var();
-                (
-                    vec![
-                        Ty::List(Box::new(t.clone())),
-                        Ty::Fn {
-                            params: vec![t.clone(), t.clone()],
-                            ret: Box::new(t.clone()),
-                        },
-                    ],
-                    t,
-                )
-            },
-            is_effectful: false,
-            constraint: None,
-        },
-        BuiltinFn {
-            name: "fold",
-            signature: |subst| {
-                // fold: (List<T>, U, Fn(U, T) -> U) -> U
-                let t = subst.fresh_var();
-                let u = subst.fresh_var();
-                (
-                    vec![
-                        Ty::List(Box::new(t.clone())),
-                        u.clone(),
-                        Ty::Fn {
-                            params: vec![u.clone(), t],
-                            ret: Box::new(u.clone()),
-                        },
-                    ],
-                    u,
-                )
-            },
-            is_effectful: false,
-            constraint: None,
-        },
-        BuiltinFn {
-            name: "any",
-            signature: |subst| {
-                // any: (List<T>, Fn(T) -> Bool) -> Bool
-                let t = subst.fresh_var();
-                (
-                    vec![
-                        Ty::List(Box::new(t.clone())),
-                        Ty::Fn {
-                            params: vec![t],
-                            ret: Box::new(Ty::Bool),
-                        },
-                    ],
-                    Ty::Bool,
-                )
-            },
-            is_effectful: false,
-            constraint: None,
-        },
-        BuiltinFn {
-            name: "all",
-            signature: |subst| {
-                // all: (List<T>, Fn(T) -> Bool) -> Bool
-                let t = subst.fresh_var();
-                (
-                    vec![
-                        Ty::List(Box::new(t.clone())),
-                        Ty::Fn {
-                            params: vec![t],
-                            ret: Box::new(Ty::Bool),
-                        },
-                    ],
-                    Ty::Bool,
-                )
-            },
-            is_effectful: false,
-            constraint: None,
-        },
-        BuiltinFn {
-            name: "len",
-            signature: |subst| {
-                // len: (List<T>) -> Int
-                let t = subst.fresh_var();
-                (vec![Ty::List(Box::new(t))], Ty::Int)
-            },
-            is_effectful: false,
-            constraint: None,
-        },
-        BuiltinFn {
-            name: "reverse",
-            signature: |subst| {
-                // reverse: (List<T>) -> List<T>
-                let t = subst.fresh_var();
-                (
-                    vec![Ty::List(Box::new(t.clone()))],
-                    Ty::List(Box::new(t)),
-                )
-            },
-            is_effectful: false,
-            constraint: None,
-        },
-        BuiltinFn {
-            name: "join",
-            signature: |_| {
-                // join: (List<String>, String) -> String
-                (
-                    vec![Ty::List(Box::new(Ty::String)), Ty::String],
-                    Ty::String,
-                )
-            },
-            is_effectful: false,
-            constraint: None,
-        },
-        BuiltinFn {
-            name: "char_to_int",
-            signature: |_| {
-                // char_to_int: (String) -> Int
-                (vec![Ty::String], Ty::Int)
-            },
-            is_effectful: false,
-            constraint: None,
-        },
-        BuiltinFn {
-            name: "int_to_char",
-            signature: |_| {
-                // int_to_char: (Int) -> String
-                (vec![Ty::Int], Ty::String)
-            },
-            is_effectful: false,
-            constraint: None,
-        },
-        BuiltinFn {
-            name: "contains",
-            signature: |subst| {
-                // contains: (List<T>, T) -> Bool
-                let t = subst.fresh_var();
-                (
-                    vec![Ty::List(Box::new(t.clone())), t],
-                    Ty::Bool,
-                )
-            },
-            is_effectful: false,
-            constraint: None,
-        },
-        BuiltinFn {
-            name: "substring",
-            signature: |_| {
-                // substring: (String, Int, Int) -> String
-                (vec![Ty::String, Ty::Int, Ty::Int], Ty::String)
-            },
-            is_effectful: false,
-            constraint: None,
-        },
-        BuiltinFn {
-            name: "len_str",
-            signature: |_| {
-                // len_str: (String) -> Int
-                (vec![Ty::String], Ty::Int)
-            },
-            is_effectful: false,
-            constraint: None,
-        },
-        BuiltinFn {
-            name: "to_bytes",
-            signature: |_| {
-                // to_bytes: (String) -> List<Byte>
-                (vec![Ty::String], Ty::bytes())
-            },
-            is_effectful: false,
-            constraint: None,
-        },
-        BuiltinFn {
-            name: "to_utf8",
-            signature: |_| {
-                // to_utf8: (List<Byte>) -> String
-                (vec![Ty::bytes()], Ty::String)
-            },
-            is_effectful: false,
-            constraint: None,
-        },
-        BuiltinFn {
-            name: "to_utf8_lossy",
-            signature: |_| {
-                // to_utf8_lossy: (List<Byte>) -> String
-                (vec![Ty::bytes()], Ty::String)
-            },
-            is_effectful: false,
-            constraint: None,
-        },
+        &Filter,
+        &Map,
+        &Pmap,
+        &ToString,
+        &ToFloat,
+        &ToInt,
+        &Find,
+        &Reduce,
+        &Fold,
+        &Any,
+        &All,
+        &Len,
+        &Reverse,
+        &Join,
+        &CharToInt,
+        &IntToChar,
+        &Contains,
+        &Substring,
+        &LenStr,
+        &ToBytes,
+        &ToUtf8,
+        &ToUtf8Lossy,
     ]
 }

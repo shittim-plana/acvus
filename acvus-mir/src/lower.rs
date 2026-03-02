@@ -105,7 +105,7 @@ fn apply_indent_to_nodes(nodes: &[Node], modifier: &IndentModifier) -> Vec<Node>
 impl Lowerer {
     pub fn new(type_map: TypeMap, context_names: HashSet<String>) -> Self {
         let builtin_names: HashSet<String> =
-            builtins().iter().map(|b| b.name.to_string()).collect();
+            builtins().iter().map(|b| b.name().to_string()).collect();
         Self {
             body: MirBody::new(),
             scopes: vec![HashMap::new()],
