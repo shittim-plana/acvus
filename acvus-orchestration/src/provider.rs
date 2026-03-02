@@ -1,12 +1,26 @@
 use futures::future::BoxFuture;
 
-/// Raw fetch trait: takes a JSON request body and returns a JSON response.
+use crate::message::{Message, ModelResponse, ToolSpec};
+
+/// Semantic fetch request — the provider implementation handles
+/// wire format serialization and response parsing.
+#[derive(Debug, Clone)]
+pub struct FetchRequest {
+    pub provider: String,
+    pub model: String,
+    pub messages: Vec<Message>,
+    pub tools: Vec<ToolSpec>,
+}
+
+/// Fetch trait: takes a semantic request and returns a parsed model response.
 ///
-/// The orchestration crate handles message formatting and response parsing.
-/// Implementors only need to handle HTTP transport (endpoint, auth, headers).
+/// Implementors are responsible for:
+/// - Serializing messages/tools into the provider's wire format
+/// - HTTP transport (endpoint, auth, headers)
+/// - Parsing the provider's response into `ModelResponse`
 pub trait Fetch: Send + Sync {
-    fn fetch<'a>(
+    fn call<'a>(
         &'a self,
-        body: serde_json::Value,
-    ) -> BoxFuture<'a, Result<serde_json::Value, String>>;
+        request: &'a FetchRequest,
+    ) -> BoxFuture<'a, Result<ModelResponse, String>>;
 }

@@ -1,10 +1,23 @@
 use std::collections::HashMap;
 
-/// A chat message with role and content.
+/// A chat message with role, content, and optional tool call metadata.
 #[derive(Debug, Clone)]
 pub struct Message {
     pub role: String,
     pub content: String,
+    pub tool_calls: Vec<ToolCall>,
+    pub tool_call_id: Option<String>,
+}
+
+impl Message {
+    pub fn text(role: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }
+    }
 }
 
 /// A tool call requested by the model.

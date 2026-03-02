@@ -4,6 +4,8 @@ use std::path::Path;
 use acvus_mir::extern_module::ExternRegistry;
 use acvus_mir::ir::{InstKind, MirModule};
 use acvus_mir::ty::Ty;
+use acvus_mir_pass::AnalysisPass;
+use acvus_mir_pass::analysis::val_def::{ValDefMap, ValDefMapAnalysis};
 
 use crate::dsl::{NodeSpec, ToolDecl};
 use crate::error::{OrchError, OrchErrorKind};
@@ -25,6 +27,7 @@ pub struct CompiledBlock {
     pub role: String,
     pub module: MirModule,
     pub context_keys: HashSet<String>,
+    pub val_def: ValDefMap,
 }
 
 /// Compile a node spec into a `CompiledNode`.
@@ -79,11 +82,13 @@ pub fn compile_node(
 
         let context_keys = extract_context_keys(&module);
         all_context_keys.extend(context_keys.iter().cloned());
+        let val_def = ValDefMapAnalysis.run(&module, ());
 
         compiled_blocks.push(CompiledBlock {
             role: msg.role.clone(),
             module,
             context_keys,
+            val_def,
         });
     }
 

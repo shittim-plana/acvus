@@ -1,13 +1,19 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
+use acvus_ast::Literal;
 use acvus_interpreter::{ExternFnRegistry, Interpreter, Value};
 use acvus_mir::extern_module::ExternRegistry;
+use acvus_mir_pass::analysis::reachable_context::reachable_context_keys;
+use futures::future::BoxFuture;
+use futures::stream::{FuturesUnordered, StreamExt};
 
 use crate::compile::CompiledNode;
 use crate::dag::Dag;
 use crate::error::{OrchError, OrchErrorKind};
 use crate::message::{Message, ModelResponse, Output, ToolCall, ToolResult, ToolSpec};
-use crate::provider::Fetch;
+use crate::provider::{Fetch, FetchRequest};
 use crate::storage::Storage;
 
 pub struct Executor<F, S>
@@ -21,12 +27,11 @@ where
     fetch: F,
     mir_registry: ExternRegistry,
     fuel_limit: u64,
-    fuel_consumed: u64,
 }
 
 impl<F, S> Executor<F, S>
 where
-    F: Fetch,
+    F: Fetch + 'static,
     S: Storage,
 {
     pub fn new(
@@ -37,149 +42,286 @@ where
         mir_registry: ExternRegistry,
         fuel_limit: u64,
     ) -> Self {
-        Self {
-            nodes,
-            dag,
-            storage,
-            fetch,
-            mir_registry,
-            fuel_limit,
-            fuel_consumed: 0,
-        }
+        Self { nodes, dag, storage, fetch, mir_registry, fuel_limit }
     }
 
-    /// Run the full DAG in topological order, returning the final storage.
-    pub async fn run(mut self) -> Result<S, OrchError> {
-        let topo_order = self.dag.topo_order.clone();
-        for &idx in &topo_order {
-            self.execute_node(idx).await?;
-        }
-        Ok(self.storage)
-    }
+    /// Run the full DAG, executing independent nodes in parallel.
+    ///
+    /// Uses MIR static analysis (`reachable_context_keys`) to determine which
+    /// dependencies are actually needed at runtime. Nodes whose live code paths
+    /// don't reference a dependency's output can be launched early, even if that
+    /// dependency hasn't completed yet.
+    ///
+    /// Known context values are converted to `Literal` and fed into the analysis
+    /// so branch conditions can be evaluated — dead branches are pruned and their
+    /// context loads ignored.
+    pub async fn run(self) -> Result<S, OrchError> {
+        let Executor { nodes, dag, mut storage, fetch, fuel_limit, .. } = self;
+        let fetch = Arc::new(fetch);
+        let fuel = Arc::new(AtomicU64::new(0));
+        let n = nodes.len();
 
-    async fn execute_node(&mut self, idx: usize) -> Result<(), OrchError> {
-        let node = &self.nodes[idx];
-        let model = node.model.clone();
-        let node_name = node.name.clone();
-        let blocks: Vec<_> = node
-            .blocks
-            .iter()
-            .map(|b| (b.module.clone(), b.role.clone(), b.context_keys.clone()))
-            .collect();
-        let tools: Vec<ToolSpec> = node
-            .tools
-            .iter()
-            .map(|t| ToolSpec {
-                name: t.name.clone(),
-                description: String::new(),
-                params: t.params.clone(),
-            })
-            .collect();
+        let mut launched = vec![false; n];
+        let mut completed = vec![false; n];
 
-        // Build context from storage based on context keys
-        let context = self.build_context(idx);
+        let mut running: FuturesUnordered<BoxFuture<'static, Result<(usize, Output), OrchError>>> =
+            FuturesUnordered::new();
 
-        // Render each block into a message
-        let mut messages = Vec::new();
-        for (module, role, _context_keys) in &blocks {
-            let context_values: HashMap<String, Value> = context
-                .iter()
-                .map(|(k, v)| (k.clone(), output_to_value(v)))
-                .collect();
-
-            let interp =
-                Interpreter::new(module.clone(), context_values, ExternFnRegistry::new());
-            let output = interp.execute_to_string().await;
-
-            messages.push(Message { role: role.clone(), content: output });
-        }
-
-        // Format request, call fetch, parse response
-        self.consume_fuel(1)?;
-
-        let body = format_request(&messages, &tools, &model);
-        let response_json = self
-            .fetch
-            .fetch(body)
-            .await
-            .map_err(|e| OrchError::new(OrchErrorKind::ModelError(e)))?;
-        let mut response = parse_response(&response_json)
-            .map_err(|e| OrchError::new(OrchErrorKind::ModelError(e)))?;
-
-        // Tool call loop
-        let mut all_messages = messages;
-        while let ModelResponse::ToolCalls(ref calls) = response {
-            self.consume_fuel(1)?;
-
-            let tool_results = self.handle_tool_calls(calls)?;
-
-            // Append assistant tool_calls message
-            all_messages.push(Message {
-                role: "assistant".into(),
-                content: format_tool_calls_content(calls),
-            });
-
-            // Append tool results as messages
-            for result in &tool_results {
-                all_messages.push(Message {
-                    role: "tool".into(),
-                    content: result.content.clone(),
-                });
-            }
-
-            // Re-call model
-            let body = format_request(&all_messages, &tools, &model);
-            let resp_json = self
-                .fetch
-                .fetch(body)
-                .await
-                .map_err(|e| OrchError::new(OrchErrorKind::ModelError(e)))?;
-            response = parse_response(&resp_json)
-                .map_err(|e| OrchError::new(OrchErrorKind::ModelError(e)))?;
-        }
-
-        // Store output
-        if let ModelResponse::Text(text) = response {
-            self.storage.set(node_name, Output::Text(text));
-        }
-
-        Ok(())
-    }
-
-    fn build_context(&self, idx: usize) -> HashMap<String, Output> {
-        let node = &self.nodes[idx];
-        let mut context = HashMap::new();
-        for key in &node.all_context_keys {
-            if let Some(value) = self.storage.get(key) {
-                context.insert(key.clone(), value);
+        // Launch initially ready nodes
+        for i in 0..n {
+            if is_node_ready(i, &nodes, &dag, &storage, &completed) {
+                launched[i] = true;
+                let context = build_context_for(&nodes[i], &storage);
+                running.push(Box::pin(run_node(
+                    i,
+                    nodes[i].clone(),
+                    context,
+                    Arc::clone(&fetch),
+                    Arc::clone(&fuel),
+                    fuel_limit,
+                )));
             }
         }
-        context
-    }
 
-    fn consume_fuel(&mut self, amount: u64) -> Result<(), OrchError> {
-        self.fuel_consumed += amount;
-        if self.fuel_consumed > self.fuel_limit {
-            Err(OrchError::new(OrchErrorKind::FuelExhausted))
-        } else {
-            Ok(())
-        }
-    }
+        // Process completions and launch newly ready nodes
+        while let Some(result) = running.next().await {
+            let (idx, output) = result?;
+            storage.set(nodes[idx].name.clone(), output);
+            completed[idx] = true;
 
-    fn handle_tool_calls(&self, calls: &[ToolCall]) -> Result<Vec<ToolResult>, OrchError> {
-        let mut results = Vec::new();
-        for call in calls {
-            results.push(ToolResult {
-                call_id: call.id.clone(),
-                content: format!("tool '{}' not implemented", call.name),
-            });
+            // Re-check all pending nodes — with new storage values,
+            // the analysis may prune branches and unlock more nodes.
+            for i in 0..n {
+                if !launched[i] && is_node_ready(i, &nodes, &dag, &storage, &completed) {
+                    launched[i] = true;
+                    let context = build_context_for(&nodes[i], &storage);
+                    running.push(Box::pin(run_node(
+                        i,
+                        nodes[i].clone(),
+                        context,
+                        Arc::clone(&fetch),
+                        Arc::clone(&fuel),
+                        fuel_limit,
+                    )));
+                }
+            }
         }
-        Ok(results)
+
+        Ok(storage)
     }
 }
 
 // ---------------------------------------------------------------------------
-// Output -> Value conversion
+// Node execution (standalone async, captures everything by value)
+// ---------------------------------------------------------------------------
+
+async fn run_node<F>(
+    idx: usize,
+    node: CompiledNode,
+    context: HashMap<String, Output>,
+    fetch: Arc<F>,
+    fuel: Arc<AtomicU64>,
+    fuel_limit: u64,
+) -> Result<(usize, Output), OrchError>
+where
+    F: Fetch,
+{
+    // Render each block into a message
+    let mut messages = Vec::new();
+    for block in &node.blocks {
+        let context_values: HashMap<String, Value> = context
+            .iter()
+            .map(|(k, v)| (k.clone(), output_to_value(v)))
+            .collect();
+
+        let interp =
+            Interpreter::new(block.module.clone(), context_values, ExternFnRegistry::new());
+        let output = interp.execute_to_string().await;
+
+        messages.push(Message::text(&block.role, output));
+    }
+
+    let tools: Vec<ToolSpec> = node
+        .tools
+        .iter()
+        .map(|t| ToolSpec {
+            name: t.name.clone(),
+            description: String::new(),
+            params: t.params.clone(),
+        })
+        .collect();
+
+    // Call model
+    consume_fuel(&fuel, fuel_limit)?;
+    let request = FetchRequest {
+        provider: node.provider.clone(),
+        model: node.model.clone(),
+        messages: messages.clone(),
+        tools: tools.clone(),
+    };
+    let mut response = fetch
+        .call(&request)
+        .await
+        .map_err(|e| OrchError::new(OrchErrorKind::ModelError(e)))?;
+
+    // Tool call loop
+    let mut all_messages = messages;
+    while let ModelResponse::ToolCalls(ref calls) = response {
+        consume_fuel(&fuel, fuel_limit)?;
+
+        let tool_results = handle_tool_calls(calls);
+
+        // Assistant message with tool calls
+        all_messages.push(Message {
+            role: "assistant".into(),
+            content: String::new(),
+            tool_calls: calls.clone(),
+            tool_call_id: None,
+        });
+
+        // Tool result messages
+        for result in &tool_results {
+            all_messages.push(Message {
+                role: "tool".into(),
+                content: result.content.clone(),
+                tool_calls: Vec::new(),
+                tool_call_id: Some(result.call_id.clone()),
+            });
+        }
+
+        let request = FetchRequest {
+            provider: node.provider.clone(),
+            model: node.model.clone(),
+            messages: all_messages.clone(),
+            tools: tools.clone(),
+        };
+        response = fetch
+            .call(&request)
+            .await
+            .map_err(|e| OrchError::new(OrchErrorKind::ModelError(e)))?;
+    }
+
+    match response {
+        ModelResponse::Text(text) => Ok((idx, Output::Text(text))),
+        ModelResponse::ToolCalls(_) => unreachable!(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Check if a node can be launched given the current storage state.
+///
+/// Uses `reachable_context_keys` to determine which context keys are actually
+/// needed on live code paths. A dependency is only blocking if:
+/// 1. It hasn't completed yet, AND
+/// 2. Its output is referenced on a live path in one of the node's blocks.
+fn is_node_ready<S>(
+    idx: usize,
+    nodes: &[CompiledNode],
+    dag: &Dag,
+    storage: &S,
+    completed: &[bool],
+) -> bool
+where
+    S: Storage,
+{
+    let node = &nodes[idx];
+
+    // Build known literals from available storage values
+    let mut known = HashMap::new();
+    for key in &node.all_context_keys {
+        if let Some(output) = storage.get(key) {
+            if let Some(lit) = output_to_literal(&output) {
+                known.insert(key.clone(), lit);
+            }
+        }
+    }
+
+    // Compute actually needed keys via static analysis across all blocks
+    let mut needed = HashSet::new();
+    for block in &node.blocks {
+        needed.extend(reachable_context_keys(&block.module, &known, &block.val_def));
+    }
+
+    // Check: for each incomplete dependency, is its output actually needed?
+    for &dep_idx in &dag.deps[idx] {
+        if completed[dep_idx] {
+            continue;
+        }
+        let dep_name = &nodes[dep_idx].name;
+        if needed.contains(dep_name) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn build_context_for<S>(node: &CompiledNode, storage: &S) -> HashMap<String, Output>
+where
+    S: Storage,
+{
+    let mut context = HashMap::new();
+    for key in &node.all_context_keys {
+        if let Some(value) = storage.get(key) {
+            context.insert(key.clone(), value);
+        }
+    }
+    context
+}
+
+// ---------------------------------------------------------------------------
+// Output → Literal conversion (for reachable_context_keys analysis)
+// ---------------------------------------------------------------------------
+
+fn output_to_literal(output: &Output) -> Option<Literal> {
+    match output {
+        Output::Text(s) => Some(Literal::String(s.clone())),
+        Output::Json(v) => json_to_literal(v),
+        Output::Image(_) => None,
+    }
+}
+
+fn json_to_literal(v: &serde_json::Value) -> Option<Literal> {
+    match v {
+        serde_json::Value::String(s) => Some(Literal::String(s.clone())),
+        serde_json::Value::Bool(b) => Some(Literal::Bool(*b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Some(Literal::Int(i))
+            } else if let Some(f) = n.as_f64() {
+                Some(Literal::Float(f))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn consume_fuel(fuel: &AtomicU64, limit: u64) -> Result<(), OrchError> {
+    let prev = fuel.fetch_add(1, Ordering::Relaxed);
+    if prev + 1 > limit {
+        Err(OrchError::new(OrchErrorKind::FuelExhausted))
+    } else {
+        Ok(())
+    }
+}
+
+fn handle_tool_calls(calls: &[ToolCall]) -> Vec<ToolResult> {
+    calls
+        .iter()
+        .map(|call| ToolResult {
+            call_id: call.id.clone(),
+            content: format!("tool '{}' not implemented", call.name),
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Output → Value conversion (for interpreter context injection)
 // ---------------------------------------------------------------------------
 
 fn output_to_value(output: &Output) -> Value {
@@ -209,119 +351,6 @@ fn json_to_value(v: &serde_json::Value) -> Value {
             Value::Object(obj.iter().map(|(k, v)| (k.clone(), json_to_value(v))).collect())
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Request formatting (OpenAI-compatible)
-// ---------------------------------------------------------------------------
-
-fn format_request(messages: &[Message], tools: &[ToolSpec], model: &str) -> serde_json::Value {
-    let msgs: Vec<serde_json::Value> = messages
-        .iter()
-        .map(|m| {
-            serde_json::json!({
-                "role": m.role,
-                "content": m.content,
-            })
-        })
-        .collect();
-
-    let mut body = serde_json::json!({
-        "model": model,
-        "messages": msgs,
-    });
-
-    if !tools.is_empty() {
-        let tool_specs: Vec<serde_json::Value> = tools
-            .iter()
-            .map(|t| {
-                let properties: serde_json::Map<String, serde_json::Value> = t
-                    .params
-                    .iter()
-                    .map(|(name, type_name)| {
-                        (name.clone(), serde_json::json!({ "type": type_name }))
-                    })
-                    .collect();
-
-                serde_json::json!({
-                    "type": "function",
-                    "function": {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": {
-                            "type": "object",
-                            "properties": properties,
-                        }
-                    }
-                })
-            })
-            .collect();
-
-        body["tools"] = serde_json::Value::Array(tool_specs);
-    }
-
-    body
-}
-
-fn format_tool_calls_content(calls: &[ToolCall]) -> String {
-    calls
-        .iter()
-        .map(|c| format!("{}({})", c.name, c.arguments))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-// ---------------------------------------------------------------------------
-// Response parsing (OpenAI-compatible)
-// ---------------------------------------------------------------------------
-
-fn parse_response(json: &serde_json::Value) -> Result<ModelResponse, String> {
-    let choices = json
-        .get("choices")
-        .and_then(|c| c.as_array())
-        .ok_or("missing 'choices' in response")?;
-
-    let choice = choices.first().ok_or("empty choices array")?;
-
-    let message = choice.get("message").ok_or("missing 'message' in choice")?;
-
-    // Check for tool calls
-    if let Some(tool_calls) = message.get("tool_calls").and_then(|t| t.as_array()) {
-        let calls: Result<Vec<ToolCall>, String> = tool_calls
-            .iter()
-            .map(|tc| {
-                let id = tc
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .ok_or("missing tool call id")?
-                    .to_string();
-                let func = tc.get("function").ok_or("missing function")?;
-                let name = func
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .ok_or("missing function name")?
-                    .to_string();
-                let arguments = func
-                    .get("arguments")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| serde_json::from_str(s).ok())
-                    .unwrap_or(serde_json::Value::Object(Default::default()));
-
-                Ok(ToolCall { id, name, arguments })
-            })
-            .collect();
-
-        return Ok(ModelResponse::ToolCalls(calls?));
-    }
-
-    // Text response
-    let content = message
-        .get("content")
-        .and_then(|c| c.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    Ok(ModelResponse::Text(content))
 }
 
 // ---------------------------------------------------------------------------
@@ -363,69 +392,38 @@ mod tests {
     }
 
     #[test]
-    fn format_request_basic() {
-        let messages = vec![
-            Message { role: "system".into(), content: "You are helpful.".into() },
-            Message { role: "user".into(), content: "Hello".into() },
-        ];
-        let body = format_request(&messages, &[], "gpt-4");
-        assert_eq!(body["model"], "gpt-4");
-        assert_eq!(body["messages"].as_array().unwrap().len(), 2);
-        assert!(body.get("tools").is_none());
+    fn output_to_literal_text() {
+        let lit = output_to_literal(&Output::Text("hello".into()));
+        assert_eq!(lit, Some(Literal::String("hello".into())));
     }
 
     #[test]
-    fn format_request_with_tools() {
-        let messages = vec![Message { role: "user".into(), content: "hi".into() }];
-        let tools = vec![ToolSpec {
-            name: "search".into(),
-            description: "Search the web".into(),
-            params: HashMap::from([("query".into(), "string".into())]),
-        }];
-        let body = format_request(&messages, &tools, "gpt-4");
-        let tools_arr = body["tools"].as_array().unwrap();
-        assert_eq!(tools_arr.len(), 1);
-        assert_eq!(tools_arr[0]["function"]["name"], "search");
+    fn output_to_literal_json_string() {
+        let lit = output_to_literal(&Output::Json(serde_json::json!("world")));
+        assert_eq!(lit, Some(Literal::String("world".into())));
     }
 
     #[test]
-    fn parse_text_response() {
-        let json = serde_json::json!({
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "Hello there!"
-                }
-            }]
-        });
-        let resp = parse_response(&json).unwrap();
-        assert!(matches!(resp, ModelResponse::Text(ref s) if s == "Hello there!"));
+    fn output_to_literal_json_int() {
+        let lit = output_to_literal(&Output::Json(serde_json::json!(42)));
+        assert_eq!(lit, Some(Literal::Int(42)));
     }
 
     #[test]
-    fn parse_tool_call_response() {
-        let json = serde_json::json!({
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "tool_calls": [{
-                        "id": "call_123",
-                        "function": {
-                            "name": "search",
-                            "arguments": "{\"query\": \"hello\"}"
-                        }
-                    }]
-                }
-            }]
-        });
-        let resp = parse_response(&json).unwrap();
-        match resp {
-            ModelResponse::ToolCalls(calls) => {
-                assert_eq!(calls.len(), 1);
-                assert_eq!(calls[0].name, "search");
-                assert_eq!(calls[0].arguments["query"], "hello");
-            }
-            _ => panic!("expected ToolCalls"),
-        }
+    fn output_to_literal_json_bool() {
+        let lit = output_to_literal(&Output::Json(serde_json::json!(true)));
+        assert_eq!(lit, Some(Literal::Bool(true)));
+    }
+
+    #[test]
+    fn output_to_literal_image_none() {
+        let lit = output_to_literal(&Output::Image(vec![0xff]));
+        assert!(lit.is_none());
+    }
+
+    #[test]
+    fn output_to_literal_json_object_none() {
+        let lit = output_to_literal(&Output::Json(serde_json::json!({"key": "val"})));
+        assert!(lit.is_none());
     }
 }
