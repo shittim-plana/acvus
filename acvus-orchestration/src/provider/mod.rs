@@ -2,6 +2,7 @@ mod openai;
 mod anthropic;
 mod google;
 
+use crate::dsl::GenerationParams;
 use crate::message::{Message, ModelResponse, ToolSpec};
 
 #[derive(Debug, Clone)]
@@ -35,11 +36,12 @@ pub fn build_request(
     model: &str,
     messages: &[Message],
     tools: &[ToolSpec],
+    generation: &GenerationParams,
 ) -> HttpRequest {
     match config.api {
-        ApiKind::OpenAI => openai::build_request(config, model, messages, tools),
-        ApiKind::Anthropic => anthropic::build_request(config, model, messages, tools),
-        ApiKind::Google => google::build_request(config, model, messages, tools),
+        ApiKind::OpenAI => openai::build_request(config, model, messages, tools, generation),
+        ApiKind::Anthropic => anthropic::build_request(config, model, messages, tools, generation),
+        ApiKind::Google => google::build_request(config, model, messages, tools, generation),
     }
 }
 

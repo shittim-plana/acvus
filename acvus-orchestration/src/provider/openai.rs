@@ -1,3 +1,4 @@
+use crate::dsl::GenerationParams;
 use crate::message::{Message, ModelResponse, ToolCall, ToolSpec};
 
 use super::{HttpRequest, ProviderConfig};
@@ -7,8 +8,9 @@ pub fn build_request(
     model: &str,
     messages: &[Message],
     tools: &[ToolSpec],
+    generation: &GenerationParams,
 ) -> HttpRequest {
-    let body = format_body(model, messages, tools);
+    let body = format_body(model, messages, tools, generation);
     let url = format!("{}/v1/chat/completions", config.endpoint);
     HttpRequest {
         url,
@@ -53,13 +55,17 @@ fn format_message(m: &Message) -> serde_json::Value {
     msg
 }
 
-fn format_body(model: &str, messages: &[Message], tools: &[ToolSpec]) -> serde_json::Value {
+fn format_body(model: &str, messages: &[Message], tools: &[ToolSpec], generation: &GenerationParams) -> serde_json::Value {
     let msgs: Vec<serde_json::Value> = messages.iter().map(format_message).collect();
 
     let mut body = serde_json::json!({
         "model": model,
         "messages": msgs,
     });
+
+    if let Some(t) = generation.temperature { body["temperature"] = serde_json::json!(t); }
+    if let Some(p) = generation.top_p { body["top_p"] = serde_json::json!(p); }
+    if let Some(m) = generation.max_tokens { body["max_tokens"] = serde_json::json!(m); }
 
     if !tools.is_empty() {
         let tool_specs: Vec<serde_json::Value> = tools
@@ -143,6 +149,7 @@ pub fn parse_response(json: &serde_json::Value) -> Result<ModelResponse, String>
 mod tests {
     use std::collections::HashMap;
 
+    use crate::dsl::GenerationParams;
     use crate::message::{Message, ToolSpec};
 
     use super::*;
@@ -156,6 +163,7 @@ mod tests {
                 Message::text("user", "Hello"),
             ],
             &[],
+            &GenerationParams::default(),
         );
         assert_eq!(body["model"], "gpt-4o");
         assert_eq!(body["messages"].as_array().unwrap().len(), 2);
@@ -172,6 +180,7 @@ mod tests {
                 description: "Search the web".into(),
                 params: HashMap::from([("query".into(), "string".into())]),
             }],
+            &GenerationParams::default(),
         );
         let tools = body["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 1);

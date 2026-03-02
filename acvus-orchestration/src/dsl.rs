@@ -13,6 +13,8 @@ pub struct NodeSpec {
     #[serde(default)]
     pub messages: Vec<MessageSpec>,
     pub strategy: Strategy,
+    #[serde(default)]
+    pub generation: GenerationParams,
     /// Output template file path — rendered after the model responds.
     pub output: Option<String>,
     /// Inline output template.
@@ -59,6 +61,15 @@ pub enum MessageSpec {
         template: Option<String>,
         inline_template: Option<String>,
     },
+}
+
+/// Generation parameters for model calls.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GenerationParams {
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub top_k: Option<u32>,
+    pub max_tokens: Option<u32>,
 }
 
 /// Tool declaration.

@@ -1,3 +1,4 @@
+use crate::dsl::GenerationParams;
 use crate::message::{Message, ModelResponse, ToolCall, ToolSpec};
 
 use super::{HttpRequest, ProviderConfig};
@@ -7,8 +8,9 @@ pub fn build_request(
     model: &str,
     messages: &[Message],
     tools: &[ToolSpec],
+    generation: &GenerationParams,
 ) -> HttpRequest {
-    let body = format_body(model, messages, tools);
+    let body = format_body(model, messages, tools, generation);
     let url = format!("{}/v1/messages", config.endpoint);
     HttpRequest {
         url,
@@ -21,7 +23,7 @@ pub fn build_request(
     }
 }
 
-fn format_body(model: &str, messages: &[Message], tools: &[ToolSpec]) -> serde_json::Value {
+fn format_body(model: &str, messages: &[Message], tools: &[ToolSpec], generation: &GenerationParams) -> serde_json::Value {
     let mut system_text = String::new();
     let mut msgs = Vec::new();
 
@@ -39,8 +41,12 @@ fn format_body(model: &str, messages: &[Message], tools: &[ToolSpec]) -> serde_j
     let mut body = serde_json::json!({
         "model": model,
         "messages": msgs,
-        "max_tokens": 4096,
+        "max_tokens": generation.max_tokens.unwrap_or(4096),
     });
+
+    if let Some(t) = generation.temperature { body["temperature"] = serde_json::json!(t); }
+    if let Some(p) = generation.top_p { body["top_p"] = serde_json::json!(p); }
+    if let Some(k) = generation.top_k { body["top_k"] = serde_json::json!(k); }
 
     if !system_text.is_empty() {
         body["system"] = serde_json::Value::String(system_text);
@@ -167,6 +173,7 @@ pub fn parse_response(json: &serde_json::Value) -> Result<ModelResponse, String>
 mod tests {
     use std::collections::HashMap;
 
+    use crate::dsl::GenerationParams;
     use crate::message::{Message, ToolSpec};
 
     use super::*;
@@ -180,6 +187,7 @@ mod tests {
                 Message::text("user", "Hello"),
             ],
             &[],
+            &GenerationParams::default(),
         );
         assert_eq!(body["system"], "You are helpful.");
         let msgs = body["messages"].as_array().unwrap();
@@ -197,6 +205,7 @@ mod tests {
                 description: "Search".into(),
                 params: HashMap::from([("query".into(), "string".into())]),
             }],
+            &GenerationParams::default(),
         );
         let tools = body["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 1);

@@ -1,3 +1,4 @@
+use crate::dsl::GenerationParams;
 use crate::message::{Message, ModelResponse, ToolCall, ToolSpec};
 
 use super::{HttpRequest, ProviderConfig};
@@ -7,8 +8,9 @@ pub fn build_request(
     model: &str,
     messages: &[Message],
     tools: &[ToolSpec],
+    generation: &GenerationParams,
 ) -> HttpRequest {
-    let body = format_body(messages, tools);
+    let body = format_body(messages, tools, generation);
     let url = format!(
         "{}/v1beta/models/{}:generateContent",
         config.endpoint, model
@@ -23,7 +25,7 @@ pub fn build_request(
     }
 }
 
-fn format_body(messages: &[Message], tools: &[ToolSpec]) -> serde_json::Value {
+fn format_body(messages: &[Message], tools: &[ToolSpec], generation: &GenerationParams) -> serde_json::Value {
     let mut system_text = String::new();
     let mut contents = Vec::new();
 
@@ -41,6 +43,15 @@ fn format_body(messages: &[Message], tools: &[ToolSpec]) -> serde_json::Value {
     let mut body = serde_json::json!({
         "contents": contents,
     });
+
+    let mut gen_config = serde_json::Map::new();
+    if let Some(t) = generation.temperature { gen_config.insert("temperature".into(), serde_json::json!(t)); }
+    if let Some(p) = generation.top_p { gen_config.insert("topP".into(), serde_json::json!(p)); }
+    if let Some(k) = generation.top_k { gen_config.insert("topK".into(), serde_json::json!(k)); }
+    if let Some(m) = generation.max_tokens { gen_config.insert("maxOutputTokens".into(), serde_json::json!(m)); }
+    if !gen_config.is_empty() {
+        body["generationConfig"] = serde_json::Value::Object(gen_config);
+    }
 
     if !system_text.is_empty() {
         body["system_instruction"] = serde_json::json!({
@@ -162,6 +173,7 @@ pub fn parse_response(json: &serde_json::Value) -> Result<ModelResponse, String>
 mod tests {
     use std::collections::HashMap;
 
+    use crate::dsl::GenerationParams;
     use crate::message::{Message, ToolSpec};
 
     use super::*;
@@ -174,6 +186,7 @@ mod tests {
                 Message::text("user", "Hello"),
             ],
             &[],
+            &GenerationParams::default(),
         );
         assert_eq!(
             body["system_instruction"]["parts"][0]["text"],
@@ -200,6 +213,7 @@ mod tests {
                 description: "Search".into(),
                 params: HashMap::from([("query".into(), "string".into())]),
             }],
+            &GenerationParams::default(),
         );
         let decls = &body["tools"][0]["function_declarations"];
         assert_eq!(decls.as_array().unwrap().len(), 1);

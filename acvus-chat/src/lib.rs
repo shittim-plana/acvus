@@ -163,7 +163,7 @@ where
             })
             .collect();
 
-        let request = build_request(&provider_config, &node.model, &messages, &tools);
+        let request = build_request(&provider_config, &node.model, &messages, &tools, &node.generation);
         let json = ctx
             .fetch
             .fetch(&request)
@@ -438,6 +438,7 @@ where
             &nodes[0].model,
             &messages,
             &self.tools,
+            &nodes[0].generation,
         );
         let json = fetch
             .fetch(&request)
