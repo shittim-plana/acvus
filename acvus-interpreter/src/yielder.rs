@@ -3,24 +3,31 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
-use futures::Stream;
 use parking_lot::Mutex;
 
 use crate::value::Value;
+
+// ---------------------------------------------------------------------------
+// Shared state
+// ---------------------------------------------------------------------------
 
 struct Shared {
     value: Option<Value>,
     yielded: bool,
     producer_waker: Option<Waker>,
+    context_request: Option<String>,
+    context_response: Option<Value>,
+    context_requested: bool,
 }
 
-/// Handle passed to the producer async fn. Call `.yield_val(v).await` to emit values.
+// ---------------------------------------------------------------------------
+// YieldHandle — producer side
+// ---------------------------------------------------------------------------
+
 #[derive(Clone)]
 pub struct YieldHandle {
     shared: Arc<Mutex<Shared>>,
 }
-
-// YieldHandle is Send + Sync via Arc<Mutex>.
 
 impl YieldHandle {
     pub fn yield_val(&self, value: Value) -> YieldFuture {
@@ -29,10 +36,19 @@ impl YieldHandle {
             value: Some(value),
         }
     }
+
+    pub fn request_context(&self, name: String) -> ContextFuture {
+        ContextFuture {
+            shared: Arc::clone(&self.shared),
+            name: Some(name),
+        }
+    }
 }
 
-/// Future returned by `YieldHandle::yield_val`. Completes once the stream
-/// consumer has taken the value.
+// ---------------------------------------------------------------------------
+// YieldFuture
+// ---------------------------------------------------------------------------
+
 pub struct YieldFuture {
     shared: Arc<Mutex<Shared>>,
     value: Option<Value>,
@@ -46,71 +62,155 @@ impl Future for YieldFuture {
         let mut shared = this.shared.lock();
 
         if let Some(value) = this.value.take() {
-            // First poll: deposit value and suspend.
             shared.value = Some(value);
             shared.yielded = true;
             shared.producer_waker = Some(cx.waker().clone());
             Poll::Pending
         } else {
-            // Resumed by stream consumer: value has been taken.
             Poll::Ready(())
         }
     }
 }
 
-/// Stream that drives a producer future and yields values deposited via `YieldHandle`.
-pub struct YieldStream {
+// ---------------------------------------------------------------------------
+// ContextFuture
+// ---------------------------------------------------------------------------
+
+pub struct ContextFuture {
+    shared: Arc<Mutex<Shared>>,
+    name: Option<String>,
+}
+
+impl Future for ContextFuture {
+    type Output = Value;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Value> {
+        let this = self.get_mut();
+        let mut shared = this.shared.lock();
+
+        if let Some(name) = this.name.take() {
+            shared.context_request = Some(name);
+            shared.context_requested = true;
+            shared.producer_waker = Some(cx.waker().clone());
+            Poll::Pending
+        } else if let Some(value) = shared.context_response.take() {
+            Poll::Ready(value)
+        } else {
+            shared.producer_waker = Some(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Resume API — public types
+// ---------------------------------------------------------------------------
+
+pub struct ResumeKey(ResumeKeyInner);
+
+enum ResumeKeyInner {
+    Start,
+    Context(Value),
+}
+
+pub enum Stepped {
+    Emit(EmitStepped),
+    NeedContext(NeedContextStepped),
+    Done,
+}
+
+pub struct EmitStepped {
+    value: Value,
+    key: ResumeKey,
+}
+
+impl EmitStepped {
+    pub fn into_parts(self) -> (Value, ResumeKey) {
+        (self.value, self.key)
+    }
+}
+
+pub struct NeedContextStepped {
+    name: String,
+}
+
+impl NeedContextStepped {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn into_key(self, value: Value) -> ResumeKey {
+        ResumeKey(ResumeKeyInner::Context(value))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Coroutine
+// ---------------------------------------------------------------------------
+
+pub struct Coroutine {
     shared: Arc<Mutex<Shared>>,
     fut: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
 }
 
-impl Stream for YieldStream {
-    type Item = Value;
+impl Coroutine {
+    pub fn resume(&mut self, key: ResumeKey) -> Stepped {
+        // 1. Inject context response if the key carries one.
+        if let ResumeKeyInner::Context(value) = key.0 {
+            let mut shared = self.shared.lock();
+            shared.context_response = Some(value);
+        }
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Value>> {
-        let this = self.get_mut();
-
-        let fut = match &mut this.fut {
+        let fut = match &mut self.fut {
             Some(f) => f.as_mut(),
-            None => return Poll::Ready(None),
+            None => return Stepped::Done,
         };
 
-        // Drive the producer future.
-        match fut.poll(cx) {
+        // 2. Poll with noop waker.
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+
+        match fut.poll(&mut cx) {
             Poll::Ready(()) => {
-                this.fut = None;
-                // Producer finished. Check if there's a final yielded value.
-                let mut shared = this.shared.lock();
+                self.fut = None;
+                let mut shared = self.shared.lock();
                 if shared.yielded {
                     shared.yielded = false;
-                    Poll::Ready(shared.value.take())
-                } else {
-                    Poll::Ready(None)
+                    if let Some(value) = shared.value.take() {
+                        return Stepped::Emit(EmitStepped {
+                            value,
+                            key: ResumeKey(ResumeKeyInner::Start),
+                        });
+                    }
                 }
+                Stepped::Done
             }
             Poll::Pending => {
-                let mut shared = this.shared.lock();
-                if shared.yielded {
+                let mut shared = self.shared.lock();
+                if shared.context_requested {
+                    shared.context_requested = false;
+                    let name = shared.context_request.take().unwrap();
+                    Stepped::NeedContext(NeedContextStepped { name })
+                } else if shared.yielded {
                     shared.yielded = false;
-                    let value = shared.value.take();
-                    // Wake the producer so it continues on next poll.
-                    let waker = shared.producer_waker.take();
-                    drop(shared);
-                    if let Some(waker) = waker {
-                        waker.wake();
-                    }
-                    Poll::Ready(value)
+                    let value = shared.value.take().unwrap();
+                    Stepped::Emit(EmitStepped {
+                        value,
+                        key: ResumeKey(ResumeKeyInner::Start),
+                    })
                 } else {
-                    // Producer is waiting on something else (e.g. async call).
-                    Poll::Pending
+                    Stepped::Done
                 }
             }
         }
     }
 }
 
-/// Create a `YieldStream` from an async closure that receives a `YieldHandle`.
-pub fn yielder<F, Fut>(f: F) -> YieldStream
+// ---------------------------------------------------------------------------
+// Constructor
+// ---------------------------------------------------------------------------
+
+pub fn coroutine<F, Fut>(f: F) -> (Coroutine, ResumeKey)
 where
     F: FnOnce(YieldHandle) -> Fut,
     Fut: Future<Output = ()> + Send + 'static,
@@ -119,11 +219,17 @@ where
         value: None,
         yielded: false,
         producer_waker: None,
+        context_request: None,
+        context_response: None,
+        context_requested: false,
     }));
     let handle = YieldHandle { shared: Arc::clone(&shared) };
     let fut = f(handle);
-    YieldStream {
-        shared,
-        fut: Some(Box::pin(fut)),
-    }
+    (
+        Coroutine {
+            shared,
+            fut: Some(Box::pin(fut)),
+        },
+        ResumeKey(ResumeKeyInner::Start),
+    )
 }

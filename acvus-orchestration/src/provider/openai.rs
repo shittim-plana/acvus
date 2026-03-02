@@ -1,28 +1,22 @@
-use acvus_orchestration::{FetchRequest, Message, ModelResponse, ToolCall};
+use crate::message::{Message, ModelResponse, ToolCall, ToolSpec};
 
-pub async fn call(
-    client: &reqwest::Client,
-    endpoint: &str,
-    api_key: &str,
-    request: &FetchRequest,
-) -> Result<ModelResponse, String> {
-    let body = format_request(request);
-    let url = format!("{endpoint}/v1/chat/completions");
+use super::{HttpRequest, ProviderConfig};
 
-    let resp = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("openai request failed: {e}"))?;
-
-    let json: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("openai response parse failed: {e}"))?;
-
-    parse_response(&json)
+pub fn build_request(
+    config: &ProviderConfig,
+    model: &str,
+    messages: &[Message],
+    tools: &[ToolSpec],
+) -> HttpRequest {
+    let body = format_body(model, messages, tools);
+    let url = format!("{}/v1/chat/completions", config.endpoint);
+    HttpRequest {
+        url,
+        headers: vec![
+            ("Authorization".into(), format!("Bearer {}", config.api_key)),
+        ],
+        body,
+    }
 }
 
 fn format_message(m: &Message) -> serde_json::Value {
@@ -59,17 +53,16 @@ fn format_message(m: &Message) -> serde_json::Value {
     msg
 }
 
-fn format_request(request: &FetchRequest) -> serde_json::Value {
-    let msgs: Vec<serde_json::Value> = request.messages.iter().map(format_message).collect();
+fn format_body(model: &str, messages: &[Message], tools: &[ToolSpec]) -> serde_json::Value {
+    let msgs: Vec<serde_json::Value> = messages.iter().map(format_message).collect();
 
     let mut body = serde_json::json!({
-        "model": request.model,
+        "model": model,
         "messages": msgs,
     });
 
-    if !request.tools.is_empty() {
-        let tool_specs: Vec<serde_json::Value> = request
-            .tools
+    if !tools.is_empty() {
+        let tool_specs: Vec<serde_json::Value> = tools
             .iter()
             .map(|t| {
                 let properties: serde_json::Map<String, serde_json::Value> = t
@@ -100,7 +93,7 @@ fn format_request(request: &FetchRequest) -> serde_json::Value {
     body
 }
 
-fn parse_response(json: &serde_json::Value) -> Result<ModelResponse, String> {
+pub fn parse_response(json: &serde_json::Value) -> Result<ModelResponse, String> {
     let choices = json
         .get("choices")
         .and_then(|c| c.as_array())
@@ -150,29 +143,20 @@ fn parse_response(json: &serde_json::Value) -> Result<ModelResponse, String> {
 mod tests {
     use std::collections::HashMap;
 
-    use acvus_orchestration::{Message, ToolSpec};
+    use crate::message::{Message, ToolSpec};
 
     use super::*;
 
-    fn make_request(messages: Vec<Message>, tools: Vec<ToolSpec>) -> FetchRequest {
-        FetchRequest {
-            provider: "openai".into(),
-            model: "gpt-4o".into(),
-            messages,
-            tools,
-        }
-    }
-
     #[test]
     fn format_basic_messages() {
-        let req = make_request(
-            vec![
+        let body = format_body(
+            "gpt-4o",
+            &[
                 Message::text("system", "You are helpful."),
                 Message::text("user", "Hello"),
             ],
-            vec![],
+            &[],
         );
-        let body = format_request(&req);
         assert_eq!(body["model"], "gpt-4o");
         assert_eq!(body["messages"].as_array().unwrap().len(), 2);
         assert!(body.get("tools").is_none());
@@ -180,15 +164,15 @@ mod tests {
 
     #[test]
     fn format_with_tools() {
-        let req = make_request(
-            vec![Message::text("user", "hi")],
-            vec![ToolSpec {
+        let body = format_body(
+            "gpt-4o",
+            &[Message::text("user", "hi")],
+            &[ToolSpec {
                 name: "search".into(),
                 description: "Search the web".into(),
                 params: HashMap::from([("query".into(), "string".into())]),
             }],
         );
-        let body = format_request(&req);
         let tools = body["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["function"]["name"], "search");

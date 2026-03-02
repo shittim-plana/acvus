@@ -7,7 +7,7 @@ use acvus_mir::ty::Ty;
 use acvus_mir_pass::AnalysisPass;
 use acvus_mir_pass::analysis::val_def::{ValDefMap, ValDefMapAnalysis};
 
-use crate::dsl::{NodeSpec, ToolDecl};
+use crate::dsl::{MessageSpec, NodeSpec, ToolDecl};
 use crate::error::{OrchError, OrchErrorKind};
 
 /// A compiled orchestration node.
@@ -17,8 +17,18 @@ pub struct CompiledNode {
     pub provider: String,
     pub model: String,
     pub tools: Vec<ToolDecl>,
-    pub blocks: Vec<CompiledBlock>,
+    pub messages: Vec<CompiledMessage>,
     pub all_context_keys: HashSet<String>,
+}
+
+/// A compiled message entry.
+#[derive(Debug, Clone)]
+pub enum CompiledMessage {
+    Block(CompiledBlock),
+    Iterator {
+        key: String,
+        block: Option<CompiledBlock>,
+    },
 }
 
 /// A compiled message block within a node.
@@ -40,56 +50,47 @@ pub fn compile_node(
     context_types: &HashMap<String, Ty>,
     registry: &ExternRegistry,
 ) -> Result<CompiledNode, Vec<OrchError>> {
-    let mut compiled_blocks = Vec::new();
+    let mut compiled_messages = Vec::new();
     let mut all_context_keys = HashSet::new();
     let mut errors = Vec::new();
 
     for (i, msg) in spec.messages.iter().enumerate() {
-        let path = base_dir.join(&msg.template);
-        let source = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(e) => {
-                errors.push(OrchError::new(OrchErrorKind::TemplateLoad {
-                    path: path.display().to_string(),
-                    error: e.to_string(),
-                }));
-                continue;
-            }
-        };
-
-        let template = match acvus_ast::parse(&source) {
-            Ok(t) => t,
-            Err(e) => {
-                errors.push(OrchError::new(OrchErrorKind::TemplateParse {
-                    block: i,
-                    error: format!("{e:?}"),
-                }));
-                continue;
-            }
-        };
-
-        let (module, _hints) =
-            match acvus_mir::compile(&template, context_types.clone(), registry) {
-                Ok(m) => m,
-                Err(errs) => {
-                    errors.push(OrchError::new(OrchErrorKind::TemplateCompile {
-                        block: i,
-                        errors: errs,
-                    }));
-                    continue;
+        match msg {
+            MessageSpec::Block { role, template } => {
+                match compile_template(base_dir, template, i, context_types, registry) {
+                    Ok(block) => {
+                        all_context_keys.extend(block.context_keys.iter().cloned());
+                        compiled_messages.push(CompiledMessage::Block(CompiledBlock {
+                            role: role.clone(),
+                            ..block
+                        }));
+                    }
+                    Err(e) => errors.push(e),
                 }
-            };
+            }
+            MessageSpec::Iterator { iterator, template } => {
+                let key = iterator.trim_start_matches('@').to_string();
 
-        let context_keys = extract_context_keys(&module);
-        all_context_keys.extend(context_keys.iter().cloned());
-        let val_def = ValDefMapAnalysis.run(&module, ());
+                let block = if let Some(tmpl) = template {
+                    // Iterator template receives @type and @text from each item
+                    let mut iter_types = context_types.clone();
+                    iter_types.insert("type".into(), Ty::String);
+                    iter_types.insert("text".into(), Ty::String);
 
-        compiled_blocks.push(CompiledBlock {
-            role: msg.role.clone(),
-            module,
-            context_keys,
-            val_def,
-        });
+                    match compile_template(base_dir, tmpl, i, &iter_types, registry) {
+                        Ok(block) => Some(block),
+                        Err(e) => {
+                            errors.push(e);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                compiled_messages.push(CompiledMessage::Iterator { key, block });
+            }
+        }
     }
 
     if !errors.is_empty() {
@@ -101,8 +102,50 @@ pub fn compile_node(
         provider: spec.provider.clone(),
         model: spec.model.clone(),
         tools: spec.tools.clone(),
-        blocks: compiled_blocks,
+        messages: compiled_messages,
         all_context_keys,
+    })
+}
+
+fn compile_template(
+    base_dir: &Path,
+    template: &str,
+    block_idx: usize,
+    context_types: &HashMap<String, Ty>,
+    registry: &ExternRegistry,
+) -> Result<CompiledBlock, OrchError> {
+    let path = base_dir.join(template);
+    let source = std::fs::read_to_string(&path).map_err(|e| {
+        OrchError::new(OrchErrorKind::TemplateLoad {
+            path: path.display().to_string(),
+            error: e.to_string(),
+        })
+    })?;
+
+    let ast = acvus_ast::parse(&source).map_err(|e| {
+        OrchError::new(OrchErrorKind::TemplateParse {
+            block: block_idx,
+            error: format!("{e:?}"),
+        })
+    })?;
+
+    let (module, _hints) = acvus_mir::compile(&ast, context_types.clone(), registry).map_err(
+        |errs| {
+            OrchError::new(OrchErrorKind::TemplateCompile {
+                block: block_idx,
+                errors: errs,
+            })
+        },
+    )?;
+
+    let context_keys = extract_context_keys(&module);
+    let val_def = ValDefMapAnalysis.run(&module, ());
+
+    Ok(CompiledBlock {
+        role: String::new(),
+        module,
+        context_keys,
+        val_def,
     })
 }
 

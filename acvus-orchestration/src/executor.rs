@@ -3,17 +3,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use acvus_ast::Literal;
-use acvus_interpreter::{ExternFnRegistry, Interpreter, Value};
+use acvus_interpreter::{
+    Coroutine, ExternFnRegistry, Interpreter, NeedContextStepped, ResumeKey, Stepped, Value,
+};
 use acvus_mir::extern_module::ExternRegistry;
+use acvus_mir::ir::MirModule;
 use acvus_mir_pass::analysis::reachable_context::reachable_context_keys;
 use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
 
-use crate::compile::CompiledNode;
+use crate::compile::{CompiledMessage, CompiledNode};
 use crate::dag::Dag;
 use crate::error::{OrchError, OrchErrorKind};
 use crate::message::{Message, ModelResponse, Output, ToolCall, ToolResult, ToolSpec};
-use crate::provider::{Fetch, FetchRequest};
+use crate::provider::{build_request, parse_response, Fetch, ProviderConfig};
 use crate::storage::Storage;
 
 pub struct Executor<F, S>
@@ -25,6 +28,7 @@ where
     dag: Dag,
     storage: S,
     fetch: F,
+    providers: HashMap<String, ProviderConfig>,
     mir_registry: ExternRegistry,
     fuel_limit: u64,
 }
@@ -39,70 +43,139 @@ where
         dag: Dag,
         storage: S,
         fetch: F,
+        providers: HashMap<String, ProviderConfig>,
         mir_registry: ExternRegistry,
         fuel_limit: u64,
     ) -> Self {
-        Self { nodes, dag, storage, fetch, mir_registry, fuel_limit }
+        Self { nodes, dag, storage, fetch, providers, mir_registry, fuel_limit }
     }
 
-    /// Run the full DAG, executing independent nodes in parallel.
+    /// Run the full DAG with demand-driven rendering.
     ///
-    /// Uses MIR static analysis (`reachable_context_keys`) to determine which
-    /// dependencies are actually needed at runtime. Nodes whose live code paths
-    /// don't reference a dependency's output can be launched early, even if that
-    /// dependency hasn't completed yet.
-    ///
-    /// Known context values are converted to `Literal` and fed into the analysis
-    /// so branch conditions can be evaluated — dead branches are pruned and their
-    /// context loads ignored.
+    /// Template rendering is sync (coroutine resume loop). When a template
+    /// needs a context value that isn't available yet, the node blocks until
+    /// the dependency's model call completes. Model calls are the only async
+    /// operations, driven via `FuturesUnordered`.
     pub async fn run(self) -> Result<S, OrchError> {
-        let Executor { nodes, dag, mut storage, fetch, fuel_limit, .. } = self;
+        let Executor { nodes, dag, mut storage, fetch, providers, fuel_limit, .. } = self;
         let fetch = Arc::new(fetch);
         let fuel = Arc::new(AtomicU64::new(0));
         let n = nodes.len();
 
         let mut launched = vec![false; n];
         let mut completed = vec![false; n];
+        let mut node_states: Vec<Option<NodeRunState>> = (0..n).map(|_| None).collect();
+
+        let name_to_idx: HashMap<&str, usize> = nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.name.as_str(), i))
+            .collect();
 
         let mut running: FuturesUnordered<BoxFuture<'static, Result<(usize, Output), OrchError>>> =
             FuturesUnordered::new();
 
-        // Launch initially ready nodes
+        // Launch initially ready nodes (prefetch via static analysis)
         for i in 0..n {
             if is_node_ready(i, &nodes, &dag, &storage, &completed) {
                 launched[i] = true;
-                let context = build_context_for(&nodes[i], &storage);
-                running.push(Box::pin(run_node(
-                    i,
-                    nodes[i].clone(),
-                    context,
-                    Arc::clone(&fetch),
-                    Arc::clone(&fuel),
-                    fuel_limit,
-                )));
+                node_states[i] = Some(make_node_state(&nodes[i]));
             }
         }
 
-        // Process completions and launch newly ready nodes
-        while let Some(result) = running.next().await {
-            let (idx, output) = result?;
-            storage.set(nodes[idx].name.clone(), output);
-            completed[idx] = true;
+        loop {
+            // 1. Drive rendering (sync) — all non-blocked nodes
+            loop {
+                let mut progress = false;
+                let mut to_submit: Vec<usize> = Vec::new();
+                let mut to_launch: Vec<usize> = Vec::new();
 
-            // Re-check all pending nodes — with new storage values,
-            // the analysis may prune branches and unlock more nodes.
-            for i in 0..n {
-                if !launched[i] && is_node_ready(i, &nodes, &dag, &storage, &completed) {
-                    launched[i] = true;
-                    let context = build_context_for(&nodes[i], &storage);
-                    running.push(Box::pin(run_node(
+                for i in 0..n {
+                    let state = match &mut node_states[i] {
+                        Some(s) if s.waiting_for.is_none() => s,
+                        _ => continue,
+                    };
+                    match drive_rendering(state, &storage) {
+                        DriveResult::AllRendered => {
+                            to_submit.push(i);
+                            progress = true;
+                        }
+                        DriveResult::Blocked(dep_name) => {
+                            if let Some(&dep_idx) = name_to_idx.get(dep_name.as_str()) {
+                                if !launched[dep_idx] {
+                                    to_launch.push(dep_idx);
+                                    progress = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                for i in to_submit {
+                    let state = node_states[i].take().unwrap();
+                    let provider_config = providers
+                        .get(&nodes[i].provider)
+                        .ok_or_else(|| {
+                            OrchError::new(OrchErrorKind::ModelError(format!(
+                                "unknown provider: {}",
+                                nodes[i].provider
+                            )))
+                        })?
+                        .clone();
+                    running.push(Box::pin(call_model(
                         i,
                         nodes[i].clone(),
-                        context,
+                        state.rendered_messages,
+                        provider_config,
                         Arc::clone(&fetch),
                         Arc::clone(&fuel),
                         fuel_limit,
                     )));
+                }
+
+                for i in to_launch {
+                    launched[i] = true;
+                    node_states[i] = Some(make_node_state(&nodes[i]));
+                }
+
+                if !progress {
+                    break;
+                }
+            }
+
+            // 2. Done check
+            if running.is_empty() {
+                break;
+            }
+
+            // 3. Await model completion
+            let result = running.next().await;
+            let (idx, output) = match result {
+                Some(Ok(r)) => r,
+                Some(Err(e)) => return Err(e),
+                None => break,
+            };
+            storage.set(nodes[idx].name.clone(), output);
+            completed[idx] = true;
+
+            // 4. Unblock waiting nodes
+            let completed_name = &nodes[idx].name;
+            for i in 0..n {
+                if let Some(state) = &mut node_states[i] {
+                    if state.waiting_for.as_deref() == Some(completed_name.as_str()) {
+                        let need = state.pending_need.take().unwrap();
+                        let output_val = storage.get(completed_name).unwrap();
+                        state.resume_key = Some(need.into_key(output_to_value(&output_val)));
+                        state.waiting_for = None;
+                    }
+                }
+            }
+
+            // 5. Prefetch — launch nodes that static analysis says are ready
+            for i in 0..n {
+                if !launched[i] && is_node_ready(i, &nodes, &dag, &storage, &completed) {
+                    launched[i] = true;
+                    node_states[i] = Some(make_node_state(&nodes[i]));
                 }
             }
         }
@@ -112,13 +185,111 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// Node execution (standalone async, captures everything by value)
+// NodeRunState — per-node rendering state
 // ---------------------------------------------------------------------------
 
-async fn run_node<F>(
+struct NodeRunState {
+    blocks: Vec<(String, MirModule)>,
+    block_idx: usize,
+    coroutine: Option<Coroutine>,
+    resume_key: Option<ResumeKey>,
+    pending_need: Option<NeedContextStepped>,
+    current_output: String,
+    rendered_messages: Vec<Message>,
+    waiting_for: Option<String>,
+}
+
+enum DriveResult {
+    AllRendered,
+    Blocked(String),
+}
+
+fn make_node_state(node: &CompiledNode) -> NodeRunState {
+    let blocks: Vec<(String, MirModule)> = node
+        .messages
+        .iter()
+        .filter_map(|msg| match msg {
+            CompiledMessage::Block(block) => Some((block.role.clone(), block.module.clone())),
+            CompiledMessage::Iterator { .. } => None,
+        })
+        .collect();
+
+    NodeRunState {
+        blocks,
+        block_idx: 0,
+        coroutine: None,
+        resume_key: None,
+        pending_need: None,
+        current_output: String::new(),
+        rendered_messages: Vec::new(),
+        waiting_for: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// drive_rendering — sync, drives a node's coroutine until blocked or done
+// ---------------------------------------------------------------------------
+
+fn drive_rendering<S>(state: &mut NodeRunState, storage: &S) -> DriveResult
+where
+    S: Storage,
+{
+    loop {
+        // Create coroutine for current block if needed
+        if state.coroutine.is_none() {
+            if state.block_idx >= state.blocks.len() {
+                return DriveResult::AllRendered;
+            }
+            let (_, module) = &state.blocks[state.block_idx];
+            let interp = Interpreter::new(module.clone(), ExternFnRegistry::new());
+            let (coroutine, key) = interp.execute();
+            state.coroutine = Some(coroutine);
+            state.resume_key = Some(key);
+        }
+
+        let coroutine = state.coroutine.as_mut().unwrap();
+        let key = state.resume_key.take().unwrap();
+
+        match coroutine.resume(key) {
+            Stepped::Emit(emit) => {
+                let (value, next_key) = emit.into_parts();
+                match value {
+                    Value::String(s) => state.current_output.push_str(&s),
+                    other => panic!("drive_rendering: expected String, got {other:?}"),
+                }
+                state.resume_key = Some(next_key);
+            }
+            Stepped::NeedContext(need) => {
+                let name = need.name().to_string();
+                if let Some(output) = storage.get(&name) {
+                    state.resume_key = Some(need.into_key(output_to_value(&output)));
+                } else {
+                    state.pending_need = Some(need);
+                    state.waiting_for = Some(name.clone());
+                    return DriveResult::Blocked(name);
+                }
+            }
+            Stepped::Done => {
+                let role = state.blocks[state.block_idx].0.clone();
+                let output = std::mem::take(&mut state.current_output);
+                state.rendered_messages.push(Message::text(&role, output));
+                state.coroutine = None;
+                state.resume_key = None;
+                state.block_idx += 1;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// call_model — async, model call + tool loop only
+// ---------------------------------------------------------------------------
+
+async fn call_model<F>(
     idx: usize,
     node: CompiledNode,
-    context: HashMap<String, Output>,
+    messages: Vec<Message>,
+    provider_config: ProviderConfig,
     fetch: Arc<F>,
     fuel: Arc<AtomicU64>,
     fuel_limit: u64,
@@ -126,21 +297,6 @@ async fn run_node<F>(
 where
     F: Fetch,
 {
-    // Render each block into a message
-    let mut messages = Vec::new();
-    for block in &node.blocks {
-        let context_values: HashMap<String, Value> = context
-            .iter()
-            .map(|(k, v)| (k.clone(), output_to_value(v)))
-            .collect();
-
-        let interp =
-            Interpreter::new(block.module.clone(), context_values, ExternFnRegistry::new());
-        let output = interp.execute_to_string().await;
-
-        messages.push(Message::text(&block.role, output));
-    }
-
     let tools: Vec<ToolSpec> = node
         .tools
         .iter()
@@ -151,27 +307,20 @@ where
         })
         .collect();
 
-    // Call model
     consume_fuel(&fuel, fuel_limit)?;
-    let request = FetchRequest {
-        provider: node.provider.clone(),
-        model: node.model.clone(),
-        messages: messages.clone(),
-        tools: tools.clone(),
-    };
-    let mut response = fetch
-        .call(&request)
+    let http_request = build_request(&provider_config, &node.model, &messages, &tools);
+    let json = fetch
+        .fetch(&http_request)
         .await
         .map_err(|e| OrchError::new(OrchErrorKind::ModelError(e)))?;
+    let mut response = parse_response(&provider_config.api, &json)
+        .map_err(|e| OrchError::new(OrchErrorKind::ModelError(e)))?;
 
-    // Tool call loop
     let mut all_messages = messages;
     while let ModelResponse::ToolCalls(ref calls) = response {
         consume_fuel(&fuel, fuel_limit)?;
-
         let tool_results = handle_tool_calls(calls);
 
-        // Assistant message with tool calls
         all_messages.push(Message {
             role: "assistant".into(),
             content: String::new(),
@@ -179,7 +328,6 @@ where
             tool_call_id: None,
         });
 
-        // Tool result messages
         for result in &tool_results {
             all_messages.push(Message {
                 role: "tool".into(),
@@ -189,15 +337,12 @@ where
             });
         }
 
-        let request = FetchRequest {
-            provider: node.provider.clone(),
-            model: node.model.clone(),
-            messages: all_messages.clone(),
-            tools: tools.clone(),
-        };
-        response = fetch
-            .call(&request)
+        let http_request = build_request(&provider_config, &node.model, &all_messages, &tools);
+        let json = fetch
+            .fetch(&http_request)
             .await
+            .map_err(|e| OrchError::new(OrchErrorKind::ModelError(e)))?;
+        response = parse_response(&provider_config.api, &json)
             .map_err(|e| OrchError::new(OrchErrorKind::ModelError(e)))?;
     }
 
@@ -211,12 +356,7 @@ where
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Check if a node can be launched given the current storage state.
-///
-/// Uses `reachable_context_keys` to determine which context keys are actually
-/// needed on live code paths. A dependency is only blocking if:
-/// 1. It hasn't completed yet, AND
-/// 2. Its output is referenced on a live path in one of the node's blocks.
+/// Check if a node can be launched given the current storage state (for prefetch).
 fn is_node_ready<S>(
     idx: usize,
     nodes: &[CompiledNode],
@@ -229,7 +369,6 @@ where
 {
     let node = &nodes[idx];
 
-    // Build known literals from available storage values
     let mut known = HashMap::new();
     for key in &node.all_context_keys {
         if let Some(output) = storage.get(key) {
@@ -239,13 +378,13 @@ where
         }
     }
 
-    // Compute actually needed keys via static analysis across all blocks
     let mut needed = HashSet::new();
-    for block in &node.blocks {
-        needed.extend(reachable_context_keys(&block.module, &known, &block.val_def));
+    for msg in &node.messages {
+        if let CompiledMessage::Block(block) = msg {
+            needed.extend(reachable_context_keys(&block.module, &known, &block.val_def));
+        }
     }
 
-    // Check: for each incomplete dependency, is its output actually needed?
     for &dep_idx in &dag.deps[idx] {
         if completed[dep_idx] {
             continue;
@@ -257,19 +396,6 @@ where
     }
 
     true
-}
-
-fn build_context_for<S>(node: &CompiledNode, storage: &S) -> HashMap<String, Output>
-where
-    S: Storage,
-{
-    let mut context = HashMap::new();
-    for key in &node.all_context_keys {
-        if let Some(value) = storage.get(key) {
-            context.insert(key.clone(), value);
-        }
-    }
-    context
 }
 
 // ---------------------------------------------------------------------------
@@ -324,7 +450,7 @@ fn handle_tool_calls(calls: &[ToolCall]) -> Vec<ToolResult> {
 // Output → Value conversion (for interpreter context injection)
 // ---------------------------------------------------------------------------
 
-fn output_to_value(output: &Output) -> Value {
+pub fn output_to_value(output: &Output) -> Value {
     match output {
         Output::Text(s) => Value::String(s.clone()),
         Output::Json(v) => json_to_value(v),

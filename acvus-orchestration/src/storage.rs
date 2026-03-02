@@ -9,6 +9,7 @@ use crate::message::Output;
 pub trait Storage {
     fn get(&self, key: &str) -> Option<Output>;
     fn set(&mut self, key: String, value: Output);
+    fn remove(&mut self, key: &str);
 }
 
 /// Simple in-memory storage backed by a `HashMap`.
@@ -29,6 +30,10 @@ impl Storage for HashMapStorage {
 
     fn set(&mut self, key: String, value: Output) {
         self.entries.insert(key, value);
+    }
+
+    fn remove(&mut self, key: &str) {
+        self.entries.remove(key);
     }
 }
 

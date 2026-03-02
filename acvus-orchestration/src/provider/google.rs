@@ -1,40 +1,33 @@
-use acvus_orchestration::{FetchRequest, Message, ModelResponse, ToolCall};
+use crate::message::{Message, ModelResponse, ToolCall, ToolSpec};
 
-pub async fn call(
-    client: &reqwest::Client,
-    endpoint: &str,
-    api_key: &str,
-    request: &FetchRequest,
-) -> Result<ModelResponse, String> {
-    let body = format_request(request);
+use super::{HttpRequest, ProviderConfig};
+
+pub fn build_request(
+    config: &ProviderConfig,
+    model: &str,
+    messages: &[Message],
+    tools: &[ToolSpec],
+) -> HttpRequest {
+    let body = format_body(messages, tools);
     let url = format!(
-        "{endpoint}/v1beta/models/{}:generateContent",
-        request.model
+        "{}/v1beta/models/{}:generateContent",
+        config.endpoint, model
     );
-
-    let resp = client
-        .post(&url)
-        .header("x-goog-api-key", api_key)
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("google request failed: {e}"))?;
-
-    let json: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("google response parse failed: {e}"))?;
-
-    parse_response(&json)
+    HttpRequest {
+        url,
+        headers: vec![
+            ("x-goog-api-key".into(), config.api_key.clone()),
+            ("content-type".into(), "application/json".into()),
+        ],
+        body,
+    }
 }
 
-fn format_request(request: &FetchRequest) -> serde_json::Value {
-    // Separate system instruction from contents
+fn format_body(messages: &[Message], tools: &[ToolSpec]) -> serde_json::Value {
     let mut system_text = String::new();
     let mut contents = Vec::new();
 
-    for m in &request.messages {
+    for m in messages {
         if m.role == "system" {
             if !system_text.is_empty() {
                 system_text.push('\n');
@@ -55,9 +48,8 @@ fn format_request(request: &FetchRequest) -> serde_json::Value {
         });
     }
 
-    if !request.tools.is_empty() {
-        let declarations: Vec<serde_json::Value> = request
-            .tools
+    if !tools.is_empty() {
+        let declarations: Vec<serde_json::Value> = tools
             .iter()
             .map(|t| {
                 let properties: serde_json::Map<String, serde_json::Value> = t
@@ -88,7 +80,7 @@ fn format_request(request: &FetchRequest) -> serde_json::Value {
 }
 
 fn format_content(m: &Message) -> serde_json::Value {
-    // Map roles: "assistant" → "model", "tool" stays special
+    // Map roles: "assistant" -> "model", "tool" stays special
     let role = match m.role.as_str() {
         "assistant" => "model",
         other => other,
@@ -96,7 +88,7 @@ fn format_content(m: &Message) -> serde_json::Value {
 
     let mut parts = Vec::new();
 
-    // Tool call results → functionResponse parts
+    // Tool call results -> functionResponse parts
     if let Some(ref tool_call_id) = m.tool_call_id {
         parts.push(serde_json::json!({
             "functionResponse": {
@@ -109,7 +101,7 @@ fn format_content(m: &Message) -> serde_json::Value {
         return serde_json::json!({ "role": "function", "parts": parts });
     }
 
-    // Assistant message with tool calls → functionCall parts
+    // Assistant message with tool calls -> functionCall parts
     if !m.tool_calls.is_empty() {
         for tc in &m.tool_calls {
             parts.push(serde_json::json!({
@@ -127,7 +119,7 @@ fn format_content(m: &Message) -> serde_json::Value {
     serde_json::json!({ "role": role, "parts": parts })
 }
 
-fn parse_response(json: &serde_json::Value) -> Result<ModelResponse, String> {
+pub fn parse_response(json: &serde_json::Value) -> Result<ModelResponse, String> {
     let candidates = json
         .get("candidates")
         .and_then(|c| c.as_array())
@@ -170,29 +162,19 @@ fn parse_response(json: &serde_json::Value) -> Result<ModelResponse, String> {
 mod tests {
     use std::collections::HashMap;
 
-    use acvus_orchestration::{Message, ToolSpec};
+    use crate::message::{Message, ToolSpec};
 
     use super::*;
 
-    fn make_request(messages: Vec<Message>, tools: Vec<ToolSpec>) -> FetchRequest {
-        FetchRequest {
-            provider: "google".into(),
-            model: "gemini-2.0-flash".into(),
-            messages,
-            tools,
-        }
-    }
-
     #[test]
     fn format_system_as_instruction() {
-        let req = make_request(
-            vec![
+        let body = format_body(
+            &[
                 Message::text("system", "You are helpful."),
                 Message::text("user", "Hello"),
             ],
-            vec![],
+            &[],
         );
-        let body = format_request(&req);
         assert_eq!(
             body["system_instruction"]["parts"][0]["text"],
             "You are helpful."
@@ -211,15 +193,14 @@ mod tests {
 
     #[test]
     fn format_with_tools() {
-        let req = make_request(
-            vec![Message::text("user", "hi")],
-            vec![ToolSpec {
+        let body = format_body(
+            &[Message::text("user", "hi")],
+            &[ToolSpec {
                 name: "search".into(),
                 description: "Search".into(),
                 params: HashMap::from([("query".into(), "string".into())]),
             }],
         );
-        let body = format_request(&req);
         let decls = &body["tools"][0]["function_declarations"];
         assert_eq!(decls.as_array().unwrap().len(), 1);
         assert_eq!(decls[0]["name"], "search");

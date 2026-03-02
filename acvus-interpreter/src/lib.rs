@@ -8,4 +8,4 @@ mod yielder;
 pub use extern_fn::{ExternFn, ExternFnBody, ExternFnRegistry, ExternFnSig};
 pub use interpreter::Interpreter;
 pub use value::{FnValue, OpaqueValue, PureValue, Value};
-pub use yielder::{YieldHandle, YieldStream};
+pub use yielder::{Coroutine, EmitStepped, NeedContextStepped, ResumeKey, Stepped, YieldHandle};

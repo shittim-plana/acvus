@@ -1,38 +1,31 @@
-use acvus_orchestration::{FetchRequest, Message, ModelResponse, ToolCall};
+use crate::message::{Message, ModelResponse, ToolCall, ToolSpec};
 
-pub async fn call(
-    client: &reqwest::Client,
-    endpoint: &str,
-    api_key: &str,
-    request: &FetchRequest,
-) -> Result<ModelResponse, String> {
-    let body = format_request(request);
-    let url = format!("{endpoint}/v1/messages");
+use super::{HttpRequest, ProviderConfig};
 
-    let resp = client
-        .post(&url)
-        .header("x-api-key", api_key)
-        .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("anthropic request failed: {e}"))?;
-
-    let json: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("anthropic response parse failed: {e}"))?;
-
-    parse_response(&json)
+pub fn build_request(
+    config: &ProviderConfig,
+    model: &str,
+    messages: &[Message],
+    tools: &[ToolSpec],
+) -> HttpRequest {
+    let body = format_body(model, messages, tools);
+    let url = format!("{}/v1/messages", config.endpoint);
+    HttpRequest {
+        url,
+        headers: vec![
+            ("x-api-key".into(), config.api_key.clone()),
+            ("anthropic-version".into(), "2023-06-01".into()),
+            ("content-type".into(), "application/json".into()),
+        ],
+        body,
+    }
 }
 
-fn format_request(request: &FetchRequest) -> serde_json::Value {
-    // Separate system messages from the rest
+fn format_body(model: &str, messages: &[Message], tools: &[ToolSpec]) -> serde_json::Value {
     let mut system_text = String::new();
     let mut msgs = Vec::new();
 
-    for m in &request.messages {
+    for m in messages {
         if m.role == "system" {
             if !system_text.is_empty() {
                 system_text.push('\n');
@@ -44,7 +37,7 @@ fn format_request(request: &FetchRequest) -> serde_json::Value {
     }
 
     let mut body = serde_json::json!({
-        "model": request.model,
+        "model": model,
         "messages": msgs,
         "max_tokens": 4096,
     });
@@ -53,9 +46,8 @@ fn format_request(request: &FetchRequest) -> serde_json::Value {
         body["system"] = serde_json::Value::String(system_text);
     }
 
-    if !request.tools.is_empty() {
-        let tool_specs: Vec<serde_json::Value> = request
-            .tools
+    if !tools.is_empty() {
+        let tool_specs: Vec<serde_json::Value> = tools
             .iter()
             .map(|t| {
                 let properties: serde_json::Map<String, serde_json::Value> = t
@@ -84,7 +76,7 @@ fn format_request(request: &FetchRequest) -> serde_json::Value {
 }
 
 fn format_message(m: &Message) -> serde_json::Value {
-    // Tool call results → user message with tool_result content blocks
+    // Tool call results -> user message with tool_result content blocks
     if let Some(ref tool_call_id) = m.tool_call_id {
         return serde_json::json!({
             "role": "user",
@@ -96,7 +88,7 @@ fn format_message(m: &Message) -> serde_json::Value {
         });
     }
 
-    // Assistant message with tool calls → tool_use content blocks
+    // Assistant message with tool calls -> tool_use content blocks
     if !m.tool_calls.is_empty() {
         let mut content: Vec<serde_json::Value> = Vec::new();
 
@@ -129,7 +121,7 @@ fn format_message(m: &Message) -> serde_json::Value {
     })
 }
 
-fn parse_response(json: &serde_json::Value) -> Result<ModelResponse, String> {
+pub fn parse_response(json: &serde_json::Value) -> Result<ModelResponse, String> {
     let content = json
         .get("content")
         .and_then(|c| c.as_array())
@@ -175,29 +167,20 @@ fn parse_response(json: &serde_json::Value) -> Result<ModelResponse, String> {
 mod tests {
     use std::collections::HashMap;
 
-    use acvus_orchestration::{Message, ToolSpec};
+    use crate::message::{Message, ToolSpec};
 
     use super::*;
 
-    fn make_request(messages: Vec<Message>, tools: Vec<ToolSpec>) -> FetchRequest {
-        FetchRequest {
-            provider: "anthropic".into(),
-            model: "claude-sonnet-4-6".into(),
-            messages,
-            tools,
-        }
-    }
-
     #[test]
     fn format_system_separated() {
-        let req = make_request(
-            vec![
+        let body = format_body(
+            "claude-sonnet-4-6",
+            &[
                 Message::text("system", "You are helpful."),
                 Message::text("user", "Hello"),
             ],
-            vec![],
+            &[],
         );
-        let body = format_request(&req);
         assert_eq!(body["system"], "You are helpful.");
         let msgs = body["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 1);
@@ -206,15 +189,15 @@ mod tests {
 
     #[test]
     fn format_with_tools() {
-        let req = make_request(
-            vec![Message::text("user", "hi")],
-            vec![ToolSpec {
+        let body = format_body(
+            "claude-sonnet-4-6",
+            &[Message::text("user", "hi")],
+            &[ToolSpec {
                 name: "search".into(),
                 description: "Search".into(),
                 params: HashMap::from([("query".into(), "string".into())]),
             }],
         );
-        let body = format_request(&req);
         let tools = body["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["name"], "search");

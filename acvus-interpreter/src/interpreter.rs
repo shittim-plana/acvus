@@ -2,7 +2,6 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 
 use futures::future::BoxFuture;
-use futures::StreamExt;
 
 use acvus_ast::{BinOp, Literal, RangeKind, UnaryOp};
 use acvus_mir::ir::{Inst, InstKind, Label, MirBody, MirModule, ValueId};
@@ -10,11 +9,10 @@ use acvus_mir::ir::{Inst, InstKind, Label, MirBody, MirModule, ValueId};
 use crate::builtins;
 use crate::extern_fn::ExternFnRegistry;
 use crate::value::{FnValue, Value};
-use crate::yielder::{self, YieldHandle, YieldStream};
+use crate::yielder::{self, Coroutine, ResumeKey, Stepped, YieldHandle};
 
 pub struct Interpreter {
     module: MirModule,
-    context: HashMap<String, Value>,
     variables: HashMap<String, Value>,
     extern_fns: ExternFnRegistry,
 }
@@ -167,12 +165,12 @@ fn build_label_map(body: &MirBody) -> HashMap<Label, usize> {
 // ---------------------------------------------------------------------------
 
 impl Interpreter {
-    pub fn new(module: MirModule, context: HashMap<String, Value>, extern_fns: ExternFnRegistry) -> Self {
-        Self { module, context, variables: HashMap::new(), extern_fns }
+    pub fn new(module: MirModule, extern_fns: ExternFnRegistry) -> Self {
+        Self { module, variables: HashMap::new(), extern_fns }
     }
 
-    pub fn execute(self) -> YieldStream {
-        yielder::yielder(|handle| async move {
+    pub fn execute(self) -> (Coroutine, ResumeKey) {
+        yielder::coroutine(|handle| async move {
             let insts = self.module.main.insts.clone();
             let label_map = build_label_map(&self.module.main);
             let frame = Frame::new(self.module.main.val_count, label_map);
@@ -180,13 +178,28 @@ impl Interpreter {
         })
     }
 
-    pub async fn execute_to_string(self) -> String {
-        let mut stream = self.execute();
+    pub async fn execute_to_string(self, context: HashMap<String, Value>) -> String {
+        let (mut coroutine, mut key) = self.execute();
         let mut output = String::new();
-        while let Some(v) = stream.next().await {
-            match v {
-                Value::String(s) => output.push_str(&s),
-                other => panic!("execute_to_string: expected String, got {other:?}"),
+        loop {
+            match coroutine.resume(key) {
+                Stepped::Emit(emit) => {
+                    let (value, next_key) = emit.into_parts();
+                    match value {
+                        Value::String(s) => output.push_str(&s),
+                        other => panic!("execute_to_string: expected String, got {other:?}"),
+                    }
+                    key = next_key;
+                }
+                Stepped::NeedContext(need) => {
+                    let name = need.name().to_string();
+                    let v = context
+                        .get(&name)
+                        .unwrap_or_else(|| panic!("ContextLoad: undefined context @{name}"))
+                        .clone();
+                    key = need.into_key(v);
+                }
+                Stepped::Done => break,
             }
         }
         output
@@ -335,9 +348,7 @@ impl Interpreter {
 
                 // -- context / variable I/O --
                 InstKind::ContextLoad { dst, name } => {
-                    let v = this.context.get(name)
-                        .unwrap_or_else(|| panic!("ContextLoad: undefined context @{name}"))
-                        .clone();
+                    let v = handle.request_context(name.clone()).await;
                     frame.set(*dst, v);
                 }
                 InstKind::VarLoad { dst, name } => {

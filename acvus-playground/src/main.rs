@@ -114,8 +114,8 @@ async fn compile_and_run(
 
     let ir = acvus_mir::printer::dump(&module);
 
-    let interp = Interpreter::new(module, context_values, extern_fns);
-    let output = interp.execute_to_string().await;
+    let interp = Interpreter::new(module, extern_fns);
+    let output = interp.execute_to_string(context_values).await;
 
     Ok((output, ir))
 }

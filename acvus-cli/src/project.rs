@@ -27,10 +27,29 @@ pub struct ProviderConfig {
     pub api_key_env: String,
 }
 
-/// Infer a `Ty` from a TOML value.
+/// Check if a TOML string value is a type declaration (e.g. "string", "int").
+pub fn is_type_decl(value: &toml::Value) -> bool {
+    match value {
+        toml::Value::String(s) => {
+            matches!(s.as_str(), "string" | "int" | "float" | "bool")
+        }
+        _ => false,
+    }
+}
+
+/// Resolve a `Ty` from a TOML value.
+///
+/// If the value is a type name string ("string", "int", "float", "bool"),
+/// returns that type directly. Otherwise infers from the value.
 pub fn toml_to_ty(value: &toml::Value) -> Ty {
     match value {
-        toml::Value::String(_) => Ty::String,
+        toml::Value::String(s) => match s.as_str() {
+            "string" => Ty::String,
+            "int" => Ty::Int,
+            "float" => Ty::Float,
+            "bool" => Ty::Bool,
+            _ => Ty::String,
+        },
         toml::Value::Integer(_) => Ty::Int,
         toml::Value::Float(_) => Ty::Float,
         toml::Value::Boolean(_) => Ty::Bool,

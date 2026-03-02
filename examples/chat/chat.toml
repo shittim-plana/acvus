@@ -1,0 +1,14 @@
+name = "chat"
+provider = "gemini"
+model = "gemini-2.5-flash"
+
+[[messages]]
+role = "system"
+template = "system.acvus"
+
+[[messages]]
+iterator = "@history"
+
+[[messages]]
+role = "user"
+template = "user.acvus"

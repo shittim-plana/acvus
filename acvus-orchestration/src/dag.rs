@@ -4,7 +4,7 @@ use crate::compile::CompiledNode;
 use crate::error::{OrchError, OrchErrorKind};
 
 /// Dependency graph for orchestration nodes.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Dag {
     pub name_to_idx: HashMap<String, usize>,
     pub deps: Vec<HashSet<usize>>,
@@ -83,7 +83,7 @@ mod tests {
             provider: "test".into(),
             model: "m".into(),
             tools: vec![],
-            blocks: vec![],
+            messages: vec![],
             all_context_keys: context_keys.into_iter().map(Into::into).collect(),
         }
     }
