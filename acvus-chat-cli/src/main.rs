@@ -170,7 +170,12 @@ async fn main() {
     };
 
     let extern_fns = ExternFnRegistry::new();
-    let mut engine = ChatEngine::new(compiled_nodes, providers, fetch, extern_fns, storage, output_module).await;
+    let mut engine = ChatEngine::new(compiled_nodes, providers, fetch, extern_fns, storage, output_module)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("engine init error: {e}");
+            process::exit(1);
+        });
 
     if context_args.is_empty() {
         // Interactive mode: resolve context keys from stdin on demand
@@ -182,7 +187,10 @@ async fn main() {
         };
 
         loop {
-            let response = engine.turn(&resolver).await;
+            let response = engine.turn(&resolver).await.unwrap_or_else(|e| {
+                eprintln!("turn error: {e}");
+                process::exit(1);
+            });
             println!("{response}");
         }
     } else {
@@ -194,7 +202,10 @@ async fn main() {
                 .clone();
             async move { Value::String(value) }
         };
-        let response = engine.turn(&resolver).await;
+        let response = engine.turn(&resolver).await.unwrap_or_else(|e| {
+            eprintln!("turn error: {e}");
+            process::exit(1);
+        });
         println!("{response}");
     }
 }

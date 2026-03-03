@@ -8,3 +8,4 @@ acvus-interpreter = { path = "../acvus-interpreter" }
 acvus-orchestration = { path = "../acvus-orchestration" }
 futures = "0.3"
 serde_json = "1"
+thiserror = "2"
