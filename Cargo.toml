@@ -11,4 +11,5 @@ members = [
     "acvus-playground", 
     "acvus-orchestration", 
     "acvus-chat", 
-    "acvus-chat-cli"]
+    "acvus-chat-cli"
+]
