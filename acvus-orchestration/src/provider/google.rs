@@ -1,9 +1,44 @@
 use std::collections::HashMap;
 
 use crate::dsl::GenerationParams;
-use crate::message::{Message, ModelResponse, ToolCall, ToolSpec};
+use crate::message::{Message, ModelResponse, ToolCall, ToolSpec, Usage};
 
-use super::{HttpRequest, ProviderConfig};
+use super::{HttpRequest, LlmModel, ProviderConfig};
+
+pub struct GoogleModel {
+    config: ProviderConfig,
+    model: String,
+}
+
+impl GoogleModel {
+    pub fn new(config: ProviderConfig, model: String) -> Self {
+        Self { config, model }
+    }
+}
+
+impl LlmModel for GoogleModel {
+    fn build_request(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSpec],
+        generation: &GenerationParams,
+        cached_content: Option<&str>,
+    ) -> HttpRequest {
+        build_request(&self.config, &self.model, messages, tools, generation, cached_content)
+    }
+
+    fn parse_response(&self, json: &serde_json::Value) -> Result<(ModelResponse, Usage), String> {
+        parse_response(json)
+    }
+
+    fn build_count_tokens_request(&self, messages: &[Message]) -> Option<HttpRequest> {
+        Some(build_count_tokens_request(&self.config, &self.model, messages))
+    }
+
+    fn parse_count_tokens_response(&self, json: &serde_json::Value) -> Result<u32, String> {
+        parse_count_tokens_response(json)
+    }
+}
 
 pub fn build_request(
     config: &ProviderConfig,
@@ -85,6 +120,53 @@ pub fn parse_cache_response(json: &serde_json::Value) -> Result<String, String> 
         .and_then(|n| n.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| "missing 'name' in cache response".into())
+}
+
+pub fn build_count_tokens_request(
+    config: &ProviderConfig,
+    model: &str,
+    messages: &[Message],
+) -> HttpRequest {
+    let mut system_text = String::new();
+    let mut contents = Vec::new();
+
+    for m in messages {
+        if m.role == "system" {
+            if !system_text.is_empty() {
+                system_text.push('\n');
+            }
+            system_text.push_str(&m.content);
+        } else {
+            contents.push(format_content(m));
+        }
+    }
+
+    let mut body = serde_json::json!({ "contents": contents });
+    if !system_text.is_empty() {
+        body["systemInstruction"] = serde_json::json!({
+            "parts": [{ "text": system_text }]
+        });
+    }
+
+    let url = format!(
+        "{}/v1beta/models/{}:countTokens",
+        config.endpoint, model
+    );
+    HttpRequest {
+        url,
+        headers: vec![
+            ("x-goog-api-key".into(), config.api_key.clone()),
+            ("content-type".into(), "application/json".into()),
+        ],
+        body,
+    }
+}
+
+pub fn parse_count_tokens_response(json: &serde_json::Value) -> Result<u32, String> {
+    json.get("totalTokens")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32)
+        .ok_or_else(|| "missing 'totalTokens' in count tokens response".into())
 }
 
 fn format_cached_body(
@@ -249,7 +331,9 @@ fn format_content(m: &Message) -> serde_json::Value {
     serde_json::json!({ "role": role, "parts": parts })
 }
 
-pub fn parse_response(json: &serde_json::Value) -> Result<ModelResponse, String> {
+pub fn parse_response(json: &serde_json::Value) -> Result<(ModelResponse, Usage), String> {
+    let usage = parse_usage(json);
+
     let candidates = json
         .get("candidates")
         .and_then(|c| c.as_array())
@@ -282,9 +366,20 @@ pub fn parse_response(json: &serde_json::Value) -> Result<ModelResponse, String>
     }
 
     if !tool_calls.is_empty() {
-        Ok(ModelResponse::ToolCalls(tool_calls))
+        Ok((ModelResponse::ToolCalls(tool_calls), usage))
     } else {
-        Ok(ModelResponse::Text(text_parts.join("")))
+        Ok((ModelResponse::Text(text_parts.join("")), usage))
+    }
+}
+
+fn parse_usage(json: &serde_json::Value) -> Usage {
+    let u = match json.get("usageMetadata") {
+        Some(u) => u,
+        None => return Usage::default(),
+    };
+    Usage {
+        input_tokens: u.get("promptTokenCount").and_then(|v| v.as_u64()).map(|v| v as u32),
+        output_tokens: u.get("candidatesTokenCount").and_then(|v| v.as_u64()).map(|v| v as u32),
     }
 }
 
@@ -381,7 +476,7 @@ mod tests {
                 }
             }]
         });
-        let resp = parse_response(&json).unwrap();
+        let (resp, _) = parse_response(&json).unwrap();
         assert!(matches!(resp, ModelResponse::Text(ref s) if s == "Hello there!"));
     }
 
@@ -400,7 +495,7 @@ mod tests {
                 }
             }]
         });
-        let resp = parse_response(&json).unwrap();
+        let (resp, _) = parse_response(&json).unwrap();
         match resp {
             ModelResponse::ToolCalls(calls) => {
                 assert_eq!(calls.len(), 1);
@@ -409,5 +504,44 @@ mod tests {
             }
             _ => panic!("expected ToolCalls"),
         }
+    }
+
+    #[test]
+    fn parse_usage_fields() {
+        let json = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{ "text": "hi" }]
+                }
+            }],
+            "usageMetadata": { "promptTokenCount": 20, "candidatesTokenCount": 12 }
+        });
+        let (_, usage) = parse_response(&json).unwrap();
+        assert_eq!(usage.input_tokens, Some(20));
+        assert_eq!(usage.output_tokens, Some(12));
+    }
+
+    #[test]
+    fn count_tokens_request_format() {
+        let config = ProviderConfig {
+            api: crate::provider::ApiKind::Google,
+            endpoint: "https://generativelanguage.googleapis.com".into(),
+            api_key: "test-key".into(),
+        };
+        let req = build_count_tokens_request(
+            &config,
+            "gemini-2.0-flash",
+            &[Message::text("user", "hello")],
+        );
+        assert!(req.url.contains(":countTokens"));
+        assert!(req.url.contains("gemini-2.0-flash"));
+        assert!(req.body.get("contents").is_some());
+    }
+
+    #[test]
+    fn count_tokens_response_parsing() {
+        let json = serde_json::json!({ "totalTokens": 42 });
+        assert_eq!(parse_count_tokens_response(&json).unwrap(), 42);
     }
 }

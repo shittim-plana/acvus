@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use acvus_orchestration::{
-    GenerationParams, MessageSpec, NodeKind, NodeSpec, Strategy, StrategyMode, ToolBinding,
+    GenerationParams, MessageSpec, NodeKind, NodeSpec, Strategy, StrategyMode, TokenBudget,
+    ToolBinding,
 };
 use serde::Deserialize;
 
@@ -49,6 +50,8 @@ pub struct NodeDef {
     // Llm/LlmCache (None for Plain)
     provider: Option<String>,
     model: Option<String>,
+    /// Total input token budget shared across budgeted iterators.
+    max_tokens: Option<u32>,
     #[serde(default)]
     tools: Vec<ToolBindingDef>,
     #[serde(default)]
@@ -88,12 +91,20 @@ enum MessageDef {
         slice: Option<Vec<i64>>,
         bind: Option<String>,
         role: Option<String>,
+        token_budget: Option<TokenBudgetDef>,
     },
     Block {
         role: String,
         template: Option<String>,
         inline_template: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TokenBudgetDef {
+    priority: u32,
+    min: Option<u32>,
+    max: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -142,7 +153,7 @@ pub fn resolve_node(def: NodeDef, base_dir: &Path) -> Result<NodeSpec, String> {
                     .map_err(|e| format!("message {i}: {e}"))?;
                 messages.push(MessageSpec::Block { role, source });
             }
-            MessageDef::Iterator { iterator, template, inline_template, slice, bind, role } => {
+            MessageDef::Iterator { iterator, template, inline_template, slice, bind, role, token_budget } => {
                 let source = if template.is_some() || inline_template.is_some() {
                     Some(
                         resolve_template(base_dir, template.as_deref(), inline_template.as_deref())
@@ -157,6 +168,11 @@ pub fn resolve_node(def: NodeDef, base_dir: &Path) -> Result<NodeSpec, String> {
                     slice,
                     bind,
                     role,
+                    token_budget: token_budget.map(|tb| TokenBudget {
+                        priority: tb.priority,
+                        min: tb.min,
+                        max: tb.max,
+                    }),
                 });
             }
         }
@@ -211,7 +227,7 @@ pub fn resolve_node(def: NodeDef, base_dir: &Path) -> Result<NodeSpec, String> {
             let model = def.model.ok_or_else(|| {
                 format!("node '{}': llm requires 'model'", def.name)
             })?;
-            NodeKind::Llm { provider, model, messages, tools, generation, cache_key }
+            NodeKind::Llm { provider, model, messages, tools, generation, cache_key, max_tokens: def.max_tokens }
         }
         NodeKindDef::LlmCache { ttl, cache_config } => {
             let provider = def.provider.ok_or_else(|| {

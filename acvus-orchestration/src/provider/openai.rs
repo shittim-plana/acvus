@@ -1,7 +1,43 @@
 use crate::dsl::GenerationParams;
-use crate::message::{Message, ModelResponse, ToolCall, ToolSpec};
+use crate::message::{Message, ModelResponse, ToolCall, ToolSpec, Usage};
 
-use super::{HttpRequest, ProviderConfig};
+use super::{HttpRequest, LlmModel, ProviderConfig};
+
+pub struct OpenAiModel {
+    config: ProviderConfig,
+    model: String,
+}
+
+impl OpenAiModel {
+    pub fn new(config: ProviderConfig, model: String) -> Self {
+        Self { config, model }
+    }
+}
+
+impl LlmModel for OpenAiModel {
+    fn build_request(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSpec],
+        generation: &GenerationParams,
+        cached_content: Option<&str>,
+    ) -> HttpRequest {
+        let _ = cached_content;
+        build_request(&self.config, &self.model, messages, tools, generation)
+    }
+
+    fn parse_response(&self, json: &serde_json::Value) -> Result<(ModelResponse, Usage), String> {
+        parse_response(json)
+    }
+
+    fn build_count_tokens_request(&self, _messages: &[Message]) -> Option<HttpRequest> {
+        None
+    }
+
+    fn parse_count_tokens_response(&self, _json: &serde_json::Value) -> Result<u32, String> {
+        Err("count tokens not supported for OpenAI".into())
+    }
+}
 
 pub fn build_request(
     config: &ProviderConfig,
@@ -99,7 +135,9 @@ fn format_body(model: &str, messages: &[Message], tools: &[ToolSpec], generation
     body
 }
 
-pub fn parse_response(json: &serde_json::Value) -> Result<ModelResponse, String> {
+pub fn parse_response(json: &serde_json::Value) -> Result<(ModelResponse, Usage), String> {
+    let usage = parse_usage(json);
+
     let choices = json
         .get("choices")
         .and_then(|c| c.as_array())
@@ -133,7 +171,7 @@ pub fn parse_response(json: &serde_json::Value) -> Result<ModelResponse, String>
             })
             .collect();
 
-        return Ok(ModelResponse::ToolCalls(calls?));
+        return Ok((ModelResponse::ToolCalls(calls?), usage));
     }
 
     let content = message
@@ -142,7 +180,18 @@ pub fn parse_response(json: &serde_json::Value) -> Result<ModelResponse, String>
         .unwrap_or("")
         .to_string();
 
-    Ok(ModelResponse::Text(content))
+    Ok((ModelResponse::Text(content), usage))
+}
+
+fn parse_usage(json: &serde_json::Value) -> Usage {
+    let u = match json.get("usage") {
+        Some(u) => u,
+        None => return Usage::default(),
+    };
+    Usage {
+        input_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).map(|v| v as u32),
+        output_tokens: u.get("completion_tokens").and_then(|v| v.as_u64()).map(|v| v as u32),
+    }
 }
 
 #[cfg(test)]
@@ -230,7 +279,7 @@ mod tests {
                 }
             }]
         });
-        let resp = parse_response(&json).unwrap();
+        let (resp, _) = parse_response(&json).unwrap();
         assert!(matches!(resp, ModelResponse::Text(ref s) if s == "Hello there!"));
     }
 
@@ -250,7 +299,7 @@ mod tests {
                 }
             }]
         });
-        let resp = parse_response(&json).unwrap();
+        let (resp, _) = parse_response(&json).unwrap();
         match resp {
             ModelResponse::ToolCalls(calls) => {
                 assert_eq!(calls.len(), 1);
@@ -259,5 +308,16 @@ mod tests {
             }
             _ => panic!("expected ToolCalls"),
         }
+    }
+
+    #[test]
+    fn parse_usage_fields() {
+        let json = serde_json::json!({
+            "choices": [{ "message": { "content": "hi" } }],
+            "usage": { "prompt_tokens": 10, "completion_tokens": 5 }
+        });
+        let (_, usage) = parse_response(&json).unwrap();
+        assert_eq!(usage.input_tokens, Some(10));
+        assert_eq!(usage.output_tokens, Some(5));
     }
 }

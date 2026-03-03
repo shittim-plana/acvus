@@ -87,6 +87,7 @@ mod tests {
                 tools: vec![],
                 generation: Default::default(),
                 cache_key: None,
+                max_tokens: None,
             },
             all_context_keys: context_keys.into_iter().map(Into::into).collect(),
             strategy: Default::default(),

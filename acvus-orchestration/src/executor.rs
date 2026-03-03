@@ -326,7 +326,7 @@ where
         .fetch(&http_request)
         .await
         .map_err(|e| OrchError::new(OrchErrorKind::ModelError(e)))?;
-    let mut response = parse_response(&provider_config.api, &json)
+    let (mut response, _usage) = parse_response(&provider_config.api, &json)
         .map_err(|e| OrchError::new(OrchErrorKind::ModelError(e)))?;
 
     let mut all_messages = messages;
@@ -355,7 +355,7 @@ where
             .fetch(&http_request)
             .await
             .map_err(|e| OrchError::new(OrchErrorKind::ModelError(e)))?;
-        response = parse_response(&provider_config.api, &json)
+        (response, _) = parse_response(&provider_config.api, &json)
             .map_err(|e| OrchError::new(OrchErrorKind::ModelError(e)))?;
     }
 

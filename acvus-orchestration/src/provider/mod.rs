@@ -5,7 +5,7 @@ mod google;
 use std::collections::HashMap;
 
 use crate::dsl::GenerationParams;
-use crate::message::{Message, ModelResponse, ToolSpec};
+use crate::message::{Message, ModelResponse, ToolSpec, Usage};
 
 #[derive(Debug, Clone)]
 pub enum ApiKind {
@@ -74,10 +74,36 @@ pub fn parse_cache_response(
 pub fn parse_response(
     api: &ApiKind,
     json: &serde_json::Value,
-) -> Result<ModelResponse, String> {
+) -> Result<(ModelResponse, Usage), String> {
     match api {
         ApiKind::OpenAI => openai::parse_response(json),
         ApiKind::Anthropic => anthropic::parse_response(json),
         ApiKind::Google => google::parse_response(json),
+    }
+}
+
+/// Provider-specific model abstraction — handles request building, response parsing, and token counting.
+pub trait LlmModel {
+    fn build_request(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSpec],
+        generation: &GenerationParams,
+        cached_content: Option<&str>,
+    ) -> HttpRequest;
+
+    fn parse_response(&self, json: &serde_json::Value) -> Result<(ModelResponse, Usage), String>;
+
+    /// Returns `None` if the provider doesn't support token counting.
+    fn build_count_tokens_request(&self, messages: &[Message]) -> Option<HttpRequest>;
+
+    fn parse_count_tokens_response(&self, json: &serde_json::Value) -> Result<u32, String>;
+}
+
+pub fn create_llm_model(config: ProviderConfig, model: String) -> Box<dyn LlmModel> {
+    match config.api {
+        ApiKind::OpenAI => Box::new(openai::OpenAiModel::new(config, model)),
+        ApiKind::Anthropic => Box::new(anthropic::AnthropicModel::new(config, model)),
+        ApiKind::Google => Box::new(google::GoogleModel::new(config, model)),
     }
 }

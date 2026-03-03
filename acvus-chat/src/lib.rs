@@ -9,10 +9,10 @@ use std::sync::Arc;
 
 use acvus_interpreter::{ExternFnRegistry, Interpreter, NeedContextStepped, ResumeKey, Stepped, Value};
 use acvus_orchestration::{
-    build_cache_request, build_request, parse_cache_response, parse_response, CompiledBlock,
+    build_cache_request, create_llm_model, parse_cache_response, CompiledBlock,
     CompiledMessage, CompiledNode, CompiledNodeKind, CompiledToolBinding, Fetch,
-    HashMapStorage, Message, ModelResponse, ProviderConfig, Storage, StrategyMode, ToolCall,
-    ToolSpec,
+    HashMapStorage, LlmModel, Message, ModelResponse, ProviderConfig, Storage, StrategyMode,
+    TokenBudget, ToolCall, ToolSpec,
 };
 
 use error::value_type_name;
@@ -339,12 +339,18 @@ where
                         })?;
                     storage.set(node.name.clone(), Value::String(cache_name));
                 }
-                CompiledNodeKind::Llm { provider, model, messages, tools, generation, cache_key } => {
-                    let mut rendered = Vec::new();
+                CompiledNodeKind::Llm { provider, model, messages, tools, generation, cache_key, max_tokens } => {
                     let mut new_turn_messages = Vec::new();
                     let first_iter = messages
                         .iter()
                         .position(|m| matches!(m, CompiledMessage::Iterator { .. }));
+
+                    let provider_config = self
+                        .providers
+                        .get(provider)
+                        .ok_or_else(|| ChatError::UnknownProvider(provider.clone()))?
+                        .clone();
+                    let llm = create_llm_model(provider_config, model.clone());
 
                     let cached_content = if let Some(ck) = cache_key {
                         self.resolve_cached_content(ck, storage, key_cache, turn_local)
@@ -353,6 +359,7 @@ where
                         None
                     };
 
+                    let mut segments: Vec<MessageSegment> = Vec::new();
                     for (i, msg) in messages.iter().enumerate() {
                         match msg {
                             CompiledMessage::Block(block) => {
@@ -360,29 +367,33 @@ where
                                     .render_with_deps(block, storage, local.clone(), key_cache, turn_local)
                                     .await?;
                                 let message = Message::text(&block.role, text);
-                                rendered.push(message.clone());
                                 if first_iter.map_or(false, |pos| i > pos) {
-                                    new_turn_messages.push(message);
+                                    new_turn_messages.push(message.clone());
                                 }
+                                segments.push(MessageSegment::Single(message));
                             }
-                            CompiledMessage::Iterator { key, block, slice, bind, role } => {
+                            CompiledMessage::Iterator { key, block, slice, bind, role, token_budget } => {
                                 let expanded = self
                                     .expand_iterator(key, block.as_ref(), slice, bind, role, storage, key_cache, turn_local)
                                     .await?;
-                                rendered.extend(expanded);
+                                segments.push(MessageSegment::Iterator {
+                                    messages: expanded,
+                                    budget: token_budget.clone(),
+                                });
                             }
                         }
                     }
 
-                    let provider_config = self
-                        .providers
-                        .get(provider)
-                        .ok_or_else(|| ChatError::UnknownProvider(provider.clone()))?
-                        .clone();
+                    self.allocate_token_budgets(&*llm, &node.name, &mut segments, *max_tokens)
+                        .await?;
 
+                    let mut rendered: Vec<Message> = segments.into_iter().flat_map(|seg| match seg {
+                        MessageSegment::Single(m) => vec![m],
+                        MessageSegment::Iterator { messages, .. } => messages,
+                    }).collect();
                     let specs = tool_specs(tools);
-                    let request = build_request(
-                        &provider_config, model, &rendered, &specs, generation, cached_content.as_deref(),
+                    let request = llm.build_request(
+                        &rendered, &specs, generation, cached_content.as_deref(),
                     );
                     tracing::debug!(node = %node.name, body = %request.body, "llm fetch request");
                     let json = self.fetch.fetch(&request).await.map_err(|e| {
@@ -390,8 +401,8 @@ where
                         ChatError::Fetch { node: node.name.clone(), detail: e }
                     })?;
                     tracing::debug!(node = %node.name, response = %json, "llm fetch response");
-                    let mut response =
-                        parse_response(&provider_config.api, &json).map_err(|e| {
+                    let (mut response, _usage) =
+                        llm.parse_response(&json).map_err(|e| {
                             tracing::warn!(node = %node.name, response = %json, "llm parse failed");
                             ChatError::Parse { node: node.name.clone(), detail: e }
                         })?;
@@ -441,8 +452,8 @@ where
                                     });
                                 }
 
-                                let request = build_request(
-                                    &provider_config, model, &rendered, &specs, generation, cached_content.as_deref(),
+                                let request = llm.build_request(
+                                    &rendered, &specs, generation, cached_content.as_deref(),
                                 );
                                 tracing::debug!(node = %node.name, body = %request.body, "llm fetch request (tool followup)");
                                 let json = self.fetch.fetch(&request).await.map_err(|e| {
@@ -450,7 +461,7 @@ where
                                     ChatError::Fetch { node: node.name.clone(), detail: e }
                                 })?;
                                 tracing::debug!(node = %node.name, response = %json, "llm fetch response (tool followup)");
-                                response = parse_response(&provider_config.api, &json).map_err(|e| {
+                                (response, _) = llm.parse_response(&json).map_err(|e| {
                                     tracing::warn!(node = %node.name, response = %json, "llm parse failed (tool followup)");
                                     ChatError::Parse { node: node.name.clone(), detail: e }
                                 })?;
@@ -561,6 +572,133 @@ where
         }
         Ok(messages)
     }
+
+    /// Count tokens for messages via the LlmModel. Returns None if unsupported.
+    async fn count_tokens(
+        &self,
+        llm: &dyn LlmModel,
+        node_name: &str,
+        messages: &[Message],
+    ) -> Result<Option<u32>, ChatError> {
+        if messages.is_empty() {
+            return Ok(Some(0));
+        }
+        let request = match llm.build_count_tokens_request(messages) {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+        let json = self.fetch.fetch(&request).await.map_err(|e| {
+            ChatError::TokenCount { node: node_name.to_string(), detail: e }
+        })?;
+        let count = llm.parse_count_tokens_response(&json).map_err(|e| {
+            ChatError::TokenCount { node: node_name.to_string(), detail: e }
+        })?;
+        Ok(Some(count))
+    }
+
+    /// Allocate token budgets across budgeted iterator segments.
+    ///
+    /// Algorithm:
+    /// 1. Count tokens for each budgeted iterator
+    /// 2. Reserve `request` tokens for each that has one
+    /// 3. Distribute remaining pool by priority (0 first)
+    /// 4. Trim each iterator to its allocated budget
+    async fn allocate_token_budgets(
+        &self,
+        llm: &dyn LlmModel,
+        node_name: &str,
+        segments: &mut [MessageSegment],
+        total_budget: Option<u32>,
+    ) -> Result<(), ChatError> {
+        // Collect budgeted iterators: (segment index, budget, token count)
+        let mut budgeted: Vec<(usize, TokenBudget, u32)> = Vec::new();
+        for (i, seg) in segments.iter().enumerate() {
+            if let MessageSegment::Iterator { messages, budget: Some(budget) } = seg {
+                let count = match self.count_tokens(llm, node_name, messages).await? {
+                    Some(c) => c,
+                    None => {
+                        tracing::warn!(node = %node_name, "count tokens not supported, skipping budget allocation");
+                        return Ok(());
+                    }
+                };
+                budgeted.push((i, budget.clone(), count));
+            }
+        }
+
+        if budgeted.is_empty() {
+            return Ok(());
+        }
+
+        // If no total budget, only apply individual limits
+        let Some(total) = total_budget else {
+            for (seg_idx, budget, actual) in &budgeted {
+                if let Some(limit) = budget.max {
+                    if *actual > limit {
+                        trim_segment(&mut segments[*seg_idx], *actual, limit, node_name);
+                    }
+                }
+            }
+            return Ok(());
+        };
+
+        // Reserve pool
+        let reserved: u32 = budgeted
+            .iter()
+            .filter_map(|(_, b, _)| b.min)
+            .sum();
+        let mut pool = total.saturating_sub(reserved);
+
+        // Sort by priority ascending (0 = highest priority, fills first)
+        budgeted.sort_by_key(|(_, b, _)| b.priority);
+
+        for (seg_idx, budget, actual) in &budgeted {
+            let available = pool + budget.min.unwrap_or(0);
+            let cap = budget.max.map(|l| available.min(l)).unwrap_or(available);
+            let allocated = (*actual).min(cap);
+            let consumed_from_pool = allocated.saturating_sub(budget.min.unwrap_or(0));
+            pool = pool.saturating_sub(consumed_from_pool);
+
+            if *actual > allocated {
+                trim_segment(&mut segments[*seg_idx], *actual, allocated, node_name);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+enum MessageSegment {
+    Single(Message),
+    Iterator {
+        messages: Vec<Message>,
+        budget: Option<TokenBudget>,
+    },
+}
+
+fn trim_segment(segment: &mut MessageSegment, actual_tokens: u32, target_tokens: u32, node_name: &str) {
+    let messages = match segment {
+        MessageSegment::Iterator { messages, .. } => messages,
+        _ => return,
+    };
+    if messages.is_empty() {
+        return;
+    }
+    let len = messages.len();
+    let per_message = actual_tokens / len as u32;
+    let keep = if per_message > 0 { (target_tokens / per_message) as usize } else { len };
+    let keep = keep.max(1).min(len);
+    let skip = len - keep;
+
+    tracing::debug!(
+        node = %node_name,
+        actual_tokens = actual_tokens,
+        target_tokens = target_tokens,
+        original = len,
+        kept = keep,
+        "trimmed iterator messages",
+    );
+
+    *messages = messages.split_off(skip);
 }
 
 // ---------------------------------------------------------------------------
@@ -838,6 +976,7 @@ mod tests {
                 tools: vec![],
                 generation: GenerationParams::default(),
                 cache_key: None,
+                max_tokens: None,
             },
             strategy: Strategy::default(),
         }]);
@@ -883,6 +1022,7 @@ mod tests {
                     }],
                     generation: GenerationParams::default(),
                     cache_key: None,
+                    max_tokens: None,
                 },
                 strategy: Strategy::default(),
             },
@@ -932,6 +1072,7 @@ mod tests {
                     }],
                     generation: GenerationParams::default(),
                     cache_key: None,
+                    max_tokens: None,
                 },
                 strategy: Strategy::default(),
             },
@@ -983,6 +1124,7 @@ mod tests {
                     }],
                     generation: GenerationParams::default(),
                     cache_key: None,
+                    max_tokens: None,
                 },
                 strategy: Strategy::default(),
             },

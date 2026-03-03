@@ -26,6 +26,7 @@ pub enum CompiledNodeKind {
         tools: Vec<CompiledToolBinding>,
         generation: GenerationParams,
         cache_key: Option<String>,
+        max_tokens: Option<u32>,
     },
     LlmCache {
         provider: String,
@@ -74,6 +75,7 @@ pub enum CompiledMessage {
         slice: Option<Vec<i64>>,
         bind: Option<String>,
         role: Option<String>,
+        token_budget: Option<crate::dsl::TokenBudget>,
     },
 }
 
@@ -251,7 +253,7 @@ fn compile_messages(
                     Err(e) => errors.push(e),
                 }
             }
-            MessageSpec::Iterator { key, source, slice, bind, role } => {
+            MessageSpec::Iterator { key, source, slice, bind, role, token_budget } => {
                 let block = if let Some(src) = source {
                     let mut iter_types = context_types.clone();
                     if let Some(bind_name) = bind {
@@ -284,6 +286,7 @@ fn compile_messages(
                     slice: slice.clone(),
                     bind: bind.clone(),
                     role: role.clone(),
+                    token_budget: token_budget.clone(),
                 });
             }
         }
@@ -374,7 +377,7 @@ pub fn compile_node(
                 Err(e) => return Err(vec![e]),
             }
         }
-        NodeKind::Llm { provider, model, messages, tools, generation, cache_key } => {
+        NodeKind::Llm { provider, model, messages, tools, generation, cache_key, max_tokens } => {
             let (compiled_messages, keys) = compile_messages(messages, context_types, registry)?;
             let compiled_tools = compile_tool_bindings(tools)?;
             let mut all_keys = keys;
@@ -389,6 +392,7 @@ pub fn compile_node(
                     tools: compiled_tools,
                     generation: generation.clone(),
                     cache_key: cache_key.clone(),
+                    max_tokens: *max_tokens,
                 },
                 all_keys,
             )

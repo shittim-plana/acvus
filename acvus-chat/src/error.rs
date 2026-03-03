@@ -28,6 +28,9 @@ pub enum ChatError {
 
     #[error("tool call limit exceeded for node {0}")]
     ToolCallLimitExceeded(String),
+
+    #[error("token count error for node {node}: {detail}")]
+    TokenCount { node: String, detail: String },
 }
 
 /// Shorthand for formatting a `Value` variant name without pulling in the full debug repr.

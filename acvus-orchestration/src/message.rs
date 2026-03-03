@@ -50,6 +50,13 @@ pub struct ToolSpec {
     pub params: HashMap<String, String>,
 }
 
+/// Token usage from a model response.
+#[derive(Debug, Clone, Default)]
+pub struct Usage {
+    pub input_tokens: Option<u32>,
+    pub output_tokens: Option<u32>,
+}
+
 /// Node output stored in storage.
 #[derive(Debug, Clone)]
 pub enum Output {

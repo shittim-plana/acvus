@@ -14,6 +14,8 @@ pub enum NodeKind {
         tools: Vec<ToolBinding>,
         generation: GenerationParams,
         cache_key: Option<String>,
+        /// Total input token budget shared across budgeted iterators.
+        max_tokens: Option<u32>,
     },
     LlmCache {
         provider: String,
@@ -64,7 +66,20 @@ pub enum MessageSpec {
         bind: Option<String>,
         /// Override the role for all messages from this iterator.
         role: Option<String>,
+        /// Token budget for this iterator.
+        token_budget: Option<TokenBudget>,
     },
+}
+
+/// Token budget for a single iterator.
+#[derive(Debug, Clone)]
+pub struct TokenBudget {
+    /// Lower = fills first (0 is highest priority).
+    pub priority: u32,
+    /// Minimum guaranteed tokens (reserved from the shared pool).
+    pub min: Option<u32>,
+    /// Maximum tokens this iterator may use.
+    pub max: Option<u32>,
 }
 
 /// Generation parameters for model calls.
