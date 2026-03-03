@@ -18,7 +18,7 @@ struct Shared {
     producer_waker: Option<Waker>,
     context_request: Option<String>,
     context_bindings: HashMap<String, Value>,
-    context_response: Option<Value>,
+    context_response: Option<Arc<Value>>,
     context_requested: bool,
 }
 
@@ -94,9 +94,9 @@ pub struct ContextFuture {
 }
 
 impl Future for ContextFuture {
-    type Output = Value;
+    type Output = Arc<Value>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Value> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Arc<Value>> {
         let this = self.get_mut();
         let mut shared = this.shared.lock();
 
@@ -123,7 +123,7 @@ pub struct ResumeKey(ResumeKeyInner);
 
 enum ResumeKeyInner {
     Start,
-    Context(Value),
+    Context(Arc<Value>),
 }
 
 pub enum Stepped {
@@ -161,7 +161,7 @@ impl NeedContextStepped {
         (self.name, self.bindings)
     }
 
-    pub fn into_key(self, value: Value) -> ResumeKey {
+    pub fn into_key(self, value: Arc<Value>) -> ResumeKey {
         ResumeKey(ResumeKeyInner::Context(value))
     }
 }
@@ -178,9 +178,9 @@ pub struct Coroutine {
 impl Coroutine {
     pub fn resume(&mut self, key: ResumeKey) -> Stepped {
         // 1. Inject context response if the key carries one.
-        if let ResumeKeyInner::Context(value) = key.0 {
+        if let ResumeKeyInner::Context(arc) = key.0 {
             let mut shared = self.shared.lock();
-            shared.context_response = Some(value);
+            shared.context_response = Some(arc);
         }
 
         let fut = match &mut self.fut {

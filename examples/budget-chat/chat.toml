@@ -5,9 +5,6 @@ model = "gemini-2.5-flash"
 # Total token pool shared across all budgeted iterators.
 max_tokens = 16000
 
-[strategy]
-mode = "always"
-
 [[messages]]
 role = "system"
 template = "system.acvus"
@@ -15,7 +12,7 @@ template = "system.acvus"
 # Chat history with token budget.
 # priority = 0 (fills first), max = 12000 caps this iterator.
 [[messages]]
-iterator = "@context.chat.histories"
+iterator = "@history"
 token_budget = { priority = 0, max = 12000 }
 
 [[messages]]

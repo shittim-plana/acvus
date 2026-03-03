@@ -45,19 +45,18 @@ pub struct NodeDef {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
-struct StrategyDef {
-    #[serde(default)]
-    mode: StrategyModeDef,
-    /// Template file for cache key (if-modified only).
-    key: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 enum StrategyModeDef {
     #[default]
     Always,
     IfModified,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct StrategyDef {
+    #[serde(default)]
+    mode: StrategyModeDef,
+    bind: Option<String>,
 }
 
 /// Serde message entry — tried as Iterator first (untagged).
@@ -164,11 +163,11 @@ pub fn resolve_node(def: NodeDef, base_dir: &Path) -> Result<NodeSpec, String> {
             StrategyModeDef::Always => StrategyMode::Always,
             StrategyModeDef::IfModified => StrategyMode::IfModified,
         },
-        key_source: match def.strategy.key {
+        bind_source: match def.strategy.bind {
             Some(path) => {
                 let full = base_dir.join(&path);
                 let src = std::fs::read_to_string(&full)
-                    .map_err(|e| format!("failed to load strategy key '{}': {e}", full.display()))?;
+                    .map_err(|e| format!("failed to load strategy bind '{}': {e}", full.display()))?;
                 Some(src)
             }
             None => None,

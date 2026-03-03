@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
+use std::sync::Arc;
 
 use acvus_interpreter::{ExternFnRegistry, Interpreter, PureValue, Stepped, Value};
 use acvus_mir::ty::Ty;
@@ -111,9 +112,8 @@ pub async fn run_capturing_context_calls(
                 }
                 let v = values
                     .get(&name)
-                    .unwrap_or_else(|| panic!("undefined context @{name}"))
-                    .clone();
-                key = need.into_key(v);
+                    .unwrap_or_else(|| panic!("undefined context @{name}"));
+                key = need.into_key(Arc::new(v.clone()));
             }
             Stepped::Done => break,
         }

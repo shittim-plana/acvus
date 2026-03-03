@@ -182,7 +182,7 @@ where
                     if state.waiting_for.as_deref() == Some(completed_name.as_str()) {
                         let need = state.pending_need.take().unwrap();
                         let arc = storage.get(completed_name).unwrap();
-                        state.resume_key = Some(need.into_key(Arc::unwrap_or_clone(arc)));
+                        state.resume_key = Some(need.into_key(arc));
                         state.waiting_for = None;
                     }
                 }
@@ -283,7 +283,7 @@ where
                 }
                 let name = need.name().to_string();
                 if let Some(arc) = storage.get(&name) {
-                    state.resume_key = Some(need.into_key(Arc::unwrap_or_clone(arc)));
+                    state.resume_key = Some(need.into_key(arc));
                 } else {
                     state.pending_need = Some(need);
                     state.waiting_for = Some(name.clone());
@@ -384,8 +384,8 @@ where
 
     let mut known = HashMap::new();
     for key in &node.all_context_keys {
-        if let Some(value) = storage.get(key) {
-            if let Some(lit) = value_to_literal(&value) {
+        if let Some(arc) = storage.get(key) {
+            if let Some(lit) = value_to_literal(&arc) {
                 known.insert(key.clone(), lit);
             }
         }

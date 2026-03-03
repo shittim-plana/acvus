@@ -62,7 +62,7 @@ pub struct CompiledNode {
     pub kind: CompiledNodeKind,
     pub all_context_keys: HashSet<String>,
     pub strategy: Strategy,
-    pub key_module: Option<CompiledBlock>,
+    pub bind_module: Option<CompiledScript>,
 }
 
 /// Compiled expression (Script → MIR).
@@ -78,7 +78,6 @@ pub enum CompiledMessage {
     Block(CompiledBlock),
     Iterator {
         expr: CompiledScript,
-        write_keys: Vec<String>,
         block: Option<CompiledBlock>,
         slice: Option<Vec<i64>>,
         bind: Option<String>,
@@ -128,8 +127,8 @@ impl CompiledNode {
                 _ => {}
             }
         }
-        if let Some(key_block) = &self.key_module {
-            needed.extend(key_block.required_context_keys(known));
+        if let Some(bind_script) = &self.bind_module {
+            needed.extend(bind_script.context_keys.iter().cloned());
         }
         needed.retain(|k| !resolvable.contains(k));
         needed
@@ -178,10 +177,9 @@ impl CompiledNode {
                 _ => {}
             }
         }
-        if let Some(key_block) = &self.key_module {
-            let p = partition_context_keys(&key_block.module, &known, &key_block.val_def);
-            merged.eager.extend(p.eager);
-            merged.lazy.extend(p.lazy);
+        if let Some(bind_script) = &self.bind_module {
+            // Script has no branch pruning — all context keys are eager.
+            merged.eager.extend(bind_script.context_keys.iter().cloned());
         }
         merged.eager.retain(|k| !resolvable.contains(k));
         merged.lazy.retain(|k| !resolvable.contains(k) && !merged.eager.contains(k));
@@ -195,8 +193,8 @@ impl CompiledNode {
         self.all_context_keys
             .iter()
             .filter_map(|k| {
-                let value = storage.get(k)?;
-                let lit = value_to_literal(&value)?;
+                let arc = storage.get(k)?;
+                let lit = value_to_literal(&arc)?;
                 Some((k.clone(), lit))
             })
             .collect()
@@ -308,11 +306,9 @@ fn compile_messages(
                     None
                 };
 
-                let write_keys: Vec<String> = expr.context_keys.iter().cloned().collect();
                 all_context_keys.extend(expr.context_keys.iter().cloned());
                 compiled_messages.push(CompiledMessage::Iterator {
                     expr,
-                    write_keys,
                     block,
                     slice: slice.clone(),
                     bind: bind.clone(),
@@ -381,22 +377,16 @@ pub fn compile_node(
     context_types: &HashMap<String, Ty>,
     registry: &ExternRegistry,
 ) -> Result<CompiledNode, Vec<OrchError>> {
-    // Compile key template for if-modified strategy
-    let key_module =
-        if matches!(spec.strategy.mode, StrategyMode::IfModified) {
-            if let Some(key_src) = &spec.strategy.key_source {
-                match compile_template(key_src, 0, context_types, registry) {
-                    Ok(block) => Some(block),
-                    Err(e) => {
-                        return Err(vec![e]);
-                    }
-                }
-            } else {
-                None
-            }
+    // Compile bind script for if-modified strategy
+    let bind_module = if matches!(spec.strategy.mode, StrategyMode::IfModified) {
+        if let Some(bind_src) = &spec.strategy.bind_source {
+            Some(compile_script(bind_src).map_err(|e| vec![e])?)
         } else {
             None
-        };
+        }
+    } else {
+        None
+    };
 
     let (kind, mut all_context_keys) = match &spec.kind {
         NodeKind::Plain { source } => {
@@ -448,9 +438,9 @@ pub fn compile_node(
         }
     };
 
-    // key_module context keys also contribute
-    if let Some(key_block) = &key_module {
-        all_context_keys.extend(key_block.context_keys.iter().cloned());
+    // bind_module context keys also contribute
+    if let Some(bind_script) = &bind_module {
+        all_context_keys.extend(bind_script.context_keys.iter().cloned());
     }
 
     Ok(CompiledNode {
@@ -458,7 +448,7 @@ pub fn compile_node(
         kind,
         all_context_keys,
         strategy: spec.strategy.clone(),
-        key_module,
+        bind_module,
     })
 }
 

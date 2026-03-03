@@ -212,9 +212,8 @@ impl Interpreter {
                     let name = need.name().to_string();
                     let v = context
                         .get(&name)
-                        .unwrap_or_else(|| panic!("ContextLoad: undefined context @{name}"))
-                        .clone();
-                    key = need.into_key(v);
+                        .unwrap_or_else(|| panic!("ContextLoad: undefined context @{name}"));
+                    key = need.into_key(Arc::new(v.clone()));
                 }
                 Stepped::Done => break,
             }
@@ -365,15 +364,15 @@ impl Interpreter {
                 // -- context / variable I/O --
                 InstKind::ContextLoad { dst, name, bindings } => {
                     if bindings.is_empty() {
-                        let v = handle.request_context(name.clone()).await;
-                        frame.set_new(*dst, v);
+                        let arc = handle.request_context(name.clone()).await;
+                        frame.set(*dst, arc);
                     } else {
                         let binding_values: HashMap<String, Value> = bindings
                             .iter()
                             .map(|(k, vid)| (k.clone(), frame.get(*vid).clone()))
                             .collect();
-                        let v = handle.request_context_with(name.clone(), binding_values).await;
-                        frame.set_new(*dst, v);
+                        let arc = handle.request_context_with(name.clone(), binding_values).await;
+                        frame.set(*dst, arc);
                     }
                 }
                 InstKind::VarLoad { dst, name } => {

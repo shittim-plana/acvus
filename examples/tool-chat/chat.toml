@@ -3,15 +3,12 @@ kind = "llm"
 provider = "gemini"
 model = "gemini-2.5-flash"
 
-[strategy]
-mode = "always"
-
 [[messages]]
 role = "system"
 template = "system.acvus"
 
 [[messages]]
-iterator = "@context.chat.histories"
+iterator = "@history"
 
 [[messages]]
 role = "user"

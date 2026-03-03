@@ -37,17 +37,17 @@ pub struct NodeSpec {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct Strategy {
-    pub mode: StrategyMode,
-    /// Template source for cache key (if-modified only).
-    pub key_source: Option<String>,
-}
-
-#[derive(Debug, Clone, Default)]
 pub enum StrategyMode {
     #[default]
     Always,
     IfModified,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Strategy {
+    pub mode: StrategyMode,
+    /// Script source for bind value (if-modified only).
+    pub bind_source: Option<String>,
 }
 
 /// A message entry: either a template block or an iterator over a context key.

@@ -30,6 +30,7 @@ struct RenderCtx<'a, F, R> {
     fetch: &'a F,
     extern_fns: &'a ExternFnRegistry,
     resolver: &'a R,
+    history_node: &'a Option<String>,
 }
 
 enum BlockDriveResult {
@@ -42,8 +43,8 @@ fn drive_block(
     mut key: ResumeKey,
     output: &mut String,
     storage: &HashMapStorage,
-    local: &HashMap<String, Value>,
-    turn_local: &HashMap<String, Value>,
+    local: &HashMap<String, Arc<Value>>,
+    turn_local: &HashMap<String, Arc<Value>>,
 ) -> Result<BlockDriveResult, ChatError> {
     loop {
         match coroutine.resume(key) {
@@ -60,12 +61,12 @@ fn drive_block(
                     return Ok(BlockDriveResult::NeedContext(need));
                 }
                 let name = need.name().to_string();
-                if let Some(value) = local.get(&name) {
-                    key = need.into_key(value.clone());
-                } else if let Some(value) = turn_local.get(&name) {
-                    key = need.into_key(value.clone());
+                if let Some(arc) = local.get(&name) {
+                    key = need.into_key(Arc::clone(arc));
+                } else if let Some(arc) = turn_local.get(&name) {
+                    key = need.into_key(Arc::clone(arc));
                 } else if let Some(arc) = storage.get(&name) {
-                    key = need.into_key(Arc::unwrap_or_clone(arc));
+                    key = need.into_key(arc);
                 } else {
                     return Ok(BlockDriveResult::NeedContext(need));
                 }
@@ -86,8 +87,8 @@ fn drive_script(
     coroutine: &mut acvus_interpreter::Coroutine,
     mut key: ResumeKey,
     storage: &HashMapStorage,
-    local: &HashMap<String, Value>,
-    turn_local: &HashMap<String, Value>,
+    local: &HashMap<String, Arc<Value>>,
+    turn_local: &HashMap<String, Arc<Value>>,
 ) -> Result<ScriptDriveResult, ChatError> {
     loop {
         match coroutine.resume(key) {
@@ -100,12 +101,12 @@ fn drive_script(
                     return Ok(ScriptDriveResult::NeedContext(need));
                 }
                 let name = need.name().to_string();
-                if let Some(value) = local.get(&name) {
-                    key = need.into_key(value.clone());
-                } else if let Some(value) = turn_local.get(&name) {
-                    key = need.into_key(value.clone());
+                if let Some(arc) = local.get(&name) {
+                    key = need.into_key(Arc::clone(arc));
+                } else if let Some(arc) = turn_local.get(&name) {
+                    key = need.into_key(Arc::clone(arc));
                 } else if let Some(arc) = storage.get(&name) {
-                    key = need.into_key(Arc::unwrap_or_clone(arc));
+                    key = need.into_key(arc);
                 } else {
                     return Ok(ScriptDriveResult::NeedContext(need));
                 }
@@ -144,30 +145,29 @@ fn item_fields(item: &Value) -> (&str, &str) {
 
 fn update_history(
     storage: &mut HashMapStorage,
-    iterator_keys: &[String],
     new_messages: &[Message],
     response_text: &str,
 ) {
-    for iter_key in iterator_keys {
-        let mut history = storage
-            .get(iter_key)
-            .and_then(|arc| match Arc::unwrap_or_clone(arc) {
-                Value::List(items) => Some(items),
-                _ => None,
-            })
-            .unwrap_or_default();
-        for msg in new_messages {
-            history.push(Value::Object(BTreeMap::from([
-                ("type".into(), Value::String(msg.role.clone())),
-                ("text".into(), Value::String(msg.content.clone())),
-            ])));
-        }
-        history.push(Value::Object(BTreeMap::from([
-            ("type".into(), Value::String("assistant".into())),
-            ("text".into(), Value::String(response_text.to_string())),
+    let histories = match storage.get_mut("history") {
+        Some(Value::List(list)) => list,
+        _ => return,
+    };
+
+    for msg in new_messages {
+        histories.push(Value::Object(BTreeMap::from([
+            ("type".into(), Value::String(msg.role.clone())),
+            ("text".into(), Value::String(msg.content.clone())),
         ])));
-        storage.set(iter_key.clone(), Value::List(history));
     }
+    histories.push(Value::Object(BTreeMap::from([
+        ("type".into(), Value::String("assistant".into())),
+        ("text".into(), Value::String(response_text.to_string())),
+    ])));
+}
+
+struct HistoryUpdate {
+    messages: Vec<Message>,
+    response_text: String,
 }
 
 fn ty_to_json_schema(ty: &acvus_mir::ty::Ty) -> &'static str {
@@ -223,34 +223,35 @@ where
         name: &str,
         bindings: HashMap<String, Value>,
         storage: &mut HashMapStorage,
-        key_cache: &mut HashMap<String, String>,
-        turn_local: &mut HashMap<String, Value>,
-    ) -> Result<Value, ChatError> {
+        bind_cache: &mut HashMap<String, Vec<(Value, Arc<Value>)>>,
+        turn_local: &mut HashMap<String, Arc<Value>>,
+        pending_updates: &mut Vec<HistoryUpdate>,
+    ) -> Result<Arc<Value>, ChatError> {
         if !bindings.is_empty() {
             if let Some(&idx) = self.name_to_idx.get(name) {
-                self.resolve_node(idx, storage, bindings, key_cache, turn_local)
+                let local = bindings.into_iter().map(|(k, v)| (k, Arc::new(v))).collect();
+                self.resolve_node(idx, storage, local, bind_cache, turn_local, pending_updates)
                     .await?;
             }
             return storage
                 .get(name)
-                .map(Arc::unwrap_or_clone)
                 .ok_or_else(|| ChatError::UnresolvedContext(name.to_string()));
         }
 
         if let Some(&idx) = self.name_to_idx.get(name) {
             if storage.get(name).is_none() {
-                self.resolve_node(idx, storage, HashMap::new(), key_cache, turn_local)
+                self.resolve_node(idx, storage, HashMap::new(), bind_cache, turn_local, pending_updates)
                     .await?;
             }
         }
         if let Some(arc) = storage.get(name) {
-            Ok(Arc::unwrap_or_clone(arc))
-        } else if let Some(cached) = turn_local.get(name) {
-            Ok(cached.clone())
+            Ok(arc)
+        } else if let Some(arc) = turn_local.get(name) {
+            Ok(Arc::clone(arc))
         } else {
             tracing::debug!(context = %name, "resolve via external resolver");
-            let resolved = (self.resolver)(name.to_string()).await;
-            turn_local.insert(name.to_string(), resolved.clone());
+            let resolved = Arc::new((self.resolver)(name.to_string()).await);
+            turn_local.insert(name.to_string(), Arc::clone(&resolved));
             Ok(resolved)
         }
     }
@@ -259,8 +260,9 @@ where
         &self,
         expr: &CompiledScript,
         storage: &mut HashMapStorage,
-        key_cache: &mut HashMap<String, String>,
-        turn_local: &mut HashMap<String, Value>,
+        bind_cache: &mut HashMap<String, Vec<(Value, Arc<Value>)>>,
+        turn_local: &mut HashMap<String, Arc<Value>>,
+        pending_updates: &mut Vec<HistoryUpdate>,
     ) -> Result<Value, ChatError> {
         let interp = Interpreter::new(expr.module.clone(), self.extern_fns.clone());
         let (mut coroutine, key) = interp.execute();
@@ -272,7 +274,7 @@ where
                     let name = need.name().to_string();
                     let bindings = need.bindings().clone();
                     let value = self
-                        .resolve_context(&name, bindings, storage, key_cache, turn_local)
+                        .resolve_context(&name, bindings, storage, bind_cache, turn_local, pending_updates)
                         .await?;
                     let key = need.into_key(value);
                     result = drive_script(&mut coroutine, key, storage, &HashMap::new(), turn_local)?;
@@ -285,10 +287,11 @@ where
         &self,
         expr: &CompiledScript,
         storage: &mut HashMapStorage,
-        key_cache: &mut HashMap<String, String>,
-        turn_local: &mut HashMap<String, Value>,
+        bind_cache: &mut HashMap<String, Vec<(Value, Arc<Value>)>>,
+        turn_local: &mut HashMap<String, Arc<Value>>,
+        pending_updates: &mut Vec<HistoryUpdate>,
     ) -> Result<Option<String>, ChatError> {
-        let value = self.eval_script(expr, storage, key_cache, turn_local).await?;
+        let value = self.eval_script(expr, storage, bind_cache, turn_local, pending_updates).await?;
         match value {
             Value::String(s) => Ok(Some(s)),
             Value::Unit => Ok(None),
@@ -300,9 +303,10 @@ where
         &'a self,
         block: &'a CompiledBlock,
         storage: &'a mut HashMapStorage,
-        local: HashMap<String, Value>,
-        key_cache: &'a mut HashMap<String, String>,
-        turn_local: &'a mut HashMap<String, Value>,
+        local: HashMap<String, Arc<Value>>,
+        bind_cache: &'a mut HashMap<String, Vec<(Value, Arc<Value>)>>,
+        turn_local: &'a mut HashMap<String, Arc<Value>>,
+        pending_updates: &'a mut Vec<HistoryUpdate>,
     ) -> Fut<'a, Result<String, ChatError>> {
         Box::pin(async move {
             let interp = Interpreter::new(block.module.clone(), self.extern_fns.clone());
@@ -318,7 +322,7 @@ where
                         let name = need.name().to_string();
                         let bindings = need.bindings().clone();
                         let value = self
-                            .resolve_context(&name, bindings, storage, key_cache, turn_local)
+                            .resolve_context(&name, bindings, storage, bind_cache, turn_local, pending_updates)
                             .await?;
                         let key = need.into_key(value);
                         result = drive_block(
@@ -334,207 +338,260 @@ where
         &'a self,
         idx: usize,
         storage: &'a mut HashMapStorage,
-        local: HashMap<String, Value>,
-        key_cache: &'a mut HashMap<String, String>,
-        turn_local: &'a mut HashMap<String, Value>,
+        local: HashMap<String, Arc<Value>>,
+        bind_cache: &'a mut HashMap<String, Vec<(Value, Arc<Value>)>>,
+        turn_local: &'a mut HashMap<String, Arc<Value>>,
+        pending_updates: &'a mut Vec<HistoryUpdate>,
     ) -> Fut<'a, Result<(), ChatError>> {
-        Box::pin(async move {
-            let node = &self.nodes[idx];
-            tracing::debug!(node = %node.name, "resolve_node");
+        Box::pin(self.resolve_node_impl(idx, storage, local, bind_cache, turn_local, pending_updates))
+    }
 
-            if matches!(node.strategy.mode, StrategyMode::IfModified) {
-                if let Some(key_block) = &node.key_module {
-                    let current_key = self
-                        .render_with_deps(key_block, storage, local.clone(), key_cache, turn_local)
-                        .await?;
-                    if key_cache
-                        .get(&node.name)
-                        .map(|k| k == &current_key)
-                        .unwrap_or(false)
-                    {
-                        tracing::debug!(node = %node.name, "if_modified skip (key unchanged)");
+    async fn resolve_node_impl(
+        &'a self,
+        idx: usize,
+        storage: &'a mut HashMapStorage,
+        mut local: HashMap<String, Arc<Value>>,
+        bind_cache: &'a mut HashMap<String, Vec<(Value, Arc<Value>)>>,
+        turn_local: &'a mut HashMap<String, Arc<Value>>,
+        pending_updates: &'a mut Vec<HistoryUpdate>,
+    ) -> Result<(), ChatError> {
+        let node = &self.nodes[idx];
+        tracing::debug!(node = %node.name, "resolve_node");
+
+        // IfModified: evaluate bind script, check cache
+        if matches!(node.strategy.mode, StrategyMode::IfModified) {
+            if let Some(bind_script) = &node.bind_module {
+                let bind_value = self
+                    .eval_script(bind_script, storage, bind_cache, turn_local, pending_updates)
+                    .await?;
+                if let Some(entries) = bind_cache.get(&node.name) {
+                    if let Some((_, cached_output)) = entries.iter().find(|(v, _)| v == &bind_value) {
+                        tracing::debug!(node = %node.name, "skip (bind cached)");
+                        storage.set(node.name.clone(), Value::clone(cached_output));
                         return Ok(());
                     }
-                    key_cache.insert(node.name.clone(), current_key);
+                }
+                local.insert("bind".into(), Arc::new(bind_value));
+            }
+        }
+
+        match &node.kind {
+            CompiledNodeKind::Plain { block } => {
+                let text = self
+                    .render_with_deps(block, storage, local, bind_cache, turn_local, pending_updates)
+                    .await?;
+                storage.set(node.name.clone(), Value::String(text));
+            }
+            CompiledNodeKind::LlmCache { .. } => {
+                self.resolve_llm_cache(node, storage, local, bind_cache, turn_local, pending_updates)
+                    .await?;
+            }
+            CompiledNodeKind::Llm { .. } => {
+                self.resolve_llm(node, storage, local, bind_cache, turn_local, pending_updates)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn resolve_llm_cache(
+        &'a self,
+        node: &'a CompiledNode,
+        storage: &'a mut HashMapStorage,
+        local: HashMap<String, Arc<Value>>,
+        bind_cache: &'a mut HashMap<String, Vec<(Value, Arc<Value>)>>,
+        turn_local: &'a mut HashMap<String, Arc<Value>>,
+        pending_updates: &'a mut Vec<HistoryUpdate>,
+    ) -> Result<(), ChatError> {
+        let CompiledNodeKind::LlmCache { provider, model, messages, ttl, cache_config } = &node.kind else {
+            unreachable!()
+        };
+
+        let mut rendered = Vec::new();
+        for msg in messages {
+            let block = match msg {
+                CompiledMessage::Block(block) => block,
+                CompiledMessage::Iterator { .. } => continue,
+            };
+            let text = self
+                .render_with_deps(block, storage, local.clone(), bind_cache, turn_local, pending_updates)
+                .await?;
+            rendered.push(Message::text(&block.role, text));
+        }
+
+        let provider_config = self
+            .providers
+            .get(provider)
+            .ok_or_else(|| ChatError::UnknownProvider(provider.clone()))?
+            .clone();
+
+        let request = build_cache_request(
+            &provider_config, model, &rendered, ttl, cache_config,
+        );
+        tracing::debug!(node = %node.name, body = %request.body, "llm_cache fetch request");
+        let json = self.fetch.fetch(&request).await.map_err(|e| {
+            tracing::warn!(node = %node.name, error = %e, "llm_cache fetch failed");
+            ChatError::Fetch { node: node.name.clone(), detail: e }
+        })?;
+        tracing::debug!(node = %node.name, response = %json, "llm_cache fetch response");
+        let cache_name =
+            parse_cache_response(&provider_config.api, &json).map_err(|e| {
+                tracing::warn!(node = %node.name, response = %json, "llm_cache parse failed");
+                ChatError::Parse { node: node.name.clone(), detail: e }
+            })?;
+        storage.set(node.name.clone(), Value::String(cache_name));
+        Ok(())
+    }
+
+    async fn resolve_llm(
+        &'a self,
+        node: &'a CompiledNode,
+        storage: &'a mut HashMapStorage,
+        mut local: HashMap<String, Arc<Value>>,
+        bind_cache: &'a mut HashMap<String, Vec<(Value, Arc<Value>)>>,
+        turn_local: &'a mut HashMap<String, Arc<Value>>,
+        pending_updates: &'a mut Vec<HistoryUpdate>,
+    ) -> Result<(), ChatError> {
+        let CompiledNodeKind::Llm { provider, model, messages, tools, generation, cache_key, max_tokens } = &node.kind else {
+            unreachable!()
+        };
+
+        let mut new_turn_messages = Vec::new();
+        let first_iter = messages
+            .iter()
+            .position(|m| matches!(m, CompiledMessage::Iterator { .. }));
+
+        let provider_config = self
+            .providers
+            .get(provider)
+            .ok_or_else(|| ChatError::UnknownProvider(provider.clone()))?
+            .clone();
+        let llm = create_llm_model(provider_config, model.clone());
+
+        let cached_content = if let Some(expr) = cache_key {
+            self.resolve_cached_content(expr, storage, bind_cache, turn_local, pending_updates)
+                .await?
+        } else {
+            None
+        };
+
+        let mut segments: Vec<MessageSegment> = Vec::new();
+        for (i, msg) in messages.iter().enumerate() {
+            match msg {
+                CompiledMessage::Block(block) => {
+                    let text = self
+                        .render_with_deps(block, storage, local.clone(), bind_cache, turn_local, pending_updates)
+                        .await?;
+                    let message = Message::text(&block.role, text);
+                    if first_iter.map_or(false, |pos| i > pos) {
+                        new_turn_messages.push(message.clone());
+                    }
+                    segments.push(MessageSegment::Single(message));
+                }
+                CompiledMessage::Iterator { expr, block, slice, bind, role, token_budget, .. } => {
+                    let expanded = self
+                        .expand_iterator(expr, block.as_ref(), slice, bind, role, storage, bind_cache, turn_local, pending_updates)
+                        .await?;
+                    segments.push(MessageSegment::Iterator {
+                        messages: expanded,
+                        budget: token_budget.clone(),
+                    });
                 }
             }
+        }
 
-            match &node.kind {
-                CompiledNodeKind::Plain { block } => {
-                    let text = self
-                        .render_with_deps(block, storage, local, key_cache, turn_local)
-                        .await?;
-                    storage.set(node.name.clone(), Value::String(text));
-                }
-                CompiledNodeKind::LlmCache { provider, model, messages, ttl, cache_config } => {
-                    let mut rendered = Vec::new();
-                    for msg in messages {
-                        let block = match msg {
-                            CompiledMessage::Block(block) => block,
-                            CompiledMessage::Iterator { .. } => continue,
-                        };
-                        let text = self
-                            .render_with_deps(block, storage, local.clone(), key_cache, turn_local)
-                            .await?;
-                        rendered.push(Message::text(&block.role, text));
-                    }
+        self.allocate_token_budgets(&*llm, &node.name, &mut segments, *max_tokens)
+            .await?;
 
-                    let provider_config = self
-                        .providers
-                        .get(provider)
-                        .ok_or_else(|| ChatError::UnknownProvider(provider.clone()))?
-                        .clone();
+        let mut rendered: Vec<Message> = segments.into_iter().flat_map(|seg| match seg {
+            MessageSegment::Single(m) => vec![m],
+            MessageSegment::Iterator { messages, .. } => messages,
+        }).collect();
+        let specs = tool_specs(tools);
+        let request = llm.build_request(
+            &rendered, &specs, generation, cached_content.as_deref(),
+        );
+        tracing::debug!(node = %node.name, body = %request.body, "llm fetch request");
+        let json = self.fetch.fetch(&request).await.map_err(|e| {
+            tracing::warn!(node = %node.name, error = %e, "llm fetch failed");
+            ChatError::Fetch { node: node.name.clone(), detail: e }
+        })?;
+        tracing::debug!(node = %node.name, response = %json, "llm fetch response");
+        let (mut response, _usage) =
+            llm.parse_response(&json).map_err(|e| {
+                tracing::warn!(node = %node.name, response = %json, "llm parse failed");
+                ChatError::Parse { node: node.name.clone(), detail: e }
+            })?;
 
-                    let request = build_cache_request(
-                        &provider_config, model, &rendered, ttl, cache_config,
-                    );
-                    tracing::debug!(node = %node.name, body = %request.body, "llm_cache fetch request");
-                    let json = self.fetch.fetch(&request).await.map_err(|e| {
-                        tracing::warn!(node = %node.name, error = %e, "llm_cache fetch failed");
-                        ChatError::Fetch { node: node.name.clone(), detail: e }
-                    })?;
-                    tracing::debug!(node = %node.name, response = %json, "llm_cache fetch response");
-                    let cache_name =
-                        parse_cache_response(&provider_config.api, &json).map_err(|e| {
-                            tracing::warn!(node = %node.name, response = %json, "llm_cache parse failed");
-                            ChatError::Parse { node: node.name.clone(), detail: e }
-                        })?;
-                    storage.set(node.name.clone(), Value::String(cache_name));
-                }
-                CompiledNodeKind::Llm { provider, model, messages, tools, generation, cache_key, max_tokens } => {
-                    let mut new_turn_messages = Vec::new();
-                    let first_iter = messages
-                        .iter()
-                        .position(|m| matches!(m, CompiledMessage::Iterator { .. }));
-
-                    let provider_config = self
-                        .providers
-                        .get(provider)
-                        .ok_or_else(|| ChatError::UnknownProvider(provider.clone()))?
-                        .clone();
-                    let llm = create_llm_model(provider_config, model.clone());
-
-                    let cached_content = if let Some(expr) = cache_key {
-                        self.resolve_cached_content(expr, storage, key_cache, turn_local)
-                            .await?
-                    } else {
-                        None
-                    };
-
-                    let mut segments: Vec<MessageSegment> = Vec::new();
-                    for (i, msg) in messages.iter().enumerate() {
-                        match msg {
-                            CompiledMessage::Block(block) => {
-                                let text = self
-                                    .render_with_deps(block, storage, local.clone(), key_cache, turn_local)
-                                    .await?;
-                                let message = Message::text(&block.role, text);
-                                if first_iter.map_or(false, |pos| i > pos) {
-                                    new_turn_messages.push(message.clone());
-                                }
-                                segments.push(MessageSegment::Single(message));
-                            }
-                            CompiledMessage::Iterator { expr, block, slice, bind, role, token_budget, .. } => {
-                                let expanded = self
-                                    .expand_iterator(expr, block.as_ref(), slice, bind, role, storage, key_cache, turn_local)
-                                    .await?;
-                                segments.push(MessageSegment::Iterator {
-                                    messages: expanded,
-                                    budget: token_budget.clone(),
-                                });
-                            }
+        let mut tool_rounds = 0usize;
+        loop {
+            match response {
+                ModelResponse::Text(text) => {
+                    tracing::debug!(node = %node.name, len = text.len(), "llm text response");
+                    let output = Value::String(text.clone());
+                    // IfModified: cache bind_value → output
+                    if matches!(node.strategy.mode, StrategyMode::IfModified) {
+                        if let Some(bind_val) = local.remove("bind") {
+                            bind_cache
+                                .entry(node.name.clone())
+                                .or_default()
+                                .push(((*bind_val).clone(), Arc::new(output.clone())));
                         }
                     }
+                    // History: push update if this is the designated history node
+                    if self.history_node.as_deref() == Some(node.name.as_str()) {
+                        pending_updates.push(HistoryUpdate {
+                            messages: new_turn_messages,
+                            response_text: text.clone(),
+                        });
+                    }
+                    storage.set(node.name.clone(), output);
+                    break;
+                }
+                ModelResponse::ToolCalls(calls) => {
+                    tool_rounds += 1;
+                    if tool_rounds > MAX_TOOL_ROUNDS {
+                        return Err(ChatError::ToolCallLimitExceeded(node.name.clone()));
+                    }
 
-                    self.allocate_token_budgets(&*llm, &node.name, &mut segments, *max_tokens)
-                        .await?;
+                    rendered.push(Message {
+                        role: "assistant".into(),
+                        content: String::new(),
+                        tool_calls: calls.clone(),
+                        tool_call_id: None,
+                    });
 
-                    let mut rendered: Vec<Message> = segments.into_iter().flat_map(|seg| match seg {
-                        MessageSegment::Single(m) => vec![m],
-                        MessageSegment::Iterator { messages, .. } => messages,
-                    }).collect();
-                    let specs = tool_specs(tools);
+                    for call in &calls {
+                        tracing::debug!(node = %node.name, tool = %call.name, args = %call.arguments, "tool call received");
+                        let result_text = self.execute_tool_call(
+                            call, &node.name, tools, storage, bind_cache, turn_local, pending_updates,
+                        ).await?;
+                        tracing::debug!(tool = %call.name, result = %result_text, "tool call result");
+                        rendered.push(Message {
+                            role: "tool".into(),
+                            content: result_text,
+                            tool_calls: Vec::new(),
+                            tool_call_id: Some(call.id.clone()),
+                        });
+                    }
+
                     let request = llm.build_request(
                         &rendered, &specs, generation, cached_content.as_deref(),
                     );
-                    tracing::debug!(node = %node.name, body = %request.body, "llm fetch request");
+                    tracing::debug!(node = %node.name, body = %request.body, "llm fetch request (tool followup)");
                     let json = self.fetch.fetch(&request).await.map_err(|e| {
-                        tracing::warn!(node = %node.name, error = %e, "llm fetch failed");
+                        tracing::warn!(node = %node.name, error = %e, "llm fetch failed (tool followup)");
                         ChatError::Fetch { node: node.name.clone(), detail: e }
                     })?;
-                    tracing::debug!(node = %node.name, response = %json, "llm fetch response");
-                    let (mut response, _usage) =
-                        llm.parse_response(&json).map_err(|e| {
-                            tracing::warn!(node = %node.name, response = %json, "llm parse failed");
-                            ChatError::Parse { node: node.name.clone(), detail: e }
-                        })?;
-
-                    let mut tool_rounds = 0usize;
-                    loop {
-                        match response {
-                            ModelResponse::Text(text) => {
-                                tracing::debug!(node = %node.name, len = text.len(), "llm text response");
-                                let write_keys: Vec<String> = messages
-                                    .iter()
-                                    .filter_map(|m| match m {
-                                        CompiledMessage::Iterator { write_keys, .. } => Some(write_keys.clone()),
-                                        _ => None,
-                                    })
-                                    .flatten()
-                                    .collect();
-                                if !write_keys.is_empty() {
-                                    update_history(storage, &write_keys, &new_turn_messages, &text);
-                                }
-                                storage.set(node.name.clone(), Value::String(text));
-                                break;
-                            }
-                            ModelResponse::ToolCalls(calls) => {
-                                tool_rounds += 1;
-                                if tool_rounds > MAX_TOOL_ROUNDS {
-                                    return Err(ChatError::ToolCallLimitExceeded(node.name.clone()));
-                                }
-
-                                rendered.push(Message {
-                                    role: "assistant".into(),
-                                    content: String::new(),
-                                    tool_calls: calls.clone(),
-                                    tool_call_id: None,
-                                });
-
-                                for call in &calls {
-                                    tracing::debug!(node = %node.name, tool = %call.name, args = %call.arguments, "tool call received");
-                                    let result_text = self.execute_tool_call(
-                                        call, &node.name, tools, storage, key_cache, turn_local,
-                                    ).await?;
-                                    tracing::debug!(tool = %call.name, result = %result_text, "tool call result");
-                                    rendered.push(Message {
-                                        role: "tool".into(),
-                                        content: result_text,
-                                        tool_calls: Vec::new(),
-                                        tool_call_id: Some(call.id.clone()),
-                                    });
-                                }
-
-                                let request = llm.build_request(
-                                    &rendered, &specs, generation, cached_content.as_deref(),
-                                );
-                                tracing::debug!(node = %node.name, body = %request.body, "llm fetch request (tool followup)");
-                                let json = self.fetch.fetch(&request).await.map_err(|e| {
-                                    tracing::warn!(node = %node.name, error = %e, "llm fetch failed (tool followup)");
-                                    ChatError::Fetch { node: node.name.clone(), detail: e }
-                                })?;
-                                tracing::debug!(node = %node.name, response = %json, "llm fetch response (tool followup)");
-                                (response, _) = llm.parse_response(&json).map_err(|e| {
-                                    tracing::warn!(node = %node.name, response = %json, "llm parse failed (tool followup)");
-                                    ChatError::Parse { node: node.name.clone(), detail: e }
-                                })?;
-                            }
-                        }
-                    }
+                    tracing::debug!(node = %node.name, response = %json, "llm fetch response (tool followup)");
+                    (response, _) = llm.parse_response(&json).map_err(|e| {
+                        tracing::warn!(node = %node.name, response = %json, "llm parse failed (tool followup)");
+                        ChatError::Parse { node: node.name.clone(), detail: e }
+                    })?;
                 }
             }
-            Ok(())
-        })
+        }
+        Ok(())
     }
 
     async fn execute_tool_call(
@@ -543,8 +600,9 @@ where
         node_name: &str,
         tools: &[CompiledToolBinding],
         storage: &'a mut HashMapStorage,
-        key_cache: &'a mut HashMap<String, String>,
-        turn_local: &'a mut HashMap<String, Value>,
+        bind_cache: &'a mut HashMap<String, Vec<(Value, Arc<Value>)>>,
+        turn_local: &'a mut HashMap<String, Arc<Value>>,
+        pending_updates: &'a mut Vec<HistoryUpdate>,
     ) -> Result<String, ChatError> {
         let binding = tools.iter().find(|t| t.name == call.name).ok_or_else(|| {
             ChatError::ToolNotFound { node: node_name.to_string(), tool: call.name.clone() }
@@ -556,14 +614,14 @@ where
             }
         })?;
 
-        let tool_local: HashMap<String, Value> = match &call.arguments {
+        let tool_local: HashMap<String, Arc<Value>> = match &call.arguments {
             serde_json::Value::Object(obj) => {
-                obj.iter().map(|(k, v)| (k.clone(), json_to_value(v))).collect()
+                obj.iter().map(|(k, v)| (k.clone(), Arc::new(json_to_value(v)))).collect()
             }
             _ => HashMap::new(),
         };
 
-        self.resolve_node(target_idx, storage, tool_local, key_cache, turn_local)
+        self.resolve_node(target_idx, storage, tool_local, bind_cache, turn_local, pending_updates)
             .await?;
 
         let result = storage
@@ -585,10 +643,11 @@ where
         bind: &Option<String>,
         role_override: &Option<String>,
         storage: &'a mut HashMapStorage,
-        key_cache: &'a mut HashMap<String, String>,
-        turn_local: &'a mut HashMap<String, Value>,
+        bind_cache: &'a mut HashMap<String, Vec<(Value, Arc<Value>)>>,
+        turn_local: &'a mut HashMap<String, Arc<Value>>,
+        pending_updates: &'a mut Vec<HistoryUpdate>,
     ) -> Result<Vec<Message>, ChatError> {
-        let evaluated = self.eval_script(expr, storage, key_cache, turn_local).await?;
+        let evaluated = self.eval_script(expr, storage, bind_cache, turn_local, pending_updates).await?;
         let all_items = match &evaluated {
             Value::List(items) => items.as_slice(),
             _ => {
@@ -618,15 +677,15 @@ where
 
             if let Some(block) = block {
                 let local = if let Some(bind_name) = bind {
-                    HashMap::from([(bind_name.clone(), item.clone())])
+                    HashMap::from([(bind_name.clone(), Arc::new(item.clone()))])
                 } else {
                     HashMap::from([
-                        ("type".into(), Value::String(role.to_string())),
-                        ("text".into(), Value::String(item_text.to_string())),
+                        ("type".into(), Arc::new(Value::String(role.to_string()))),
+                        ("text".into(), Arc::new(Value::String(item_text.to_string()))),
                     ])
                 };
                 let rendered = self
-                    .render_with_deps(block, storage, local, key_cache, turn_local)
+                    .render_with_deps(block, storage, local, bind_cache, turn_local, pending_updates)
                     .await?;
                 messages.push(Message::text(role, rendered));
             } else {
@@ -775,8 +834,9 @@ pub struct ChatEngine<F> {
     fetch: F,
     extern_fns: ExternFnRegistry,
     storage: HashMapStorage,
-    key_cache: HashMap<String, String>,
+    bind_cache: HashMap<String, Vec<(Value, Arc<Value>)>>,
     entrypoint_idx: usize,
+    history_node: Option<String>,
 }
 
 impl<F> ChatEngine<F>
@@ -790,6 +850,7 @@ where
         extern_fns: ExternFnRegistry,
         mut storage: HashMapStorage,
         entrypoint: &str,
+        history: Option<&str>,
     ) -> Result<Self, ChatError> {
         let name_to_idx: HashMap<String, usize> = nodes
             .iter()
@@ -801,13 +862,32 @@ where
             .get(entrypoint)
             .ok_or_else(|| ChatError::EntrypointNotFound(entrypoint.to_string()))?;
 
-        // Seed context metadata for all Llm nodes
+        if let Some(h) = history {
+            if !name_to_idx.contains_key(h) {
+                return Err(ChatError::HistoryNodeNotFound(h.to_string()));
+            }
+        }
+
+        // Seed context metadata as nested Object: context.{node}.{model,provider}
+        let mut context_obj: BTreeMap<String, Value> = BTreeMap::new();
         for node in &nodes {
             if let CompiledNodeKind::Llm { provider, model, .. } = &node.kind {
-                let prefix = format!("context.{}", node.name);
-                storage.set(format!("{prefix}.model"), Value::String(model.clone()));
-                storage.set(format!("{prefix}.provider"), Value::String(provider.clone()));
+                context_obj.insert(
+                    node.name.clone(),
+                    Value::Object(BTreeMap::from([
+                        ("model".into(), Value::String(model.clone())),
+                        ("provider".into(), Value::String(provider.clone())),
+                    ])),
+                );
             }
+        }
+        if !context_obj.is_empty() {
+            storage.set("context".into(), Value::Object(context_obj));
+        }
+
+        // Seed empty history list
+        if history.is_some() {
+            storage.set("history".into(), Value::List(Vec::new()));
         }
 
         Ok(Self {
@@ -817,8 +897,9 @@ where
             fetch,
             extern_fns,
             storage,
-            key_cache: HashMap::new(),
+            bind_cache: HashMap::new(),
             entrypoint_idx,
+            history_node: history.map(|s| s.to_string()),
         })
     }
 
@@ -829,7 +910,7 @@ where
         let entrypoint = &self.nodes[self.entrypoint_idx].name;
         tracing::debug!(entrypoint = %entrypoint, "turn start");
 
-        // Remove always-strategy nodes so they re-resolve this turn
+        // Always-strategy nodes re-resolve every turn
         for node in &self.nodes {
             if matches!(node.strategy.mode, StrategyMode::Always) {
                 self.storage.remove(&node.name);
@@ -837,6 +918,7 @@ where
         }
 
         let mut turn_local = HashMap::new();
+        let mut pending_updates = Vec::new();
 
         let ctx = RenderCtx {
             nodes: &self.nodes,
@@ -845,27 +927,63 @@ where
             fetch: &self.fetch,
             extern_fns: &self.extern_fns,
             resolver,
+            history_node: &self.history_node,
         };
 
         ctx.resolve_node(
             self.entrypoint_idx,
             &mut self.storage,
             HashMap::new(),
-            &mut self.key_cache,
+            &mut self.bind_cache,
             &mut turn_local,
+            &mut pending_updates,
         )
         .await?;
+
+        // Apply deferred history updates after all coroutines are dropped
+        for update in pending_updates {
+            update_history(&mut self.storage, &update.messages, &update.response_text);
+        }
 
         let name = &self.nodes[self.entrypoint_idx].name;
         let result = self
             .storage
             .get(name)
-            .map(|v| Arc::unwrap_or_clone(v))
             .ok_or_else(|| ChatError::UnresolvedContext(name.clone()))?;
-        match result {
-            Value::String(s) => Ok(s),
-            other => Err(ChatError::EmitType(value_type_name(&other))),
+        match &*result {
+            Value::String(s) => Ok(s.clone()),
+            other => Err(ChatError::EmitType(value_type_name(other))),
         }
+    }
+
+    pub fn history_len(&self) -> usize {
+        match self.storage.get("history") {
+            Some(arc) => match &*arc {
+                Value::List(list) => list.len(),
+                _ => 0,
+            },
+            None => 0,
+        }
+    }
+
+    pub fn history_pop(&mut self) -> Option<Value> {
+        match self.storage.get_mut("history") {
+            Some(Value::List(list)) => list.pop(),
+            _ => None,
+        }
+    }
+
+    pub async fn re_execute<R>(&mut self, index: usize, resolver: &R) -> Result<String, ChatError>
+    where
+        R: AsyncFn(String) -> Value + Sync,
+    {
+        let len = self.history_len();
+        assert!(index <= len, "re_execute index out of bounds: {index} > {len}");
+        match self.storage.get_mut("history") {
+            Some(Value::List(list)) => list.truncate(index),
+            _ => panic!("re_execute called without history"),
+        }
+        self.turn(resolver).await
     }
 }
 
@@ -977,6 +1095,7 @@ mod tests {
             ExternFnRegistry::new(),
             HashMapStorage::new(),
             "main",
+            None,
         )
         .await;
         assert!(result.is_ok());
@@ -997,6 +1116,7 @@ mod tests {
             ExternFnRegistry::new(),
             HashMapStorage::new(),
             "nonexistent",
+            None,
         )
         .await;
         assert!(matches!(result, Err(ChatError::EntrypointNotFound(_))));
@@ -1017,6 +1137,7 @@ mod tests {
             ExternFnRegistry::new(),
             HashMapStorage::new(),
             "main",
+            None,
         )
         .await
         .unwrap();
@@ -1052,6 +1173,7 @@ mod tests {
             ExternFnRegistry::new(),
             HashMapStorage::new(),
             "main",
+            None,
         )
         .await
         .unwrap();
@@ -1102,6 +1224,7 @@ mod tests {
             ExternFnRegistry::new(),
             HashMapStorage::new(),
             "main",
+            None,
         )
         .await
         .unwrap();
@@ -1154,6 +1277,7 @@ mod tests {
             ExternFnRegistry::new(),
             HashMapStorage::new(),
             "main",
+            None,
         )
         .await
         .unwrap();
@@ -1211,6 +1335,7 @@ mod tests {
             ExternFnRegistry::new(),
             HashMapStorage::new(),
             "main",
+            None,
         )
         .await
         .unwrap();

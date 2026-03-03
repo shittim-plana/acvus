@@ -28,7 +28,10 @@ pub enum PureValue {
 
 /// Runtime value — flat enum for fast dispatch.
 /// Includes everything PureValue has, plus Fn for closures.
-#[derive(Debug, Clone)]
+///
+/// `PartialEq` compares structural equality for data variants.
+/// `Fn` and `Opaque` are never equal (not comparable).
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Int(i64),
     Float(f64),
@@ -72,6 +75,12 @@ impl OpaqueValue {
     }
 }
 
+impl PartialEq for OpaqueValue {
+    fn eq(&self, _other: &Self) -> bool {
+        false
+    }
+}
+
 impl fmt::Debug for OpaqueValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Opaque<{}>", self.type_name)
@@ -83,6 +92,12 @@ impl fmt::Debug for OpaqueValue {
 pub struct FnValue {
     pub body: Label,
     pub captures: Vec<Arc<Value>>,
+}
+
+impl PartialEq for FnValue {
+    fn eq(&self, _other: &Self) -> bool {
+        false
+    }
 }
 
 impl Value {
