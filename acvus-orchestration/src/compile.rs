@@ -55,6 +55,12 @@ pub struct CompiledToolBinding {
     pub params: HashMap<String, Ty>,
 }
 
+/// Compiled history specification for a node.
+#[derive(Debug, Clone)]
+pub struct CompiledHistory {
+    pub store: CompiledScript,
+}
+
 /// A compiled orchestration node.
 #[derive(Debug, Clone)]
 pub struct CompiledNode {
@@ -63,7 +69,7 @@ pub struct CompiledNode {
     pub all_context_keys: HashSet<String>,
     pub strategy: Strategy,
     pub bind_module: Option<CompiledScript>,
-    pub history: bool,
+    pub history: Option<CompiledHistory>,
 }
 
 /// Compiled expression (Script → MIR).
@@ -202,6 +208,29 @@ impl CompiledNode {
     }
 }
 
+/// Compile an expression string (script syntax) with type checking.
+/// Returns the compiled script and its tail expression type.
+pub fn compile_script_typed(
+    source: &str,
+    context_types: &HashMap<String, Ty>,
+    registry: &ExternRegistry,
+) -> Result<(CompiledScript, Ty), OrchError> {
+    let script = acvus_ast::parse_script(source).map_err(|e| {
+        OrchError::new(OrchErrorKind::ScriptParse {
+            error: format!("{e}"),
+        })
+    })?;
+    let (module, _hints, tail_ty) =
+        acvus_mir::compile_script_typed(&script, context_types.clone(), registry).map_err(|errs| {
+            OrchError::new(OrchErrorKind::TemplateCompile {
+                block: 0,
+                errors: errs,
+            })
+        })?;
+    let context_keys = extract_context_keys(&module);
+    Ok((CompiledScript { module, context_keys }, tail_ty))
+}
+
 /// Compile an expression string (script syntax) into a `CompiledScript`.
 pub fn compile_script(source: &str) -> Result<CompiledScript, OrchError> {
     let script = acvus_ast::parse_script(source).map_err(|e| {
@@ -287,13 +316,15 @@ fn compile_messages(
                         iter_types.insert(
                             bind_name.clone(),
                             Ty::Object(BTreeMap::from([
-                                ("type".into(), Ty::String),
-                                ("text".into(), Ty::String),
+                                ("role".into(), Ty::String),
+                                ("content".into(), Ty::String),
+                                ("content_type".into(), Ty::String),
                             ])),
                         );
                     } else {
-                        iter_types.insert("type".into(), Ty::String);
-                        iter_types.insert("text".into(), Ty::String);
+                        iter_types.insert("role".into(), Ty::String);
+                        iter_types.insert("content".into(), Ty::String);
+                        iter_types.insert("content_type".into(), Ty::String);
                     }
 
                     match compile_template(src, i, &iter_types, registry) {
@@ -444,13 +475,23 @@ pub fn compile_node(
         all_context_keys.extend(bind_script.context_keys.iter().cloned());
     }
 
+    // Compile history store script (untyped — typed compilation happens in compile_nodes)
+    let history = match &spec.history {
+        Some(hs) => {
+            let store = compile_script(&hs.store).map_err(|e| vec![e])?;
+            all_context_keys.extend(store.context_keys.iter().cloned());
+            Some(CompiledHistory { store })
+        }
+        None => None,
+    };
+
     Ok(CompiledNode {
         name: spec.name.clone(),
         kind,
         all_context_keys,
         strategy: spec.strategy.clone(),
         bind_module,
-        history: spec.history,
+        history,
     })
 }
 
@@ -465,25 +506,31 @@ pub fn compile_nodes(
 ) -> Result<Vec<CompiledNode>, Vec<OrchError>> {
     let mut context_types = injected_types.clone();
     for spec in specs {
-        context_types.insert(spec.name.clone(), Ty::String);
+        context_types.insert(spec.name.clone(), spec.kind.output_ty());
     }
 
-    // Inject @history type for nodes with history = true.
-    // @history is an Object where each key is a history-enabled node name,
-    // mapping to List<Object<{type: String, text: String}>>.
-    let history_nodes: Vec<&str> = specs
+    // Inject @history type for nodes with history.
+    // First compile each store expression with type checking to infer its element type.
+    // @history.{node} = List<store_type>.
+    let history_specs: Vec<(&str, &str)> = specs
         .iter()
-        .filter(|s| s.history)
-        .map(|s| s.name.as_str())
+        .filter_map(|s| s.history.as_ref().map(|h| (s.name.as_str(), h.store.as_str())))
         .collect();
-    if !history_nodes.is_empty() {
-        let msg_ty = Ty::Object(BTreeMap::from([
-            ("type".into(), Ty::String),
-            ("text".into(), Ty::String),
-        ]));
+    if !history_specs.is_empty() {
+        // Build a temporary context_types for store type inference.
+        // Store expressions can reference node outputs (@chat, @input, etc.) but not @history itself.
+        let store_ctx = context_types.clone();
         let mut history_fields = BTreeMap::new();
-        for name in &history_nodes {
-            history_fields.insert(name.to_string(), Ty::List(Box::new(msg_ty.clone())));
+        for &(name, store_src) in &history_specs {
+            match compile_script_typed(store_src, &store_ctx, registry) {
+                Ok((_script, ty)) => {
+                    history_fields.insert(name.to_string(), Ty::List(Box::new(ty)));
+                }
+                Err(_) => {
+                    // Fallback: type check failed, use Error type (unifies with anything)
+                    history_fields.insert(name.to_string(), Ty::List(Box::new(Ty::Error)));
+                }
+            }
         }
         context_types.insert("history".into(), Ty::Object(history_fields));
         context_types.insert("index".into(), Ty::Int);

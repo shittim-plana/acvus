@@ -60,6 +60,35 @@ impl TypeChecker {
         Ok(resolved)
     }
 
+    pub fn check_script(mut self, script: &acvus_ast::Script) -> Result<(TypeMap, Ty), Vec<MirError>> {
+        for stmt in &script.stmts {
+            match stmt {
+                acvus_ast::Stmt::Bind { name, expr, span } => {
+                    let ty = self.check_expr(expr);
+                    self.define_var(name, ty.clone());
+                    self.record(*span, ty);
+                }
+                acvus_ast::Stmt::Expr(expr) => {
+                    self.check_expr(expr);
+                }
+            }
+        }
+        let tail_ty = match &script.tail {
+            Some(expr) => self.check_expr(expr),
+            None => Ty::Unit,
+        };
+        if !self.errors.is_empty() {
+            return Err(self.errors);
+        }
+        let resolved_tail = self.subst.resolve(&tail_ty);
+        let resolved: TypeMap = self
+            .type_map
+            .iter()
+            .map(|(span, ty)| (*span, self.subst.resolve(ty)))
+            .collect();
+        Ok((resolved, resolved_tail))
+    }
+
     fn push_scope(&mut self) {
         self.scopes.push(HashMap::new());
     }

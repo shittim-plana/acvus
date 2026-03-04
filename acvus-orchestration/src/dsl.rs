@@ -1,4 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+
+use acvus_mir::ty::Ty;
 
 /// Node kind — determines how the node is executed.
 /// Config specific to each kind lives inside the variant.
@@ -28,13 +30,35 @@ pub enum NodeKind {
     },
 }
 
+impl NodeKind {
+    /// The output type produced by this node kind.
+    pub fn output_ty(&self) -> Ty {
+        match self {
+            NodeKind::Plain { .. } => Ty::String,
+            NodeKind::Llm { .. } => Ty::Object(BTreeMap::from([
+                ("role".into(), Ty::String),
+                ("content".into(), Ty::String),
+                ("content_type".into(), Ty::String),
+            ])),
+            NodeKind::LlmCache { .. } => Ty::String,
+        }
+    }
+}
+
+/// History specification for a node.
+#[derive(Debug, Clone)]
+pub struct HistorySpec {
+    /// Script expression to evaluate and store each turn.
+    pub store: String,
+}
+
 /// Node specification — pure compilation input, no Serde.
 #[derive(Debug, Clone)]
 pub struct NodeSpec {
     pub name: String,
     pub kind: NodeKind,
     pub strategy: Strategy,
-    pub history: bool,
+    pub history: Option<HistorySpec>,
 }
 
 #[derive(Debug, Clone, Default)]

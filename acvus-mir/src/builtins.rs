@@ -210,6 +210,18 @@ impl BuiltinSig for Reverse {
     }
 }
 
+pub struct Flatten;
+impl BuiltinSig for Flatten {
+    fn name(&self) -> &'static str { "flatten" }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        (
+            vec![Ty::List(Box::new(Ty::List(Box::new(t.clone()))))],
+            Ty::List(Box::new(t)),
+        )
+    }
+}
+
 pub struct Join;
 impl BuiltinSig for Join {
     fn name(&self) -> &'static str { "join" }
@@ -312,6 +324,7 @@ pub fn builtins() -> Vec<&'static dyn BuiltinSig> {
         &All,
         &Len,
         &Reverse,
+        &Flatten,
         &Join,
         &CharToInt,
         &IntToChar,

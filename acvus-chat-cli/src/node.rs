@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use acvus_orchestration::{
-    GenerationParams, MessageSpec, NodeKind, NodeSpec, Strategy, StrategyMode, TokenBudget,
-    ToolBinding,
+    GenerationParams, HistorySpec, MessageSpec, NodeKind, NodeSpec, Strategy, StrategyMode,
+    TokenBudget, ToolBinding,
 };
 use serde::Deserialize;
 
@@ -42,8 +42,12 @@ pub struct NodeDef {
     #[serde(default)]
     generation: GenerationParamsDef,
     cache_key: Option<String>,
-    #[serde(default)]
-    history: bool,
+    history: Option<HistoryDef>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct HistoryDef {
+    pub store: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -229,6 +233,6 @@ pub fn resolve_node(def: NodeDef, base_dir: &Path) -> Result<NodeSpec, String> {
         name: def.name,
         kind,
         strategy,
-        history: def.history,
+        history: def.history.map(|h| HistorySpec { store: h.store }),
     })
 }

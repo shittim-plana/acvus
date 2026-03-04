@@ -182,7 +182,7 @@ async fn main() {
                 eprintln!("turn error: {e}");
                 process::exit(1);
             });
-            println!("{response}");
+            println!("{}", format_output(&response));
         }
     } else {
         // One-shot: CLI args → defaults → panic
@@ -202,6 +202,17 @@ async fn main() {
             eprintln!("turn error: {e}");
             process::exit(1);
         });
-        println!("{response}");
+        println!("{}", format_output(&response));
+    }
+}
+
+fn format_output(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Object(obj) => match obj.get("content") {
+            Some(Value::String(s)) => s.clone(),
+            _ => format!("{value:?}"),
+        },
+        _ => format!("{value:?}"),
     }
 }

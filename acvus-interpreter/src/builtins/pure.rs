@@ -34,6 +34,17 @@ pub(crate) fn builtin_reverse(items: Vec<Value>) -> Value {
     Value::List(items)
 }
 
+pub(crate) fn builtin_flatten(items: Vec<Value>) -> Value {
+    let mut out = Vec::new();
+    for item in items {
+        match item {
+            Value::List(inner) => out.extend(inner),
+            other => out.push(other),
+        }
+    }
+    Value::List(out)
+}
+
 pub(crate) fn builtin_join(items: Vec<String>, sep: String) -> String {
     items.join(&sep)
 }

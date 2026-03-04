@@ -2,9 +2,11 @@ name = "chat"
 kind = "llm"
 provider = "gemini"
 model = "gemini-2.5-flash"
-history = true
 # Total token pool shared across all budgeted iterators.
 max_tokens = 16000
+
+[history]
+store = "@chat"
 
 [[messages]]
 role = "system"

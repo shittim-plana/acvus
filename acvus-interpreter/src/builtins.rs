@@ -27,6 +27,7 @@ pub fn call_pure(name: &str, args: Vec<Value>) -> Value {
         "int_to_char"   => PureBuiltin::call(builtin_int_to_char, args),
         "len"           => PureBuiltin::call(builtin_len, args),
         "reverse"       => PureBuiltin::call(builtin_reverse, args),
+        "flatten"       => PureBuiltin::call(builtin_flatten, args),
         "join"          => PureBuiltin::call(builtin_join, args),
         "contains"      => PureBuiltin::call(builtin_contains, args),
         "contains_str"  => PureBuiltin::call(builtin_contains_str, args),

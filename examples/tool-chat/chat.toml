@@ -2,7 +2,9 @@ name = "chat"
 kind = "llm"
 provider = "gemini"
 model = "gemini-2.5-flash"
-history = true
+
+[history]
+store = "@chat"
 
 [[messages]]
 role = "system"

@@ -46,6 +46,20 @@ pub fn compile_script(script: &Script) -> (MirModule, HintTable) {
     lowerer.lower_script(script)
 }
 
+/// Compile a parsed script with type checking. Returns the MIR module, hint table, and the tail expression type.
+pub fn compile_script_typed(
+    script: &Script,
+    context_types: HashMap<String, Ty>,
+    registry: &ExternRegistry,
+) -> Result<(MirModule, HintTable, Ty), Vec<MirError>> {
+    let context_names: HashSet<String> = context_types.keys().cloned().collect();
+    let checker = TypeChecker::new(context_types, registry);
+    let (type_map, tail_ty) = checker.check_script(script)?;
+    let lowerer = Lowerer::new(type_map, context_names);
+    let (module, hints) = lowerer.lower_script(script);
+    Ok((module, hints, tail_ty))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

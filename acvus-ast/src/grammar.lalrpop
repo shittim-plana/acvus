@@ -284,8 +284,10 @@ ListElem: ListElem = {
     <l:@L> ".." <r:@R> => ListElem::Rest(Span::new(l, r)),
 };
 
-// Object field: shorthand `name`, `$name`, or `@name`
+// Object field: `key: expr`, or shorthand `name`, `$name`, `@name`
 ObjectField: ObjectExprField = {
+    <l:@L> <key:"ident"> ":" <value:Expr> <r:@R> =>
+        ObjectExprField { key, value, span: Span::new(l, r) },
     <l:@L> <name:"ident"> <r:@R> => {
         let span = Span::new(l, r);
         ObjectExprField {
