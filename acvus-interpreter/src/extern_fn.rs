@@ -6,6 +6,7 @@ use futures::future::BoxFuture;
 use acvus_mir::extern_module::{ExternModule, ExternRegistry};
 use acvus_mir::ty::Ty;
 
+use crate::builtins::{FromValue, IntoValue};
 use crate::value::Value;
 
 #[derive(Clone)]
@@ -27,8 +28,78 @@ impl ExternFnBody {
         Self(Arc::new(move |args| Box::pin(f(args))))
     }
 
+    pub fn from_fn<Args, F>(f: F) -> Self
+    where
+        F: IntoExternFnBody<Args>,
+    {
+        f.into_extern_body()
+    }
+
     pub async fn call(&self, args: Vec<Value>) -> Value {
         (self.0)(args).await
+    }
+}
+
+// -- IntoExternFnBody (typed constructor) -------------------------------------
+
+pub trait IntoExternFnBody<Args> {
+    fn into_extern_body(self) -> ExternFnBody;
+}
+
+impl<F, Fut, R, A> IntoExternFnBody<(A,)> for F
+where
+    F: Fn(A) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = R> + Send + 'static,
+    A: FromValue + Send + 'static,
+    R: IntoValue + Send + 'static,
+{
+    fn into_extern_body(self) -> ExternFnBody {
+        ExternFnBody(Arc::new(move |args| {
+            let mut it = args.into_iter();
+            let a = A::from_value(it.next().unwrap());
+            let fut = self(a);
+            Box::pin(async move { fut.await.into_value() })
+        }))
+    }
+}
+
+impl<F, Fut, R, A, B> IntoExternFnBody<(A, B)> for F
+where
+    F: Fn(A, B) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = R> + Send + 'static,
+    A: FromValue + Send + 'static,
+    B: FromValue + Send + 'static,
+    R: IntoValue + Send + 'static,
+{
+    fn into_extern_body(self) -> ExternFnBody {
+        ExternFnBody(Arc::new(move |args| {
+            let mut it = args.into_iter();
+            let a = A::from_value(it.next().unwrap());
+            let b = B::from_value(it.next().unwrap());
+            let fut = self(a, b);
+            Box::pin(async move { fut.await.into_value() })
+        }))
+    }
+}
+
+impl<F, Fut, R, A, B, C> IntoExternFnBody<(A, B, C)> for F
+where
+    F: Fn(A, B, C) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = R> + Send + 'static,
+    A: FromValue + Send + 'static,
+    B: FromValue + Send + 'static,
+    C: FromValue + Send + 'static,
+    R: IntoValue + Send + 'static,
+{
+    fn into_extern_body(self) -> ExternFnBody {
+        ExternFnBody(Arc::new(move |args| {
+            let mut it = args.into_iter();
+            let a = A::from_value(it.next().unwrap());
+            let b = B::from_value(it.next().unwrap());
+            let c = C::from_value(it.next().unwrap());
+            let fut = self(a, b, c);
+            Box::pin(async move { fut.await.into_value() })
+        }))
     }
 }
 
@@ -106,12 +177,7 @@ mod tests {
             }
         }
         fn into_body(self) -> ExternFnBody {
-            ExternFnBody::new(|args| async move {
-                match &args[0] {
-                    Value::Int(n) => Value::Int(n + 1),
-                    _ => panic!("expected Int"),
-                }
-            })
+            ExternFnBody::from_fn(|n: i64| async move { n + 1 })
         }
     }
 

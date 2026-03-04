@@ -5,7 +5,8 @@ mod interpreter;
 mod value;
 mod yielder;
 
-pub use extern_fn::{ExternFn, ExternFnBody, ExternFnRegistry, ExternFnSig};
+pub use builtins::{FromValue, IntoValue};
+pub use extern_fn::{ExternFn, ExternFnBody, ExternFnRegistry, ExternFnSig, IntoExternFnBody};
 pub use interpreter::Interpreter;
 pub use value::{FnValue, OpaqueValue, PureValue, Value};
 pub use yielder::{Coroutine, EmitStepped, NeedContextStepped, ResumeKey, Stepped, YieldHandle};

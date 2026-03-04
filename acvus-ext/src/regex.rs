@@ -18,6 +18,11 @@ fn extract_regex(v: &Value) -> &regex::Regex {
         .expect("opaque value is not a Regex")
 }
 
+fn compile_regex(pattern: &str) -> regex::Regex {
+    regex::Regex::new(pattern)
+        .unwrap_or_else(|e| panic!("regex: invalid pattern '{pattern}': {e}"))
+}
+
 /// Build the compile-time `ExternModule` and register runtime functions.
 pub fn regex_module(fn_reg: &mut ExternFnRegistry) -> ExternModule {
     let mut module = ExternModule::new("regex");
@@ -80,13 +85,8 @@ impl ExternFn for RegexCompile {
         }
     }
     fn into_body(self) -> ExternFnBody {
-        ExternFnBody::new(|args| async move {
-            let Value::String(pattern) = &args[0] else {
-                panic!("regex: expected String");
-            };
-            let re = regex::Regex::new(pattern)
-                .unwrap_or_else(|e| panic!("regex: invalid pattern '{pattern}': {e}"));
-            Value::Opaque(OpaqueValue::new(OPAQUE_NAME, re))
+        ExternFnBody::from_fn(|pattern: String| async move {
+            Value::Opaque(OpaqueValue::new(OPAQUE_NAME, compile_regex(&pattern)))
         })
     }
 }
@@ -104,12 +104,8 @@ impl ExternFn for RegexMatch {
         }
     }
     fn into_body(self) -> ExternFnBody {
-        ExternFnBody::new(|args| async move {
-            let re = extract_regex(&args[0]);
-            let Value::String(s) = &args[1] else {
-                panic!("regex_match: expected String");
-            };
-            Value::Bool(re.is_match(s))
+        ExternFnBody::from_fn(|re: Value, s: String| async move {
+            extract_regex(&re).is_match(&s)
         })
     }
 }
@@ -122,21 +118,15 @@ impl ExternFn for RegexFind {
     fn sig(&self) -> ExternFnSig {
         ExternFnSig {
             params: vec![opaque_ty(), Ty::String],
-            ret: Ty::String,
+            ret: Ty::Option(Box::new(Ty::String)),
             effectful: false,
         }
     }
     fn into_body(self) -> ExternFnBody {
-        ExternFnBody::new(|args| async move {
-            let re = extract_regex(&args[0]);
-            let Value::String(s) = &args[1] else {
-                panic!("regex_find: expected String");
-            };
-            let found = re
-                .find(s)
+        ExternFnBody::from_fn(|re: Value, s: String| async move {
+            extract_regex(&re)
+                .find(&s)
                 .map(|m| m.as_str().to_string())
-                .unwrap_or_default();
-            Value::String(found)
         })
     }
 }
@@ -154,13 +144,9 @@ impl ExternFn for RegexFindAll {
         }
     }
     fn into_body(self) -> ExternFnBody {
-        ExternFnBody::new(|args| async move {
-            let re = extract_regex(&args[0]);
-            let Value::String(s) = &args[1] else {
-                panic!("regex_find_all: expected String");
-            };
-            let matches: Vec<Value> = re
-                .find_iter(s)
+        ExternFnBody::from_fn(|re: Value, s: String| async move {
+            let matches: Vec<Value> = extract_regex(&re)
+                .find_iter(&s)
                 .map(|m| Value::String(m.as_str().to_string()))
                 .collect();
             Value::List(matches)
@@ -181,15 +167,8 @@ impl ExternFn for RegexReplace {
         }
     }
     fn into_body(self) -> ExternFnBody {
-        ExternFnBody::new(|args| async move {
-            let re = extract_regex(&args[0]);
-            let Value::String(s) = &args[1] else {
-                panic!("regex_replace: expected String for haystack");
-            };
-            let Value::String(rep) = &args[2] else {
-                panic!("regex_replace: expected String for replacement");
-            };
-            Value::String(re.replace_all(s, rep.as_str()).into_owned())
+        ExternFnBody::from_fn(|re: Value, s: String, rep: String| async move {
+            extract_regex(&re).replace_all(&s, rep.as_str()).into_owned()
         })
     }
 }
@@ -207,12 +186,11 @@ impl ExternFn for RegexSplit {
         }
     }
     fn into_body(self) -> ExternFnBody {
-        ExternFnBody::new(|args| async move {
-            let re = extract_regex(&args[0]);
-            let Value::String(s) = &args[1] else {
-                panic!("regex_split: expected String");
-            };
-            let parts: Vec<Value> = re.split(s).map(|p| Value::String(p.to_string())).collect();
+        ExternFnBody::from_fn(|re: Value, s: String| async move {
+            let parts: Vec<Value> = extract_regex(&re)
+                .split(&s)
+                .map(|p| Value::String(p.to_string()))
+                .collect();
             Value::List(parts)
         })
     }
@@ -268,7 +246,11 @@ mod tests {
             vec![re, Value::String("abc123def456".into())],
         )
         .await;
-        assert_eq!(result, Value::String("123".into()));
+        assert!(matches!(
+            result,
+            Value::Variant { ref tag, payload: Some(ref inner) }
+            if tag == "Some" && **inner == Value::String("123".into())
+        ));
     }
 
     #[tokio::test]

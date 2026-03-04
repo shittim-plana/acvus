@@ -2,11 +2,11 @@ use crate::value::Value;
 
 // -- FromValue / IntoValue ------------------------------------------------
 
-pub(crate) trait FromValue: Sized {
+pub trait FromValue: Sized {
     fn from_value(v: Value) -> Self;
 }
 
-pub(crate) trait IntoValue {
+pub trait IntoValue {
     fn into_value(self) -> Value;
 }
 
@@ -145,7 +145,7 @@ where
 
 // -- PureBuiltin trait (Axum Handler pattern) -----------------------------
 
-pub(crate) trait PureBuiltin<Args> {
+pub trait PureBuiltin<Args> {
     fn call(self, args: Vec<Value>) -> Value;
 }
 
