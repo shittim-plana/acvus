@@ -90,6 +90,7 @@ pub struct GenerationParams {
     pub top_p: Option<f64>,
     pub top_k: Option<u32>,
     pub max_tokens: Option<u32>,
+    pub grounding: bool,
 }
 
 /// Tool binding — binds a tool name to a target node with typed parameters.

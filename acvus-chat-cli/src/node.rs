@@ -95,6 +95,8 @@ struct GenerationParamsDef {
     top_p: Option<f64>,
     top_k: Option<u32>,
     max_tokens: Option<u32>,
+    #[serde(default)]
+    grounding: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -181,6 +183,7 @@ pub fn resolve_node(def: NodeDef, base_dir: &Path) -> Result<NodeSpec, String> {
         top_p: def.generation.top_p,
         top_k: def.generation.top_k,
         max_tokens: def.generation.max_tokens,
+        grounding: def.generation.grounding,
     };
 
     let tools: Vec<ToolBinding> = def.tools.into_iter().map(|t| ToolBinding {

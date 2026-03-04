@@ -195,6 +195,14 @@ fn format_cached_body(
         body["generationConfig"] = serde_json::Value::Object(gen_config);
     }
 
+    format_tools(&mut body, tools, generation.grounding);
+
+    body
+}
+
+fn format_tools(body: &mut serde_json::Value, tools: &[ToolSpec], grounding: bool) {
+    let mut tool_entries = Vec::new();
+
     if !tools.is_empty() {
         let declarations: Vec<serde_json::Value> = tools
             .iter()
@@ -218,12 +226,18 @@ fn format_cached_body(
             })
             .collect();
 
-        body["tools"] = serde_json::json!([{
+        tool_entries.push(serde_json::json!({
             "function_declarations": declarations,
-        }]);
+        }));
     }
 
-    body
+    if grounding {
+        tool_entries.push(serde_json::json!({ "google_search": {} }));
+    }
+
+    if !tool_entries.is_empty() {
+        body["tools"] = serde_json::Value::Array(tool_entries);
+    }
 }
 
 fn format_body(messages: &[Message], tools: &[ToolSpec], generation: &GenerationParams) -> serde_json::Value {
@@ -260,33 +274,7 @@ fn format_body(messages: &[Message], tools: &[ToolSpec], generation: &Generation
         });
     }
 
-    if !tools.is_empty() {
-        let declarations: Vec<serde_json::Value> = tools
-            .iter()
-            .map(|t| {
-                let properties: serde_json::Map<String, serde_json::Value> = t
-                    .params
-                    .iter()
-                    .map(|(name, type_name)| {
-                        (name.clone(), serde_json::json!({ "type": type_name }))
-                    })
-                    .collect();
-
-                serde_json::json!({
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": {
-                        "type": "object",
-                        "properties": properties,
-                    }
-                })
-            })
-            .collect();
-
-        body["tools"] = serde_json::json!([{
-            "function_declarations": declarations,
-        }]);
-    }
+    format_tools(&mut body, tools, generation.grounding);
 
     body
 }
