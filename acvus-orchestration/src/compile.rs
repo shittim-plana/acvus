@@ -222,8 +222,8 @@ pub fn compile_script_typed(
     })?;
     let (module, _hints, tail_ty) =
         acvus_mir::compile_script_typed(&script, context_types.clone(), registry).map_err(|errs| {
-            OrchError::new(OrchErrorKind::TemplateCompile {
-                block: 0,
+            OrchError::new(OrchErrorKind::ScriptCompile {
+                context: source.to_string(),
                 errors: errs,
             })
         })?;
@@ -231,16 +231,47 @@ pub fn compile_script_typed(
     Ok((CompiledScript { module, context_keys }, tail_ty))
 }
 
-/// Compile an expression string (script syntax) into a `CompiledScript`.
-pub fn compile_script(source: &str) -> Result<CompiledScript, OrchError> {
-    let script = acvus_ast::parse_script(source).map_err(|e| {
-        OrchError::new(OrchErrorKind::ScriptParse {
-            error: format!("{e}"),
-        })
-    })?;
-    let (module, _hints) = acvus_mir::compile_script(&script);
-    let context_keys = extract_context_keys(&module);
-    Ok(CompiledScript { module, context_keys })
+// ── Script output type expectations ──────────────────────────────────
+//
+//   Field          Expected type   Notes
+//   ─────────────  ──────────────  ──────────────────────────────────
+//   iterator       List<T>         T becomes the element type for body
+//   cache_key      String
+//   history store  (any)           type inferred → @history.{node} = List<T>
+//   bind script    (any)
+//
+
+/// Expect the tail type to be `List<T>`. Returns the inner `T`.
+fn expect_list(
+    context: &str,
+    ty: Ty,
+) -> Result<Ty, OrchError> {
+    match ty {
+        Ty::List(inner) => Ok(*inner),
+        Ty::Error => Ok(Ty::Error),
+        other => Err(OrchError::new(OrchErrorKind::ScriptTypeMismatch {
+            context: context.into(),
+            expected: "List<_>".into(),
+            got: format!("{other}"),
+        })),
+    }
+}
+
+/// Expect the tail type to be exactly `expected`.
+fn expect_ty(
+    context: &str,
+    ty: &Ty,
+    expected: &Ty,
+) -> Result<(), OrchError> {
+    if matches!(ty, Ty::Error) || ty == expected {
+        Ok(())
+    } else {
+        Err(OrchError::new(OrchErrorKind::ScriptTypeMismatch {
+            context: context.into(),
+            expected: format!("{expected}"),
+            got: format!("{ty}"),
+        }))
+    }
 }
 
 /// Compile a template source string into a `CompiledBlock`.
@@ -302,8 +333,16 @@ fn compile_messages(
                 }
             }
             MessageSpec::Iterator { key, source, slice, bind, role, token_budget } => {
-                let expr = match compile_script(key) {
-                    Ok(e) => e,
+                let (expr, elem_ty) = match compile_script_typed(key, context_types, registry) {
+                    Ok((script, tail_ty)) => {
+                        match expect_list(&format!("iterator (block {i})"), tail_ty) {
+                            Ok(inner) => (script, inner),
+                            Err(e) => {
+                                errors.push(e);
+                                continue;
+                            }
+                        }
+                    }
                     Err(e) => {
                         errors.push(e);
                         continue;
@@ -313,18 +352,14 @@ fn compile_messages(
                 let block = if let Some(src) = source {
                     let mut iter_types = context_types.clone();
                     if let Some(bind_name) = bind {
-                        iter_types.insert(
-                            bind_name.clone(),
-                            Ty::Object(BTreeMap::from([
-                                ("role".into(), Ty::String),
-                                ("content".into(), Ty::String),
-                                ("content_type".into(), Ty::String),
-                            ])),
-                        );
+                        iter_types.insert(bind_name.clone(), elem_ty.clone());
                     } else {
-                        iter_types.insert("role".into(), Ty::String);
-                        iter_types.insert("content".into(), Ty::String);
-                        iter_types.insert("content_type".into(), Ty::String);
+                        // destructure element fields into context
+                        if let Ty::Object(fields) = &elem_ty {
+                            for (k, v) in fields {
+                                iter_types.insert(k.clone(), v.clone());
+                            }
+                        }
                     }
 
                     match compile_template(src, i, &iter_types, registry) {
@@ -412,7 +447,9 @@ pub fn compile_node(
     // Compile bind script for if-modified strategy
     let bind_module = if matches!(spec.strategy.mode, StrategyMode::IfModified) {
         if let Some(bind_src) = &spec.strategy.bind_source {
-            Some(compile_script(bind_src).map_err(|e| vec![e])?)
+            let (script, _ty) = compile_script_typed(bind_src, context_types, registry)
+                .map_err(|e| vec![e])?;
+            Some(script)
         } else {
             None
         }
@@ -436,7 +473,10 @@ pub fn compile_node(
             let mut all_keys = keys;
             let compiled_cache_key = match cache_key {
                 Some(ck) => {
-                    let expr = compile_script(ck).map_err(|e| vec![e])?;
+                    let (expr, ck_ty) = compile_script_typed(ck, context_types, registry)
+                        .map_err(|e| vec![e])?;
+                    expect_ty("cache_key", &ck_ty, &Ty::String)
+                        .map_err(|e| vec![e])?;
                     all_keys.extend(expr.context_keys.iter().cloned());
                     Some(expr)
                 }
@@ -475,10 +515,11 @@ pub fn compile_node(
         all_context_keys.extend(bind_script.context_keys.iter().cloned());
     }
 
-    // Compile history store script (untyped — typed compilation happens in compile_nodes)
+    // Compile history store script with type checking.
     let history = match &spec.history {
         Some(hs) => {
-            let store = compile_script(&hs.store).map_err(|e| vec![e])?;
+            let (store, _ty) = compile_script_typed(&hs.store, context_types, registry)
+                .map_err(|e| vec![e])?;
             all_context_keys.extend(store.context_keys.iter().cloned());
             Some(CompiledHistory { store })
         }

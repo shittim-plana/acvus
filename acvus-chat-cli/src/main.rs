@@ -35,6 +35,49 @@ impl Fetch for HttpFetch {
     }
 }
 
+/// Dummy fetch for `--render-only` mode. Returns provider-appropriate dummy responses.
+#[derive(Clone)]
+struct RenderOnlyFetch {
+    /// endpoint prefix → API kind
+    endpoints: HashMap<String, ApiKind>,
+}
+
+impl Fetch for RenderOnlyFetch {
+    async fn fetch(&self, request: &HttpRequest) -> Result<serde_json::Value, String> {
+        let api = self
+            .endpoints
+            .iter()
+            .find(|(prefix, _)| request.url.starts_with(prefix.as_str()))
+            .map(|(_, kind)| kind.clone())
+            .unwrap_or(ApiKind::OpenAI);
+
+        // countTokens → fixed token count
+        if request.url.contains("countTokens") {
+            return Ok(serde_json::json!({"totalTokens": 100}));
+        }
+        // cachedContents → dummy cache name
+        if request.url.contains("cachedContents") {
+            return Ok(serde_json::json!({"name": "cachedContents/render-only"}));
+        }
+
+        Ok(match api {
+            ApiKind::OpenAI => serde_json::json!({
+                "choices": [{"message": {"role": "assistant", "content": "(render-only)"}}],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+            }),
+            ApiKind::Anthropic => serde_json::json!({
+                "content": [{"type": "text", "text": "(render-only)"}],
+                "role": "assistant",
+                "usage": {"input_tokens": 0, "output_tokens": 0}
+            }),
+            ApiKind::Google => serde_json::json!({
+                "candidates": [{"content": {"parts": [{"text": "(render-only)"}]}}],
+                "usageMetadata": {"promptTokenCount": 0, "candidatesTokenCount": 0, "totalTokenCount": 0}
+            }),
+        })
+    }
+}
+
 /// Parse `key=value` pairs from CLI arguments.
 fn parse_context_args(args: &[String]) -> HashMap<String, String> {
     let mut map = HashMap::new();
@@ -46,6 +89,18 @@ fn parse_context_args(args: &[String]) -> HashMap<String, String> {
     map
 }
 
+fn parse_api_kind(s: &str) -> ApiKind {
+    match s {
+        "openai" => ApiKind::OpenAI,
+        "anthropic" => ApiKind::Anthropic,
+        "google" => ApiKind::Google,
+        other => {
+            eprintln!("unknown api kind: {other}");
+            process::exit(1);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -53,18 +108,20 @@ async fn main() {
         .init();
 
     let args: Vec<String> = std::env::args().collect();
-    let project_dir_arg = args.get(1);
+    let render_only = args.iter().any(|a| a == "--render-only");
+    let non_flag_args: Vec<&String> = args[1..].iter().filter(|a| !a.starts_with("--")).collect();
 
-    let project_dir = match project_dir_arg {
+    let project_dir = match non_flag_args.first() {
         Some(dir) => PathBuf::from(dir),
         None => {
-            eprintln!("usage: acvus-chat-cli <project-dir> [key=value ...]");
+            eprintln!("usage: acvus-chat-cli <project-dir> [--render-only] [key=value ...]");
             process::exit(1);
         }
     };
 
-    // key=value args after project dir
-    let context_args = parse_context_args(&args[2..]);
+    let context_args = parse_context_args(
+        &non_flag_args[1..].iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+    );
 
     let project_toml = project_dir.join("project.toml");
     let project_src = std::fs::read_to_string(&project_toml).unwrap_or_else(|e| {
@@ -120,8 +177,12 @@ async fn main() {
     let storage = HashMapStorage::new();
 
     let mut providers: HashMap<String, ProviderConfig> = HashMap::new();
+    let mut endpoint_apis: HashMap<String, ApiKind> = HashMap::new();
     for (name, config) in &spec.providers {
-        let api_key = if let Some(key) = &config.api_key {
+        let api = parse_api_kind(&config.api);
+        let api_key = if render_only {
+            String::new()
+        } else if let Some(key) = &config.api_key {
             key.clone()
         } else if let Some(env_name) = &config.api_key_env {
             std::env::var(env_name).unwrap_or_else(|_| {
@@ -132,77 +193,80 @@ async fn main() {
             eprintln!("no api_key or api_key_env set (provider: {name})");
             process::exit(1);
         };
-        let api = match config.api.as_str() {
-            "openai" => ApiKind::OpenAI,
-            "anthropic" => ApiKind::Anthropic,
-            "google" => ApiKind::Google,
-            other => {
-                eprintln!("unknown api kind: {other}");
-                process::exit(1);
-            }
-        };
+        endpoint_apis.insert(config.endpoint.clone(), api.clone());
         providers.insert(
             name.clone(),
             ProviderConfig { api, endpoint: config.endpoint.clone(), api_key },
         );
     }
 
-    let fetch = HttpFetch { client: reqwest::Client::new() };
-
     let extern_fns = ExternFnRegistry::new();
-    let mut engine = ChatEngine::new(
-        compiled_nodes, providers, fetch, extern_fns, storage, &spec.entrypoint,
-    )
-    .await
-    .unwrap_or_else(|e| {
-        eprintln!("engine init error: {e}");
-        process::exit(1);
-    });
 
-    if context_args.is_empty() {
-        // Interactive mode: defaults → stdin fallback
-        let resolver = {
-            let defaults = context_defaults.clone();
-            move |name: String| {
-                let defaults = defaults.clone();
-                async move {
-                    if let Some(val) = defaults.get(&name) {
-                        return val.clone();
-                    }
-                    eprint!("{name}: ");
-                    let mut input = String::new();
-                    std::io::stdin().read_line(&mut input).unwrap();
-                    Value::String(input.trim_end().to_string())
+    let resolver = {
+        let defaults = context_defaults.clone();
+        let context_args = context_args.clone();
+        move |name: String| {
+            let defaults = defaults.clone();
+            let context_args = context_args.clone();
+            async move {
+                if let Some(v) = context_args.get(&name) {
+                    return Value::String(v.clone());
                 }
+                if let Some(val) = defaults.get(&name) {
+                    return val.clone();
+                }
+                if render_only {
+                    return Value::String(format!("(@{name})"));
+                }
+                eprint!("{name}: ");
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).unwrap();
+                Value::String(input.trim_end().to_string())
             }
-        };
+        }
+    };
 
-        loop {
+    if render_only {
+        let fetch = RenderOnlyFetch { endpoints: endpoint_apis };
+        let mut engine = ChatEngine::new(
+            compiled_nodes, providers, fetch, extern_fns, storage, &spec.entrypoint,
+        )
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("engine init error: {e}");
+            process::exit(1);
+        });
+        let response = engine.turn(&resolver).await.unwrap_or_else(|e| {
+            eprintln!("turn error: {e}");
+            process::exit(1);
+        });
+        println!("{}", format_output(&response));
+    } else {
+        let fetch = HttpFetch { client: reqwest::Client::new() };
+        let mut engine = ChatEngine::new(
+            compiled_nodes, providers, fetch, extern_fns, storage, &spec.entrypoint,
+        )
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("engine init error: {e}");
+            process::exit(1);
+        });
+
+        if context_args.is_empty() {
+            loop {
+                let response = engine.turn(&resolver).await.unwrap_or_else(|e| {
+                    eprintln!("turn error: {e}");
+                    process::exit(1);
+                });
+                println!("{}", format_output(&response));
+            }
+        } else {
             let response = engine.turn(&resolver).await.unwrap_or_else(|e| {
                 eprintln!("turn error: {e}");
                 process::exit(1);
             });
             println!("{}", format_output(&response));
         }
-    } else {
-        // One-shot: CLI args → defaults → panic
-        let resolver = {
-            let defaults = context_defaults.clone();
-            move |name: String| {
-                let value = context_args
-                    .get(&name)
-                    .cloned()
-                    .map(Value::String)
-                    .or_else(|| defaults.get(&name).cloned())
-                    .unwrap_or_else(|| panic!("unresolved context: @{name}"));
-                async move { value }
-            }
-        };
-        let response = engine.turn(&resolver).await.unwrap_or_else(|e| {
-            eprintln!("turn error: {e}");
-            process::exit(1);
-        });
-        println!("{}", format_output(&response));
     }
 }
 

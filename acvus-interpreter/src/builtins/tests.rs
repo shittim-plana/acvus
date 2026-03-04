@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use super::*;
 
@@ -44,4 +44,27 @@ fn to_int_float() {
 #[test]
 fn to_float_int() {
     assert!(matches!(call_pure("to_float", vec![Value::Int(5)]), Value::Float(f) if f == 5.0));
+}
+
+#[test]
+fn all_mir_builtins_handled() {
+    let mir_names: HashSet<&str> = acvus_mir::builtins::builtins()
+        .iter()
+        .map(|b| b.name())
+        .collect();
+    let handled: HashSet<&str> = PURE_NAMES
+        .iter()
+        .chain(HOF_NAMES.iter())
+        .copied()
+        .collect();
+    let missing: Vec<&&str> = mir_names.difference(&handled).collect();
+    assert!(
+        missing.is_empty(),
+        "builtins registered in MIR but not handled in interpreter: {missing:?}",
+    );
+    let extra: Vec<&&str> = handled.difference(&mir_names).collect();
+    assert!(
+        extra.is_empty(),
+        "builtins handled in interpreter but not registered in MIR: {extra:?}",
+    );
 }

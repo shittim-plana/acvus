@@ -16,6 +16,8 @@ pub enum OrchErrorKind {
     TemplateParse { block: usize, error: String },
     TemplateCompile { block: usize, errors: Vec<MirError> },
     ScriptParse { error: String },
+    ScriptCompile { context: String, errors: Vec<MirError> },
+    ScriptTypeMismatch { context: String, expected: String, got: String },
 
     // DAG
     CycleDetected { nodes: Vec<String> },
@@ -53,6 +55,16 @@ impl fmt::Display for OrchError {
             }
             OrchErrorKind::ScriptParse { error } => {
                 write!(f, "script parse error: {error}")
+            }
+            OrchErrorKind::ScriptCompile { context, errors } => {
+                writeln!(f, "script compile errors ({context}):")?;
+                for e in errors {
+                    writeln!(f, "  [{}..{}] {e}", e.span.start, e.span.end)?;
+                }
+                Ok(())
+            }
+            OrchErrorKind::ScriptTypeMismatch { context, expected, got } => {
+                write!(f, "script type mismatch ({context}): expected {expected}, got {got}")
             }
             OrchErrorKind::CycleDetected { nodes } => {
                 write!(f, "cycle detected: {}", nodes.join(" -> "))
