@@ -488,6 +488,17 @@ pub fn expr_to_pattern(expr: &Expr) -> Result<Pattern, ParseError> {
                 span: *span,
             })
         }
+        Expr::Variant { tag, payload, span } => {
+            let pat_payload = match payload {
+                Some(inner) => Some(Box::new(expr_to_pattern(inner)?)),
+                None => None,
+            };
+            Ok(Pattern::Variant {
+                tag: tag.clone(),
+                payload: pat_payload,
+                span: *span,
+            })
+        }
         other => Err(ParseError::new(
             ParseErrorKind::InvalidPattern("expression cannot be used as a pattern".into()),
             other.span(),
@@ -932,5 +943,68 @@ mod tests {
         } else {
             panic!("expected Bind");
         }
+    }
+
+    // ── Variant (Option) ────────────────────────────────────────────
+
+    #[test]
+    fn parse_some_expr() {
+        let t = parse("{{ Some(42) | to_string }}{{_}}{{/}}").unwrap();
+        assert_eq!(t.body.len(), 1);
+    }
+
+    #[test]
+    fn parse_none_expr() {
+        let t = parse("{{ x = None }}{{_}}{{/}}").unwrap();
+        assert_eq!(t.body.len(), 1);
+        if let Node::MatchBlock(mb) = &t.body[0] {
+            assert!(matches!(
+                &mb.source,
+                Expr::Variant { tag, payload: None, .. } if tag == "None"
+            ));
+        } else {
+            panic!("expected MatchBlock");
+        }
+    }
+
+    #[test]
+    fn parse_some_pattern() {
+        let t = parse("{{ Some(x) = @opt }}{{ x }}{{_}}{{/}}").unwrap();
+        if let Node::MatchBlock(mb) = &t.body[0] {
+            assert!(matches!(
+                &mb.arms[0].pattern,
+                Pattern::Variant { tag, payload: Some(_), .. } if tag == "Some"
+            ));
+        } else {
+            panic!("expected MatchBlock");
+        }
+    }
+
+    #[test]
+    fn parse_none_pattern() {
+        let t = parse("{{ None = @opt }}nothing{{_}}{{/}}").unwrap();
+        if let Node::MatchBlock(mb) = &t.body[0] {
+            assert!(matches!(
+                &mb.arms[0].pattern,
+                Pattern::Variant { tag, payload: None, .. } if tag == "None"
+            ));
+        } else {
+            panic!("expected MatchBlock");
+        }
+    }
+
+    #[test]
+    fn validate_variant_is_refutable() {
+        let expr = Expr::Variant {
+            tag: "Some".into(),
+            payload: Some(Box::new(Expr::Ident {
+                name: "x".into(),
+                ref_kind: RefKind::Value,
+                span: Span::new(0, 1),
+            })),
+            span: Span::new(0, 1),
+        };
+        let pat = expr_to_pattern(&expr).unwrap();
+        assert!(validate_irrefutable(&pat).is_err());
     }
 }

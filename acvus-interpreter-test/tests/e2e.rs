@@ -1720,3 +1720,96 @@ async fn context_call_no_bindings_not_captured() {
     assert_eq!(result.output, "hi");
     assert!(result.calls.is_empty());
 }
+
+// ── Variant (Option) ────────────────────────────────────────────
+
+#[tokio::test]
+async fn variant_some_extract_value() {
+    let types = HashMap::from([("opt".into(), Ty::Option(Box::new(Ty::String)))]);
+    let values = HashMap::from([(
+        "opt".into(),
+        Value::Variant {
+            tag: "Some".into(),
+            payload: Some(Box::new(Value::String("hello".into()))),
+        },
+    )]);
+    assert_eq!(
+        run_with_context(
+            "{{ Some(value) = @opt }}{{ value }}{{_}}empty{{/}}",
+            types,
+            values
+        )
+        .await,
+        "hello"
+    );
+}
+
+#[tokio::test]
+async fn variant_none_match() {
+    let types = HashMap::from([("opt".into(), Ty::Option(Box::new(Ty::Int)))]);
+    let values = HashMap::from([(
+        "opt".into(),
+        Value::Variant {
+            tag: "None".into(),
+            payload: None,
+        },
+    )]);
+    assert_eq!(
+        run_with_context("{{ None = @opt }}none{{_}}has value{{/}}", types, values).await,
+        "none"
+    );
+}
+
+#[tokio::test]
+async fn variant_some_catch_all() {
+    let types = HashMap::from([("opt".into(), Ty::Option(Box::new(Ty::Int)))]);
+    let values = HashMap::from([(
+        "opt".into(),
+        Value::Variant {
+            tag: "None".into(),
+            payload: None,
+        },
+    )]);
+    assert_eq!(
+        run_with_context(
+            "{{ Some(v) = @opt }}{{ v | to_string }}{{_}}no value{{/}}",
+            types,
+            values
+        )
+        .await,
+        "no value"
+    );
+}
+
+#[tokio::test]
+async fn variant_some_with_literal_pattern() {
+    let types = HashMap::from([("opt".into(), Ty::Option(Box::new(Ty::Int)))]);
+    let values = HashMap::from([(
+        "opt".into(),
+        Value::Variant {
+            tag: "Some".into(),
+            payload: Some(Box::new(Value::Int(42))),
+        },
+    )]);
+    assert_eq!(
+        run_with_context("{{ Some(42) = @opt }}matched{{_}}no{{/}}", types, values).await,
+        "matched"
+    );
+}
+
+#[tokio::test]
+async fn variant_construct_some() {
+    assert_eq!(
+        run_simple("{{ x = Some(42) }}{{ Some(v) = x }}{{ v | to_string }}{{_}}{{/}}{{_}}{{/}}")
+            .await,
+        "42"
+    );
+}
+
+#[tokio::test]
+async fn variant_construct_none() {
+    assert_eq!(
+        run_simple("{{ x = None }}{{ None = x }}none{{_}}some{{/}}{{_}}{{/}}").await,
+        "none"
+    );
+}

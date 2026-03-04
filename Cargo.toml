@@ -10,6 +10,7 @@ members = [
     "acvus-mir-test", 
     "acvus-playground", 
     "acvus-orchestration", 
-    "acvus-chat", 
-    "acvus-chat-cli"
+    "acvus-chat",
+    "acvus-chat-cli",
+    "acvus-ext"
 ]

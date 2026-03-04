@@ -352,6 +352,29 @@ fn write_body(
                 fmt_use(*object, &consts, &texts)
             )?,
 
+            // Variant
+            InstKind::MakeVariant { dst, tag, payload } => match payload {
+                Some(p) => writeln!(
+                    f,
+                    "{} = variant {tag}({})",
+                    fmt_val(*dst),
+                    fmt_use(*p, &consts, &texts)
+                )?,
+                None => writeln!(f, "{} = variant {tag}", fmt_val(*dst))?,
+            },
+            InstKind::TestVariant { dst, src, tag } => writeln!(
+                f,
+                "{} = test {} is {tag}",
+                fmt_val(*dst),
+                fmt_use(*src, &consts, &texts)
+            )?,
+            InstKind::UnwrapVariant { dst, src } => writeln!(
+                f,
+                "{} = unwrap {}",
+                fmt_val(*dst),
+                fmt_use(*src, &consts, &texts)
+            )?,
+
             // Closures
             InstKind::MakeClosure {
                 dst,

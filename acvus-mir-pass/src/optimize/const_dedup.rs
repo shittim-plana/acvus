@@ -205,6 +205,16 @@ fn remap_uses(kind: &mut InstKind, remap: &HashMap<ValueId, ValueId>) {
             remap_vec(then_args, remap);
             remap_vec(else_args, remap);
         }
+
+        InstKind::MakeVariant { payload, .. } => {
+            if let Some(p) = payload {
+                remap_val(p, remap);
+            }
+        }
+
+        InstKind::TestVariant { src, .. } => remap_val(src, remap),
+
+        InstKind::UnwrapVariant { src, .. } => remap_val(src, remap),
     }
 }
 

@@ -82,6 +82,50 @@ pub(crate) fn builtin_to_utf8_lossy(bytes: Vec<u8>) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+pub(crate) fn builtin_trim(s: String) -> String {
+    s.trim().to_string()
+}
+
+pub(crate) fn builtin_trim_start(s: String) -> String {
+    s.trim_start().to_string()
+}
+
+pub(crate) fn builtin_trim_end(s: String) -> String {
+    s.trim_end().to_string()
+}
+
+pub(crate) fn builtin_upper(s: String) -> String {
+    s.to_uppercase()
+}
+
+pub(crate) fn builtin_lower(s: String) -> String {
+    s.to_lowercase()
+}
+
+pub(crate) fn builtin_replace_str(s: String, from: String, to: String) -> String {
+    s.replace(&from, &to)
+}
+
+pub(crate) fn builtin_split_str(s: String, sep: String) -> Value {
+    Value::List(
+        s.split(&sep)
+            .map(|p| Value::String(p.to_string()))
+            .collect(),
+    )
+}
+
+pub(crate) fn builtin_starts_with_str(s: String, prefix: String) -> bool {
+    s.starts_with(&prefix)
+}
+
+pub(crate) fn builtin_ends_with_str(s: String, suffix: String) -> bool {
+    s.ends_with(&suffix)
+}
+
+pub(crate) fn builtin_repeat_str(s: String, n: i64) -> String {
+    s.repeat(n.max(0) as usize)
+}
+
 fn value_to_string(v: Value) -> String {
     match v {
         Value::Int(n) => n.to_string(),

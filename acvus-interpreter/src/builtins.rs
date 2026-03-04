@@ -39,6 +39,16 @@ pub fn call_pure(name: &str, args: Vec<Value>) -> Value {
         "to_bytes" => PureBuiltin::call(builtin_to_bytes, args),
         "to_utf8" => PureBuiltin::call(builtin_to_utf8, args),
         "to_utf8_lossy" => PureBuiltin::call(builtin_to_utf8_lossy, args),
+        "trim" => PureBuiltin::call(builtin_trim, args),
+        "trim_start" => PureBuiltin::call(builtin_trim_start, args),
+        "trim_end" => PureBuiltin::call(builtin_trim_end, args),
+        "upper" => PureBuiltin::call(builtin_upper, args),
+        "lower" => PureBuiltin::call(builtin_lower, args),
+        "replace_str" => PureBuiltin::call(builtin_replace_str, args),
+        "split_str" => PureBuiltin::call(builtin_split_str, args),
+        "starts_with_str" => PureBuiltin::call(builtin_starts_with_str, args),
+        "ends_with_str" => PureBuiltin::call(builtin_ends_with_str, args),
+        "repeat_str" => PureBuiltin::call(builtin_repeat_str, args),
         _ => panic!("not a pure builtin: {name}"),
     }
 }

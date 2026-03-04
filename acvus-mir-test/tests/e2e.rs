@@ -1395,3 +1395,41 @@ fn context_call_expr() {
     .unwrap();
     insta::assert_snapshot!(ir);
 }
+
+// ── Variant (Option) ────────────────────────────────────────────
+
+#[test]
+fn variant_some_expr() {
+    let ir = compile_simple("{{ x = Some(42) }}{{_}}{{/}}").unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn variant_none_expr() {
+    let ir = compile_simple("{{ x = None }}{{_}}{{/}}").unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn variant_some_pattern() {
+    let context = HashMap::from([("opt".into(), Ty::Option(Box::new(Ty::Int)))]);
+    let ir = compile_to_ir(
+        "{{ Some(v) = @opt }}{{ v | to_string }}{{_}}nope{{/}}",
+        context,
+        &ExternRegistry::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn variant_none_pattern() {
+    let context = HashMap::from([("opt".into(), Ty::Option(Box::new(Ty::Int)))]);
+    let ir = compile_to_ir(
+        "{{ None = @opt }}none{{_}}has value{{/}}",
+        context,
+        &ExternRegistry::new(),
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}

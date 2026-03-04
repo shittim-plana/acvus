@@ -77,6 +77,16 @@ const PURE_NAMES: &[&str] = &[
     "to_bytes",
     "to_utf8",
     "to_utf8_lossy",
+    "trim",
+    "trim_start",
+    "trim_end",
+    "upper",
+    "lower",
+    "replace_str",
+    "split_str",
+    "starts_with_str",
+    "ends_with_str",
+    "repeat_str",
 ];
 
 /// Names of higher-order function builtins dispatched by `exec_builtin`.

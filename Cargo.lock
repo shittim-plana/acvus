@@ -44,6 +44,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "acvus-ext"
+version = "0.1.0"
+dependencies = [
+ "acvus-interpreter",
+ "acvus-mir",
+ "futures",
+ "regex",
+ "tokio",
+]
+
+[[package]]
 name = "acvus-interpreter"
 version = "0.1.0"
 dependencies = [

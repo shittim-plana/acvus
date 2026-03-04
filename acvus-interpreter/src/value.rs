@@ -24,6 +24,10 @@ pub enum PureValue {
     Object(BTreeMap<String, PureValue>),
     Tuple(Vec<PureValue>),
     Byte(u8),
+    Variant {
+        tag: String,
+        payload: Option<Box<PureValue>>,
+    },
 }
 
 /// Runtime value — flat enum for fast dispatch.
@@ -47,6 +51,10 @@ pub enum Value {
     Object(BTreeMap<String, Value>),
     Tuple(Vec<Value>),
     Byte(u8),
+    Variant {
+        tag: String,
+        payload: Option<Box<Value>>,
+    },
     Fn(FnValue),
     Opaque(OpaqueValue),
 }
@@ -131,6 +139,10 @@ impl Value {
                 Value::Tuple(elems.into_iter().map(Value::from_pure).collect())
             }
             PureValue::Byte(b) => Value::Byte(b),
+            PureValue::Variant { tag, payload } => Value::Variant {
+                tag,
+                payload: payload.map(|p| Box::new(Value::from_pure(*p))),
+            },
         }
     }
 
@@ -166,6 +178,10 @@ impl Value {
                 PureValue::Tuple(elems.into_iter().map(Value::into_pure).collect())
             }
             Value::Byte(b) => PureValue::Byte(b),
+            Value::Variant { tag, payload } => PureValue::Variant {
+                tag,
+                payload: payload.map(|p| Box::new((*p).into_pure())),
+            },
             Value::Fn(_) => panic!("cannot convert Fn to PureValue"),
             Value::Opaque(o) => panic!("cannot convert Opaque<{}> to PureValue", o.type_name),
         }

@@ -38,6 +38,10 @@ pub enum Token {
     In,
     #[token("_", priority = 3)]
     Underscore,
+    #[token("Some", priority = 3)]
+    Some,
+    #[token("None", priority = 3)]
+    None,
 
     // ── Identifiers ──
     #[regex(r"[\p{L}_][\p{L}\p{N}_]*", |lex| lex.slice().to_string(), priority = 2)]
@@ -144,6 +148,8 @@ impl fmt::Display for Token {
             Token::False => write!(f, "false"),
             Token::In => write!(f, "in"),
             Token::Underscore => write!(f, "_"),
+            Token::Some => write!(f, "Some"),
+            Token::None => write!(f, "None"),
             Token::Plus => write!(f, "+"),
             Token::Minus => write!(f, "-"),
             Token::Star => write!(f, "*"),

@@ -7,6 +7,7 @@ pub mod lower;
 pub mod printer;
 pub mod ty;
 pub mod typeck;
+pub mod variant;
 
 use std::collections::{HashMap, HashSet};
 

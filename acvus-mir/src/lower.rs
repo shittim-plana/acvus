@@ -231,6 +231,14 @@ impl Lowerer {
         }
     }
 
+    fn variant_inner_type(&self, variant_val: ValueId) -> Ty {
+        if let Some(Ty::Option(inner)) = self.body.val_types.get(&variant_val) {
+            inner.as_ref().clone()
+        } else {
+            Ty::Unit
+        }
+    }
+
     fn iterable_elem_type(&self, src_val: ValueId) -> Ty {
         match self.body.val_types.get(&src_val) {
             Some(Ty::List(elem)) => elem.as_ref().clone(),
@@ -675,6 +683,23 @@ impl Lowerer {
                         dst,
                         name: name.clone(),
                         bindings: binding_vals,
+                    },
+                );
+                dst
+            }
+
+            Expr::Variant { tag, payload, span } => {
+                let payload_val = payload.as_ref().map(|e| self.lower_expr(e));
+                let dst = self.alloc_val();
+                let ty = self.type_of_span(*span);
+                self.set_val_type(dst, ty);
+                self.set_origin(dst, ValOrigin::Expr);
+                self.emit_inst(
+                    *span,
+                    InstKind::MakeVariant {
+                        dst,
+                        tag: tag.clone(),
+                        payload: payload_val,
                     },
                 );
                 dst
@@ -1385,6 +1410,109 @@ impl Lowerer {
 
                 all_ok
             }
+
+            Pattern::Variant { tag, payload, .. } => {
+                // Test if the variant tag matches.
+                let tag_ok = self.alloc_val();
+                self.set_val_type(tag_ok, Ty::Bool);
+                self.emit_inst(
+                    span,
+                    InstKind::TestVariant {
+                        dst: tag_ok,
+                        src: src_reg,
+                        tag: tag.clone(),
+                    },
+                );
+
+                let Some(inner_pat) = payload else {
+                    // No payload (e.g. None) — tag test is the final result.
+                    return tag_ok;
+                };
+
+                // Has payload — short-circuit: if tag fails, skip inner test.
+                let check_inner_label = self.alloc_label();
+                let fail_label = self.alloc_label();
+                let result_label = self.alloc_label();
+
+                self.emit_inst(
+                    span,
+                    InstKind::JumpIf {
+                        cond: tag_ok,
+                        then_label: check_inner_label,
+                        then_args: vec![],
+                        else_label: fail_label,
+                        else_args: vec![],
+                    },
+                );
+
+                // Success path: unwrap and test inner pattern.
+                self.emit_inst(
+                    span,
+                    InstKind::BlockLabel {
+                        label: check_inner_label,
+                        params: vec![],
+                    },
+                );
+
+                let inner_val = self.alloc_val();
+                let inner_ty = self.variant_inner_type(src_reg);
+                self.set_val_type(inner_val, inner_ty);
+                self.emit_inst(
+                    span,
+                    InstKind::UnwrapVariant {
+                        dst: inner_val,
+                        src: src_reg,
+                    },
+                );
+
+                let inner_ok = self.lower_pattern_test(inner_pat, inner_val, span);
+
+                let result_param = self.alloc_val();
+                self.set_val_type(result_param, Ty::Bool);
+
+                self.emit_inst(
+                    span,
+                    InstKind::Jump {
+                        label: result_label,
+                        args: vec![inner_ok],
+                    },
+                );
+
+                // Fail path.
+                self.emit_inst(
+                    span,
+                    InstKind::BlockLabel {
+                        label: fail_label,
+                        params: vec![],
+                    },
+                );
+                let false_val = self.alloc_val();
+                self.set_val_type(false_val, Ty::Bool);
+                self.emit_inst(
+                    span,
+                    InstKind::Const {
+                        dst: false_val,
+                        value: Literal::Bool(false),
+                    },
+                );
+                self.emit_inst(
+                    span,
+                    InstKind::Jump {
+                        label: result_label,
+                        args: vec![false_val],
+                    },
+                );
+
+                // Merge result.
+                self.emit_inst(
+                    span,
+                    InstKind::BlockLabel {
+                        label: result_label,
+                        params: vec![result_param],
+                    },
+                );
+                result_param
+            }
         }
     }
 
@@ -1500,6 +1628,23 @@ impl Lowerer {
                     self.lower_pattern_bind(pat, field_val, span);
                 }
             }
+
+            Pattern::Variant { payload, .. } => {
+                let Some(inner_pat) = payload else {
+                    return; // No payload (e.g. None) — nothing to bind.
+                };
+                let inner_val = self.alloc_val();
+                let inner_ty = self.variant_inner_type(src_reg);
+                self.set_val_type(inner_val, inner_ty);
+                self.emit_inst(
+                    span,
+                    InstKind::UnwrapVariant {
+                        dst: inner_val,
+                        src: src_reg,
+                    },
+                );
+                self.lower_pattern_bind(inner_pat, inner_val, span);
+            }
         }
     }
 
@@ -1598,6 +1743,11 @@ impl Lowerer {
             Expr::ContextCall { bindings, .. } => {
                 for (_, e) in bindings {
                     self.collect_free_vars(e, bound, free, seen);
+                }
+            }
+            Expr::Variant { payload, .. } => {
+                if let Some(inner) = payload {
+                    self.collect_free_vars(inner, bound, free, seen);
                 }
             }
         }

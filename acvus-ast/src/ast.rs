@@ -166,6 +166,12 @@ pub enum Expr {
         bindings: Vec<(String, Expr)>,
         span: Span,
     },
+    /// A variant constructor: `Some(expr)` or `None`.
+    Variant {
+        tag: String,
+        payload: Option<Box<Expr>>,
+        span: Span,
+    },
 }
 
 /// An element in a tuple expression: either a real expression or a wildcard `_`.
@@ -192,7 +198,8 @@ impl Expr {
             | Expr::Object { span, .. }
             | Expr::Range { span, .. }
             | Expr::Tuple { span, .. }
-            | Expr::ContextCall { span, .. } => *span,
+            | Expr::ContextCall { span, .. }
+            | Expr::Variant { span, .. } => *span,
         }
     }
 }
@@ -251,6 +258,12 @@ pub enum Pattern {
         elements: Vec<TuplePatternElem>,
         span: Span,
     },
+    /// A variant pattern: `Some(inner)` or `None`.
+    Variant {
+        tag: String,
+        payload: Option<Box<Pattern>>,
+        span: Span,
+    },
 }
 
 impl Pattern {
@@ -261,7 +274,8 @@ impl Pattern {
             | Pattern::List { span, .. }
             | Pattern::Object { span, .. }
             | Pattern::Range { span, .. }
-            | Pattern::Tuple { span, .. } => *span,
+            | Pattern::Tuple { span, .. }
+            | Pattern::Variant { span, .. } => *span,
         }
     }
 }

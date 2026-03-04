@@ -378,6 +378,106 @@ impl BuiltinSig for ToUtf8Lossy {
     }
 }
 
+pub struct Trim;
+impl BuiltinSig for Trim {
+    fn name(&self) -> &'static str {
+        "trim"
+    }
+    fn signature(&self, _subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        (vec![Ty::String], Ty::String)
+    }
+}
+
+pub struct TrimStart;
+impl BuiltinSig for TrimStart {
+    fn name(&self) -> &'static str {
+        "trim_start"
+    }
+    fn signature(&self, _subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        (vec![Ty::String], Ty::String)
+    }
+}
+
+pub struct TrimEnd;
+impl BuiltinSig for TrimEnd {
+    fn name(&self) -> &'static str {
+        "trim_end"
+    }
+    fn signature(&self, _subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        (vec![Ty::String], Ty::String)
+    }
+}
+
+pub struct Upper;
+impl BuiltinSig for Upper {
+    fn name(&self) -> &'static str {
+        "upper"
+    }
+    fn signature(&self, _subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        (vec![Ty::String], Ty::String)
+    }
+}
+
+pub struct Lower;
+impl BuiltinSig for Lower {
+    fn name(&self) -> &'static str {
+        "lower"
+    }
+    fn signature(&self, _subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        (vec![Ty::String], Ty::String)
+    }
+}
+
+pub struct ReplaceStr;
+impl BuiltinSig for ReplaceStr {
+    fn name(&self) -> &'static str {
+        "replace_str"
+    }
+    fn signature(&self, _subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        (vec![Ty::String, Ty::String, Ty::String], Ty::String)
+    }
+}
+
+pub struct SplitStr;
+impl BuiltinSig for SplitStr {
+    fn name(&self) -> &'static str {
+        "split_str"
+    }
+    fn signature(&self, _subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        (vec![Ty::String, Ty::String], Ty::List(Box::new(Ty::String)))
+    }
+}
+
+pub struct StartsWithStr;
+impl BuiltinSig for StartsWithStr {
+    fn name(&self) -> &'static str {
+        "starts_with_str"
+    }
+    fn signature(&self, _subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        (vec![Ty::String, Ty::String], Ty::Bool)
+    }
+}
+
+pub struct EndsWithStr;
+impl BuiltinSig for EndsWithStr {
+    fn name(&self) -> &'static str {
+        "ends_with_str"
+    }
+    fn signature(&self, _subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        (vec![Ty::String, Ty::String], Ty::Bool)
+    }
+}
+
+pub struct RepeatStr;
+impl BuiltinSig for RepeatStr {
+    fn name(&self) -> &'static str {
+        "repeat_str"
+    }
+    fn signature(&self, _subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        (vec![Ty::String, Ty::Int], Ty::String)
+    }
+}
+
 pub fn builtins() -> Vec<&'static dyn BuiltinSig> {
     vec![
         &Filter,
@@ -404,5 +504,15 @@ pub fn builtins() -> Vec<&'static dyn BuiltinSig> {
         &ToBytes,
         &ToUtf8,
         &ToUtf8Lossy,
+        &Trim,
+        &TrimStart,
+        &TrimEnd,
+        &Upper,
+        &Lower,
+        &ReplaceStr,
+        &SplitStr,
+        &StartsWithStr,
+        &EndsWithStr,
+        &RepeatStr,
     ]
 }

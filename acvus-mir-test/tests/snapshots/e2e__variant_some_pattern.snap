@@ -1,0 +1,37 @@
+---
+source: acvus-mir-test/tests/e2e.rs
+expression: ir
+---
+=== literals ===
+  T0 = "nope"
+
+=== main ===
+     0 │   r0 = context_load @opt
+     1 │ L2:
+     2 │   r1 = test r0 is Some
+     3 │   jump_if r1 then L3 else L4
+     4 │ L3:
+     5 │   r2 = unwrap r0
+     7 │   jump L5(true (r3))
+     8 │ L4:
+    10 │   jump L5(false (r5))
+    11 │ L5(r4: Bool):
+    12 │   jump_if r4 then L6 else L1
+    13 │ L6:
+    14 │   r6 = unwrap r0
+    15 │   r7 = call to_string(r6)
+    16 │   yield r7
+    17 │   jump L0
+    18 │ L1:
+    20 │   yield T0
+    21 │ L0:
+
+    ; r0 (@opt) : Option<Int>
+    ; r1 (v1) : Bool
+    ; r2 (v2) : Int
+    ; r3 (v3) : Bool
+    ; r4 (v4) : Bool
+    ; r5 (v5) : Bool
+    ; r6 (v) : Int
+    ; r7 (to_string(...)) : String
+    ; r8 (v8) : String

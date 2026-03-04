@@ -377,6 +377,37 @@ impl Interpreter {
                     frame.set_new(*dst, Value::List(items[*skip_head..end].to_vec()));
                 }
 
+                // -- variant --
+                InstKind::MakeVariant { dst, tag, payload } => {
+                    let p = payload.as_ref().map(|v| Box::new(frame.take_owned(*v)));
+                    frame.set_new(
+                        *dst,
+                        Value::Variant {
+                            tag: tag.clone(),
+                            payload: p,
+                        },
+                    );
+                }
+                InstKind::TestVariant { dst, src, tag } => {
+                    let Value::Variant { tag: t, .. } = frame.get(*src) else {
+                        panic!("TestVariant: expected Variant, got {:?}", frame.get(*src));
+                    };
+                    frame.set_new(*dst, Value::Bool(t == tag));
+                }
+                InstKind::UnwrapVariant { dst, src } => {
+                    let Value::Variant {
+                        payload: Some(inner),
+                        ..
+                    } = frame.get(*src)
+                    else {
+                        panic!(
+                            "UnwrapVariant: expected Variant with payload, got {:?}",
+                            frame.get(*src)
+                        );
+                    };
+                    frame.set_new(*dst, *inner.clone());
+                }
+
                 // -- pattern testing --
                 InstKind::TestLiteral { dst, src, value } => {
                     let eq = values_equal(frame.get(*src), &literal_to_value(value));
@@ -785,6 +816,23 @@ fn values_equal(a: &Value, b: &Value) -> bool {
         (Value::Bool(a), Value::Bool(b)) => a == b,
         (Value::Byte(a), Value::Byte(b)) => a == b,
         (Value::Unit, Value::Unit) => true,
+        (
+            Value::Variant {
+                tag: ta,
+                payload: pa,
+            },
+            Value::Variant {
+                tag: tb,
+                payload: pb,
+            },
+        ) => {
+            ta == tb
+                && match (pa, pb) {
+                    (Some(a), Some(b)) => values_equal(a, b),
+                    (None, None) => true,
+                    _ => false,
+                }
+        }
         _ => false,
     }
 }

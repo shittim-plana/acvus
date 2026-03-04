@@ -203,6 +203,9 @@ fn used_vals(kind: &InstKind) -> Vec<ValueId> {
         | InstKind::BlockLabel { .. }
         | InstKind::Nop => vec![],
         InstKind::ContextLoad { bindings, .. } => bindings.iter().map(|(_, v)| *v).collect(),
+        InstKind::MakeVariant { payload, .. } => payload.iter().copied().collect(),
+        InstKind::TestVariant { src, .. } => vec![*src],
+        InstKind::UnwrapVariant { src, .. } => vec![*src],
     }
 }
 
@@ -233,7 +236,10 @@ fn defined_val(kind: &InstKind) -> Option<ValueId> {
         | InstKind::ObjectGet { dst, .. }
         | InstKind::MakeClosure { dst, .. }
         | InstKind::CallClosure { dst, .. }
-        | InstKind::IterInit { dst, .. } => Some(*dst),
+        | InstKind::IterInit { dst, .. }
+        | InstKind::MakeVariant { dst, .. }
+        | InstKind::TestVariant { dst, .. }
+        | InstKind::UnwrapVariant { dst, .. } => Some(*dst),
         InstKind::IterNext { dst_value, .. } => Some(*dst_value),
         _ => None,
     }

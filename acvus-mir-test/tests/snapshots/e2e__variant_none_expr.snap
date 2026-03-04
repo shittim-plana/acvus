@@ -1,0 +1,8 @@
+---
+source: acvus-mir-test/tests/e2e.rs
+expression: ir
+---
+=== main ===
+     0 │   r0 = variant None
+
+    ; r0 (v0) : Option<?0>

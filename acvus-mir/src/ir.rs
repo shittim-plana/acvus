@@ -168,6 +168,22 @@ pub enum InstKind {
         iter: ValueId,
     },
 
+    // Variant (tagged union)
+    MakeVariant {
+        dst: ValueId,
+        tag: String,
+        payload: Option<ValueId>,
+    },
+    TestVariant {
+        dst: ValueId,
+        src: ValueId,
+        tag: String,
+    },
+    UnwrapVariant {
+        dst: ValueId,
+        src: ValueId,
+    },
+
     // Control flow
     BlockLabel {
         label: Label,

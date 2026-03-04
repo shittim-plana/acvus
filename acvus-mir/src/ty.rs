@@ -22,6 +22,7 @@ pub enum Ty {
     Byte,
     /// Opaque type: user-defined, identified by name. No internal structure.
     Opaque(String),
+    Option(Box<Ty>),
     /// Unification variable. Must not appear in final resolved types.
     Var(TyVar),
     /// Poison type: produced after a type error. Unifies with anything to suppress cascading errors.
@@ -80,6 +81,7 @@ impl fmt::Display for Ty {
                 }
                 write!(f, ") -> {ret}")
             }
+            Ty::Option(inner) => write!(f, "Option<{inner}>"),
             Ty::Opaque(name) => write!(f, "{name}"),
             Ty::Var(v) => write!(f, "?{}", v.0),
             Ty::Error => write!(f, "<error>"),
@@ -125,6 +127,7 @@ impl TySubst {
                 }
             }
             Ty::List(inner) => Ty::List(Box::new(self.resolve(inner))),
+            Ty::Option(inner) => Ty::Option(Box::new(self.resolve(inner))),
             Ty::Object(fields) => {
                 let resolved: BTreeMap<_, _> = fields
                     .iter()
@@ -224,6 +227,7 @@ impl TySubst {
             }
 
             (Ty::List(la), Ty::List(lb)) => self.unify(la, lb),
+            (Ty::Option(a), Ty::Option(b)) => self.unify(a, b),
 
             (Ty::Object(fa), Ty::Object(fb)) => {
                 if fa.len() == fb.len() {
@@ -306,6 +310,7 @@ impl TySubst {
                 }
             }
             Ty::List(inner) => self.occurs_in(var, inner),
+            Ty::Option(inner) => self.occurs_in(var, inner),
             Ty::Tuple(elems) => elems.iter().any(|e| self.occurs_in(var, e)),
             Ty::Object(fields) => fields.values().any(|v| self.occurs_in(var, v)),
             Ty::Fn { params, ret } => {

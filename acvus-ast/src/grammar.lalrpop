@@ -21,6 +21,8 @@ extern {
         "false" => Token::False,
         "in" => Token::In,
         "_" => Token::Underscore,
+        "Some" => Token::Some,
+        "None" => Token::None,
         "+" => Token::Plus,
         "-" => Token::Minus,
         "*" => Token::Star,
@@ -209,6 +211,12 @@ PrimaryExpr: Expr = {
         Expr::Literal { value: Literal::Bool(true), span: Span::new(l, r) },
     <l:@L> "false" <r:@R> =>
         Expr::Literal { value: Literal::Bool(false), span: Span::new(l, r) },
+
+    // Variant constructors: Some(expr) and None
+    <l:@L> "Some" "(" <inner:Expr> ")" <r:@R> =>
+        Expr::Variant { tag: "Some".into(), payload: Some(Box::new(inner)), span: Span::new(l, r) },
+    <l:@L> "None" <r:@R> =>
+        Expr::Variant { tag: "None".into(), payload: None, span: Span::new(l, r) },
 
     // Parenthesized expression or tuple
     <l:@L> "(" <items:CommaSep<TupleElemRule>> ")" <r:@R> => {

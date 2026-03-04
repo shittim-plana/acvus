@@ -9,6 +9,7 @@ use crate::builtins::builtins;
 use crate::error::{MirError, MirErrorKind};
 use crate::extern_module::ExternRegistry;
 use crate::ty::{Ty, TySubst};
+use crate::variant::{VariantPayload, VariantRegistry, make_enum_ty};
 
 /// Maps each AST Span to its inferred type.
 pub type TypeMap = HashMap<Span, Ty>;
@@ -22,6 +23,8 @@ pub struct TypeChecker {
     variable_types: HashMap<String, Ty>,
     /// External function definitions.
     extern_registry: ExternRegistry,
+    /// Variant type registry (enum definitions).
+    variant_registry: VariantRegistry,
     /// Unification state.
     subst: TySubst,
     /// Accumulated type map.
@@ -37,6 +40,7 @@ impl TypeChecker {
             context_types,
             variable_types: HashMap::new(),
             extern_registry: registry.clone(),
+            variant_registry: VariantRegistry::new(),
             subst: TySubst::new(),
             type_map: TypeMap::new(),
             errors: Vec::new(),
@@ -234,7 +238,7 @@ impl TypeChecker {
     /// Other patterns match against the iterated element type.
     fn pattern_match_type(&self, pattern: &Pattern, source_ty: &Ty) -> Ty {
         match pattern {
-            Pattern::List { .. } | Pattern::Tuple { .. } => {
+            Pattern::List { .. } | Pattern::Tuple { .. } | Pattern::Variant { .. } => {
                 // List/Tuple patterns destructure the source as a whole.
                 source_ty.clone()
             }
@@ -715,6 +719,51 @@ impl TypeChecker {
                 ty
             }
 
+            Expr::Variant { tag, payload, span } => {
+                let Some((enum_def, variant_def)) = self.variant_registry.resolve(tag) else {
+                    self.error(
+                        MirErrorKind::UndefinedFunction(format!("unknown variant: {tag}")),
+                        *span,
+                    );
+                    return Ty::Error;
+                };
+                let enum_name = enum_def.name.clone();
+                let type_params: Vec<Ty> = (0..enum_def.type_param_count)
+                    .map(|_| self.subst.fresh_var())
+                    .collect();
+                let variant_payload = variant_def.payload.clone();
+
+                match &variant_payload {
+                    VariantPayload::TypeParam(idx) => {
+                        let Some(inner_expr) = payload else {
+                            self.error(
+                                MirErrorKind::UnificationFailure {
+                                    expected: Ty::Error,
+                                    got: Ty::Unit,
+                                },
+                                *span,
+                            );
+                            return Ty::Error;
+                        };
+                        let inner_ty = self.check_expr(inner_expr);
+                        if self.subst.unify(&type_params[*idx], &inner_ty).is_err() {
+                            self.error(
+                                MirErrorKind::UnificationFailure {
+                                    expected: self.subst.resolve(&type_params[*idx]),
+                                    got: self.subst.resolve(&inner_ty),
+                                },
+                                *span,
+                            );
+                        }
+                    }
+                    VariantPayload::None => {}
+                }
+
+                let ty = make_enum_ty(&enum_name, &type_params, &self.subst);
+                self.record(*span, ty.clone());
+                ty
+            }
+
             Expr::ContextCall {
                 name,
                 bindings,
@@ -1036,6 +1085,40 @@ impl TypeChecker {
                     self.check_pattern(pat, &resolved_elem, span);
                 }
             }
+
+            Pattern::Variant { tag, payload, .. } => {
+                let Some((enum_def, variant_def)) = self.variant_registry.resolve(tag) else {
+                    self.error(
+                        MirErrorKind::UndefinedFunction(format!("unknown variant: {tag}")),
+                        span,
+                    );
+                    return;
+                };
+                let enum_name = enum_def.name.clone();
+                let type_params: Vec<Ty> = (0..enum_def.type_param_count)
+                    .map(|_| self.subst.fresh_var())
+                    .collect();
+                let variant_payload = variant_def.payload.clone();
+
+                let enum_ty = make_enum_ty(&enum_name, &type_params, &self.subst);
+                if self.subst.unify(&source_resolved, &enum_ty).is_err() {
+                    self.error(
+                        MirErrorKind::PatternTypeMismatch {
+                            pattern_ty: enum_ty,
+                            source_ty: source_resolved,
+                        },
+                        span,
+                    );
+                    return;
+                }
+
+                if let VariantPayload::TypeParam(idx) = &variant_payload {
+                    let resolved_inner = self.subst.resolve(&type_params[*idx]);
+                    if let Some(inner_pat) = payload {
+                        self.check_pattern(inner_pat, &resolved_inner, span);
+                    }
+                }
+            }
         }
     }
 
@@ -1249,5 +1332,49 @@ mod tests {
         let src = "{{ x = @items | filter(x -> x != 0) }}{{ x | len | to_string }}{{_}}{{/}}";
         let result = check_with_context(src, context);
         assert!(result.is_ok());
+    }
+
+    // ── Variant (Option) ────────────────────────────────────────────
+
+    #[test]
+    fn some_int_is_option_int() {
+        let src = "{{ x = Some(42) }}{{_}}{{/}}";
+        assert!(check(src).is_ok());
+    }
+
+    #[test]
+    fn none_is_option() {
+        let src = "{{ x = None }}{{_}}{{/}}";
+        assert!(check(src).is_ok());
+    }
+
+    #[test]
+    fn some_pattern_extracts_inner() {
+        let context = HashMap::from([("opt".into(), Ty::Option(Box::new(Ty::String)))]);
+        let src = "{{ Some(x) = @opt }}{{ x }}{{_}}{{/}}";
+        assert!(check_with_context(src, context).is_ok());
+    }
+
+    #[test]
+    fn none_pattern_matches_option() {
+        let context = HashMap::from([("opt".into(), Ty::Option(Box::new(Ty::Int)))]);
+        let src = "{{ None = @opt }}none{{_}}has value{{/}}";
+        assert!(check_with_context(src, context).is_ok());
+    }
+
+    #[test]
+    fn some_unifies_with_option_context() {
+        let context = HashMap::from([("opt".into(), Ty::Option(Box::new(Ty::Int)))]);
+        // match Some(v) against Option<Int> → v : Int
+        let src = "{{ Some(v) = @opt }}{{ v | to_string }}{{_}}{{/}}";
+        assert!(check_with_context(src, context).is_ok());
+    }
+
+    #[test]
+    fn some_type_mismatch() {
+        // Some(42) is Option<Int>, cannot match against String
+        let context = HashMap::from([("s".into(), Ty::String)]);
+        let src = "{{ Some(x) = @s }}{{ x }}{{_}}{{/}}";
+        assert!(check_with_context(src, context).is_err());
     }
 }

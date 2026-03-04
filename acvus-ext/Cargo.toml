@@ -1,0 +1,13 @@
+[package]
+name = "acvus-ext"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+acvus-mir = { path = "../acvus-mir" }
+acvus-interpreter = { path = "../acvus-interpreter" }
+futures = "0.3"
+regex = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
