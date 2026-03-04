@@ -10,54 +10,13 @@ use acvus_mir_pass::analysis::reachable_context::{
 };
 use acvus_mir_pass::analysis::val_def::{ValDefMap, ValDefMapAnalysis};
 
-use crate::dsl::{
-    GenerationParams, MessageSpec, NodeKind, NodeSpec, Strategy, StrategyMode, ToolBinding,
-};
+use crate::dsl::{MessageSpec, NodeSpec, Strategy, StrategyMode};
 use crate::error::{OrchError, OrchErrorKind};
 use crate::executor::value_to_literal;
+use crate::kind::{
+    CompiledNodeKind, NodeKind, compile_llm, compile_llm_cache, compile_plain, parse_type_name,
+};
 use crate::storage::Storage;
-
-/// Compiled node kind — mirrors `NodeKind` but with compiled messages.
-#[derive(Debug, Clone)]
-pub enum CompiledNodeKind {
-    Plain {
-        block: CompiledBlock,
-    },
-    Llm {
-        provider: String,
-        model: String,
-        messages: Vec<CompiledMessage>,
-        tools: Vec<CompiledToolBinding>,
-        generation: GenerationParams,
-        cache_key: Option<CompiledScript>,
-        max_tokens: Option<u32>,
-    },
-    LlmCache {
-        provider: String,
-        model: String,
-        messages: Vec<CompiledMessage>,
-        ttl: String,
-        cache_config: HashMap<String, serde_json::Value>,
-    },
-}
-
-impl CompiledNodeKind {
-    pub fn messages(&self) -> &[CompiledMessage] {
-        match self {
-            Self::Plain { .. } => &[],
-            Self::Llm { messages, .. } | Self::LlmCache { messages, .. } => messages,
-        }
-    }
-}
-
-/// A compiled tool binding with resolved types.
-#[derive(Debug, Clone)]
-pub struct CompiledToolBinding {
-    pub name: String,
-    pub description: String,
-    pub node: String,
-    pub params: HashMap<String, Ty>,
-}
 
 /// Compiled history specification for a node.
 #[derive(Debug, Clone)]
@@ -202,7 +161,7 @@ impl CompiledNode {
 
 /// Compile an expression string (script syntax) with type checking.
 /// Returns the compiled script and its tail expression type.
-pub fn compile_script(
+pub(crate) fn compile_script(
     source: &str,
     context_types: &HashMap<String, Ty>,
     registry: &ExternRegistry,
@@ -240,18 +199,8 @@ pub fn compile_script(
 //   bind script         (any)
 //
 
-/// The element type that bodyless iterators must produce.
-/// Each element is used directly as a message: `{role, content, content_type}`.
-fn message_elem_ty() -> Ty {
-    Ty::Object(BTreeMap::from([
-        ("role".into(), Ty::String),
-        ("content".into(), Ty::String),
-        ("content_type".into(), Ty::String),
-    ]))
-}
-
 /// Expect the tail type to be `List<T>`. Returns the inner `T`.
-fn expect_list(context: &str, ty: Ty) -> Result<Ty, OrchError> {
+pub(crate) fn expect_list(context: &str, ty: Ty) -> Result<Ty, OrchError> {
     match ty {
         Ty::List(inner) => Ok(*inner),
         Ty::Error => Ok(Ty::Error),
@@ -264,7 +213,7 @@ fn expect_list(context: &str, ty: Ty) -> Result<Ty, OrchError> {
 }
 
 /// Expect the tail type to be exactly `expected`.
-fn expect_ty(context: &str, ty: &Ty, expected: &Ty) -> Result<(), OrchError> {
+pub(crate) fn expect_ty(context: &str, ty: &Ty, expected: &Ty) -> Result<(), OrchError> {
     if matches!(ty, Ty::Error) || ty == expected {
         Ok(())
     } else {
@@ -277,7 +226,7 @@ fn expect_ty(context: &str, ty: &Ty, expected: &Ty) -> Result<(), OrchError> {
 }
 
 /// Compile a template source string into a `CompiledBlock`.
-pub fn compile_template(
+pub(crate) fn compile_template(
     source: &str,
     block_idx: usize,
     context_types: &HashMap<String, Ty>,
@@ -310,10 +259,11 @@ pub fn compile_template(
 }
 
 /// Compile messages from a message spec list.
-fn compile_messages(
+pub(crate) fn compile_messages(
     messages: &[MessageSpec],
     context_types: &HashMap<String, Ty>,
     registry: &ExternRegistry,
+    iterator_elem_ty: &Ty,
 ) -> Result<(Vec<CompiledMessage>, HashSet<String>), Vec<OrchError>> {
     let mut compiled_messages = Vec::new();
     let mut all_context_keys = HashSet::new();
@@ -356,7 +306,7 @@ fn compile_messages(
                         continue;
                     }
                 };
-                if let Err(e) = expect_ty(&ctx, &elem_ty, &message_elem_ty()) {
+                if let Err(e) = expect_ty(&ctx, &elem_ty, iterator_elem_ty) {
                     errors.push(e);
                     continue;
                 }
@@ -376,51 +326,6 @@ fn compile_messages(
         return Err(errors);
     }
     Ok((compiled_messages, all_context_keys))
-}
-
-/// Compile tool bindings, converting param type name strings to `Ty`.
-fn compile_tool_bindings(
-    tools: &[ToolBinding],
-) -> Result<Vec<CompiledToolBinding>, Vec<OrchError>> {
-    let mut compiled = Vec::new();
-    let mut errors = Vec::new();
-
-    for tool in tools {
-        let mut params = HashMap::new();
-        for (param_name, type_name) in &tool.params {
-            let Some(ty) = parse_type_name(type_name) else {
-                errors.push(OrchError::new(OrchErrorKind::ToolParamType {
-                    tool: tool.name.clone(),
-                    param: param_name.clone(),
-                    type_name: type_name.clone(),
-                }));
-                continue;
-            };
-            params.insert(param_name.clone(), ty);
-        }
-        compiled.push(CompiledToolBinding {
-            name: tool.name.clone(),
-            description: tool.description.clone(),
-            node: tool.node.clone(),
-            params,
-        });
-    }
-
-    if !errors.is_empty() {
-        return Err(errors);
-    }
-    Ok(compiled)
-}
-
-/// Parse a type name string into a `Ty`.
-fn parse_type_name(name: &str) -> Option<Ty> {
-    match name {
-        "string" => Some(Ty::String),
-        "int" => Some(Ty::Int),
-        "float" => Some(Ty::Float),
-        "bool" => Some(Ty::Bool),
-        _ => None,
-    }
 }
 
 /// Compile a node spec into a `CompiledNode`.
@@ -445,65 +350,17 @@ pub fn compile_node(
     };
 
     let (kind, mut all_context_keys) = match &spec.kind {
-        NodeKind::Plain { source } => {
-            let block =
-                compile_template(source, 0, context_types, registry).map_err(|e| vec![e])?;
-            let keys = block.context_keys.clone();
-            (CompiledNodeKind::Plain { block }, keys)
+        NodeKind::Plain(plain_spec) => {
+            let (compiled, keys) = compile_plain(plain_spec, context_types, registry)?;
+            (CompiledNodeKind::Plain(compiled), keys)
         }
-        NodeKind::Llm {
-            provider,
-            model,
-            messages,
-            tools,
-            generation,
-            cache_key,
-            max_tokens,
-        } => {
-            let (compiled_messages, keys) = compile_messages(messages, context_types, registry)?;
-            let compiled_tools = compile_tool_bindings(tools)?;
-            let mut all_keys = keys;
-            let compiled_cache_key = match cache_key {
-                Some(ck) => {
-                    let (expr, ck_ty) =
-                        compile_script(ck, context_types, registry).map_err(|e| vec![e])?;
-                    expect_ty("cache_key", &ck_ty, &Ty::String).map_err(|e| vec![e])?;
-                    all_keys.extend(expr.context_keys.iter().cloned());
-                    Some(expr)
-                }
-                None => None,
-            };
-            (
-                CompiledNodeKind::Llm {
-                    provider: provider.clone(),
-                    model: model.clone(),
-                    messages: compiled_messages,
-                    tools: compiled_tools,
-                    generation: generation.clone(),
-                    cache_key: compiled_cache_key,
-                    max_tokens: *max_tokens,
-                },
-                all_keys,
-            )
+        NodeKind::Llm(llm_spec) => {
+            let (compiled, keys) = compile_llm(llm_spec, context_types, registry)?;
+            (CompiledNodeKind::Llm(compiled), keys)
         }
-        NodeKind::LlmCache {
-            provider,
-            model,
-            messages,
-            ttl,
-            cache_config,
-        } => {
-            let (compiled_messages, keys) = compile_messages(messages, context_types, registry)?;
-            (
-                CompiledNodeKind::LlmCache {
-                    provider: provider.clone(),
-                    model: model.clone(),
-                    messages: compiled_messages,
-                    ttl: ttl.clone(),
-                    cache_config: cache_config.clone(),
-                },
-                keys,
-            )
+        NodeKind::LlmCache(cache_spec) => {
+            let (compiled, keys) = compile_llm_cache(cache_spec, context_types, registry)?;
+            (CompiledNodeKind::LlmCache(compiled), keys)
         }
     };
 
@@ -578,10 +435,10 @@ pub fn compile_nodes(
     // available to that node at compile time.
     let mut tool_param_types: HashMap<String, HashMap<String, Ty>> = HashMap::new();
     for spec in specs {
-        let NodeKind::Llm { tools, .. } = &spec.kind else {
+        let NodeKind::Llm(llm_spec) = &spec.kind else {
             continue;
         };
-        for tool in tools {
+        for tool in &llm_spec.tools {
             let params: HashMap<String, Ty> = tool
                 .params
                 .iter()
@@ -616,8 +473,8 @@ pub fn compile_nodes(
     // Tool target validation
     let node_names: HashSet<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
     for node in &nodes {
-        if let CompiledNodeKind::Llm { tools, .. } = &node.kind {
-            for tool in tools {
+        if let CompiledNodeKind::Llm(llm) = &node.kind {
+            for tool in &llm.tools {
                 if !node_names.contains(tool.node.as_str()) {
                     errors.push(OrchError::new(OrchErrorKind::ToolTargetNotFound {
                         tool: tool.name.clone(),

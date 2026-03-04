@@ -4,7 +4,7 @@ mod openai;
 
 use std::collections::HashMap;
 
-use crate::dsl::GenerationParams;
+use crate::kind::GenerationParams;
 use crate::message::{Message, ModelResponse, ToolSpec, Usage};
 
 #[derive(Debug, Clone)]

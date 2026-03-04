@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::dsl::GenerationParams;
+use crate::kind::GenerationParams;
 use crate::message::{Message, ModelResponse, ToolCall, ToolSpec, Usage};
 
 use super::{HttpRequest, LlmModel, ProviderConfig};
@@ -415,7 +415,7 @@ fn parse_usage(json: &serde_json::Value) -> Usage {
 mod tests {
     use std::collections::HashMap;
 
-    use crate::dsl::GenerationParams;
+    use crate::kind::GenerationParams;
     use crate::message::{Message, ToolSpec};
 
     use super::*;

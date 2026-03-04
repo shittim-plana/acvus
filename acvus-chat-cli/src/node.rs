@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use acvus_orchestration::{
-    GenerationParams, HistorySpec, MessageSpec, NodeKind, NodeSpec, Strategy, StrategyMode,
-    TokenBudget, ToolBinding,
+    GenerationParams, HistorySpec, LlmCacheSpec, LlmSpec, MessageSpec, NodeKind, NodeSpec,
+    PlainSpec, Strategy, StrategyMode, TokenBudget, ToolBinding,
 };
 use serde::Deserialize;
 
@@ -208,7 +208,7 @@ pub fn resolve_node(def: NodeDef, base_dir: &Path) -> Result<NodeSpec, String> {
                 def.inline_template.as_deref(),
             )
             .map_err(|e| format!("plain node '{}': {e}", def.name))?;
-            NodeKind::Plain { source }
+            NodeKind::Plain(PlainSpec { source })
         }
         NodeKindDef::Llm => {
             let provider = def
@@ -217,7 +217,7 @@ pub fn resolve_node(def: NodeDef, base_dir: &Path) -> Result<NodeSpec, String> {
             let model = def
                 .model
                 .ok_or_else(|| format!("node '{}': llm requires 'model'", def.name))?;
-            NodeKind::Llm {
+            NodeKind::Llm(LlmSpec {
                 provider,
                 model,
                 messages,
@@ -225,7 +225,7 @@ pub fn resolve_node(def: NodeDef, base_dir: &Path) -> Result<NodeSpec, String> {
                 generation,
                 cache_key,
                 max_tokens: def.max_tokens,
-            }
+            })
         }
         NodeKindDef::LlmCache { ttl, cache_config } => {
             let provider = def
@@ -234,13 +234,13 @@ pub fn resolve_node(def: NodeDef, base_dir: &Path) -> Result<NodeSpec, String> {
             let model = def
                 .model
                 .ok_or_else(|| format!("node '{}': llm-cache requires 'model'", def.name))?;
-            NodeKind::LlmCache {
+            NodeKind::LlmCache(LlmCacheSpec {
                 provider,
                 model,
                 messages,
                 ttl,
                 cache_config,
-            }
+            })
         }
     };
 

@@ -87,7 +87,7 @@ mod tests {
     fn make_node(name: &str, context_keys: Vec<&str>) -> CompiledNode {
         CompiledNode {
             name: name.into(),
-            kind: crate::compile::CompiledNodeKind::Llm {
+            kind: crate::kind::CompiledNodeKind::Llm(crate::kind::CompiledLlm {
                 provider: "test".into(),
                 model: "m".into(),
                 messages: vec![],
@@ -95,7 +95,7 @@ mod tests {
                 generation: Default::default(),
                 cache_key: None,
                 max_tokens: None,
-            },
+            }),
             all_context_keys: context_keys.into_iter().map(Into::into).collect(),
             strategy: Default::default(),
             bind_module: None,

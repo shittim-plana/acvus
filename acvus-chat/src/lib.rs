@@ -368,17 +368,17 @@ where
         }
 
         match &node.kind {
-            CompiledNodeKind::Plain { block } => {
+            CompiledNodeKind::Plain(plain) => {
                 let text = self
-                    .render_with_deps(block, storage, local, bind_cache, turn_local)
+                    .render_with_deps(&plain.block, storage, local, bind_cache, turn_local)
                     .await?;
                 storage.set(node.name.clone(), Value::String(text));
             }
-            CompiledNodeKind::LlmCache { .. } => {
+            CompiledNodeKind::LlmCache(_) => {
                 self.resolve_llm_cache(node, storage, local, bind_cache, turn_local)
                     .await?;
             }
-            CompiledNodeKind::Llm { .. } => {
+            CompiledNodeKind::Llm(_) => {
                 self.resolve_llm(node, storage, local, bind_cache, turn_local)
                     .await?;
             }
@@ -394,16 +394,16 @@ where
         bind_cache: &'a mut HashMap<String, Vec<(Value, Arc<Value>)>>,
         turn_local: &'a mut HashMap<String, Arc<Value>>,
     ) -> Result<(), ChatError> {
-        let CompiledNodeKind::LlmCache {
-            provider,
-            model,
-            messages,
-            ttl,
-            cache_config,
-        } = &node.kind
-        else {
+        let CompiledNodeKind::LlmCache(llm_cache) = &node.kind else {
             unreachable!()
         };
+        let (provider, model, messages, ttl, cache_config) = (
+            &llm_cache.provider,
+            &llm_cache.model,
+            &llm_cache.messages,
+            &llm_cache.ttl,
+            &llm_cache.cache_config,
+        );
 
         let mut rendered = Vec::new();
         for msg in messages {
@@ -452,18 +452,18 @@ where
         bind_cache: &'a mut HashMap<String, Vec<(Value, Arc<Value>)>>,
         turn_local: &'a mut HashMap<String, Arc<Value>>,
     ) -> Result<(), ChatError> {
-        let CompiledNodeKind::Llm {
-            provider,
-            model,
-            messages,
-            tools,
-            generation,
-            cache_key,
-            max_tokens,
-        } = &node.kind
-        else {
+        let CompiledNodeKind::Llm(llm) = &node.kind else {
             unreachable!()
         };
+        let (provider, model, messages, tools, generation, cache_key, max_tokens) = (
+            &llm.provider,
+            &llm.model,
+            &llm.messages,
+            &llm.tools,
+            &llm.generation,
+            &llm.cache_key,
+            &llm.max_tokens,
+        );
 
         let provider_config = self
             .providers
@@ -913,8 +913,8 @@ where
                 }
             }
             // Tool targets are also reachable
-            if let CompiledNodeKind::Llm { tools, .. } = &nodes[idx].kind {
-                for tool in tools {
+            if let CompiledNodeKind::Llm(llm) = &nodes[idx].kind {
+                for tool in &llm.tools {
                     if let Some(&dep_idx) = name_to_idx.get(&tool.node)
                         && reachable.insert(dep_idx)
                     {
@@ -932,15 +932,12 @@ where
         // Seed context metadata as nested Object: context.{node}.{model,provider}
         let mut context_obj: BTreeMap<String, Value> = BTreeMap::new();
         for node in &nodes {
-            if let CompiledNodeKind::Llm {
-                provider, model, ..
-            } = &node.kind
-            {
+            if let CompiledNodeKind::Llm(llm) = &node.kind {
                 context_obj.insert(
                     node.name.clone(),
                     Value::Object(BTreeMap::from([
-                        ("model".into(), Value::String(model.clone())),
-                        ("provider".into(), Value::String(provider.clone())),
+                        ("model".into(), Value::String(llm.model.clone())),
+                        ("provider".into(), Value::String(llm.provider.clone())),
                     ])),
                 );
             }
@@ -1090,8 +1087,8 @@ mod tests {
 
     use acvus_mir::extern_module::ExternRegistry;
     use acvus_orchestration::{
-        ApiKind, GenerationParams, HttpRequest, MessageSpec, NodeKind, NodeSpec, Strategy,
-        ToolBinding, compile_nodes,
+        ApiKind, GenerationParams, HttpRequest, LlmSpec, MessageSpec, NodeKind, NodeSpec,
+        PlainSpec, Strategy, ToolBinding, compile_nodes,
     };
 
     // -- MockFetch: returns queued JSON responses in order -----------------------
@@ -1182,9 +1179,9 @@ mod tests {
     async fn new_valid_entrypoint() {
         let nodes = compile_test_nodes(&[NodeSpec {
             name: "main".into(),
-            kind: NodeKind::Plain {
+            kind: NodeKind::Plain(PlainSpec {
                 source: "hello".into(),
-            },
+            }),
             strategy: Strategy::default(),
             history: None,
         }]);
@@ -1205,9 +1202,9 @@ mod tests {
     async fn new_invalid_entrypoint() {
         let nodes = compile_test_nodes(&[NodeSpec {
             name: "main".into(),
-            kind: NodeKind::Plain {
+            kind: NodeKind::Plain(PlainSpec {
                 source: "hello".into(),
-            },
+            }),
             strategy: Strategy::default(),
             history: None,
         }]);
@@ -1228,9 +1225,9 @@ mod tests {
     async fn turn_plain_node() {
         let nodes = compile_test_nodes(&[NodeSpec {
             name: "main".into(),
-            kind: NodeKind::Plain {
+            kind: NodeKind::Plain(PlainSpec {
                 source: "hello world".into(),
-            },
+            }),
             strategy: Strategy::default(),
             history: None,
         }]);
@@ -1254,7 +1251,7 @@ mod tests {
     async fn turn_llm_text_response() {
         let nodes = compile_test_nodes(&[NodeSpec {
             name: "main".into(),
-            kind: NodeKind::Llm {
+            kind: NodeKind::Llm(LlmSpec {
                 provider: "test".into(),
                 model: "gpt-test".into(),
                 messages: vec![MessageSpec::Block {
@@ -1265,7 +1262,7 @@ mod tests {
                 generation: GenerationParams::default(),
                 cache_key: None,
                 max_tokens: None,
-            },
+            }),
             strategy: Strategy::default(),
             history: None,
         }]);
@@ -1299,15 +1296,15 @@ mod tests {
         let nodes = compile_test_nodes(&[
             NodeSpec {
                 name: "tool_target".into(),
-                kind: NodeKind::Plain {
+                kind: NodeKind::Plain(PlainSpec {
                     source: "tool result text".into(),
-                },
+                }),
                 strategy: Strategy::default(),
                 history: None,
             },
             NodeSpec {
                 name: "main".into(),
-                kind: NodeKind::Llm {
+                kind: NodeKind::Llm(LlmSpec {
                     provider: "test".into(),
                     model: "gpt-test".into(),
                     messages: vec![MessageSpec::Block {
@@ -1323,7 +1320,7 @@ mod tests {
                     generation: GenerationParams::default(),
                     cache_key: None,
                     max_tokens: None,
-                },
+                }),
                 strategy: Strategy::default(),
                 history: None,
             },
@@ -1359,15 +1356,15 @@ mod tests {
         let nodes = compile_test_nodes(&[
             NodeSpec {
                 name: "tool_target".into(),
-                kind: NodeKind::Plain {
+                kind: NodeKind::Plain(PlainSpec {
                     source: "result".into(),
-                },
+                }),
                 strategy: Strategy::default(),
                 history: None,
             },
             NodeSpec {
                 name: "main".into(),
-                kind: NodeKind::Llm {
+                kind: NodeKind::Llm(LlmSpec {
                     provider: "test".into(),
                     model: "gpt-test".into(),
                     messages: vec![MessageSpec::Block {
@@ -1383,7 +1380,7 @@ mod tests {
                     generation: GenerationParams::default(),
                     cache_key: None,
                     max_tokens: None,
-                },
+                }),
                 strategy: Strategy::default(),
                 history: None,
             },
@@ -1415,15 +1412,15 @@ mod tests {
         let nodes = compile_test_nodes(&[
             NodeSpec {
                 name: "tool_target".into(),
-                kind: NodeKind::Plain {
+                kind: NodeKind::Plain(PlainSpec {
                     source: "result".into(),
-                },
+                }),
                 strategy: Strategy::default(),
                 history: None,
             },
             NodeSpec {
                 name: "main".into(),
-                kind: NodeKind::Llm {
+                kind: NodeKind::Llm(LlmSpec {
                     provider: "test".into(),
                     model: "gpt-test".into(),
                     messages: vec![MessageSpec::Block {
@@ -1439,7 +1436,7 @@ mod tests {
                     generation: GenerationParams::default(),
                     cache_key: None,
                     max_tokens: None,
-                },
+                }),
                 strategy: Strategy::default(),
                 history: None,
             },

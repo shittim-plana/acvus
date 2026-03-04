@@ -12,10 +12,10 @@ use acvus_mir_pass::analysis::reachable_context::reachable_context_keys;
 use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
 
-use crate::compile::{CompiledMessage, CompiledNode, CompiledNodeKind};
+use crate::compile::{CompiledMessage, CompiledNode};
 use crate::dag::Dag;
-use crate::dsl::GenerationParams;
 use crate::error::{OrchError, OrchErrorKind};
+use crate::kind::{CompiledNodeKind, GenerationParams};
 use crate::message::{Message, ModelResponse, ToolCall, ToolResult, ToolSpec};
 use crate::provider::{Fetch, ProviderConfig, build_request, parse_response};
 use crate::storage::Storage;
@@ -130,35 +130,28 @@ where
 
                 for i in to_submit {
                     let state = node_states[i].take().unwrap();
-                    let (provider, model, tools, generation) = match &nodes[i].kind {
-                        CompiledNodeKind::Llm {
-                            provider,
-                            model,
-                            tools,
-                            generation,
-                            ..
-                        } => {
-                            let tool_specs: Vec<ToolSpec> = tools
-                                .iter()
-                                .map(|t| ToolSpec {
-                                    name: t.name.clone(),
-                                    description: t.description.clone(),
-                                    params: t
-                                        .params
-                                        .iter()
-                                        .map(|(k, v)| (k.clone(), ty_to_json_schema(v).to_string()))
-                                        .collect(),
-                                })
-                                .collect();
-                            (
-                                provider.clone(),
-                                model.clone(),
-                                tool_specs,
-                                generation.clone(),
-                            )
-                        }
-                        _ => continue,
+                    let CompiledNodeKind::Llm(llm) = &nodes[i].kind else {
+                        continue;
                     };
+                    let tool_specs: Vec<ToolSpec> = llm
+                        .tools
+                        .iter()
+                        .map(|t| ToolSpec {
+                            name: t.name.clone(),
+                            description: t.description.clone(),
+                            params: t
+                                .params
+                                .iter()
+                                .map(|(k, v)| (k.clone(), ty_to_json_schema(v).to_string()))
+                                .collect(),
+                        })
+                        .collect();
+                    let (provider, model, tools, generation) = (
+                        llm.provider.clone(),
+                        llm.model.clone(),
+                        tool_specs,
+                        llm.generation.clone(),
+                    );
                     let provider_config = providers
                         .get(&provider)
                         .ok_or_else(|| {
