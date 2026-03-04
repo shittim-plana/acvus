@@ -157,12 +157,16 @@ pub fn build_count_tokens_request(
         }
     }
 
-    let mut body = serde_json::json!({ "contents": contents });
+    let mut gen_request = serde_json::json!({
+        "model": format!("models/{model}"),
+        "contents": contents,
+    });
     if !system_text.is_empty() {
-        body["systemInstruction"] = serde_json::json!({
+        gen_request["systemInstruction"] = serde_json::json!({
             "parts": [{ "text": system_text }]
         });
     }
+    let body = serde_json::json!({ "generateContentRequest": gen_request });
 
     let url = format!("{}/v1beta/models/{}:countTokens", config.endpoint, model);
     HttpRequest {

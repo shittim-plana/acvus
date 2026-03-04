@@ -348,7 +348,7 @@ where
         turn_local: &'a mut HashMap<String, Arc<Value>>,
     ) -> Result<(), ChatError> {
         let node = &self.nodes[idx];
-        tracing::debug!(node = %node.name, "resolve_node");
+        tracing::info!(node = %node.name, "resolve node");
 
         // IfModified: evaluate bind script, check cache
         if matches!(node.strategy.mode, StrategyMode::IfModified)
@@ -360,7 +360,7 @@ where
             if let Some(entries) = bind_cache.get(&node.name)
                 && let Some((_, cached_output)) = entries.iter().find(|(v, _)| v == &bind_value)
             {
-                tracing::debug!(node = %node.name, "skip (bind cached)");
+                tracing::info!(node = %node.name, "skip (bind cached)");
                 storage.set(node.name.clone(), Value::clone(cached_output));
                 return Ok(());
             }
@@ -423,6 +423,7 @@ where
             .ok_or_else(|| ChatError::UnknownProvider(provider.clone()))?
             .clone();
 
+        tracing::info!(node = %node.name, provider = %provider, model = %model, "resolve llm_cache");
         let request = build_cache_request(&provider_config, model, &rendered, ttl, cache_config);
         tracing::debug!(node = %node.name, body = %request.body, "llm_cache fetch request");
         let json = self.fetch.fetch(&request).await.map_err(|e| {
@@ -465,6 +466,7 @@ where
             &llm.max_tokens,
         );
         let max_output_tokens = max_tokens.output;
+        tracing::info!(node = %node.name, provider = %provider, model = %model, "resolve llm");
 
         let provider_config = self
             .providers
@@ -542,7 +544,7 @@ where
         loop {
             match response {
                 ModelResponse::Text(text) => {
-                    tracing::debug!(node = %node.name, len = text.len(), "llm text response");
+                    tracing::info!(node = %node.name, len = text.len(), "llm text response");
                     let output = Value::Object(BTreeMap::from([
                         ("role".into(), Value::String("assistant".into())),
                         ("content".into(), Value::String(text.clone())),
@@ -574,13 +576,15 @@ where
                     });
 
                     for call in &calls {
-                        tracing::debug!(node = %node.name, tool = %call.name, args = %call.arguments, "tool call received");
+                        tracing::info!(node = %node.name, tool = %call.name, "tool call received");
+                        tracing::debug!(node = %node.name, tool = %call.name, args = %call.arguments, "tool call args");
                         let result_text = self
                             .execute_tool_call(
                                 call, &node.name, tools, storage, bind_cache, turn_local,
                             )
                             .await?;
-                        tracing::debug!(tool = %call.name, result = %result_text, "tool call result");
+                        tracing::info!(node = %node.name, tool = %call.name, len = result_text.len(), "tool call result");
+                        tracing::debug!(tool = %call.name, result = %result_text, "tool call result body");
                         rendered.push(Message {
                             role: "tool".into(),
                             content: result_text,
@@ -695,7 +699,7 @@ where
             all_items
         };
 
-        tracing::debug!(count = items.len(), "expand_iterator");
+        tracing::info!(count = items.len(), "expanded iterator");
         let mut messages = Vec::new();
         for item in items {
             let (item_role, item_text) = item_fields(item);
@@ -719,6 +723,7 @@ where
             Some(r) => r,
             None => return Ok(None),
         };
+        tracing::debug!(node = %node_name, body = %request.body, "count tokens request");
         let json = self
             .fetch
             .fetch(&request)
@@ -727,13 +732,14 @@ where
                 node: node_name.to_string(),
                 detail: e,
             })?;
+        tracing::debug!(node = %node_name, response = %json, "count tokens response");
         let count = llm
             .parse_count_tokens_response(&json)
             .map_err(|e| ChatError::TokenCount {
                 node: node_name.to_string(),
                 detail: e,
             })?;
-        tracing::debug!(node = %node_name, tokens = count, "counted tokens for iterator");
+        tracing::info!(node = %node_name, tokens = count, "counted tokens");
         Ok(Some(count))
     }
 
@@ -776,7 +782,7 @@ where
             return Ok(());
         }
 
-        tracing::debug!(
+        tracing::info!(
             node = %node_name,
             total_budget = ?total_budget,
             budgeted_count = budgeted.len(),
@@ -820,7 +826,7 @@ where
             }
         };
 
-        tracing::debug!(node = %node_name, fixed_tokens = fixed_tokens, "counted fixed segment tokens");
+        tracing::info!(node = %node_name, fixed_tokens = fixed_tokens, "counted fixed segment tokens");
 
         let remaining = total.saturating_sub(fixed_tokens);
 
@@ -838,7 +844,7 @@ where
             let consumed_from_pool = allocated.saturating_sub(budget.min.unwrap_or(0));
             pool = pool.saturating_sub(consumed_from_pool);
 
-            tracing::debug!(node = %node_name, actual = *actual, allocated = allocated, "iterator token allocation");
+            tracing::info!(node = %node_name, actual = *actual, allocated = allocated, "iterator token allocation");
 
             if *actual > allocated {
                 trim_segment(&mut segments[*seg_idx], *actual, allocated, node_name);
@@ -880,10 +886,8 @@ fn trim_segment(
     let keep = keep.max(1).min(len);
     let skip = len - keep;
 
-    tracing::debug!(
+    tracing::info!(
         node = %node_name,
-        actual_tokens = actual_tokens,
-        target_tokens = target_tokens,
         original = len,
         kept = keep,
         "trimmed iterator messages",
@@ -1023,7 +1027,7 @@ where
         R: AsyncFn(String) -> Value + Sync,
     {
         let entrypoint = &self.nodes[self.entrypoint_idx].name;
-        tracing::debug!(entrypoint = %entrypoint, "turn start");
+        tracing::info!(entrypoint = %entrypoint, "turn start");
 
         // Update @index to current turn count
         self.storage
@@ -1079,6 +1083,7 @@ where
         }
 
         self.turn_count += 1;
+        tracing::info!(turn = self.turn_count, "turn complete");
 
         let name = &self.nodes[self.entrypoint_idx].name;
         let result = self
