@@ -3,9 +3,18 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use acvus_mir::extern_module::ExternRegistry;
 use acvus_mir::ty::Ty;
 
-use crate::compile::{CompiledMessage, CompiledScript};
+use crate::compile::{self, CompiledMessage, CompiledScript};
 use crate::dsl::MessageSpec;
 use crate::error::{OrchError, OrchErrorKind};
+
+/// Token limits for LLM calls.
+#[derive(Debug, Clone, Default)]
+pub struct MaxTokens {
+    /// Total input token budget shared across budgeted iterators.
+    pub input: Option<u32>,
+    /// Maximum output tokens for the model response.
+    pub output: Option<u32>,
+}
 
 /// LLM node spec — model call with messages, tools, generation params.
 #[derive(Debug, Clone)]
@@ -16,8 +25,7 @@ pub struct LlmSpec {
     pub tools: Vec<ToolBinding>,
     pub generation: GenerationParams,
     pub cache_key: Option<String>,
-    /// Total input token budget shared across budgeted iterators.
-    pub max_tokens: Option<u32>,
+    pub max_tokens: MaxTokens,
 }
 
 impl LlmSpec {
@@ -36,7 +44,6 @@ pub struct GenerationParams {
     pub temperature: Option<f64>,
     pub top_p: Option<f64>,
     pub top_k: Option<u32>,
-    pub max_tokens: Option<u32>,
     pub grounding: bool,
 }
 
@@ -67,7 +74,7 @@ pub struct CompiledLlm {
     pub tools: Vec<CompiledToolBinding>,
     pub generation: GenerationParams,
     pub cache_key: Option<CompiledScript>,
-    pub max_tokens: Option<u32>,
+    pub max_tokens: MaxTokens,
 }
 
 /// The element type that bodyless iterators must produce for LLM nodes.
@@ -99,13 +106,13 @@ pub fn compile_llm(
 ) -> Result<(CompiledLlm, HashSet<String>), Vec<OrchError>> {
     let elem_ty = message_elem_ty();
     let (compiled_messages, mut all_keys) =
-        crate::compile::compile_messages(&spec.messages, context_types, registry, &elem_ty)?;
+        compile::compile_messages(&spec.messages, context_types, registry, &elem_ty)?;
     let compiled_tools = compile_tool_bindings(&spec.tools)?;
     let compiled_cache_key = match &spec.cache_key {
         Some(ck) => {
             let (expr, ck_ty) =
-                crate::compile::compile_script(ck, context_types, registry).map_err(|e| vec![e])?;
-            crate::compile::expect_ty("cache_key", &ck_ty, &Ty::String).map_err(|e| vec![e])?;
+                compile::compile_script(ck, context_types, registry).map_err(|e| vec![e])?;
+            compile::expect_ty("cache_key", &ck_ty, &Ty::String).map_err(|e| vec![e])?;
             all_keys.extend(expr.context_keys.iter().cloned());
             Some(expr)
         }
@@ -119,7 +126,7 @@ pub fn compile_llm(
             tools: compiled_tools,
             generation: spec.generation.clone(),
             cache_key: compiled_cache_key,
-            max_tokens: spec.max_tokens,
+            max_tokens: spec.max_tokens.clone(),
         },
         all_keys,
     ))

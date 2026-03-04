@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use acvus_orchestration::{
-    GenerationParams, HistorySpec, LlmCacheSpec, LlmSpec, MessageSpec, NodeKind, NodeSpec,
-    PlainSpec, Strategy, StrategyMode, TokenBudget, ToolBinding,
+    GenerationParams, HistorySpec, LlmCacheSpec, LlmSpec, MaxTokens, MessageSpec, NodeKind,
+    NodeSpec, PlainSpec, Strategy, StrategyMode, TokenBudget, ToolBinding,
 };
 use serde::Deserialize;
 
@@ -31,8 +31,8 @@ pub struct NodeDef {
     // Llm/LlmCache (None for Plain)
     provider: Option<String>,
     model: Option<String>,
-    /// Total input token budget shared across budgeted iterators.
-    max_tokens: Option<u32>,
+    #[serde(default)]
+    max_tokens: MaxTokensDef,
     #[serde(default)]
     tools: Vec<ToolBindingDef>,
     #[serde(default)]
@@ -91,11 +91,16 @@ struct TokenBudgetDef {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+struct MaxTokensDef {
+    input: Option<u32>,
+    output: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
 struct GenerationParamsDef {
     temperature: Option<f64>,
     top_p: Option<f64>,
     top_k: Option<u32>,
-    max_tokens: Option<u32>,
     #[serde(default)]
     grounding: bool,
 }
@@ -183,8 +188,12 @@ pub fn resolve_node(def: NodeDef, base_dir: &Path) -> Result<NodeSpec, String> {
         temperature: def.generation.temperature,
         top_p: def.generation.top_p,
         top_k: def.generation.top_k,
-        max_tokens: def.generation.max_tokens,
         grounding: def.generation.grounding,
+    };
+
+    let max_tokens = MaxTokens {
+        input: def.max_tokens.input,
+        output: def.max_tokens.output,
     };
 
     let tools: Vec<ToolBinding> = def
@@ -224,7 +233,7 @@ pub fn resolve_node(def: NodeDef, base_dir: &Path) -> Result<NodeSpec, String> {
                 tools,
                 generation,
                 cache_key,
-                max_tokens: def.max_tokens,
+                max_tokens,
             })
         }
         NodeKindDef::LlmCache { ttl, cache_config } => {

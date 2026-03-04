@@ -39,14 +39,25 @@ pub fn build_request(
     messages: &[Message],
     tools: &[ToolSpec],
     generation: &GenerationParams,
+    max_output_tokens: Option<u32>,
     cached_content: Option<&str>,
 ) -> HttpRequest {
     match config.api {
-        ApiKind::OpenAI => openai::build_request(config, model, messages, tools, generation),
-        ApiKind::Anthropic => anthropic::build_request(config, model, messages, tools, generation),
-        ApiKind::Google => {
-            google::build_request(config, model, messages, tools, generation, cached_content)
+        ApiKind::OpenAI => {
+            openai::build_request(config, model, messages, tools, generation, max_output_tokens)
         }
+        ApiKind::Anthropic => {
+            anthropic::build_request(config, model, messages, tools, generation, max_output_tokens)
+        }
+        ApiKind::Google => google::build_request(
+            config,
+            model,
+            messages,
+            tools,
+            generation,
+            max_output_tokens,
+            cached_content,
+        ),
     }
 }
 
@@ -88,6 +99,7 @@ pub trait LlmModel {
         messages: &[Message],
         tools: &[ToolSpec],
         generation: &GenerationParams,
+        max_output_tokens: Option<u32>,
         cached_content: Option<&str>,
     ) -> HttpRequest;
 

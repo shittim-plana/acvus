@@ -10,6 +10,7 @@ use acvus_mir_pass::analysis::reachable_context::{
 };
 use acvus_mir_pass::analysis::val_def::{ValDefMap, ValDefMapAnalysis};
 
+use crate::TokenBudget;
 use crate::dsl::{MessageSpec, NodeSpec, Strategy, StrategyMode};
 use crate::error::{OrchError, OrchErrorKind};
 use crate::executor::value_to_literal;
@@ -50,7 +51,7 @@ pub enum CompiledMessage {
         expr: CompiledScript,
         slice: Option<Vec<i64>>,
         role: Option<String>,
-        token_budget: Option<crate::dsl::TokenBudget>,
+        token_budget: Option<TokenBudget>,
     },
 }
 

@@ -82,19 +82,21 @@ pub fn build_dag(nodes: &[CompiledNode]) -> Result<Dag, Vec<OrchError>> {
 
 #[cfg(test)]
 mod tests {
+    use crate::{CompiledLlm, CompiledNodeKind};
+
     use super::*;
 
     fn make_node(name: &str, context_keys: Vec<&str>) -> CompiledNode {
         CompiledNode {
             name: name.into(),
-            kind: crate::kind::CompiledNodeKind::Llm(crate::kind::CompiledLlm {
+            kind: CompiledNodeKind::Llm(CompiledLlm {
                 provider: "test".into(),
                 model: "m".into(),
                 messages: vec![],
                 tools: vec![],
                 generation: Default::default(),
                 cache_key: None,
-                max_tokens: None,
+                max_tokens: Default::default(),
             }),
             all_context_keys: context_keys.into_iter().map(Into::into).collect(),
             strategy: Default::default(),

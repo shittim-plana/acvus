@@ -146,11 +146,12 @@ where
                                 .collect(),
                         })
                         .collect();
-                    let (provider, model, tools, generation) = (
+                    let (provider, model, tools, generation, max_output_tokens) = (
                         llm.provider.clone(),
                         llm.model.clone(),
                         tool_specs,
                         llm.generation.clone(),
+                        llm.max_tokens.output,
                     );
                     let provider_config = providers
                         .get(&provider)
@@ -166,6 +167,7 @@ where
                         model,
                         tools,
                         generation,
+                        max_output_tokens,
                         state.rendered_messages,
                         provider_config,
                         Arc::clone(&fetch),
@@ -335,6 +337,7 @@ async fn call_model<F>(
     model: String,
     tools: Vec<ToolSpec>,
     generation: GenerationParams,
+    max_output_tokens: Option<u32>,
     messages: Vec<Message>,
     provider_config: ProviderConfig,
     fetch: Arc<F>,
@@ -351,6 +354,7 @@ where
         &messages,
         &tools,
         &generation,
+        max_output_tokens,
         None,
     );
     let json = fetch
@@ -387,6 +391,7 @@ where
             &all_messages,
             &tools,
             &generation,
+            max_output_tokens,
             None,
         );
         let json = fetch

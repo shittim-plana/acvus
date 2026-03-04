@@ -20,10 +20,18 @@ impl LlmModel for OpenAiModel {
         messages: &[Message],
         tools: &[ToolSpec],
         generation: &GenerationParams,
+        max_output_tokens: Option<u32>,
         cached_content: Option<&str>,
     ) -> HttpRequest {
         let _ = cached_content;
-        build_request(&self.config, &self.model, messages, tools, generation)
+        build_request(
+            &self.config,
+            &self.model,
+            messages,
+            tools,
+            generation,
+            max_output_tokens,
+        )
     }
 
     fn parse_response(&self, json: &serde_json::Value) -> Result<(ModelResponse, Usage), String> {
@@ -45,8 +53,9 @@ pub fn build_request(
     messages: &[Message],
     tools: &[ToolSpec],
     generation: &GenerationParams,
+    max_output_tokens: Option<u32>,
 ) -> HttpRequest {
-    let body = format_body(model, messages, tools, generation);
+    let body = format_body(model, messages, tools, generation, max_output_tokens);
     let url = format!("{}/v1/chat/completions", config.endpoint);
     HttpRequest {
         url,
@@ -94,6 +103,7 @@ fn format_body(
     messages: &[Message],
     tools: &[ToolSpec],
     generation: &GenerationParams,
+    max_output_tokens: Option<u32>,
 ) -> serde_json::Value {
     let msgs: Vec<serde_json::Value> = messages.iter().map(format_message).collect();
 
@@ -108,7 +118,7 @@ fn format_body(
     if let Some(p) = generation.top_p {
         body["top_p"] = serde_json::json!(p);
     }
-    if let Some(m) = generation.max_tokens {
+    if let Some(m) = max_output_tokens {
         body["max_tokens"] = serde_json::json!(m);
     }
 
@@ -232,6 +242,7 @@ mod tests {
             ],
             &[],
             &GenerationParams::default(),
+            None,
         );
         assert_eq!(body["model"], "gpt-4o");
         assert_eq!(body["messages"].as_array().unwrap().len(), 2);
@@ -249,6 +260,7 @@ mod tests {
                 params: HashMap::from([("query".into(), "string".into())]),
             }],
             &GenerationParams::default(),
+            None,
         );
         let tools = body["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 1);

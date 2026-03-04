@@ -4,7 +4,8 @@ mod plain;
 
 pub(crate) use llm::parse_type_name;
 pub use llm::{
-    CompiledLlm, CompiledToolBinding, GenerationParams, LlmSpec, ToolBinding, compile_llm,
+    CompiledLlm, CompiledToolBinding, GenerationParams, LlmSpec, MaxTokens, ToolBinding,
+    compile_llm,
 };
 pub use llm_cache::{CompiledLlmCache, LlmCacheSpec, compile_llm_cache};
 pub use plain::{CompiledPlain, PlainSpec, compile_plain};

@@ -464,6 +464,7 @@ where
             &llm.cache_key,
             &llm.max_tokens,
         );
+        let max_output_tokens = max_tokens.output;
 
         let provider_config = self
             .providers
@@ -507,7 +508,7 @@ where
             }
         }
 
-        self.allocate_token_budgets(&*llm, &node.name, &mut segments, *max_tokens)
+        self.allocate_token_budgets(&*llm, &node.name, &mut segments, max_tokens.input)
             .await?;
 
         let mut rendered: Vec<Message> = segments
@@ -518,7 +519,8 @@ where
             })
             .collect();
         let specs = tool_specs(tools);
-        let request = llm.build_request(&rendered, &specs, generation, cached_content.as_deref());
+        let request =
+            llm.build_request(&rendered, &specs, generation, max_output_tokens, cached_content.as_deref());
         tracing::debug!(node = %node.name, body = %request.body, "llm fetch request");
         let json = self.fetch.fetch(&request).await.map_err(|e| {
             tracing::warn!(node = %node.name, error = %e, "llm fetch failed");
@@ -587,8 +589,13 @@ where
                         });
                     }
 
-                    let request =
-                        llm.build_request(&rendered, &specs, generation, cached_content.as_deref());
+                    let request = llm.build_request(
+                        &rendered,
+                        &specs,
+                        generation,
+                        max_output_tokens,
+                        cached_content.as_deref(),
+                    );
                     tracing::debug!(node = %node.name, body = %request.body, "llm fetch request (tool followup)");
                     let json = self.fetch.fetch(&request).await.map_err(|e| {
                         tracing::warn!(node = %node.name, error = %e, "llm fetch failed (tool followup)");
@@ -726,16 +733,19 @@ where
                 node: node_name.to_string(),
                 detail: e,
             })?;
+        tracing::debug!(node = %node_name, tokens = count, "counted tokens for iterator");
         Ok(Some(count))
     }
 
     /// Allocate token budgets across budgeted iterator segments.
     ///
     /// Algorithm:
-    /// 1. Count tokens for each budgeted iterator
-    /// 2. Reserve `request` tokens for each that has one
-    /// 3. Distribute remaining pool by priority (0 first)
-    /// 4. Trim each iterator to its allocated budget
+    /// 1. Count tokens for fixed segments (blocks + non-budgeted iterators)
+    /// 2. Subtract fixed tokens from total budget
+    /// 3. Count tokens for each budgeted iterator
+    /// 4. Reserve `min` tokens for each budgeted iterator
+    /// 5. Distribute remaining pool by priority (0 first)
+    /// 6. Trim each iterator to its allocated budget
     async fn allocate_token_budgets(
         &self,
         llm: &dyn LlmModel,
@@ -766,6 +776,13 @@ where
             return Ok(());
         }
 
+        tracing::debug!(
+            node = %node_name,
+            total_budget = ?total_budget,
+            budgeted_count = budgeted.len(),
+            "allocating token budgets",
+        );
+
         // If no total budget, only apply individual limits
         let Some(total) = total_budget else {
             for (seg_idx, budget, actual) in &budgeted {
@@ -778,9 +795,38 @@ where
             return Ok(());
         };
 
+        // Count tokens for fixed segments (blocks + non-budgeted iterators)
+        let budgeted_indices: std::collections::HashSet<usize> =
+            budgeted.iter().map(|(i, _, _)| *i).collect();
+        let mut fixed_messages: Vec<&Message> = Vec::new();
+        for (i, seg) in segments.iter().enumerate() {
+            if budgeted_indices.contains(&i) {
+                continue;
+            }
+            match seg {
+                MessageSegment::Single(m) => fixed_messages.push(m),
+                MessageSegment::Iterator { messages, .. } => {
+                    fixed_messages.extend(messages.iter());
+                }
+            }
+        }
+
+        let fixed_refs: Vec<Message> = fixed_messages.iter().map(|m| (*m).clone()).collect();
+        let fixed_tokens = match self.count_tokens(llm, node_name, &fixed_refs).await? {
+            Some(c) => c,
+            None => {
+                tracing::warn!(node = %node_name, "count tokens not supported, skipping budget allocation");
+                return Ok(());
+            }
+        };
+
+        tracing::debug!(node = %node_name, fixed_tokens = fixed_tokens, "counted fixed segment tokens");
+
+        let remaining = total.saturating_sub(fixed_tokens);
+
         // Reserve pool
         let reserved: u32 = budgeted.iter().filter_map(|(_, b, _)| b.min).sum();
-        let mut pool = total.saturating_sub(reserved);
+        let mut pool = remaining.saturating_sub(reserved);
 
         // Sort by priority ascending (0 = highest priority, fills first)
         budgeted.sort_by_key(|(_, b, _)| b.priority);
@@ -791,6 +837,8 @@ where
             let allocated = (*actual).min(cap);
             let consumed_from_pool = allocated.saturating_sub(budget.min.unwrap_or(0));
             pool = pool.saturating_sub(consumed_from_pool);
+
+            tracing::debug!(node = %node_name, actual = *actual, allocated = allocated, "iterator token allocation");
 
             if *actual > allocated {
                 trim_segment(&mut segments[*seg_idx], *actual, allocated, node_name);
@@ -1087,8 +1135,8 @@ mod tests {
 
     use acvus_mir::extern_module::ExternRegistry;
     use acvus_orchestration::{
-        ApiKind, GenerationParams, HttpRequest, LlmSpec, MessageSpec, NodeKind, NodeSpec,
-        PlainSpec, Strategy, ToolBinding, compile_nodes,
+        ApiKind, GenerationParams, HttpRequest, LlmSpec, MaxTokens, MessageSpec, NodeKind,
+        NodeSpec, PlainSpec, Strategy, ToolBinding, compile_nodes,
     };
 
     // -- MockFetch: returns queued JSON responses in order -----------------------
@@ -1261,7 +1309,7 @@ mod tests {
                 tools: vec![],
                 generation: GenerationParams::default(),
                 cache_key: None,
-                max_tokens: None,
+                max_tokens: MaxTokens::default(),
             }),
             strategy: Strategy::default(),
             history: None,
@@ -1319,7 +1367,7 @@ mod tests {
                     }],
                     generation: GenerationParams::default(),
                     cache_key: None,
-                    max_tokens: None,
+                    max_tokens: MaxTokens::default(),
                 }),
                 strategy: Strategy::default(),
                 history: None,
@@ -1379,7 +1427,7 @@ mod tests {
                     }],
                     generation: GenerationParams::default(),
                     cache_key: None,
-                    max_tokens: None,
+                    max_tokens: MaxTokens::default(),
                 }),
                 strategy: Strategy::default(),
                 history: None,
@@ -1435,7 +1483,7 @@ mod tests {
                     }],
                     generation: GenerationParams::default(),
                     cache_key: None,
-                    max_tokens: None,
+                    max_tokens: MaxTokens::default(),
                 }),
                 strategy: Strategy::default(),
                 history: None,

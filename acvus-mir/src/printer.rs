@@ -624,19 +624,20 @@ mod tests {
     use super::*;
     use crate::extern_module::{ExternModule, ExternRegistry};
     use crate::ty::Ty;
+    use crate::user_type::UserTypeRegistry;
     use std::collections::{BTreeMap, HashMap};
 
     fn compile_and_dump(
         source: &str,
         context: HashMap<String, Ty>,
-        registry: &crate::extern_module::ExternRegistry,
+        registry: &ExternRegistry,
     ) -> String {
         let template = acvus_ast::parse(source).expect("parse failed");
         let (module, _) = crate::compile(
             &template,
             context,
             registry,
-            &crate::user_type::UserTypeRegistry::new(),
+            &UserTypeRegistry::new(),
         )
         .expect("compile failed");
         dump(&module)

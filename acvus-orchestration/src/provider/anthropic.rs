@@ -20,10 +20,18 @@ impl LlmModel for AnthropicModel {
         messages: &[Message],
         tools: &[ToolSpec],
         generation: &GenerationParams,
+        max_output_tokens: Option<u32>,
         cached_content: Option<&str>,
     ) -> HttpRequest {
         let _ = cached_content;
-        build_request(&self.config, &self.model, messages, tools, generation)
+        build_request(
+            &self.config,
+            &self.model,
+            messages,
+            tools,
+            generation,
+            max_output_tokens,
+        )
     }
 
     fn parse_response(&self, json: &serde_json::Value) -> Result<(ModelResponse, Usage), String> {
@@ -49,8 +57,9 @@ pub fn build_request(
     messages: &[Message],
     tools: &[ToolSpec],
     generation: &GenerationParams,
+    max_output_tokens: Option<u32>,
 ) -> HttpRequest {
-    let body = format_body(model, messages, tools, generation);
+    let body = format_body(model, messages, tools, generation, max_output_tokens);
     let url = format!("{}/v1/messages", config.endpoint);
     HttpRequest {
         url,
@@ -115,6 +124,7 @@ fn format_body(
     messages: &[Message],
     tools: &[ToolSpec],
     generation: &GenerationParams,
+    max_output_tokens: Option<u32>,
 ) -> serde_json::Value {
     let mut system_text = String::new();
     let mut msgs = Vec::new();
@@ -133,7 +143,7 @@ fn format_body(
     let mut body = serde_json::json!({
         "model": model,
         "messages": msgs,
-        "max_tokens": generation.max_tokens.unwrap_or(4096),
+        "max_tokens": max_output_tokens.unwrap_or(4096),
     });
 
     if let Some(t) = generation.temperature {
@@ -309,6 +319,7 @@ mod tests {
             ],
             &[],
             &GenerationParams::default(),
+            None,
         );
         assert_eq!(body["system"], "You are helpful.");
         let msgs = body["messages"].as_array().unwrap();
@@ -327,6 +338,7 @@ mod tests {
                 params: HashMap::from([("query".into(), "string".into())]),
             }],
             &GenerationParams::default(),
+            None,
         );
         let tools = body["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 1);

@@ -19,7 +19,7 @@ pub use error::{OrchError, OrchErrorKind};
 pub use executor::{Executor, value_to_literal};
 pub use kind::{
     CompiledLlm, CompiledLlmCache, CompiledNodeKind, CompiledPlain, CompiledToolBinding,
-    GenerationParams, LlmCacheSpec, LlmSpec, NodeKind, PlainSpec, ToolBinding,
+    GenerationParams, LlmCacheSpec, LlmSpec, MaxTokens, NodeKind, PlainSpec, ToolBinding,
 };
 pub use message::{Message, ModelResponse, Output, ToolCall, ToolResult, ToolSpec, Usage};
 pub use provider::{

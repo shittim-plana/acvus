@@ -22,6 +22,7 @@ impl LlmModel for GoogleModel {
         messages: &[Message],
         tools: &[ToolSpec],
         generation: &GenerationParams,
+        max_output_tokens: Option<u32>,
         cached_content: Option<&str>,
     ) -> HttpRequest {
         build_request(
@@ -30,6 +31,7 @@ impl LlmModel for GoogleModel {
             messages,
             tools,
             generation,
+            max_output_tokens,
             cached_content,
         )
     }
@@ -57,11 +59,14 @@ pub fn build_request(
     messages: &[Message],
     tools: &[ToolSpec],
     generation: &GenerationParams,
+    max_output_tokens: Option<u32>,
     cached_content: Option<&str>,
 ) -> HttpRequest {
     let body = match cached_content {
-        Some(cache_name) => format_cached_body(messages, tools, generation, cache_name),
-        None => format_body(messages, tools, generation),
+        Some(cache_name) => {
+            format_cached_body(messages, tools, generation, max_output_tokens, cache_name)
+        }
+        None => format_body(messages, tools, generation, max_output_tokens),
     };
     let url = format!(
         "{}/v1beta/models/{}:generateContent",
@@ -181,6 +186,7 @@ fn format_cached_body(
     messages: &[Message],
     tools: &[ToolSpec],
     generation: &GenerationParams,
+    max_output_tokens: Option<u32>,
     cache_name: &str,
 ) -> serde_json::Value {
     let contents: Vec<serde_json::Value> = messages
@@ -204,7 +210,7 @@ fn format_cached_body(
     if let Some(k) = generation.top_k {
         gen_config.insert("topK".into(), serde_json::json!(k));
     }
-    if let Some(m) = generation.max_tokens {
+    if let Some(m) = max_output_tokens {
         gen_config.insert("maxOutputTokens".into(), serde_json::json!(m));
     }
     if !gen_config.is_empty() {
@@ -260,6 +266,7 @@ fn format_body(
     messages: &[Message],
     tools: &[ToolSpec],
     generation: &GenerationParams,
+    max_output_tokens: Option<u32>,
 ) -> serde_json::Value {
     let mut system_text = String::new();
     let mut contents = Vec::new();
@@ -289,7 +296,7 @@ fn format_body(
     if let Some(k) = generation.top_k {
         gen_config.insert("topK".into(), serde_json::json!(k));
     }
-    if let Some(m) = generation.max_tokens {
+    if let Some(m) = max_output_tokens {
         gen_config.insert("maxOutputTokens".into(), serde_json::json!(m));
     }
     if !gen_config.is_empty() {
@@ -429,6 +436,7 @@ mod tests {
             ],
             &[],
             &GenerationParams::default(),
+            None,
         );
         assert_eq!(
             body["system_instruction"]["parts"][0]["text"],
@@ -456,6 +464,7 @@ mod tests {
                 params: HashMap::from([("query".into(), "string".into())]),
             }],
             &GenerationParams::default(),
+            None,
         );
         let decls = &body["tools"][0]["function_declarations"];
         assert_eq!(decls.as_array().unwrap().len(), 1);
