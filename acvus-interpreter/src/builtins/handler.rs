@@ -109,6 +109,40 @@ impl IntoValue for Value {
     }
 }
 
+impl<T> IntoValue for Option<T>
+where
+    T: IntoValue,
+{
+    fn into_value(self) -> Value {
+        match self {
+            Some(v) => Value::Variant {
+                tag: "Some".into(),
+                payload: Some(Box::new(v.into_value())),
+            },
+            None => Value::Variant {
+                tag: "None".into(),
+                payload: None,
+            },
+        }
+    }
+}
+
+impl<T> FromValue for Option<T>
+where
+    T: FromValue,
+{
+    fn from_value(v: Value) -> Self {
+        match v {
+            Value::Variant {
+                tag,
+                payload: Some(inner),
+            } if tag == "Some" => Some(T::from_value(*inner)),
+            Value::Variant { tag, .. } if tag == "None" => None,
+            _ => unreachable!("FromValue<Option<T>>: expected Variant, got {v:?}"),
+        }
+    }
+}
+
 // -- PureBuiltin trait (Axum Handler pattern) -----------------------------
 
 pub(crate) trait PureBuiltin<Args> {

@@ -74,17 +74,8 @@ pub(crate) fn builtin_to_bytes(s: String) -> Value {
     Value::List(s.into_bytes().into_iter().map(Value::Byte).collect())
 }
 
-pub(crate) fn builtin_to_utf8(bytes: Vec<u8>) -> Value {
-    match String::from_utf8(bytes) {
-        Ok(s) => Value::Variant {
-            tag: "Some".into(),
-            payload: Some(Box::new(Value::String(s))),
-        },
-        Err(_) => Value::Variant {
-            tag: "None".into(),
-            payload: None,
-        },
-    }
+pub(crate) fn builtin_to_utf8(bytes: Vec<u8>) -> Option<String> {
+    String::from_utf8(bytes).ok()
 }
 
 pub(crate) fn builtin_to_utf8_lossy(bytes: Vec<u8>) -> String {
