@@ -5,6 +5,13 @@ use acvus_mir::ty::Ty;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
+pub struct ExprDef {
+    pub name: String,
+    pub source: Option<String>,
+    pub inline_source: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ProjectSpec {
     pub name: String,
     #[serde(default = "default_fuel_limit")]
@@ -15,6 +22,8 @@ pub struct ProjectSpec {
     pub providers: HashMap<String, ProviderConfig>,
     #[serde(default)]
     pub context: toml::Table,
+    #[serde(default)]
+    pub expr: Vec<ExprDef>,
 }
 
 fn default_fuel_limit() -> u64 {

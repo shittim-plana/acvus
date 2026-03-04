@@ -1,8 +1,10 @@
+mod expr;
 mod llm;
 mod llm_cache;
 mod plain;
 
 pub(crate) use llm::parse_type_name;
+pub use expr::{CompiledExpr, ExprSpec, compile_expr};
 pub use llm::{
     CompiledLlm, CompiledToolBinding, GenerationParams, LlmSpec, MaxTokens, ToolBinding,
     compile_llm,
@@ -19,6 +21,7 @@ pub enum NodeKind {
     Plain(PlainSpec),
     Llm(LlmSpec),
     LlmCache(LlmCacheSpec),
+    Expr(ExprSpec),
 }
 
 impl NodeKind {
@@ -28,6 +31,7 @@ impl NodeKind {
             NodeKind::Plain(spec) => spec.output_ty(),
             NodeKind::Llm(spec) => spec.output_ty(),
             NodeKind::LlmCache(spec) => spec.output_ty(),
+            NodeKind::Expr(spec) => spec.output_ty.clone(),
         }
     }
 }
@@ -38,6 +42,7 @@ pub enum CompiledNodeKind {
     Plain(CompiledPlain),
     Llm(CompiledLlm),
     LlmCache(CompiledLlmCache),
+    Expr(CompiledExpr),
 }
 
 impl CompiledNodeKind {
@@ -46,6 +51,7 @@ impl CompiledNodeKind {
             Self::Plain(_) => &[],
             Self::Llm(llm) => &llm.messages,
             Self::LlmCache(cache) => &cache.messages,
+            Self::Expr(_) => &[],
         }
     }
 }

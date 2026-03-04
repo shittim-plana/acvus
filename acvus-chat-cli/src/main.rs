@@ -10,7 +10,8 @@ use acvus_interpreter::{ExternFnRegistry, Value};
 use acvus_mir::extern_module::ExternRegistry;
 use acvus_mir::ty::Ty;
 use acvus_orchestration::{
-    ApiKind, Fetch, HashMapStorage, HttpRequest, ProviderConfig, compile_nodes,
+    ApiKind, ExprSpec, Fetch, HashMapStorage, HttpRequest, NodeKind, NodeSpec, ProviderConfig,
+    Strategy, compile_nodes, compile_script,
 };
 use node::NodeDef;
 use project::{ProjectSpec, parse_context_entry};
@@ -146,6 +147,38 @@ async fn main() {
         }
     }
 
+    // Compile expr definitions → NodeSpec with NodeKind::Expr
+    let registry = ExternRegistry::new();
+    let mut expr_node_specs: Vec<NodeSpec> = Vec::new();
+    for expr_def in &spec.expr {
+        let source = if let Some(path) = &expr_def.source {
+            std::fs::read_to_string(project_dir.join(path)).unwrap_or_else(|e| {
+                eprintln!("failed to read expr source {path}: {e}");
+                process::exit(1);
+            })
+        } else if let Some(inline) = &expr_def.inline_source {
+            inline.clone()
+        } else {
+            eprintln!("expr '{}': must have source or inline_source", expr_def.name);
+            process::exit(1);
+        };
+        let (_script, tail_ty) =
+            compile_script(&source, &context_types, &registry).unwrap_or_else(|e| {
+                eprintln!("expr '{}' compile error: {e}", expr_def.name);
+                process::exit(1);
+            });
+        context_types.insert(expr_def.name.clone(), tail_ty.clone());
+        expr_node_specs.push(NodeSpec {
+            name: expr_def.name.clone(),
+            kind: NodeKind::Expr(ExprSpec {
+                source,
+                output_ty: tail_ty,
+            }),
+            strategy: Strategy::default(),
+            history: None,
+        });
+    }
+
     let mut node_specs = Vec::new();
     for node_file in &spec.nodes {
         let node_src = std::fs::read_to_string(project_dir.join(node_file)).unwrap_or_else(|e| {
@@ -163,7 +196,9 @@ async fn main() {
         node_specs.push(node_spec);
     }
 
-    let registry = ExternRegistry::new();
+    // Merge expr node specs into node specs
+    node_specs.extend(expr_node_specs);
+
     let compiled_nodes = match compile_nodes(&node_specs, &context_types, &registry) {
         Ok(nodes) => nodes,
         Err(errors) => {

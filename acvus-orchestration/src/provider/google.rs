@@ -577,7 +577,8 @@ mod tests {
         );
         assert!(req.url.contains(":countTokens"));
         assert!(req.url.contains("gemini-2.0-flash"));
-        assert!(req.body.get("contents").is_some());
+        let gen_req = req.body.get("generateContentRequest").unwrap();
+        assert!(gen_req.get("contents").is_some());
     }
 
     #[test]

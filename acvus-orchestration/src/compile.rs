@@ -15,7 +15,8 @@ use crate::dsl::{MessageSpec, NodeSpec, Strategy, StrategyMode};
 use crate::error::{OrchError, OrchErrorKind};
 use crate::executor::value_to_literal;
 use crate::kind::{
-    CompiledNodeKind, NodeKind, compile_llm, compile_llm_cache, compile_plain, parse_type_name,
+    CompiledNodeKind, NodeKind, compile_expr, compile_llm, compile_llm_cache, compile_plain,
+    parse_type_name,
 };
 use crate::storage::Storage;
 
@@ -162,7 +163,7 @@ impl CompiledNode {
 
 /// Compile an expression string (script syntax) with type checking.
 /// Returns the compiled script and its tail expression type.
-pub(crate) fn compile_script(
+pub fn compile_script(
     source: &str,
     context_types: &HashMap<String, Ty>,
     registry: &ExternRegistry,
@@ -373,6 +374,10 @@ pub fn compile_node(
             let (compiled, keys) = compile_llm_cache(cache_spec, context_types, registry)?;
             (CompiledNodeKind::LlmCache(compiled), keys)
         }
+        NodeKind::Expr(expr_spec) => {
+            let (compiled, keys) = compile_expr(expr_spec, context_types, registry)?;
+            (CompiledNodeKind::Expr(compiled), keys)
+        }
     };
 
     // bind_module context keys also contribute
@@ -441,9 +446,12 @@ pub fn compile_nodes(
         context_types.insert("index".into(), Ty::Int);
     }
 
-    // Collect tool param types: target node name → param name → Ty.
-    // When a tool targets a node, the tool's params become context types
-    // available to that node at compile time.
+    // Tool param types must be injected from the caller (LlmSpec) side because
+    // the target node alone cannot know what types its params will have — the
+    // param types are declared in ToolBinding, not in the target node itself.
+    // This is inherently Llm-specific and cannot be generalized: tool targets
+    // are invoked dynamically by the model, and their param types are unknown
+    // until the calling LlmSpec declares them.
     let mut tool_param_types: HashMap<String, HashMap<String, Ty>> = HashMap::new();
     for spec in specs {
         let NodeKind::Llm(llm_spec) = &spec.kind else {
@@ -481,7 +489,9 @@ pub fn compile_nodes(
         return Err(errors);
     }
 
-    // Tool target validation
+    // Tool targets are not captured in all_context_keys (they are invoked
+    // dynamically by the model, not via @ref in templates), so we validate
+    // their existence separately.
     let node_names: HashSet<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
     for node in &nodes {
         if let CompiledNodeKind::Llm(llm) = &node.kind {

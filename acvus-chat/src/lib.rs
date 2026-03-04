@@ -12,9 +12,9 @@ use acvus_interpreter::{
 };
 use acvus_orchestration::{
     CompiledBlock, CompiledHistory, CompiledMessage, CompiledNode, CompiledNodeKind,
-    CompiledScript, CompiledToolBinding, Fetch, HashMapStorage, LlmModel, Message, ModelResponse,
-    ProviderConfig, Storage, StrategyMode, TokenBudget, ToolCall, ToolSpec, build_cache_request,
-    create_llm_model, parse_cache_response,
+    CompiledScript, CompiledToolBinding, Fetch, HashMapStorage, LlmModel, Message,
+    ModelResponse, ProviderConfig, Storage, StrategyMode, TokenBudget, ToolCall, ToolSpec,
+    build_cache_request, create_llm_model, parse_cache_response,
 };
 
 use error::value_type_name;
@@ -199,44 +199,47 @@ where
     F: Fetch,
     R: AsyncFn(String) -> Value + Sync,
 {
-    async fn resolve_context(
-        &self,
+    fn resolve_context(
+        &'a self,
         name: &str,
         bindings: HashMap<String, Value>,
-        storage: &mut HashMapStorage,
-        bind_cache: &mut HashMap<String, Vec<(Value, Arc<Value>)>>,
-        turn_local: &mut HashMap<String, Arc<Value>>,
-    ) -> Result<Arc<Value>, ChatError> {
-        if !bindings.is_empty() {
-            if let Some(&idx) = self.name_to_idx.get(name) {
-                let local = bindings
-                    .into_iter()
-                    .map(|(k, v)| (k, Arc::new(v)))
-                    .collect();
-                self.resolve_node(idx, storage, local, bind_cache, turn_local)
+        storage: &'a mut HashMapStorage,
+        bind_cache: &'a mut HashMap<String, Vec<(Value, Arc<Value>)>>,
+        turn_local: &'a mut HashMap<String, Arc<Value>>,
+    ) -> Fut<'a, Result<Arc<Value>, ChatError>> {
+        let name = name.to_string();
+        Box::pin(async move {
+            if !bindings.is_empty() {
+                if let Some(&idx) = self.name_to_idx.get(&name) {
+                    let local = bindings
+                        .into_iter()
+                        .map(|(k, v)| (k, Arc::new(v)))
+                        .collect();
+                    self.resolve_node(idx, storage, local, bind_cache, turn_local)
+                        .await?;
+                }
+                return storage
+                    .get(&name)
+                    .ok_or_else(|| ChatError::UnresolvedContext(name.clone()));
+            }
+
+            if let Some(&idx) = self.name_to_idx.get(&name)
+                && storage.get(&name).is_none()
+            {
+                self.resolve_node(idx, storage, HashMap::new(), bind_cache, turn_local)
                     .await?;
             }
-            return storage
-                .get(name)
-                .ok_or_else(|| ChatError::UnresolvedContext(name.to_string()));
-        }
-
-        if let Some(&idx) = self.name_to_idx.get(name)
-            && storage.get(name).is_none()
-        {
-            self.resolve_node(idx, storage, HashMap::new(), bind_cache, turn_local)
-                .await?;
-        }
-        if let Some(arc) = storage.get(name) {
-            Ok(arc)
-        } else if let Some(arc) = turn_local.get(name) {
-            Ok(Arc::clone(arc))
-        } else {
+            if let Some(arc) = storage.get(&name) {
+                return Ok(arc);
+            }
+            if let Some(arc) = turn_local.get(&name) {
+                return Ok(Arc::clone(arc));
+            }
             tracing::debug!(context = %name, "resolve via external resolver");
-            let resolved = Arc::new((self.resolver)(name.to_string()).await);
-            turn_local.insert(name.to_string(), Arc::clone(&resolved));
+            let resolved = Arc::new((self.resolver)(name.clone()).await);
+            turn_local.insert(name, Arc::clone(&resolved));
             Ok(resolved)
-        }
+        })
     }
 
     async fn eval_script(
@@ -381,6 +384,12 @@ where
             CompiledNodeKind::Llm(_) => {
                 self.resolve_llm(node, storage, local, bind_cache, turn_local)
                     .await?;
+            }
+            CompiledNodeKind::Expr(expr) => {
+                let value = self
+                    .eval_script(&expr.script, storage, bind_cache, turn_local)
+                    .await?;
+                storage.set(node.name.clone(), value);
             }
         }
         Ok(())
@@ -964,7 +973,8 @@ where
                     queue.push_back(dep_idx);
                 }
             }
-            // Tool targets are also reachable
+            // Tool targets are not in all_context_keys (invoked dynamically
+            // by the model, not via @ref), so we add them as edges explicitly.
             if let CompiledNodeKind::Llm(llm) = &nodes[idx].kind {
                 for tool in &llm.tools {
                     if let Some(&dep_idx) = name_to_idx.get(&tool.node)
