@@ -143,7 +143,10 @@ async fn main() {
     }
 
     // Compile expr definitions → NodeSpec with NodeKind::Expr
-    let registry = ExternRegistry::new();
+    let mut fn_reg_for_compile = ExternFnRegistry::new();
+    let regex_mod = acvus_ext::regex_module(&mut fn_reg_for_compile);
+    let mut registry = ExternRegistry::new();
+    registry.register(&regex_mod);
     let mut expr_node_specs: Vec<NodeSpec> = Vec::new();
     for expr_def in &spec.expr {
         let source = if let Some(path) = &expr_def.source {
@@ -249,7 +252,7 @@ async fn main() {
         );
     }
 
-    let extern_fns = ExternFnRegistry::new();
+    let extern_fns = fn_reg_for_compile;
 
     let resolver = {
         let defaults = context_defaults.clone();

@@ -48,7 +48,7 @@ pub fn regex_module(fn_reg: &mut ExternFnRegistry) -> ExternModule {
     );
     module.add_fn(
         "regex_replace",
-        vec![opaque_ty(), Ty::String, Ty::String],
+        vec![Ty::String, opaque_ty(), Ty::String],
         Ty::String,
         false,
     );
@@ -156,13 +156,13 @@ impl ExternFn for RegexReplace {
     }
     fn sig(&self) -> ExternFnSig {
         ExternFnSig {
-            params: vec![opaque_ty(), Ty::String, Ty::String],
+            params: vec![Ty::String, opaque_ty(), Ty::String],
             ret: Ty::String,
             effectful: false,
         }
     }
     fn into_body(self) -> ExternFnBody {
-        ExternFnBody::from_fn(|re: Value, s: String, rep: String| async move {
+        ExternFnBody::from_fn(|s: String, re: Value, rep: String| async move {
             extract_regex(&re)
                 .replace_all(&s, rep.as_str())
                 .into_owned()
@@ -277,8 +277,8 @@ mod tests {
             &fns,
             "regex_replace",
             vec![
-                re,
                 Value::String("hello   world  !".into()),
+                re,
                 Value::String(" ".into()),
             ],
         )

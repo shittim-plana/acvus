@@ -1,0 +1,23 @@
+name = "chat"
+kind = "llm"
+provider = "gemini"
+model = "gemini-2.5-flash"
+
+[self]
+self_bind = '@raw | map(x -> x.content) | join("")'
+initial_value = '""'
+
+[strategy]
+mode = "history"
+inline_history_bind = "@raw"
+
+[[messages]]
+role = "system"
+template = "system.acvus"
+
+[[messages]]
+iterator = "@history.chat"
+
+[[messages]]
+role = "user"
+template = "user.acvus"

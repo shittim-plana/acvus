@@ -22,6 +22,8 @@ acvus-mir-cli           CLI tool for MIR inspection
 acvus-mir-test          MIR snapshot tests (insta)
 acvus-interpreter       Runtime values, sync execution
 acvus-interpreter-test  Interpreter e2e tests
+acvus-coroutine         Async coroutine primitive (Stepped pattern)
+acvus-ext               Extension modules (regex, etc.)
 acvus-orchestration     Compilation, DAG builder, provider abstraction, Fetch trait
 acvus-chat              Chat engine — multi-turn LLM orchestration, tool calls
 acvus-chat-cli          Chat CLI — TOML project, multi-provider HTTP
@@ -40,7 +42,23 @@ String is the only emit type. Explicit `to_string` required for non-string value
 
 Pattern matching supports list, object, tuple, and range destructuring. `{{_}}` catch-all is required on all match blocks. Tuples are fixed-length and heterogeneous. Lists are homogeneous. Object matching is open (subset).
 
+Format strings interpolate expressions inline: `"hello {{ name }}, you are {{ age | to_string }} years old"`. The `{{ }}` delimiters open an expression context — any valid expression works inside, including pipes. The parser desugars this to a `+` (string concat) chain.
+
 Pipe chains work as first-class function application: `a | f(b)` desugars to `f(a, b)`.
+
+### Builtin functions
+
+List operations: `filter`, `map`, `pmap`, `find`, `reduce`, `fold`, `any`, `all`, `len`, `reverse`, `flatten`, `join`, `contains`.
+
+Type conversions: `to_string`, `to_float`, `to_int`, `char_to_int`, `int_to_char`.
+
+String operations: `contains_str`, `substring`, `len_str`, `trim`, `trim_start`, `trim_end`, `upper`, `lower`, `replace_str`, `split_str`, `starts_with_str`, `ends_with_str`, `repeat_str`.
+
+Byte operations: `to_bytes`, `to_utf8`, `to_utf8_lossy`.
+
+Other: `unwrap`.
+
+Extension modules (e.g. `acvus-ext`) can register additional extern functions at compile time.
 
 ## Orchestration
 

@@ -31,6 +31,7 @@ name = "acvus-chat-cli"
 version = "0.1.0"
 dependencies = [
  "acvus-chat",
+ "acvus-ext",
  "acvus-interpreter",
  "acvus-mir",
  "acvus-orchestration",
