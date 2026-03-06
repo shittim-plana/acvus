@@ -88,7 +88,7 @@ RangeExpr    = AddExpr ".." AddExpr        ← exclusive [start, end)
 AddExpr      = AddExpr ("+" | "-") MulExpr ← left-associative
              | MulExpr
 
-MulExpr      = MulExpr ("*" | "/") UnaryExpr ← left-associative
+MulExpr      = MulExpr ("*" | "/" | "%") UnaryExpr ← left-associative
              | UnaryExpr
 
 UnaryExpr    = "-" UnaryExpr
@@ -178,7 +178,7 @@ TuplePatternElem = Pattern | "_"           ← wildcard
 | `FORMAT_STRING` | `"hello {{ name }}!"` (lexer가 `FmtStringStart`/`Mid`/`End`로 분할) |
 | `true` `false` | boolean literals |
 | `_` | wildcard (tuple 패턴 내부) |
-| `+` `-` `*` `/` | 산술 연산자 |
+| `+` `-` `*` `/` `%` | 산술 연산자 |
 | `!` | 논리 부정 |
 | `&&` `\|\|` | 논리 AND / OR |
 | `==` `!=` `<` `>` `<=` `>=` | 비교 연산자 |
@@ -202,6 +202,6 @@ TuplePatternElem = Pattern | "_"           ← wildcard
 | 5 | `==` `!=` `<` `>` `<=` `>=` | left |
 | 6 | `..` `..=` `=..` (range) | non-assoc |
 | 7 | `+` `-` | left |
-| 8 | `*` `/` | left |
+| 8 | `*` `/` `%` | left |
 | 9 | `-` `!` (unary) | prefix |
 | 10 | `.` `()` (postfix) | left |
