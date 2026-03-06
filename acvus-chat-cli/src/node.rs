@@ -50,6 +50,9 @@ pub struct NodeDef {
     cache_key: Option<String>,
     #[serde(rename = "self")]
     self_spec: SelfDef,
+    #[serde(default)]
+    retry: u32,
+    assert: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -295,5 +298,7 @@ pub fn resolve_node(
         kind,
         self_spec,
         strategy,
+        retry: def.retry,
+        assert: def.assert,
     })
 }

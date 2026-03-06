@@ -127,6 +127,8 @@ mod tests {
                 initial_value: dummy_script,
             },
             strategy: CompiledStrategy::Always,
+            retry: 0,
+            assert: None,
         }
     }
 

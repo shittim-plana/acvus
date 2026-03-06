@@ -95,7 +95,36 @@ where
     where
         S: Storage,
     {
-        Box::pin(self.resolve_node_impl(idx, state, local))
+        Box::pin(async move {
+            let max_retries = self.nodes[idx].retry;
+            let mut attempt = 0u32;
+            loop {
+                match self
+                    .resolve_node_impl(idx, state, local.clone())
+                    .await
+                {
+                    Ok(()) => return Ok(()),
+                    Err(ResolveError::Runtime { ref node, ref error }) => {
+                        if attempt < max_retries {
+                            attempt += 1;
+                            warn!(
+                                node = %node,
+                                attempt = attempt,
+                                max = max_retries,
+                                error = %error,
+                                "retrying node after runtime error",
+                            );
+                            continue;
+                        }
+                        return Err(ResolveError::Runtime {
+                            node: node.clone(),
+                            error: error.clone(),
+                        });
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        })
     }
 
     async fn resolve_node_impl<S>(
@@ -187,6 +216,29 @@ where
             self.eval_script(&node.self_spec.self_bind, &bind_local, state)
                 .await?
         };
+
+        // Assert: evaluate after new_self, before storing.
+        // bind_local already has @raw; add @self = new_self for the assert script.
+        if let Some(ref assert_script) = node.assert {
+            bind_local.insert("self".into(), Arc::new(new_self.clone()));
+            debug!(node = %node.name, "evaluating assert");
+            let result = self
+                .eval_script(assert_script, &bind_local, state)
+                .await?;
+            let Value::Bool(passed) = result else {
+                return Err(ResolveError::Runtime {
+                    node: node.name.clone(),
+                    error: RuntimeError::type_mismatch("assert", "bool", &format!("{result:?}")),
+                });
+            };
+            if !passed {
+                info!(node = %node.name, "assert failed, triggering retry");
+                return Err(ResolveError::Runtime {
+                    node: node.name.clone(),
+                    error: RuntimeError::other("assert failed"),
+                });
+            }
+        }
 
         // IfModified: cache
         if matches!(node.strategy, CompiledStrategy::IfModified { .. })

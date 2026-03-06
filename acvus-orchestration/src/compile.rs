@@ -44,6 +44,8 @@ pub struct CompiledNode {
     pub all_context_keys: HashSet<String>,
     pub self_spec: CompiledSelf,
     pub strategy: CompiledStrategy,
+    pub retry: u32,
+    pub assert: Option<CompiledScript>,
 }
 
 /// Compiled expression (Script → MIR).
@@ -388,6 +390,20 @@ pub fn compile_node(
     all_context_keys.extend(compiled_self.self_bind.context_keys.iter().cloned());
     all_context_keys.extend(compiled_self.initial_value.context_keys.iter().cloned());
 
+    // assert context keys contribute
+    let compiled_assert = if let Some(ref assert_src) = spec.assert {
+        // assert context: @self = new stored value, @raw = raw output, plus all context
+        let mut assert_ctx = context_types.clone();
+        assert_ctx.insert("self".into(), Ty::Bool); // placeholder; actual type varies
+        assert_ctx.insert("raw".into(), spec.kind.raw_output_ty());
+        let (script, _ty) = compile_script_with_hint(assert_src, &assert_ctx, registry, Some(&Ty::Bool))
+            .map_err(|e| vec![e])?;
+        all_context_keys.extend(script.context_keys.iter().cloned());
+        Some(script)
+    } else {
+        None
+    };
+
     // strategy context keys contribute
     match &compiled_strategy {
         CompiledStrategy::Always | CompiledStrategy::OncePerTurn => {}
@@ -405,6 +421,8 @@ pub fn compile_node(
         all_context_keys,
         self_spec: compiled_self,
         strategy: compiled_strategy,
+        retry: spec.retry,
+        assert: compiled_assert,
     })
 }
 

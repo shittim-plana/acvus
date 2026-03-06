@@ -21,6 +21,10 @@ pub struct NodeSpec {
     pub kind: NodeKind,
     pub self_spec: SelfSpec,
     pub strategy: Strategy,
+    /// Maximum retry count on RuntimeError. 0 = no retry.
+    pub retry: u32,
+    /// Assert script (must evaluate to Bool). If false, triggers retry.
+    pub assert: Option<String>,
 }
 
 /// Execution strategy — determines execution timing and @self storage location.

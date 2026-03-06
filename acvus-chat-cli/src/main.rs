@@ -180,6 +180,8 @@ async fn main() {
                 initial_value: r#""""#.into(),
             },
             strategy: Strategy::default(),
+            retry: 0,
+            assert: None,
         });
     }
 

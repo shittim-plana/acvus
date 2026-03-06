@@ -388,6 +388,8 @@ mod tests {
             }),
             self_spec: plain_self_spec(),
             strategy: Strategy::default(),
+            retry: 0,
+            assert: None,
         }]);
         let (pname, pconfig) = default_provider();
         let result = ChatEngine::new(
@@ -411,6 +413,8 @@ mod tests {
             }),
             self_spec: plain_self_spec(),
             strategy: Strategy::default(),
+            retry: 0,
+            assert: None,
         }]);
         let (pname, pconfig) = default_provider();
         let result = ChatEngine::new(
@@ -434,6 +438,8 @@ mod tests {
             }),
             self_spec: plain_self_spec(),
             strategy: Strategy::default(),
+            retry: 0,
+            assert: None,
         }]);
         let (pname, pconfig) = default_provider();
         let mut engine = ChatEngine::new(
@@ -470,6 +476,8 @@ mod tests {
             }),
             self_spec: llm_self_spec(),
             strategy: Strategy::default(),
+            retry: 0,
+            assert: None,
         }]);
         let (pname, pconfig) = default_provider();
         let mock = MockFetch::new(vec![openai_text_response("hello from LLM")]);
@@ -498,6 +506,8 @@ mod tests {
                 }),
                 strategy: Strategy::default(),
                 self_spec: plain_self_spec(),
+                retry: 0,
+                assert: None,
             },
             NodeSpec {
                 name: "main".into(),
@@ -521,6 +531,8 @@ mod tests {
                 }),
                 strategy: Strategy::default(),
                 self_spec: llm_self_spec(),
+                retry: 0,
+                assert: None,
             },
         ]);
         let (pname, pconfig) = default_provider();
@@ -561,6 +573,8 @@ mod tests {
                 initial_value: r#""default""#.into(),
             },
             strategy: Strategy::OncePerTurn,
+            retry: 0,
+            assert: None,
         }]);
         let (pname, pconfig) = default_provider();
         let mut engine = ChatEngine::new(
@@ -593,6 +607,8 @@ mod tests {
                 kind: NodeKind::Plain(PlainSpec { source: "x".into() }),
                 self_spec: plain_self_spec(),
                 strategy: Strategy::Always,
+                retry: 0,
+                assert: None,
             },
             NodeSpec {
                 name: "main".into(),
@@ -601,6 +617,8 @@ mod tests {
                 }),
                 self_spec: plain_self_spec(),
                 strategy: Strategy::default(),
+                retry: 0,
+                assert: None,
             },
         ]);
         let (pname, pconfig) = default_provider();
@@ -637,6 +655,8 @@ mod tests {
                 }),
                 self_spec: plain_self_spec(),
                 strategy: Strategy::default(),
+                retry: 0,
+            assert: None,
             }],
             &ctx,
             &ExternRegistry::default(),
@@ -699,6 +719,8 @@ mod tests {
             strategy: Strategy::History {
                 history_bind: r#"@raw | map(x -> x.content) | join("")"#.into(),
             },
+            retry: 0,
+            assert: None,
         }]);
         let (pname, pconfig) = default_provider();
         let mut engine = ChatEngine::new(
@@ -732,6 +754,8 @@ mod tests {
                 initial_value: r#""A""#.into(),
             },
             strategy: Strategy::OncePerTurn,
+            retry: 0,
+            assert: None,
         }]);
         let (pname, pconfig) = default_provider();
         let mut engine = ChatEngine::new(
