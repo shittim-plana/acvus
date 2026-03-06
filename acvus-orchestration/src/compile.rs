@@ -218,7 +218,7 @@ pub fn compile_script_with_hint(
 //   iterator + body     List<T>                  T bound to context for body
 //   iterator (no body)  List<MESSAGE_ELEM_TY>    elements used as messages directly
 //   cache_key           String
-//   history store       (any)                    type inferred → @history.{node} = List<T>
+//   history store       (any)                    type inferred → @turn.history.{node} = List<T>
 //   bind script         (any)
 //
 
@@ -366,6 +366,7 @@ pub fn compile_node(
     registry: &ExternRegistry,
     compiled_self: CompiledSelf,
     compiled_strategy: CompiledStrategy,
+    stored_ty: &Ty,
 ) -> Result<CompiledNode, Vec<OrchError>> {
     let (kind, mut all_context_keys) = match &spec.kind {
         NodeKind::Plain(plain_spec) => {
@@ -394,7 +395,7 @@ pub fn compile_node(
     let compiled_assert = if let Some(ref assert_src) = spec.assert {
         // assert context: @self = new stored value, @raw = raw output, plus all context
         let mut assert_ctx = context_types.clone();
-        assert_ctx.insert("self".into(), Ty::Bool); // placeholder; actual type varies
+        assert_ctx.insert("self".into(), stored_ty.clone());
         assert_ctx.insert("raw".into(), spec.kind.raw_output_ty());
         let (script, _ty) = compile_script_with_hint(assert_src, &assert_ctx, registry, Some(&Ty::Bool))
             .map_err(|e| vec![e])?;
@@ -438,19 +439,21 @@ pub fn compile_nodes(
     let mut context_types = injected_types.clone();
     let mut errors = Vec::new();
 
-    // 1. Compile self_bind first (with @self = raw_output_ty as initial guess)
-    //    → self_bind tail type determines stored type.
-    //    Then compile initial_value and verify compatibility.
+    // 1. Compile self_bind with @self = Ty::Infer, @raw = raw_ty.
+    //    The type checker infers @self's type from usage, anchored by @raw.
+    //    self_bind tail type = stored type.
     let mut stored_types: Vec<Ty> = Vec::new();
     let mut bind_scripts: Vec<CompiledScript> = Vec::new();
     for spec in specs {
         let raw_ty = spec.kind.raw_output_ty();
         let mut bind_ctx = context_types.clone();
-        // First pass: @self = raw_ty (best guess before stored type is known)
-        bind_ctx.insert("self".into(), raw_ty.clone());
+        bind_ctx.insert("self".into(), Ty::Infer);
         bind_ctx.insert("raw".into(), raw_ty);
-        let (script, tail_ty) = match compile_script(&spec.self_spec.self_bind, &bind_ctx, registry)
-        {
+        let (script, tail_ty) = match compile_script(
+            &spec.self_spec.self_bind,
+            &bind_ctx,
+            registry,
+        ) {
             Ok(v) => v,
             Err(e) => {
                 errors.push(e);
@@ -498,7 +501,7 @@ pub fn compile_nodes(
         initial_value_scripts.push(script);
     }
 
-    // 4. Compile strategy scripts + inject @history types for History nodes
+    // 4. Compile strategy scripts + inject @turn types for History nodes
     let history_specs: Vec<(usize, &str)> = specs
         .iter()
         .enumerate()
@@ -511,7 +514,7 @@ pub fn compile_nodes(
         // Compile history_bind scripts to infer element type
         // history_bind context: @self = completed stored value, @raw = raw output, plus all context
         let store_ctx = context_types.clone();
-        let mut history_fields = BTreeMap::new();
+        let mut entry_fields = BTreeMap::new();
         for &(i, bind_src) in &history_specs {
             let mut hist_ctx = store_ctx.clone();
             hist_ctx.insert("self".into(), stored_types[i].clone());
@@ -519,10 +522,15 @@ pub fn compile_nodes(
             let ty = compile_script(bind_src, &hist_ctx, registry)
                 .map(|(_, ty)| ty)
                 .unwrap_or(Ty::Error);
-            history_fields.insert(specs[i].name.clone(), Ty::List(Box::new(ty)));
+            entry_fields.insert(specs[i].name.clone(), ty);
         }
-        context_types.insert("history".into(), Ty::Object(history_fields));
-        context_types.insert("index".into(), Ty::Int);
+        // @turn.history = List<{node_a: T, node_b: U, ...}> — one entry per turn
+        let history_ty = Ty::List(Box::new(Ty::Object(entry_fields)));
+        let turn_fields = BTreeMap::from([
+            ("index".into(), Ty::Int),
+            ("history".into(), history_ty),
+        ]);
+        context_types.insert("turn".into(), Ty::Object(turn_fields));
     }
 
     // 5. Compile strategy for each node
@@ -598,7 +606,7 @@ pub fn compile_nodes(
             initial_value: initial_value_scripts[i].clone(),
         };
         let compiled_strategy = compiled_strategies[i].clone();
-        match compile_node(spec, &node_ctx, registry, compiled_self, compiled_strategy) {
+        match compile_node(spec, &node_ctx, registry, compiled_self, compiled_strategy, &stored_types[i]) {
             Ok(node) => nodes.push(node),
             Err(errs) => {
                 errors.extend(errs);

@@ -116,14 +116,13 @@ where
             storage.set("context".into(), Value::Object(context_obj));
         }
 
-        // Seed history
+        // Seed @turn = { index: 0, history: [] }
         if !history_nodes.is_empty() {
-            let mut history_obj = BTreeMap::new();
-            for name in &history_nodes {
-                history_obj.insert(name.clone(), Value::List(Vec::new()));
-            }
-            storage.set("history".into(), Value::Object(history_obj));
-            storage.set("index".into(), Value::Int(0));
+            let turn_obj = BTreeMap::from([
+                ("index".into(), Value::Int(0)),
+                ("history".into(), Value::List(Vec::new())),
+            ]);
+            storage.set("turn".into(), Value::Object(turn_obj));
         }
 
         // Build node table — one match, uniform Arc<dyn Node> from here
@@ -149,10 +148,10 @@ where
         let entrypoint = &self.nodes[self.entrypoint_idx].name;
         tracing::info!(entrypoint = %entrypoint, "turn start");
 
-        // Update @index to current turn count
-        self.state
-            .storage
-            .set("index".into(), Value::Int(self.state.turn as i64));
+        // Update @turn.index to current turn count
+        if let Some(Value::Object(turn)) = self.state.storage.get_mut("turn") {
+            turn.insert("index".into(), Value::Int(self.state.turn as i64));
+        }
 
         // Always-strategy nodes re-resolve every turn
         for node in &self.nodes {
@@ -166,6 +165,7 @@ where
             storage: std::mem::take(&mut self.state.storage),
             turn_context: HashMap::new(),
             bind_cache: std::mem::take(&mut self.bind_cache),
+            history_entries: BTreeMap::new(),
         };
 
         let ctx = Resolver {
@@ -186,6 +186,15 @@ where
                 && let Some(v) = rs.turn_context.get(&node.name)
             {
                 rs.storage.set(node.name.clone(), Value::clone(v));
+            }
+        }
+
+        // Flush buffered history entries to @turn.history (single get_mut)
+        if !rs.history_entries.is_empty() {
+            if let Some(Value::Object(turn)) = rs.storage.get_mut("turn")
+                && let Some(Value::List(history)) = turn.get_mut("history")
+            {
+                history.push(Value::Object(std::mem::take(&mut rs.history_entries)));
             }
         }
 
@@ -214,12 +223,10 @@ where
             return;
         }
         self.state.turn -= 1;
-        if let Some(Value::Object(obj)) = self.state.storage.get_mut("history") {
-            for name in &self.history_nodes {
-                if let Some(Value::List(list)) = obj.get_mut(name) {
-                    list.pop();
-                }
-            }
+        if let Some(Value::Object(turn)) = self.state.storage.get_mut("turn")
+            && let Some(Value::List(history)) = turn.get_mut("history")
+        {
+            history.pop();
         }
     }
 
@@ -233,12 +240,10 @@ where
             "re_execute index out of bounds: {index} > {}",
             self.state.turn,
         );
-        if let Some(Value::Object(obj)) = self.state.storage.get_mut("history") {
-            for name in &self.history_nodes {
-                if let Some(Value::List(list)) = obj.get_mut(name) {
-                    list.truncate(index);
-                }
-            }
+        if let Some(Value::Object(turn)) = self.state.storage.get_mut("turn")
+            && let Some(Value::List(history)) = turn.get_mut("history")
+        {
+            history.truncate(index);
         }
         self.state.turn = index;
         self.turn(resolver).await
@@ -558,19 +563,21 @@ mod tests {
     // -- regression tests -------------------------------------------------------
 
     /// #6: initial_value must be evaluated on first run (not Unit).
+    /// OncePerTurn: first turn uses initial_value as @self, subsequent turns use persisted @self.
     #[tokio::test]
     async fn initial_value_evaluated_on_first_run() {
-        // OncePerTurn node with initial_value = "default".
-        // self_bind = @self (returns previous value, ignoring raw).
-        // First turn: @self = "default" (from initial_value) → stored = "default"
+        // self_bind = [@self, @raw] | join("") → accumulates.
+        // initial_value = "A". raw = "B".
+        // Turn 1: @self = "A" (initial), @raw = "B" → "AB"
+        // Turn 2: @self = "AB" (persisted), @raw = "B" → "ABB"
         let nodes = compile_test_nodes(&[NodeSpec {
             name: "main".into(),
             kind: NodeKind::Plain(PlainSpec {
-                source: "hello".into(),
+                source: "B".into(),
             }),
             self_spec: SelfSpec {
-                self_bind: "@self".into(),
-                initial_value: r#""default""#.into(),
+                self_bind: r#"[@self, @raw] | join("")"#.into(),
+                initial_value: r#""A""#.into(),
             },
             strategy: Strategy::OncePerTurn,
             retry: 0,
@@ -588,9 +595,11 @@ mod tests {
         .await
         .unwrap();
 
-        // First turn: initial_value = "default", self_bind = @self = "default"
-        let result = engine.turn(&noop_resolver()).await.unwrap();
-        assert_eq!(result, Value::String("default".into()));
+        let r1 = engine.turn(&noop_resolver()).await.unwrap();
+        assert_eq!(r1, Value::String("AB".into()));
+
+        let r2 = engine.turn(&noop_resolver()).await.unwrap();
+        assert_eq!(r2, Value::String("ABB".into()));
     }
 
     /// #7: Always nodes must re-execute every invocation, not just once per turn.

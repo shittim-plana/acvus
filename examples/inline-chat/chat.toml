@@ -16,7 +16,7 @@ role = "system"
 inline_template = "You are a helpful assistant. Answer concisely."
 
 [[messages]]
-iterator = "@history.chat"
+iterator = "@turn.history | map(h -> h.chat)"
 
 [[messages]]
 role = "user"

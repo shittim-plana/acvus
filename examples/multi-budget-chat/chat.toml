@@ -28,7 +28,7 @@ token_budget = { priority = 0, min = 2000, max = 6000 }
 
 # Chat history — priority 1 (fills after documents), no max (consumes remaining pool).
 [[messages]]
-iterator = "@history.chat"
+iterator = "@turn.history | map(h -> h.chat)"
 token_budget = { priority = 1 }
 
 [[messages]]

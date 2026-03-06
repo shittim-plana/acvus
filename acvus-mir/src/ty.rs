@@ -29,6 +29,9 @@ pub enum Ty {
     UserType(UserTypeId),
     /// Unification variable. Must not appear in final resolved types.
     Var(TyVar),
+    /// Inferred type: signals the type checker to create a fresh Var internally.
+    /// Input-only — must not appear in output types.
+    Infer,
     /// Poison type: produced after a type error. Unifies with anything to suppress cascading errors.
     Error,
 }
@@ -89,6 +92,7 @@ impl fmt::Display for Ty {
             Ty::Opaque(name) => write!(f, "{name}"),
             Ty::UserType(id) => write!(f, "UserType({})", id.0),
             Ty::Var(v) => write!(f, "?{}", v.0),
+            Ty::Infer => write!(f, "<infer>"),
             Ty::Error => write!(f, "<error>"),
         }
     }

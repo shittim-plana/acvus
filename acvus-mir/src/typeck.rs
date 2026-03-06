@@ -28,6 +28,8 @@ pub struct TypeChecker<'a> {
     variant_registry: VariantRegistry,
     /// Unification state.
     subst: TySubst,
+    /// Cached fresh Vars for `Ty::Infer` context entries.
+    infer_vars: HashMap<String, Ty>,
     /// Accumulated type map.
     type_map: TypeMap,
     /// Accumulated errors.
@@ -52,6 +54,7 @@ impl<'a> TypeChecker<'a> {
             extern_registry: registry,
             variant_registry,
             subst: TySubst::new(),
+            infer_vars: HashMap::new(),
             type_map: TypeMap::new(),
             errors: Vec::new(),
         }
@@ -330,6 +333,11 @@ impl<'a> TypeChecker<'a> {
             } => {
                 let ty = match ref_kind {
                     RefKind::Context => match self.context_types.get(name) {
+                        Some(Ty::Infer) => self
+                            .infer_vars
+                            .entry(name.clone())
+                            .or_insert_with(|| self.subst.fresh_var())
+                            .clone(),
                         Some(ty) => ty.clone(),
                         None => {
                             self.error(MirErrorKind::UndefinedContext(name.clone()), *span);

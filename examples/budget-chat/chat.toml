@@ -21,7 +21,7 @@ template = "system.acvus"
 # Chat history with token budget.
 # priority = 0 (fills first), max = 12000 caps this iterator.
 [[messages]]
-iterator = "@history.chat"
+iterator = "@turn.history | map(h -> h.chat)"
 token_budget = { priority = 0, max = 12000 }
 
 [[messages]]

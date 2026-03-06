@@ -16,7 +16,7 @@ role = "system"
 template = "system.acvus"
 
 [[messages]]
-iterator = "@history.chat"
+iterator = "@turn.history | map(h -> h.chat)"
 
 [[messages]]
 role = "user"

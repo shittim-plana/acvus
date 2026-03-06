@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -27,6 +27,8 @@ pub struct ResolveState<S> {
     pub storage: S,
     pub turn_context: HashMap<String, Arc<Value>>,
     pub bind_cache: HashMap<String, Vec<(Value, Arc<Value>)>>,
+    /// Buffered history entries for the current turn. Flushed once at turn end.
+    pub history_entries: BTreeMap<String, Value>,
 }
 
 impl<S> ResolveState<S>
@@ -38,6 +40,7 @@ where
             storage,
             turn_context: HashMap::new(),
             bind_cache: HashMap::new(),
+            history_entries: BTreeMap::new(),
         }
     }
 
@@ -269,11 +272,8 @@ where
                 let entry = self
                     .eval_script(history_bind, &bind_local, state)
                     .await?;
-                if let Some(Value::Object(obj)) = state.storage.get_mut("history")
-                    && let Some(Value::List(list)) = obj.get_mut(&node.name)
-                {
-                    list.push(entry);
-                }
+                // Buffer entry — flushed to @turn.history at turn end.
+                state.history_entries.insert(node.name.clone(), entry);
             }
         }
 

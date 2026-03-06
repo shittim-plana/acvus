@@ -44,7 +44,7 @@ pub enum Strategy {
     /// Unchanged key → previous @self retained.
     IfModified { key: String },
     /// Execute once per turn. @self stored in storage (persistent).
-    /// Evaluates history_bind (@self + other context → entry) and appends to @history.{name}.
+    /// Evaluates history_bind (@self + other context → entry) and appends to @turn.history.{name}.
     History { history_bind: String },
 }
 
