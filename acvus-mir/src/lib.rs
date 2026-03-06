@@ -10,7 +10,7 @@ pub mod typeck;
 pub mod user_type;
 pub mod variant;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use acvus_ast::{Script, Template};
 
@@ -33,14 +33,13 @@ use crate::user_type::UserTypeRegistry;
 /// Returns a `MirModule` and `HintTable`, or a list of errors.
 pub fn compile(
     template: &Template,
-    context_types: HashMap<String, Ty>,
+    context_types: &HashMap<String, Ty>,
     registry: &ExternRegistry,
     user_types: &UserTypeRegistry,
 ) -> Result<(MirModule, HintTable), Vec<MirError>> {
-    let context_names: HashSet<String> = context_types.keys().cloned().collect();
     let checker = TypeChecker::new(context_types, registry, user_types);
     let (type_map, variant_registry) = checker.check_template(template)?;
-    let lowerer = Lowerer::new(type_map, context_names, variant_registry, registry.clone());
+    let lowerer = Lowerer::new(type_map, variant_registry, registry);
     let (module, hints) = lowerer.lower_template(template);
     Ok((module, hints))
 }
@@ -48,7 +47,7 @@ pub fn compile(
 /// Compile a parsed script with type checking. Returns the MIR module, hint table, and the tail expression type.
 pub fn compile_script(
     script: &Script,
-    context_types: HashMap<String, Ty>,
+    context_types: &HashMap<String, Ty>,
     registry: &ExternRegistry,
     user_types: &UserTypeRegistry,
 ) -> Result<(MirModule, HintTable, Ty), Vec<MirError>> {
@@ -57,16 +56,15 @@ pub fn compile_script(
 
 pub fn compile_script_with_hint(
     script: &Script,
-    context_types: HashMap<String, Ty>,
+    context_types: &HashMap<String, Ty>,
     registry: &ExternRegistry,
     user_types: &UserTypeRegistry,
     expected_tail: Option<&Ty>,
 ) -> Result<(MirModule, HintTable, Ty), Vec<MirError>> {
-    let context_names: HashSet<String> = context_types.keys().cloned().collect();
     let checker = TypeChecker::new(context_types, registry, user_types);
     let (type_map, tail_ty, variant_registry) =
         checker.check_script_with_hint(script, expected_tail)?;
-    let lowerer = Lowerer::new(type_map, context_names, variant_registry, registry.clone());
+    let lowerer = Lowerer::new(type_map, variant_registry, registry);
     let (module, hints) = lowerer.lower_script(script);
     Ok((module, hints, tail_ty))
 }
@@ -80,7 +78,7 @@ mod tests {
 
     fn compile_src(
         source: &str,
-        context: HashMap<String, Ty>,
+        context: &HashMap<String, Ty>,
         registry: &ExternRegistry,
     ) -> Result<(MirModule, HintTable), Vec<MirError>> {
         let template = acvus_ast::parse(source).expect("parse failed");
@@ -93,25 +91,25 @@ mod tests {
 
     #[test]
     fn integration_text_only() {
-        let result = compile_src("hello world", HashMap::new(), &empty_registry());
+        let result = compile_src("hello world", &HashMap::new(), &empty_registry());
         assert!(result.is_ok());
     }
 
     #[test]
     fn integration_string_emit() {
-        let result = compile_src(r#"{{ "hello" }}"#, HashMap::new(), &empty_registry());
+        let result = compile_src(r#"{{ "hello" }}"#, &HashMap::new(), &empty_registry());
         assert!(result.is_ok());
     }
 
     #[test]
     fn integration_context_read_var_write() {
         // Variable write (no pre-declaration needed)
-        let result = compile_src("{{ $count = 42 }}", HashMap::new(), &empty_registry());
+        let result = compile_src("{{ $count = 42 }}", &HashMap::new(), &empty_registry());
         assert!(result.is_ok());
 
         // Context read
         let context = HashMap::from([("count".into(), Ty::Int)]);
-        let result = compile_src("{{ @count | to_string }}", context, &empty_registry());
+        let result = compile_src("{{ @count | to_string }}", &context, &empty_registry());
         assert!(result.is_ok());
     }
 
@@ -120,7 +118,7 @@ mod tests {
         let context = HashMap::from([("name".into(), Ty::String)]);
         let result = compile_src(
             r#"{{ x = @name }}{{ x }}{{_}}default{{/}}"#,
-            context,
+            &context,
             &empty_registry(),
         );
         assert!(result.is_ok());
@@ -129,7 +127,7 @@ mod tests {
     #[test]
     fn integration_variable_binding() {
         let context = HashMap::from([("name".into(), Ty::String)]);
-        let result = compile_src(r#"{{ x = @name }}{{ x }}"#, context, &empty_registry());
+        let result = compile_src(r#"{{ x = @name }}{{ x }}"#, &context, &empty_registry());
         assert!(result.is_ok());
     }
 
@@ -141,7 +139,7 @@ mod tests {
         registry.register(&module);
         let result = compile_src(
             r#"{{ x = fetch_user(1) }}{{ x }}{{_}}{{/}}"#,
-            HashMap::new(),
+            &HashMap::new(),
             &registry,
         );
         assert!(result.is_ok());
@@ -152,7 +150,7 @@ mod tests {
         let context = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
         let result = compile_src(
             r#"{{ x = @items | filter(x -> x != 0) }}{{ x | len | to_string }}{{_}}{{/}}"#,
-            context,
+            &context,
             &empty_registry(),
         );
         assert!(result.is_ok());
@@ -167,7 +165,7 @@ mod tests {
                 ("age".into(), Ty::Int),
             ])),
         )]);
-        let result = compile_src("{{ @user.name }}", context, &empty_registry());
+        let result = compile_src("{{ @user.name }}", &context, &empty_registry());
         assert!(result.is_ok());
     }
 
@@ -182,7 +180,7 @@ mod tests {
         )]);
         let result = compile_src(
             r#"{{ { name, } = @users }}{{ name }}{{/}}"#,
-            context,
+            &context,
             &empty_registry(),
         );
         assert!(result.is_ok());
@@ -190,7 +188,7 @@ mod tests {
 
     #[test]
     fn integration_type_error_int_emit() {
-        let result = compile_src("{{ 42 }}", HashMap::new(), &empty_registry());
+        let result = compile_src("{{ 42 }}", &HashMap::new(), &empty_registry());
         assert!(result.is_err());
     }
 
@@ -198,7 +196,7 @@ mod tests {
     fn integration_range_expression() {
         let result = compile_src(
             "{{ x in 0..10 }}{{ x | to_string }}{{/}}",
-            HashMap::new(),
+            &HashMap::new(),
             &empty_registry(),
         );
         assert!(result.is_ok());
@@ -215,7 +213,7 @@ mod tests {
         )]);
         let result = compile_src(
             r#"{{ { name, } = @data }}{{ name }}{{/}}"#,
-            context,
+            &context,
             &empty_registry(),
         );
         assert!(result.is_ok());
@@ -226,7 +224,7 @@ mod tests {
         let context = HashMap::from([("role".into(), Ty::String)]);
         let result = compile_src(
             r#"{{ "admin" = @role }}admin page{{ "user" }}user page{{_}}guest{{/}}"#,
-            context,
+            &context,
             &empty_registry(),
         );
         assert!(result.is_ok());
@@ -237,7 +235,7 @@ mod tests {
         let context = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
         let result = compile_src(
             r#"{{ [a, b, ..] = @items }}{{ a | to_string }}{{_}}{{/}}"#,
-            context,
+            &context,
             &empty_registry(),
         );
         assert!(result.is_ok());
@@ -247,7 +245,7 @@ mod tests {
     fn integration_string_concat() {
         let result = compile_src(
             r#"{{ "hello" + " " + "world" }}"#,
-            HashMap::new(),
+            &HashMap::new(),
             &empty_registry(),
         );
         assert!(result.is_ok());
@@ -255,7 +253,7 @@ mod tests {
 
     #[test]
     fn integration_boolean_logic() {
-        let result = compile_src("{{ true }}", HashMap::new(), &empty_registry());
+        let result = compile_src("{{ true }}", &HashMap::new(), &empty_registry());
         assert!(result.is_err());
     }
 
@@ -263,7 +261,7 @@ mod tests {
         let script = acvus_ast::parse_script(source).unwrap();
         let ctx = HashMap::from([("data".into(), Ty::String)]);
         let (module, _, _) =
-            compile_script(&script, ctx, &empty_registry(), &UserTypeRegistry::new()).unwrap();
+            compile_script(&script, &ctx, &empty_registry(), &UserTypeRegistry::new()).unwrap();
         module
     }
 

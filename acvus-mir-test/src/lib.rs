@@ -8,7 +8,7 @@ use acvus_mir::user_type::UserTypeRegistry;
 /// Parse a template and compile to MIR, returning the printed IR.
 pub fn compile_to_ir(
     source: &str,
-    context: HashMap<String, Ty>,
+    context: &HashMap<String, Ty>,
     registry: &ExternRegistry,
 ) -> Result<String, String> {
     let template = acvus_ast::parse(source).map_err(|e| format!("parse error: {e}"))?;
@@ -27,7 +27,7 @@ pub fn compile_to_ir(
 
 /// Shorthand: compile with empty context.
 pub fn compile_simple(source: &str) -> Result<String, String> {
-    compile_to_ir(source, HashMap::new(), &ExternRegistry::new())
+    compile_to_ir(source, &HashMap::new(), &ExternRegistry::new())
 }
 
 /// Common context types for tests.

@@ -185,7 +185,7 @@ pub fn compile_script_with_hint(
     })?;
     let (module, _hints, tail_ty) = acvus_mir::compile_script_with_hint(
         &script,
-        context_types.clone(),
+        context_types,
         registry,
         &acvus_mir::user_type::UserTypeRegistry::new(),
         expected_tail,
@@ -259,7 +259,7 @@ pub(crate) fn compile_template(
 
     let (module, _hints) = acvus_mir::compile(
         &ast,
-        context_types.clone(),
+        context_types,
         registry,
         &acvus_mir::user_type::UserTypeRegistry::new(),
     )

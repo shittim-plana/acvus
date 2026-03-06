@@ -15,15 +15,15 @@ use crate::variant::{VariantPayload, VariantRegistry, make_enum_ty};
 /// Maps each AST Span to its inferred type.
 pub type TypeMap = HashMap<Span, Ty>;
 
-pub struct TypeChecker {
+pub struct TypeChecker<'a> {
     /// Stack of scopes: each scope maps variable names to types.
     scopes: Vec<HashMap<String, Ty>>,
     /// Context variable types (`@name`, externally declared).
-    context_types: HashMap<String, Ty>,
+    context_types: &'a HashMap<String, Ty>,
     /// Variable types (`$name`, inferred at first assignment).
     variable_types: HashMap<String, Ty>,
     /// External function definitions.
-    extern_registry: ExternRegistry,
+    extern_registry: &'a ExternRegistry,
     /// Variant type registry (enum definitions).
     variant_registry: VariantRegistry,
     /// Unification state.
@@ -34,10 +34,10 @@ pub struct TypeChecker {
     errors: Vec<MirError>,
 }
 
-impl TypeChecker {
+impl<'a> TypeChecker<'a> {
     pub fn new(
-        context_types: HashMap<String, Ty>,
-        registry: &ExternRegistry,
+        context_types: &'a HashMap<String, Ty>,
+        registry: &'a ExternRegistry,
         user_types: &UserTypeRegistry,
     ) -> Self {
         let mut variant_registry = VariantRegistry::new();
@@ -49,7 +49,7 @@ impl TypeChecker {
             scopes: vec![HashMap::new()],
             context_types,
             variable_types: HashMap::new(),
-            extern_registry: registry.clone(),
+            extern_registry: registry,
             variant_registry,
             subst: TySubst::new(),
             type_map: TypeMap::new(),
@@ -262,9 +262,9 @@ impl TypeChecker {
         if len < 2 {
             return;
         }
-        let top = self.scopes[len - 1].clone();
-        for (name, ty) in top {
-            self.scopes[len - 2].insert(name, ty);
+        let (parent, top) = self.scopes.split_at_mut(len - 1);
+        for (name, ty) in &top[0] {
+            parent[len - 2].insert(name.clone(), ty.clone());
         }
     }
 
@@ -1258,11 +1258,10 @@ mod tests {
 
     fn check(source: &str) -> Result<TypeMap, Vec<MirError>> {
         let template = parse(source).expect("parse failed");
-        let checker = TypeChecker::new(
-            HashMap::new(),
-            &ExternRegistry::new(),
-            &UserTypeRegistry::new(),
-        );
+        let empty = HashMap::new();
+        let registry = ExternRegistry::new();
+        let user_types = UserTypeRegistry::new();
+        let checker = TypeChecker::new(&empty, &registry, &user_types);
         let (tm, _) = checker.check_template(&template)?;
         Ok(tm)
     }
@@ -1272,7 +1271,9 @@ mod tests {
         context: HashMap<String, Ty>,
     ) -> Result<TypeMap, Vec<MirError>> {
         let template = parse(source).expect("parse failed");
-        let checker = TypeChecker::new(context, &ExternRegistry::new(), &UserTypeRegistry::new());
+        let registry = ExternRegistry::new();
+        let user_types = UserTypeRegistry::new();
+        let checker = TypeChecker::new(&context, &registry, &user_types);
         let (tm, _) = checker.check_template(&template)?;
         Ok(tm)
     }
@@ -1282,7 +1283,9 @@ mod tests {
         registry: &ExternRegistry,
     ) -> Result<TypeMap, Vec<MirError>> {
         let template = parse(source).expect("parse failed");
-        let checker = TypeChecker::new(HashMap::new(), registry, &UserTypeRegistry::new());
+        let empty = HashMap::new();
+        let user_types = UserTypeRegistry::new();
+        let checker = TypeChecker::new(&empty, registry, &user_types);
         let (tm, _) = checker.check_template(&template)?;
         Ok(tm)
     }

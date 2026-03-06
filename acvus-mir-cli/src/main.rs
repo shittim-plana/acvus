@@ -132,7 +132,7 @@ fn main() {
     // Compile.
     match acvus_mir::compile(
         &template,
-        context_types,
+        &context_types,
         &registry,
         &acvus_mir::user_type::UserTypeRegistry::new(),
     ) {

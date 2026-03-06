@@ -18,7 +18,7 @@ pub async fn run(
     let mir_registry = extern_fns.to_mir_registry();
     let (module, _hints) = acvus_mir::compile(
         &template,
-        context_types,
+        &context_types,
         &mir_registry,
         &acvus_mir::user_type::UserTypeRegistry::new(),
     )
@@ -53,7 +53,7 @@ pub async fn run_obfuscated(
     let mir_registry = extern_fns.to_mir_registry();
     let (module, _hints) = acvus_mir::compile(
         &template,
-        context_types,
+        &context_types,
         &mir_registry,
         &acvus_mir::user_type::UserTypeRegistry::new(),
     )
@@ -111,7 +111,7 @@ pub async fn run_capturing_context_calls(
     let template = acvus_ast::parse(source).expect("parse failed");
     let (module, _hints) = acvus_mir::compile(
         &template,
-        types,
+        &types,
         &ExternFnRegistry::new().to_mir_registry(),
         &acvus_mir::user_type::UserTypeRegistry::new(),
     )

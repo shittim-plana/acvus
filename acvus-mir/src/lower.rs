@@ -16,15 +16,12 @@ use crate::ty::Ty;
 use crate::typeck::TypeMap;
 use crate::variant::VariantRegistry;
 
-pub struct Lowerer {
+pub struct Lowerer<'a> {
     body: MirBody,
     /// Stack of scopes: variable name → register.
     scopes: Vec<HashMap<String, ValueId>>,
     /// Type map from type checker.
     type_map: TypeMap,
-    /// Context variable names (to emit ContextLoad for `@name`).
-    #[allow(dead_code)]
-    context_names: HashSet<String>,
     /// Closures produced during lowering.
     closures: HashMap<Label, ClosureBody>,
     /// Hint table.
@@ -32,7 +29,7 @@ pub struct Lowerer {
     /// Variant registry for tag → VariantTagId resolution.
     variant_registry: VariantRegistry,
     /// Extern registry for name → ExternFnId resolution.
-    extern_registry: ExternRegistry,
+    extern_registry: &'a ExternRegistry,
 }
 
 /// Adjust indentation of a text string according to an `IndentModifier`.
@@ -107,18 +104,16 @@ fn apply_indent_to_nodes(nodes: &[Node], modifier: &IndentModifier) -> Vec<Node>
         .collect()
 }
 
-impl Lowerer {
+impl<'a> Lowerer<'a> {
     pub fn new(
         type_map: TypeMap,
-        context_names: HashSet<String>,
         variant_registry: VariantRegistry,
-        extern_registry: ExternRegistry,
+        extern_registry: &'a ExternRegistry,
     ) -> Self {
         Self {
             body: MirBody::new(),
             scopes: vec![HashMap::new()],
             type_map,
-            context_names,
             closures: HashMap::new(),
             hints: HintTable::new(),
             variant_registry,
@@ -195,9 +190,9 @@ impl Lowerer {
     fn hoist_bodyless_bindings(&mut self) {
         let len = self.scopes.len();
         if len >= 2 {
-            let top = self.scopes[len - 1].clone();
-            for (name, val) in top {
-                self.scopes[len - 2].insert(name, val);
+            let (parent, top) = self.scopes.split_at_mut(len - 1);
+            for (name, val) in &top[0] {
+                parent[len - 2].insert(name.clone(), *val);
             }
         }
     }
@@ -1799,22 +1794,21 @@ mod tests {
     use std::collections::HashMap;
 
     fn lower(source: &str) -> MirModule {
-        lower_with(source, HashMap::new(), &ExternRegistry::new())
+        lower_with(source, &HashMap::new(), &ExternRegistry::new())
     }
 
     fn lower_with(
         source: &str,
-        context: HashMap<String, Ty>,
+        context: &HashMap<String, Ty>,
         registry: &ExternRegistry,
     ) -> MirModule {
         let template = acvus_ast::parse(source).expect("parse failed");
-        let context_names: HashSet<String> = context.keys().cloned().collect();
         let user_types = UserTypeRegistry::new();
         let checker = TypeChecker::new(context, registry, &user_types);
         let (type_map, variant_registry) = checker
             .check_template(&template)
             .expect("type check failed");
-        let lowerer = Lowerer::new(type_map, context_names, variant_registry, registry.clone());
+        let lowerer = Lowerer::new(type_map, variant_registry, registry);
         let (module, _hints) = lowerer.lower_template(&template);
         module
     }
@@ -1855,7 +1849,7 @@ mod tests {
         // Use a non-binding pattern to trigger full match block (no iteration).
         let module = lower_with(
             r#"{{ true = @name == "test" }}matched{{/}}"#,
-            context,
+            &context,
             &ExternRegistry::new(),
         );
         // Match block should NOT have IterInit/IterNext — it's single-value matching.
@@ -1883,7 +1877,7 @@ mod tests {
         registry.register(&ext);
         let module = lower_with(
             r#"{{ x = fetch_user(1) }}{{ x }}{{_}}{{/}}"#,
-            HashMap::new(),
+            &HashMap::new(),
             &registry,
         );
         let has_async_call = module
@@ -1897,7 +1891,7 @@ mod tests {
     #[test]
     fn lower_builtin_call() {
         let context = HashMap::from([("n".into(), Ty::Int)]);
-        let module = lower_with(r#"{{ @n | to_string }}"#, context, &ExternRegistry::new());
+        let module = lower_with(r#"{{ @n | to_string }}"#, &context, &ExternRegistry::new());
         let has_call = module
             .main
             .insts
@@ -1945,7 +1939,7 @@ mod tests {
     fn lower_match_block_indent_decrease() {
         let context = HashMap::from([("name".into(), Ty::String)]);
         let source = "{{ true = @name == \"test\" }}\n    matched\n    here{{/-2}}";
-        let module = lower_with(source, context, &ExternRegistry::new());
+        let module = lower_with(source, &context, &ExternRegistry::new());
         let texts: Vec<&str> = module
             .main
             .insts
@@ -1965,7 +1959,7 @@ mod tests {
     fn lower_match_block_indent_increase() {
         let context = HashMap::from([("name".into(), Ty::String)]);
         let source = "{{ true = @name == \"test\" }}\nmatched{{/+4}}";
-        let module = lower_with(source, context, &ExternRegistry::new());
+        let module = lower_with(source, &context, &ExternRegistry::new());
         let texts: Vec<&str> = module
             .main
             .insts

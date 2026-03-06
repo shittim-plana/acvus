@@ -104,7 +104,7 @@ async fn compile_and_run(
 
     let (module, _hints) = acvus_mir::compile(
         &template,
-        context_types,
+        &context_types,
         &mir_registry,
         &acvus_mir::user_type::UserTypeRegistry::new(),
     )

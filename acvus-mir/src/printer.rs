@@ -629,7 +629,7 @@ mod tests {
 
     fn compile_and_dump(
         source: &str,
-        context: HashMap<String, Ty>,
+        context: &HashMap<String, Ty>,
         registry: &ExternRegistry,
     ) -> String {
         let template = acvus_ast::parse(source).expect("parse failed");
@@ -640,7 +640,7 @@ mod tests {
 
     #[test]
     fn print_text_only() {
-        let out = compile_and_dump("hello world", HashMap::new(), &ExternRegistry::new());
+        let out = compile_and_dump("hello world", &HashMap::new(), &ExternRegistry::new());
         assert!(out.contains("=== literals ==="));
         assert!(out.contains("T0 = \"hello world\""));
         assert!(out.contains("yield T0"));
@@ -648,7 +648,7 @@ mod tests {
 
     #[test]
     fn print_string_emit() {
-        let out = compile_and_dump(r#"{{ "hello" }}"#, HashMap::new(), &ExternRegistry::new());
+        let out = compile_and_dump(r#"{{ "hello" }}"#, &HashMap::new(), &ExternRegistry::new());
         assert!(out.contains("T0 = \"hello\""));
         assert!(out.contains("yield T0"));
     }
@@ -658,7 +658,7 @@ mod tests {
         let context = HashMap::from([("a".into(), Ty::Int), ("b".into(), Ty::Int)]);
         let out = compile_and_dump(
             "{{ x = @a + @b }}{{ x | to_string }}{{_}}{{/}}",
-            context,
+            &context,
             &ExternRegistry::new(),
         );
         assert!(out.contains("+"));
@@ -670,7 +670,7 @@ mod tests {
         let context = HashMap::from([("name".into(), Ty::String)]);
         let out = compile_and_dump(
             r#"{{ true = @name == "test" }}matched{{/}}"#,
-            context,
+            &context,
             &ExternRegistry::new(),
         );
         assert!(!out.contains("iter_init"));
@@ -684,7 +684,7 @@ mod tests {
         let context = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
         let out = compile_and_dump(
             "{{ x = @items | filter(x -> x != 0) }}{{ x | len | to_string }}{{_}}{{/}}",
-            context,
+            &context,
             &ExternRegistry::new(),
         );
         assert!(out.contains("closure L"));
@@ -701,7 +701,7 @@ mod tests {
         registry.register(&ext);
         let out = compile_and_dump(
             "{{ x = fetch(1) }}{{ x }}{{_}}{{/}}",
-            HashMap::new(),
+            &HashMap::new(),
             &registry,
         );
         assert!(out.contains("async_call fetch"));
@@ -717,13 +717,13 @@ mod tests {
                 ("age".into(), Ty::Int),
             ])),
         )]);
-        let out = compile_and_dump("{{ @user.name }}", context, &ExternRegistry::new());
+        let out = compile_and_dump("{{ @user.name }}", &context, &ExternRegistry::new());
         assert!(out.contains(".name"));
     }
 
     #[test]
     fn print_var_write() {
-        let out = compile_and_dump("{{ $count = 42 }}", HashMap::new(), &ExternRegistry::new());
+        let out = compile_and_dump("{{ $count = 42 }}", &HashMap::new(), &ExternRegistry::new());
         assert!(out.contains("var_store $count"));
     }
 
@@ -738,7 +738,7 @@ mod tests {
         )]);
         let out = compile_and_dump(
             r#"{{ { name, } in @users }}{{ name }}{{/}}"#,
-            context,
+            &context,
             &ExternRegistry::new(),
         );
         assert!(out.contains("=== main ==="));
@@ -750,7 +750,7 @@ mod tests {
     fn print_text_dedup() {
         let out = compile_and_dump(
             r#"{{ "hello" }}{{ "hello" }}"#,
-            HashMap::new(),
+            &HashMap::new(),
             &ExternRegistry::new(),
         );
         // Same literal should share one T-index.

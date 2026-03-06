@@ -49,6 +49,7 @@ name = "acvus-coroutine"
 version = "0.1.0"
 dependencies = [
  "parking_lot",
+ "tokio",
 ]
 
 [[package]]
