@@ -1,3 +1,4 @@
+use crate::error::RuntimeError;
 use crate::value::Value;
 
 // -- FromValue / IntoValue ------------------------------------------------
@@ -146,7 +147,7 @@ where
 // -- PureBuiltin trait (Axum Handler pattern) -----------------------------
 
 pub trait PureBuiltin<Args> {
-    fn call(self, args: Vec<Value>) -> Value;
+    fn call(self, args: Vec<Value>) -> Result<Value, RuntimeError>;
 }
 
 impl<F, R, A> PureBuiltin<(A,)> for F
@@ -155,10 +156,10 @@ where
     A: FromValue,
     R: IntoValue,
 {
-    fn call(self, args: Vec<Value>) -> Value {
+    fn call(self, args: Vec<Value>) -> Result<Value, RuntimeError> {
         let mut it = args.into_iter();
         let a = A::from_value(it.next().unwrap());
-        self(a).into_value()
+        Ok(self(a).into_value())
     }
 }
 
@@ -169,11 +170,11 @@ where
     B: FromValue,
     R: IntoValue,
 {
-    fn call(self, args: Vec<Value>) -> Value {
+    fn call(self, args: Vec<Value>) -> Result<Value, RuntimeError> {
         let mut it = args.into_iter();
         let a = A::from_value(it.next().unwrap());
         let b = B::from_value(it.next().unwrap());
-        self(a, b).into_value()
+        Ok(self(a, b).into_value())
     }
 }
 
@@ -185,11 +186,11 @@ where
     C: FromValue,
     R: IntoValue,
 {
-    fn call(self, args: Vec<Value>) -> Value {
+    fn call(self, args: Vec<Value>) -> Result<Value, RuntimeError> {
         let mut it = args.into_iter();
         let a = A::from_value(it.next().unwrap());
         let b = B::from_value(it.next().unwrap());
         let c = C::from_value(it.next().unwrap());
-        self(a, b, c).into_value()
+        Ok(self(a, b, c).into_value())
     }
 }

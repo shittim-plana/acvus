@@ -7,6 +7,7 @@ use acvus_mir::extern_module::{ExternFnId, ExternModule, ExternRegistry};
 use acvus_mir::ty::Ty;
 
 use crate::builtins::{FromValue, IntoValue};
+use crate::error::RuntimeError;
 use crate::value::Value;
 
 #[derive(Clone)]
@@ -17,13 +18,15 @@ pub struct ExternFnSig {
 }
 
 #[derive(Clone)]
-pub struct ExternFnBody(Arc<dyn Fn(Vec<Value>) -> BoxFuture<'static, Value> + Send + Sync>);
+pub struct ExternFnBody(
+    Arc<dyn Fn(Vec<Value>) -> BoxFuture<'static, Result<Value, RuntimeError>> + Send + Sync>,
+);
 
 impl ExternFnBody {
     pub fn new<F, Fut>(f: F) -> Self
     where
         F: Fn(Vec<Value>) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Value> + Send + 'static,
+        Fut: Future<Output = Result<Value, RuntimeError>> + Send + 'static,
     {
         Self(Arc::new(move |args| Box::pin(f(args))))
     }
@@ -35,7 +38,7 @@ impl ExternFnBody {
         f.into_extern_body()
     }
 
-    pub async fn call(&self, args: Vec<Value>) -> Value {
+    pub async fn call(&self, args: Vec<Value>) -> Result<Value, RuntimeError> {
         (self.0)(args).await
     }
 }
@@ -58,7 +61,7 @@ where
             let mut it = args.into_iter();
             let a = A::from_value(it.next().unwrap());
             let fut = self(a);
-            Box::pin(async move { fut.await.into_value() })
+            Box::pin(async move { Ok(fut.await.into_value()) })
         }))
     }
 }
@@ -77,7 +80,7 @@ where
             let a = A::from_value(it.next().unwrap());
             let b = B::from_value(it.next().unwrap());
             let fut = self(a, b);
-            Box::pin(async move { fut.await.into_value() })
+            Box::pin(async move { Ok(fut.await.into_value()) })
         }))
     }
 }
@@ -98,7 +101,7 @@ where
             let b = B::from_value(it.next().unwrap());
             let c = C::from_value(it.next().unwrap());
             let fut = self(a, b, c);
-            Box::pin(async move { fut.await.into_value() })
+            Box::pin(async move { Ok(fut.await.into_value()) })
         }))
     }
 }
@@ -201,7 +204,7 @@ mod tests {
         registry.register(AddOne);
 
         let body = registry.get("add_one").unwrap();
-        let result = body.call(vec![Value::Int(41)]).await;
+        let result = body.call(vec![Value::Int(41)]).await.unwrap();
         match result {
             Value::Int(42) => {}
             _ => panic!("expected Int(42)"),

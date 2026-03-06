@@ -44,6 +44,7 @@ pub async fn render_block_in_coroutine(
                 }
             }
             Stepped::Done => return output,
+            Stepped::Error(e) => panic!("runtime error in render_block: {e}"),
         }
     }
 }
@@ -77,6 +78,7 @@ pub async fn eval_script_in_coroutine(
                 }
             }
             Stepped::Done => return Value::Unit,
+            Stepped::Error(e) => panic!("runtime error in eval_script: {e}"),
         }
     }
 }

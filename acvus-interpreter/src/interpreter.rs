@@ -9,6 +9,7 @@ use acvus_mir::builtins::BuiltinId;
 use acvus_mir::ir::{CallTarget, Inst, InstKind, Label, MirBody, MirModule, ValueId};
 
 use crate::builtins;
+use crate::error::RuntimeError;
 use crate::extern_fn::{ExternFnBody, ExternFnRegistry};
 use crate::value::{FnValue, Value};
 use acvus_coroutine::{Coroutine, ResumeKey, Stepped, YieldHandle};
@@ -207,12 +208,13 @@ impl Interpreter {
         }
     }
 
-    pub fn execute(self) -> (Coroutine<Value>, ResumeKey<Value>) {
+    pub fn execute(self) -> (Coroutine<Value, RuntimeError>, ResumeKey<Value>) {
         acvus_coroutine::coroutine(|handle| async move {
             let insts = self.module.main.insts.clone();
             let label_map = build_label_map(&self.module.main);
             let frame = Frame::new(self.module.main.val_count, label_map);
-            Self::run(self, insts, frame, &handle).await;
+            Self::run(self, insts, frame, &handle).await?;
+            Ok(())
         })
     }
 
@@ -237,6 +239,7 @@ impl Interpreter {
                     key = need.into_key(Arc::new(v.clone()));
                 }
                 Stepped::Done => break,
+                Stepped::Error(e) => panic!("runtime error: {e}"),
             }
         }
         output
@@ -249,7 +252,7 @@ impl Interpreter {
         insts: Vec<Inst>,
         frame: Frame,
         handle: &'a YieldHandle<Value>,
-    ) -> BoxFuture<'a, (Self, Frame, Option<Value>)> {
+    ) -> BoxFuture<'a, Result<(Self, Frame, Option<Value>), RuntimeError>> {
         Box::pin(Self::run_inner(this, insts, frame, handle))
     }
 
@@ -258,7 +261,7 @@ impl Interpreter {
         insts: Vec<Inst>,
         mut frame: Frame,
         handle: &YieldHandle<Value>,
-    ) -> (Self, Frame, Option<Value>) {
+    ) -> Result<(Self, Frame, Option<Value>), RuntimeError> {
         let mut pc = 0;
         while pc < insts.len() {
             match &insts[pc].kind {
@@ -500,10 +503,12 @@ impl Interpreter {
                     match func {
                         CallTarget::Builtin(id) => {
                             (this, result) =
-                                Self::exec_builtin(this, *id, arg_values, handle).await;
+                                Self::exec_builtin(this, *id, arg_values, handle).await?;
                         }
                         CallTarget::Extern(id) => {
-                            result = this.extern_fn_table[id.0 as usize].call(arg_values).await;
+                            result = this.extern_fn_table[id.0 as usize]
+                                .call(arg_values)
+                                .await?;
                         }
                     }
                     frame.set_new(*dst, result);
@@ -513,16 +518,16 @@ impl Interpreter {
                     let CallTarget::Extern(id) = func else {
                         panic!("AsyncCall with non-extern target");
                     };
-                    frame.set_new(
-                        *dst,
-                        this.extern_fn_table[id.0 as usize].call(arg_values).await,
-                    );
+                    let result = this.extern_fn_table[id.0 as usize]
+                        .call(arg_values)
+                        .await?;
+                    frame.set_new(*dst, result);
                 }
                 InstKind::CallClosure { dst, closure, args } => {
                     let fn_val = expect_fn(frame.take_owned(*closure), "CallClosure");
                     let arg_values = frame.collect_args_arc(args);
                     let result;
-                    (this, result) = Self::call_closure(this, fn_val, arg_values, handle).await;
+                    (this, result) = Self::call_closure(this, fn_val, arg_values, handle).await?;
                     frame.set_new(*dst, result);
                 }
                 InstKind::Await { dst, src } => {
@@ -552,13 +557,13 @@ impl Interpreter {
                 }
                 InstKind::Return(val) => {
                     let v = frame.take_owned(*val);
-                    return (this, frame, Some(v));
+                    return Ok((this, frame, Some(v)));
                 }
                 InstKind::Nop => {}
             }
             pc += 1;
         }
-        (this, frame, None)
+        Ok((this, frame, None))
     }
 
     // -- builtin dispatch -----------------------------------------------------
@@ -568,7 +573,7 @@ impl Interpreter {
         id: BuiltinId,
         args: Vec<Value>,
         handle: &'a YieldHandle<Value>,
-    ) -> (Self, Value) {
+    ) -> Result<(Self, Value), RuntimeError> {
         match id {
             BuiltinId::ToString
             | BuiltinId::ToInt
@@ -596,14 +601,17 @@ impl Interpreter {
             | BuiltinId::StartsWithStr
             | BuiltinId::EndsWithStr
             | BuiltinId::RepeatStr
-            | BuiltinId::Unwrap => (this, builtins::call_pure(id, args)),
-            BuiltinId::Filter => Self::exec_hof_filter(this, args, handle).await,
-            BuiltinId::Map | BuiltinId::Pmap => Self::exec_hof_map(this, args, handle).await,
-            BuiltinId::Find => Self::exec_hof_find(this, args, handle).await,
-            BuiltinId::Reduce => Self::exec_hof_reduce(this, args, handle).await,
-            BuiltinId::Fold => Self::exec_hof_fold(this, args, handle).await,
-            BuiltinId::Any => Self::exec_hof_any(this, args, handle).await,
-            BuiltinId::All => Self::exec_hof_all(this, args, handle).await,
+            | BuiltinId::Unwrap => {
+                let result = builtins::call_pure(id, args)?;
+                Ok((this, result))
+            }
+            BuiltinId::Filter => Ok(Self::exec_hof_filter(this, args, handle).await?),
+            BuiltinId::Map | BuiltinId::Pmap => Ok(Self::exec_hof_map(this, args, handle).await?),
+            BuiltinId::Find => Ok(Self::exec_hof_find(this, args, handle).await?),
+            BuiltinId::Reduce => Ok(Self::exec_hof_reduce(this, args, handle).await?),
+            BuiltinId::Fold => Ok(Self::exec_hof_fold(this, args, handle).await?),
+            BuiltinId::Any => Ok(Self::exec_hof_any(this, args, handle).await?),
+            BuiltinId::All => Ok(Self::exec_hof_all(this, args, handle).await?),
         }
     }
 
@@ -611,63 +619,67 @@ impl Interpreter {
         mut this: Self,
         args: Vec<Value>,
         handle: &'a YieldHandle<Value>,
-    ) -> (Self, Value) {
+    ) -> Result<(Self, Value), RuntimeError> {
         let (items, fn_val) = extract_list_fn(args, "filter");
         let mut result = Vec::new();
         for item in items {
             let arc_item = Arc::new(item);
             let keep;
             (this, keep) =
-                Self::call_closure(this, fn_val.clone(), vec![Arc::clone(&arc_item)], handle).await;
+                Self::call_closure(this, fn_val.clone(), vec![Arc::clone(&arc_item)], handle)
+                    .await?;
             if matches!(keep, Value::Bool(true)) {
                 result.push(Arc::unwrap_or_clone(arc_item));
             }
         }
-        (this, Value::List(result))
+        Ok((this, Value::List(result)))
     }
 
     async fn exec_hof_map<'a>(
         mut this: Self,
         args: Vec<Value>,
         handle: &'a YieldHandle<Value>,
-    ) -> (Self, Value) {
+    ) -> Result<(Self, Value), RuntimeError> {
         let (items, fn_val) = extract_list_fn(args, "map");
         let mut result = Vec::new();
         for item in items {
             let mapped;
             (this, mapped) =
-                Self::call_closure(this, fn_val.clone(), vec![Arc::new(item)], handle).await;
+                Self::call_closure(this, fn_val.clone(), vec![Arc::new(item)], handle).await?;
             result.push(mapped);
         }
-        (this, Value::List(result))
+        Ok((this, Value::List(result)))
     }
 
     async fn exec_hof_find<'a>(
         mut this: Self,
         args: Vec<Value>,
         handle: &'a YieldHandle<Value>,
-    ) -> (Self, Value) {
+    ) -> Result<(Self, Value), RuntimeError> {
         let (items, fn_val) = extract_list_fn(args, "find");
         for item in items {
             let arc_item = Arc::new(item);
             let matched;
             (this, matched) =
-                Self::call_closure(this, fn_val.clone(), vec![Arc::clone(&arc_item)], handle).await;
+                Self::call_closure(this, fn_val.clone(), vec![Arc::clone(&arc_item)], handle)
+                    .await?;
             if matches!(matched, Value::Bool(true)) {
-                return (this, Arc::unwrap_or_clone(arc_item));
+                return Ok((this, Arc::unwrap_or_clone(arc_item)));
             }
         }
-        panic!("find: no element matched the predicate");
+        Err(RuntimeError::empty_collection("find"))
     }
 
     async fn exec_hof_reduce<'a>(
         mut this: Self,
         args: Vec<Value>,
         handle: &'a YieldHandle<Value>,
-    ) -> (Self, Value) {
+    ) -> Result<(Self, Value), RuntimeError> {
         let (items, fn_val) = extract_list_fn(args, "reduce");
         let mut it = items.into_iter();
-        let mut acc = it.next().expect("reduce: empty list");
+        let Some(mut acc) = it.next() else {
+            return Err(RuntimeError::empty_collection("reduce"));
+        };
         for item in it {
             (this, acc) = Self::call_closure(
                 this,
@@ -675,16 +687,16 @@ impl Interpreter {
                 vec![Arc::new(acc), Arc::new(item)],
                 handle,
             )
-            .await;
+            .await?;
         }
-        (this, acc)
+        Ok((this, acc))
     }
 
     async fn exec_hof_fold<'a>(
         mut this: Self,
         args: Vec<Value>,
         handle: &'a YieldHandle<Value>,
-    ) -> (Self, Value) {
+    ) -> Result<(Self, Value), RuntimeError> {
         let mut it = args.into_iter();
         let list = it.next().unwrap();
         let init = it.next().unwrap();
@@ -701,43 +713,43 @@ impl Interpreter {
                 vec![Arc::new(acc), Arc::new(item)],
                 handle,
             )
-            .await;
+            .await?;
         }
-        (this, acc)
+        Ok((this, acc))
     }
 
     async fn exec_hof_any<'a>(
         mut this: Self,
         args: Vec<Value>,
         handle: &'a YieldHandle<Value>,
-    ) -> (Self, Value) {
+    ) -> Result<(Self, Value), RuntimeError> {
         let (items, fn_val) = extract_list_fn(args, "any");
         for item in items {
             let result;
             (this, result) =
-                Self::call_closure(this, fn_val.clone(), vec![Arc::new(item)], handle).await;
+                Self::call_closure(this, fn_val.clone(), vec![Arc::new(item)], handle).await?;
             if matches!(result, Value::Bool(true)) {
-                return (this, Value::Bool(true));
+                return Ok((this, Value::Bool(true)));
             }
         }
-        (this, Value::Bool(false))
+        Ok((this, Value::Bool(false)))
     }
 
     async fn exec_hof_all<'a>(
         mut this: Self,
         args: Vec<Value>,
         handle: &'a YieldHandle<Value>,
-    ) -> (Self, Value) {
+    ) -> Result<(Self, Value), RuntimeError> {
         let (items, fn_val) = extract_list_fn(args, "all");
         for item in items {
             let result;
             (this, result) =
-                Self::call_closure(this, fn_val.clone(), vec![Arc::new(item)], handle).await;
+                Self::call_closure(this, fn_val.clone(), vec![Arc::new(item)], handle).await?;
             if matches!(result, Value::Bool(false)) {
-                return (this, Value::Bool(false));
+                return Ok((this, Value::Bool(false)));
             }
         }
-        (this, Value::Bool(true))
+        Ok((this, Value::Bool(true)))
     }
 
     // -- closure invocation ---------------------------------------------------
@@ -747,7 +759,7 @@ impl Interpreter {
         fn_val: FnValue,
         args: Vec<Arc<Value>>,
         handle: &'a YieldHandle<Value>,
-    ) -> (Self, Value) {
+    ) -> Result<(Self, Value), RuntimeError> {
         let closure_body = this
             .module
             .closures
@@ -766,8 +778,8 @@ impl Interpreter {
         }
 
         let insts = closure_body.body.insts.clone();
-        let (this, _, result) = Self::run(this, insts, frame, handle).await;
-        (this, result.expect("closure must return a value"))
+        let (this, _, result) = Self::run(this, insts, frame, handle).await?;
+        Ok((this, result.expect("closure must return a value")))
     }
 }
 

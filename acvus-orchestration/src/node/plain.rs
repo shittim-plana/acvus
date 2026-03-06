@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use acvus_interpreter::{Coroutine, ExternFnRegistry, Interpreter, ResumeKey, Stepped, Value};
+use acvus_interpreter::{
+    Coroutine, ExternFnRegistry, Interpreter, ResumeKey, RuntimeError, Stepped, Value,
+};
 
 use super::Node;
 
@@ -20,7 +22,7 @@ impl PlainNode {
 }
 
 impl Node for PlainNode {
-    fn spawn(&self, local: HashMap<String, Arc<Value>>) -> (Coroutine<Value>, ResumeKey<Value>) {
+    fn spawn(&self, local: HashMap<String, Arc<Value>>) -> (Coroutine<Value, RuntimeError>, ResumeKey<Value>) {
         let interp = Interpreter::new(self.module.clone(), &self.extern_fns);
         let (mut inner, mut key) = interp.execute();
         acvus_coroutine::coroutine(move |handle| async move {
@@ -50,9 +52,11 @@ impl Node for PlainNode {
                         }
                     }
                     Stepped::Done => break,
+                    Stepped::Error(e) => return Err(e),
                 }
             }
             handle.yield_val(Value::String(output)).await;
+            Ok(())
         })
     }
 }

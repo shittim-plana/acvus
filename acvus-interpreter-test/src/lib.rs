@@ -142,9 +142,49 @@ pub async fn run_capturing_context_calls(
                 key = need.into_key(Arc::new(v.clone()));
             }
             Stepped::Done => break,
+            Stepped::Error(e) => panic!("runtime error: {e}"),
         }
     }
     ContextCallResult { output, calls }
+}
+
+/// Execute a template and return the RuntimeError if one occurs.
+/// Used for testing error propagation through the coroutine.
+pub async fn run_expect_error(
+    source: &str,
+    context_types: HashMap<String, Ty>,
+    context_values: HashMap<String, Value>,
+    extern_fns: ExternFnRegistry,
+) -> acvus_interpreter::RuntimeError {
+    let template = acvus_ast::parse(source).expect("parse failed");
+    let mir_registry = extern_fns.to_mir_registry();
+    let (module, _hints) = acvus_mir::compile(
+        &template,
+        &context_types,
+        &mir_registry,
+        &acvus_mir::user_type::UserTypeRegistry::new(),
+    )
+    .expect("compile failed");
+
+    let interp = Interpreter::new(module, &extern_fns);
+    let (mut coroutine, mut key) = interp.execute();
+    loop {
+        match coroutine.resume(key).await {
+            Stepped::Emit(emit) => {
+                let (_, next_key) = emit.into_parts();
+                key = next_key;
+            }
+            Stepped::NeedContext(need) => {
+                let name = need.name().to_string();
+                let v = context_values
+                    .get(&name)
+                    .unwrap_or_else(|| panic!("undefined context @{name}"));
+                key = need.into_key(Arc::new(v.clone()));
+            }
+            Stepped::Done => panic!("expected error, got Done"),
+            Stepped::Error(e) => return e,
+        }
+    }
 }
 
 // ── Fixture runner ──────────────────────────────────────────────

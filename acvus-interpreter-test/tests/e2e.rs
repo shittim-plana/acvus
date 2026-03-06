@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
-use acvus_interpreter::{ExternFn, ExternFnBody, ExternFnRegistry, ExternFnSig, Value};
+use acvus_interpreter::{
+    ExternFn, ExternFnBody, ExternFnRegistry, ExternFnSig, RuntimeError, RuntimeErrorKind, Value,
+};
 use acvus_interpreter_test::*;
 #[allow(unused_imports)]
 use acvus_interpreter_test::{run_capturing_context_calls, run_obfuscated, run_simple_obfuscated};
@@ -941,10 +943,10 @@ impl ExternFn for DoubleIt {
     }
     fn into_body(self) -> ExternFnBody {
         ExternFnBody::new(|args| async move {
-            match &args[0] {
+            Ok(match &args[0] {
                 Value::Int(n) => Value::Int(n * 2),
                 _ => panic!("expected Int"),
-            }
+            })
         })
     }
 }
@@ -1839,5 +1841,87 @@ async fn to_utf8_none_on_invalid() {
         )
         .await,
         "invalid"
+    );
+}
+
+// ── Error propagation ───────────────────────────────────────────
+
+/// Extern fn returning Err propagates as Stepped::Error.
+#[tokio::test]
+async fn error_extern_fn_propagates() {
+    struct FailingFn;
+
+    impl ExternFn for FailingFn {
+        fn name(&self) -> &str {
+            "fail_fn"
+        }
+        fn sig(&self) -> ExternFnSig {
+            ExternFnSig {
+                params: vec![Ty::Int],
+                ret: Ty::String,
+                effectful: false,
+            }
+        }
+        fn into_body(self) -> ExternFnBody {
+            ExternFnBody::new(|_args| async move {
+                Err(RuntimeError::extern_call("fail_fn", "intentional failure".into()))
+            })
+        }
+    }
+
+    let mut extern_fns = ExternFnRegistry::new();
+    extern_fns.register(FailingFn);
+
+    let err = run_expect_error(
+        r#"{{ x = fail_fn(1) }}{{ x }}{{_}}{{/}}"#,
+        HashMap::new(),
+        HashMap::new(),
+        extern_fns,
+    )
+    .await;
+
+    assert!(
+        matches!(err.kind, RuntimeErrorKind::ExternCall { ref name, .. } if name == "fail_fn"),
+        "expected ExternCall error, got: {err}",
+    );
+}
+
+/// HOF find on empty list → Stepped::Error (not panic).
+#[tokio::test]
+async fn error_find_empty_list() {
+    let types = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
+    let values = HashMap::from([("items".into(), Value::List(vec![]))]);
+
+    let err = run_expect_error(
+        r#"{{ x = @items | find(x -> x == 99) }}{{ x | to_string }}{{_}}{{/}}"#,
+        types,
+        values,
+        ExternFnRegistry::new(),
+    )
+    .await;
+
+    assert!(
+        matches!(err.kind, RuntimeErrorKind::EmptyCollection { ref operation } if operation == "find"),
+        "expected EmptyCollection error, got: {err}",
+    );
+}
+
+/// HOF reduce on empty list → Stepped::Error (not panic).
+#[tokio::test]
+async fn error_reduce_empty_list() {
+    let types = HashMap::from([("items".into(), Ty::List(Box::new(Ty::Int)))]);
+    let values = HashMap::from([("items".into(), Value::List(vec![]))]);
+
+    let err = run_expect_error(
+        r#"{{ x = @items | reduce((a, b) -> a + b) }}{{ x | to_string }}{{_}}{{/}}"#,
+        types,
+        values,
+        ExternFnRegistry::new(),
+    )
+    .await;
+
+    assert!(
+        matches!(err.kind, RuntimeErrorKind::EmptyCollection { ref operation } if operation == "reduce"),
+        "expected EmptyCollection error, got: {err}",
     );
 }

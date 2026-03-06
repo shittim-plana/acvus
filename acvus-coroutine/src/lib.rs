@@ -132,10 +132,11 @@ enum ResumeKeyInner<V> {
     Context(Arc<V>),
 }
 
-pub enum Stepped<V> {
+pub enum Stepped<V, E> {
     Emit(EmitStepped<V>),
     NeedContext(NeedContextStepped<V>),
     Done,
+    Error(E),
 }
 
 pub struct EmitStepped<V> {
@@ -176,13 +177,13 @@ impl<V> NeedContextStepped<V> {
 // Coroutine
 // ---------------------------------------------------------------------------
 
-pub struct Coroutine<V> {
+pub struct Coroutine<V, E> {
     shared: Arc<Mutex<Signal<V>>>,
-    fut: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
+    fut: Option<Pin<Box<dyn Future<Output = Result<(), E>> + Send>>>,
 }
 
-impl<V> Coroutine<V> {
-    pub fn resume(&mut self, key: ResumeKey<V>) -> ResumeFuture<'_, V> {
+impl<V, E> Coroutine<V, E> {
+    pub fn resume(&mut self, key: ResumeKey<V>) -> ResumeFuture<'_, V, E> {
         if let ResumeKeyInner::Context(arc) = key.0 {
             *self.shared.lock() = Signal::ContextReady(arc);
         }
@@ -194,14 +195,14 @@ impl<V> Coroutine<V> {
 // ResumeFuture — async resume
 // ---------------------------------------------------------------------------
 
-pub struct ResumeFuture<'a, V> {
-    coroutine: &'a mut Coroutine<V>,
+pub struct ResumeFuture<'a, V, E> {
+    coroutine: &'a mut Coroutine<V, E>,
 }
 
-impl<V> Future for ResumeFuture<'_, V> {
-    type Output = Stepped<V>;
+impl<V, E> Future for ResumeFuture<'_, V, E> {
+    type Output = Stepped<V, E>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Stepped<V>> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Stepped<V, E>> {
         let this = self.get_mut();
         let fut = match &mut this.coroutine.fut {
             Some(f) => f.as_mut(),
@@ -227,11 +228,16 @@ impl<V> Future for ResumeFuture<'_, V> {
             other => {
                 // put back unconsumed signal (e.g. ContextReady mid-processing)
                 *signal = other;
-                if poll_result.is_ready() {
-                    this.coroutine.fut = None;
-                    Poll::Ready(Stepped::Done)
-                } else {
-                    Poll::Pending
+                match poll_result {
+                    Poll::Ready(Ok(())) => {
+                        this.coroutine.fut = None;
+                        Poll::Ready(Stepped::Done)
+                    }
+                    Poll::Ready(Err(e)) => {
+                        this.coroutine.fut = None;
+                        Poll::Ready(Stepped::Error(e))
+                    }
+                    Poll::Pending => Poll::Pending,
                 }
             }
         }
@@ -242,10 +248,10 @@ impl<V> Future for ResumeFuture<'_, V> {
 // Constructor
 // ---------------------------------------------------------------------------
 
-pub fn coroutine<V, F, Fut>(f: F) -> (Coroutine<V>, ResumeKey<V>)
+pub fn coroutine<V, E, F, Fut>(f: F) -> (Coroutine<V, E>, ResumeKey<V>)
 where
     F: FnOnce(YieldHandle<V>) -> Fut,
-    Fut: Future<Output = ()> + Send + 'static,
+    Fut: Future<Output = Result<(), E>> + Send + 'static,
 {
     let shared = Arc::new(Mutex::new(Signal::Empty));
     let handle = YieldHandle {
@@ -269,23 +275,24 @@ where
 mod tests {
     use super::*;
 
-    async fn step<V>(
-        co: &mut Coroutine<V>,
+    async fn step<V, E>(
+        co: &mut Coroutine<V, E>,
         key: ResumeKey<V>,
-    ) -> Stepped<V> {
+    ) -> Stepped<V, E> {
         co.resume(key).await
     }
 
     #[tokio::test]
     async fn empty_coroutine() {
-        let (mut co, key) = coroutine::<i32, _, _>(|_handle| async move {});
+        let (mut co, key) = coroutine::<i32, (), _, _>(|_handle| async move { Ok(()) });
         assert!(matches!(step(&mut co, key).await, Stepped::Done));
     }
 
     #[tokio::test]
     async fn single_yield() {
-        let (mut co, key) = coroutine(|handle| async move {
+        let (mut co, key) = coroutine::<_, (), _, _>(|handle| async move {
             handle.yield_val(42).await;
+            Ok(())
         });
 
         let Stepped::Emit(emit) = step(&mut co, key).await else {
@@ -299,10 +306,11 @@ mod tests {
 
     #[tokio::test]
     async fn multiple_yields() {
-        let (mut co, key) = coroutine(|handle| async move {
+        let (mut co, key) = coroutine::<_, (), _, _>(|handle| async move {
             handle.yield_val(1).await;
             handle.yield_val(2).await;
             handle.yield_val(3).await;
+            Ok(())
         });
 
         let mut key = key;
@@ -320,9 +328,10 @@ mod tests {
 
     #[tokio::test]
     async fn context_request() {
-        let (mut co, key) = coroutine(|handle| async move {
+        let (mut co, key) = coroutine::<_, (), _, _>(|handle| async move {
             let ctx = handle.request_context("user".into()).await;
             handle.yield_val(format!("got: {ctx}")).await;
+            Ok(())
         });
 
         let Stepped::NeedContext(need) = step(&mut co, key).await else {
@@ -343,13 +352,14 @@ mod tests {
 
     #[tokio::test]
     async fn context_request_with_bindings() {
-        let (mut co, key) = coroutine(|handle| async move {
+        let (mut co, key) = coroutine::<_, (), _, _>(|handle| async move {
             let mut bindings = HashMap::new();
             bindings.insert("role".into(), "admin".into());
             let ctx = handle
                 .request_context_with("user".into(), bindings)
                 .await;
             handle.yield_val(format!("got: {ctx}")).await;
+            Ok(())
         });
 
         let Stepped::NeedContext(need) = step(&mut co, key).await else {
@@ -370,12 +380,13 @@ mod tests {
 
     #[tokio::test]
     async fn interleaved_yield_and_context() {
-        let (mut co, key) = coroutine(|handle| async move {
+        let (mut co, key) = coroutine::<_, (), _, _>(|handle| async move {
             handle.yield_val("start".to_string()).await;
             let name = handle.request_context("name".into()).await;
             handle.yield_val(format!("hello {name}")).await;
             let age = handle.request_context("age".into()).await;
             handle.yield_val(format!("{name} is {age}")).await;
+            Ok(())
         });
 
         // yield "start"
@@ -418,10 +429,11 @@ mod tests {
 
     #[tokio::test]
     async fn multiple_context_requests_in_sequence() {
-        let (mut co, key) = coroutine(|handle| async move {
+        let (mut co, key) = coroutine::<_, (), _, _>(|handle| async move {
             let a = handle.request_context("a".into()).await;
             let b = handle.request_context("b".into()).await;
             handle.yield_val(format!("{a}+{b}")).await;
+            Ok(())
         });
 
         let Stepped::NeedContext(need) = step(&mut co, key).await else {
@@ -447,7 +459,7 @@ mod tests {
 
     #[tokio::test]
     async fn done_after_done_is_idempotent() {
-        let (mut co, key) = coroutine::<i32, _, _>(|_handle| async move {});
+        let (mut co, key) = coroutine::<i32, (), _, _>(|_handle| async move { Ok(()) });
 
         assert!(matches!(step(&mut co, key).await, Stepped::Done));
 
@@ -460,10 +472,11 @@ mod tests {
 
     #[tokio::test]
     async fn yield_handle_clone() {
-        let (mut co, key) = coroutine(|handle| async move {
+        let (mut co, key) = coroutine::<_, (), _, _>(|handle| async move {
             let h2 = handle.clone();
             handle.yield_val(1).await;
             h2.yield_val(2).await;
+            Ok(())
         });
 
         let Stepped::Emit(emit) = step(&mut co, key).await else {
@@ -483,8 +496,9 @@ mod tests {
 
     #[tokio::test]
     async fn context_without_yield() {
-        let (mut co, key) = coroutine::<String, _, _>(|handle| async move {
+        let (mut co, key) = coroutine::<String, (), _, _>(|handle| async move {
             let _ctx = handle.request_context("ignored".into()).await;
+            Ok(())
         });
 
         let Stepped::NeedContext(need) = step(&mut co, key).await else {
@@ -492,5 +506,40 @@ mod tests {
         };
         let key = need.into_key(Arc::new("value".to_string()));
         assert!(matches!(step(&mut co, key).await, Stepped::Done));
+    }
+
+    #[tokio::test]
+    async fn error_propagation() {
+        let (mut co, key) = coroutine::<i32, String, _, _>(|_handle| async move {
+            Err("something went wrong".to_string())
+        });
+
+        let Stepped::Error(e) = step(&mut co, key).await else {
+            panic!("expected Error");
+        };
+        assert_eq!(e, "something went wrong");
+
+        // After error, further resumes return Done
+        let key = ResumeKey(ResumeKeyInner::Start);
+        assert!(matches!(step(&mut co, key).await, Stepped::Done));
+    }
+
+    #[tokio::test]
+    async fn error_after_yield() {
+        let (mut co, key) = coroutine::<i32, String, _, _>(|handle| async move {
+            handle.yield_val(1).await;
+            Err("failed after yield".to_string())
+        });
+
+        let Stepped::Emit(emit) = step(&mut co, key).await else {
+            panic!("expected Emit");
+        };
+        let (value, key) = emit.into_parts();
+        assert_eq!(value, 1);
+
+        let Stepped::Error(e) = step(&mut co, key).await else {
+            panic!("expected Error");
+        };
+        assert_eq!(e, "failed after yield");
     }
 }

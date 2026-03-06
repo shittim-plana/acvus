@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use acvus_interpreter::{Coroutine, ExternFnRegistry, ResumeKey, Value};
+use acvus_interpreter::{Coroutine, ExternFnRegistry, ResumeKey, RuntimeError, Value};
 
 use tracing::{debug, info};
 
@@ -47,7 +47,7 @@ impl<F> Node for LlmCacheNode<F>
 where
     F: Fetch + 'static,
 {
-    fn spawn(&self, local: HashMap<String, Arc<Value>>) -> (Coroutine<Value>, ResumeKey<Value>) {
+    fn spawn(&self, local: HashMap<String, Arc<Value>>) -> (Coroutine<Value, RuntimeError>, ResumeKey<Value>) {
         let messages = self.messages.clone();
         let model = self.model.clone();
         let ttl = self.ttl.clone();
@@ -78,12 +78,16 @@ where
                 &ttl,
                 &cache_config,
             );
-            let json = fetch.fetch(&request).await.expect("llm_cache fetch failed");
+            let json = fetch
+                .fetch(&request)
+                .await
+                .map_err(|e| RuntimeError::fetch(e))?;
             let cache_name = crate::provider::parse_cache_response(&provider_config.api, &json)
-                .expect("llm_cache response parse failed");
+                .map_err(|e| RuntimeError::fetch(e))?;
             debug!(cache_name = %cache_name, "llm_cache created");
 
             handle.yield_val(Value::String(cache_name)).await;
+            Ok(())
         })
     }
 }

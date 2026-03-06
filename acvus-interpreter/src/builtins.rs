@@ -6,11 +6,12 @@ pub use handler::{FromValue, IntoValue};
 use handler::PureBuiltin;
 use pure::*;
 
+use crate::error::RuntimeError;
 use crate::value::Value;
 use acvus_mir::builtins::BuiltinId;
 
 /// Dispatch a pure (non-HOF) builtin by ID.
-pub fn call_pure(id: BuiltinId, args: Vec<Value>) -> Value {
+pub fn call_pure(id: BuiltinId, args: Vec<Value>) -> Result<Value, RuntimeError> {
     match id {
         BuiltinId::ToString => PureBuiltin::call(builtin_to_string, args),
         BuiltinId::ToInt => PureBuiltin::call(builtin_to_int, args),
@@ -39,7 +40,10 @@ pub fn call_pure(id: BuiltinId, args: Vec<Value>) -> Value {
         BuiltinId::EndsWithStr => PureBuiltin::call(builtin_ends_with_str, args),
         BuiltinId::RepeatStr => PureBuiltin::call(builtin_repeat_str, args),
         BuiltinId::Unwrap => PureBuiltin::call(builtin_unwrap, args),
-        other => panic!("not a pure builtin: {}", other.name()),
+        other => Err(RuntimeError::other(format!(
+            "not a pure builtin: {}",
+            other.name()
+        ))),
     }
 }
 

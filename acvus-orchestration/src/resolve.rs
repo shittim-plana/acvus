@@ -3,7 +3,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use acvus_interpreter::{ExternFnRegistry, Interpreter, Stepped, Value};
+use acvus_interpreter::{ExternFnRegistry, Interpreter, RuntimeError, Stepped, Value};
 use acvus_mir_pass::analysis::reachable_context::partition_context_keys;
 use tracing::{debug, info, warn};
 
@@ -409,7 +409,7 @@ where
     /// Resolution: local → resolve_context (turn_context → storage → external).
     fn eval_coroutine<S>(
         &'a self,
-        coroutine: &'a mut acvus_coroutine::Coroutine<Value>,
+        coroutine: &'a mut acvus_coroutine::Coroutine<Value, RuntimeError>,
         first_key: acvus_coroutine::ResumeKey<Value>,
         local: &'a HashMap<String, Arc<Value>>,
         state: &'a mut ResolveState<S>,
@@ -443,6 +443,12 @@ where
                         warn!("coroutine finished without emit");
                         return Ok(Value::Unit);
                     }
+                    Stepped::Error(e) => {
+                        return Err(ResolveError::Runtime {
+                            node: String::new(),
+                            error: e,
+                        });
+                    }
                 }
             }
         })
@@ -473,12 +479,23 @@ where
 #[derive(Debug)]
 pub enum ResolveError {
     UnresolvedContext(String),
+    Runtime {
+        node: String,
+        error: RuntimeError,
+    },
 }
 
 impl std::fmt::Display for ResolveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ResolveError::UnresolvedContext(name) => write!(f, "unresolved context: @{name}"),
+            ResolveError::Runtime { node, error } => {
+                if node.is_empty() {
+                    write!(f, "runtime error: {error}")
+                } else {
+                    write!(f, "runtime error in node '{node}': {error}")
+                }
+            }
         }
     }
 }

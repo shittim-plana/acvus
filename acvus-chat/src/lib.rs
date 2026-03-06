@@ -247,7 +247,7 @@ where
 
 /// Drive an interpreter coroutine to a single value, resolving contexts from storage + local.
 async fn drive_script<S>(
-    coroutine: &mut acvus_coroutine::Coroutine<Value>,
+    coroutine: &mut acvus_coroutine::Coroutine<Value, acvus_interpreter::RuntimeError>,
     mut key: acvus_coroutine::ResumeKey<Value>,
     storage: &S,
     local: &HashMap<String, Arc<Value>>,
@@ -272,6 +272,7 @@ where
                 }
             }
             acvus_coroutine::Stepped::Done => return Value::Unit,
+            acvus_coroutine::Stepped::Error(e) => panic!("runtime error: {e}"),
         }
     }
 }

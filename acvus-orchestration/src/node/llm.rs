@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use acvus_interpreter::{Coroutine, ExternFnRegistry, ResumeKey, Value};
+use acvus_interpreter::{Coroutine, ExternFnRegistry, ResumeKey, RuntimeError, Value};
 
 use tracing::{debug, info, warn};
 
@@ -60,7 +60,7 @@ impl<F> Node for LlmNode<F>
 where
     F: Fetch + 'static,
 {
-    fn spawn(&self, local: HashMap<String, Arc<Value>>) -> (Coroutine<Value>, ResumeKey<Value>) {
+    fn spawn(&self, local: HashMap<String, Arc<Value>>) -> (Coroutine<Value, RuntimeError>, ResumeKey<Value>) {
         let messages = self.messages.clone();
         let tools = self.tools.clone();
         let api = self.api.clone();
@@ -136,10 +136,13 @@ where
                 max_tokens.output,
                 cached_content.as_deref(),
             );
-            let json = fetch.fetch(&request).await.expect("llm fetch failed");
+            let json = fetch
+                .fetch(&request)
+                .await
+                .map_err(|e| RuntimeError::fetch(e))?;
             let (mut response, _usage) = llm_model
                 .parse_response(&json)
-                .expect("llm response parse failed");
+                .map_err(|e| RuntimeError::fetch(e))?;
             debug!(
                 input_tokens = _usage.input_tokens,
                 output_tokens = _usage.output_tokens,
@@ -152,7 +155,7 @@ where
                     ModelResponse::Content(items) => {
                         debug!(items = items.len(), "llm returned content");
                         handle.yield_val(content_to_value(&items)).await;
-                        return;
+                        return Ok(());
                     }
                     ModelResponse::ToolCalls(calls) => {
                         tool_rounds += 1;
@@ -197,10 +200,13 @@ where
                             max_tokens.output,
                             cached_content.as_deref(),
                         );
-                        let json = fetch.fetch(&request).await.expect("llm fetch failed");
+                        let json = fetch
+                            .fetch(&request)
+                            .await
+                            .map_err(|e| RuntimeError::fetch(e))?;
                         let parsed = llm_model
                             .parse_response(&json)
-                            .expect("llm response parse failed");
+                            .map_err(|e| RuntimeError::fetch(e))?;
                         response = parsed.0;
                     }
                 }

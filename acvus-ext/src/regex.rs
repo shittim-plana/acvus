@@ -209,7 +209,7 @@ mod tests {
     }
 
     async fn call(fn_reg: &ExternFnRegistry, name: &str, args: Vec<Value>) -> Value {
-        fn_reg.get(name).unwrap().call(args).await
+        fn_reg.get(name).unwrap().call(args).await.unwrap()
     }
 
     #[tokio::test]

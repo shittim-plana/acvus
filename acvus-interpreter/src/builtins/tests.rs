@@ -7,28 +7,28 @@ use super::*;
 #[test]
 fn to_string_int() {
     assert!(
-        matches!(call_pure(BuiltinId::ToString, vec![Value::Int(42)]), Value::String(s) if s == "42")
+        matches!(call_pure(BuiltinId::ToString, vec![Value::Int(42)]).unwrap(), Value::String(s) if s == "42")
     );
 }
 
 #[test]
 fn to_string_float() {
     assert!(
-        matches!(call_pure(BuiltinId::ToString, vec![Value::Float(3.14)]), Value::String(s) if s == "3.14")
+        matches!(call_pure(BuiltinId::ToString, vec![Value::Float(3.14)]).unwrap(), Value::String(s) if s == "3.14")
     );
 }
 
 #[test]
 fn to_string_bool() {
     assert!(
-        matches!(call_pure(BuiltinId::ToString, vec![Value::Bool(true)]), Value::String(s) if s == "true")
+        matches!(call_pure(BuiltinId::ToString, vec![Value::Bool(true)]).unwrap(), Value::String(s) if s == "true")
     );
 }
 
 #[test]
 fn to_string_string() {
     assert!(
-        matches!(call_pure(BuiltinId::ToString, vec![Value::String("hi".into())]), Value::String(s) if s == "hi")
+        matches!(call_pure(BuiltinId::ToString, vec![Value::String("hi".into())]).unwrap(), Value::String(s) if s == "hi")
     );
 }
 
@@ -38,7 +38,8 @@ fn to_string_list_panics() {
     call_pure(
         BuiltinId::ToString,
         vec![Value::List(vec![Value::Int(1), Value::Int(2)])],
-    );
+    )
+    .unwrap();
 }
 
 #[test]
@@ -47,13 +48,14 @@ fn to_string_object_panics() {
     call_pure(
         BuiltinId::ToString,
         vec![Value::Object(BTreeMap::from([("a".into(), Value::Int(1))]))],
-    );
+    )
+    .unwrap();
 }
 
 #[test]
 fn to_int_float() {
     assert!(matches!(
-        call_pure(BuiltinId::ToInt, vec![Value::Float(3.7)]),
+        call_pure(BuiltinId::ToInt, vec![Value::Float(3.7)]).unwrap(),
         Value::Int(3)
     ));
 }
@@ -61,7 +63,7 @@ fn to_int_float() {
 #[test]
 fn to_float_int() {
     assert!(
-        matches!(call_pure(BuiltinId::ToFloat, vec![Value::Int(5)]), Value::Float(f) if f == 5.0)
+        matches!(call_pure(BuiltinId::ToFloat, vec![Value::Int(5)]).unwrap(), Value::Float(f) if f == 5.0)
     );
 }
 

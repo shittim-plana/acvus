@@ -12,7 +12,7 @@ pub use plain::PlainNode;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use acvus_interpreter::{Coroutine, ExternFnRegistry, ResumeKey, Value};
+use acvus_interpreter::{Coroutine, ExternFnRegistry, ResumeKey, RuntimeError, Value};
 
 use crate::provider::{Fetch, ProviderConfig};
 
@@ -22,7 +22,7 @@ pub trait Node: Send + Sync {
     fn spawn(
         &self,
         local_context: HashMap<String, Arc<Value>>,
-    ) -> (Coroutine<Value>, ResumeKey<Value>);
+    ) -> (Coroutine<Value, RuntimeError>, ResumeKey<Value>);
 }
 
 /// Build a node table from compiled nodes.
