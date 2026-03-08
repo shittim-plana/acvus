@@ -1,0 +1,174 @@
+use acvus_orchestration::{
+    ApiKind, GenerationParams, LlmSpec, MaxTokens, MessageSpec, NodeKind, NodeSpec, PlainSpec,
+    SelfSpec, Strategy, TokenBudget, ToolBinding,
+};
+use serde::Deserialize;
+
+/// JSON-deserializable node definition from the web UI.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebNode {
+    pub name: String,
+    pub kind: String,
+    pub api: String,
+    pub model: String,
+    pub temperature: f64,
+    pub max_tokens: WebMaxTokens,
+    pub self_spec: WebSelfSpec,
+    pub strategy: WebStrategy,
+    pub retry: u32,
+    pub assert: String,
+    pub messages: Vec<WebMessage>,
+    pub tools: Vec<WebToolBinding>,
+}
+
+#[derive(Deserialize)]
+pub struct WebMaxTokens {
+    pub input: u32,
+    pub output: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSelfSpec {
+    pub initial_value: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "mode", rename_all = "camelCase")]
+pub enum WebStrategy {
+    Always,
+    #[serde(rename = "once-per-turn")]
+    OncePerTurn,
+    #[serde(rename = "if-modified", rename_all = "camelCase")]
+    IfModified { key: String },
+    #[serde(rename = "history", rename_all = "camelCase")]
+    History { history_bind: String },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum WebMessage {
+    #[serde(rename_all = "camelCase")]
+    Block { role: String, template: String },
+    #[serde(rename_all = "camelCase")]
+    Iterator {
+        iterator: String,
+        role: Option<String>,
+        slice: Option<Vec<i64>>,
+        token_budget: Option<WebTokenBudget>,
+    },
+}
+
+#[derive(Deserialize)]
+pub struct WebTokenBudget {
+    pub priority: u32,
+    pub min: Option<u32>,
+    pub max: Option<u32>,
+}
+
+#[derive(Deserialize)]
+pub struct WebToolBinding {
+    pub name: String,
+    pub description: String,
+    pub node: String,
+    pub params: Vec<WebToolParam>,
+}
+
+#[derive(Deserialize)]
+pub struct WebToolParam {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ty: String,
+}
+
+pub fn convert_node(web: &WebNode) -> Result<NodeSpec, String> {
+    let kind = match web.kind.as_str() {
+        "llm" => NodeKind::Llm(LlmSpec {
+            api: ApiKind::parse(&web.api)
+                .ok_or_else(|| format!("node '{}': unknown api '{}'", web.name, web.api))?,
+            provider: String::new(),
+            model: web.model.clone(),
+            messages: web
+                .messages
+                .iter()
+                .map(|m| match m {
+                    WebMessage::Block { role, template } => MessageSpec::Block {
+                        role: role.clone(),
+                        source: template.clone(),
+                    },
+                    WebMessage::Iterator {
+                        iterator,
+                        role,
+                        slice,
+                        token_budget,
+                    } => MessageSpec::Iterator {
+                        key: iterator.clone(),
+                        slice: slice.clone(),
+                        role: role.clone(),
+                        token_budget: token_budget.as_ref().map(|tb| TokenBudget {
+                            priority: tb.priority,
+                            min: tb.min,
+                            max: tb.max,
+                        }),
+                    },
+                })
+                .collect(),
+            tools: web
+                .tools
+                .iter()
+                .map(|t| ToolBinding {
+                    name: t.name.clone(),
+                    description: t.description.clone(),
+                    node: t.node.clone(),
+                    params: t.params.iter().map(|p| (p.name.clone(), p.ty.clone())).collect(),
+                })
+                .collect(),
+            generation: GenerationParams {
+                temperature: Some(web.temperature),
+                ..Default::default()
+            },
+            cache_key: None,
+            max_tokens: MaxTokens {
+                input: Some(web.max_tokens.input),
+                output: Some(web.max_tokens.output),
+            },
+        }),
+        _ => NodeKind::Plain(PlainSpec {
+            source: web
+                .messages
+                .iter()
+                .filter_map(|m| match m {
+                    WebMessage::Block { template, .. } => Some(template.as_str()),
+                    _ => None,
+                })
+                .next()
+                .unwrap_or("")
+                .to_string(),
+        }),
+    };
+
+    let strategy = match &web.strategy {
+        WebStrategy::Always => Strategy::Always,
+        WebStrategy::OncePerTurn => Strategy::OncePerTurn,
+        WebStrategy::IfModified { key } => Strategy::IfModified { key: key.clone() },
+        WebStrategy::History { history_bind } => Strategy::History {
+            history_bind: history_bind.clone(),
+        },
+    };
+
+    Ok(NodeSpec {
+        name: web.name.clone(),
+        kind,
+        self_spec: SelfSpec {
+            initial_value: web.self_spec.initial_value.clone(),
+        },
+        strategy,
+        retry: web.retry,
+        assert: if web.assert.trim().is_empty() {
+            None
+        } else {
+            Some(web.assert.clone())
+        },
+    })
+}

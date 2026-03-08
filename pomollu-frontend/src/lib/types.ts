@@ -1,0 +1,343 @@
+export type ContentPart = {
+	id: string;
+	content_type: string;
+	value: string;
+};
+
+export type BlockInfo = {
+	type: string;
+	tags: Record<string, string>;
+	description: string;
+	[key: string]: unknown;
+};
+
+export type ContextBlock = {
+	kind: 'context';
+	id: string;
+	name: string;
+	info: BlockInfo;
+	priority: number;
+	content: ContentPart[];
+	enabled: boolean;
+};
+
+export type RawBlockMode = 'script' | 'template';
+
+export type RawBlock = {
+	kind: 'raw';
+	id: string;
+	name: string;
+	text: string;
+	mode: RawBlockMode;
+};
+
+export type ToolParam = {
+	name: string;
+	type: string;
+};
+
+export type NodeToolBinding = {
+	nodeId: string;
+	name: string;
+	description: string;
+	params: ToolParam[];
+};
+
+export type ScriptBlock = {
+	kind: 'script';
+	id: string;
+	name: string;
+	text: string;
+};
+
+export type NoneBlock = {
+	kind: 'none';
+	id: string;
+	name: string;
+};
+
+export type Block = NoneBlock | ContextBlock | RawBlock | ScriptBlock;
+
+export type BlockKind = Block['kind'];
+
+export function blockKind(block: Block): BlockKind {
+	return block.kind;
+}
+
+export function isContextBlock(block: Block): block is ContextBlock {
+	return block.kind === 'context';
+}
+
+export function isRawBlock(block: Block): block is RawBlock {
+	return block.kind === 'raw';
+}
+
+export function isScriptBlock(block: Block): block is ScriptBlock {
+	return block.kind === 'script';
+}
+
+export function blockLabel(block: Block): string {
+	if (isContextBlock(block)) return block.name || block.info.description || block.info.type || 'Untitled';
+	if (isScriptBlock(block)) return block.name || 'Untitled';
+	if (isRawBlock(block)) return block.name || 'Untitled';
+	return block.name || 'Untitled';
+}
+
+export type BlockFolder = {
+	id: string;
+	name: string;
+	enabled: boolean;
+	children: BlockNode[];
+};
+
+export type BlockNode =
+	| { kind: 'block'; block: Block }
+	| { kind: 'folder'; folder: BlockFolder }
+	| { kind: 'node'; node: Node };
+
+
+// --- Sidebar tree (generic folder system) ---
+
+export type SidebarNode =
+	| { kind: 'item'; id: string }
+	| { kind: 'folder'; id: string; name: string; children: SidebarNode[] };
+
+// --- Provider ---
+
+export type Provider = {
+	id: string;
+	name: string;
+	api: string;
+	endpoint: string;
+	apiKey: string;
+};
+
+// --- Node (LLM call unit) ---
+
+export type NodeKind = 'llm' | 'plain';
+
+export type MaxTokens = {
+	input: number;
+	output: number;
+};
+
+export type TokenBudget = {
+	priority: number;
+	min?: number;
+	max?: number;
+};
+
+export type MessageSource =
+	| { type: 'inline'; template: string }
+	| { type: 'block'; blockId: string };
+
+export type MessageDef =
+	| { kind: 'block'; role: string; source: MessageSource }
+	| { kind: 'iterator'; iterator: string; role?: string; template?: string; slice?: number[]; tokenBudget?: TokenBudget };
+
+export type Strategy =
+	| { mode: 'always' }
+	| { mode: 'once-per-turn' }
+	| { mode: 'if-modified'; key: string }
+	| { mode: 'history'; historyBind: string };
+
+export type SelfSpec = {
+	initialValue: string;
+};
+
+export type Node = {
+	id: string;
+	name: string;
+	kind: NodeKind;
+	providerId: string;
+	model: string;
+	temperature: number;
+	maxTokens: MaxTokens;
+	selfSpec: SelfSpec;
+	strategy: Strategy;
+	retry: number;
+	assert: string;
+	messages: MessageDef[];
+	tools: NodeToolBinding[];
+};
+
+// --- Context parameter resolution ---
+
+export type ParamResolution =
+	| { kind: 'static'; value: string }
+	| { kind: 'dynamic' }
+	| { kind: 'unresolved' };
+
+export type ContextParam = {
+	name: string;
+	inferredType: string;
+	resolution: ParamResolution;
+	userType?: string;
+};
+
+// --- Prompt (project) ---
+
+export type ContextBinding = {
+	name: string;
+	script: string;
+};
+
+export const HISTORY_BINDING_NAME = 'history';
+export const HISTORY_ENTRY_TYPE = 'List<{content: String, content_type: String, role: String}>';
+
+/** Context refs provided by the engine (not user-defined). */
+export const BUILTIN_CONTEXT_REFS = new Set(['turn', 'raw', 'self', 'content']);
+
+export type Prompt = {
+	id: string;
+	name: string;
+	children: BlockNode[];
+	contextBindings: ContextBinding[];
+	contextParams: ContextParam[];
+	/** Which dynamic param receives the chat input each turn. */
+	inputParam?: string;
+};
+
+// --- Profile ---
+
+export type Profile = {
+	id: string;
+	name: string;
+	children: BlockNode[];
+	contextParams: ContextParam[];
+};
+
+// --- Bot ---
+
+export type DisplayEntry = {
+	id: string;
+	name: string;
+	condition: string;
+	template: string;
+};
+
+export type BotDisplay = {
+	iterator: string;
+	entries: DisplayEntry[];
+};
+
+export type Bot = {
+	id: string;
+	name: string;
+	promptId: string;
+	profileId: string;
+	children: BlockNode[];
+	display: BotDisplay;
+	regions: DisplayRegion[];
+	layout: GridLayout;
+	contextParams: ContextParam[];
+};
+
+// --- Display region ---
+
+export type DisplayRegionBase = {
+	id: string;
+	name: string;
+};
+
+export type IterableDisplayRegion = DisplayRegionBase & {
+	kind: 'iterable';
+	iterator: string;
+	entries: DisplayEntry[];
+};
+
+export type StaticDisplayRegion = DisplayRegionBase & {
+	kind: 'static';
+	template: string;
+};
+
+export type DisplayRegion = IterableDisplayRegion | StaticDisplayRegion;
+
+// --- Grid layout ---
+
+export const GRID_HISTORY = 'history';
+
+export type GridLayout = {
+	areas: string[][]; // [row][col] — GRID_HISTORY | regionId | '' (empty)
+	colSizes: number[]; // percentages per column
+	rowSizes: number[]; // percentages per row
+	aspect: number; // width / height ratio (e.g. 16/9 = 1.78, 1 = square)
+};
+
+export function createDefaultLayout(): GridLayout {
+	return { areas: [[GRID_HISTORY]], colSizes: [100], rowSizes: [100], aspect: 0 };
+}
+
+export function gridStyle(layout: GridLayout): string {
+	return `grid-template-columns: ${layout.colSizes.map((s) => s + '%').join(' ')}; grid-template-rows: ${layout.rowSizes.map((s) => s + '%').join(' ')};`;
+}
+
+export function cumulativeBoundaries(sizes: number[]): number[] {
+	const b = [0];
+	for (const s of sizes) b.push(b[b.length - 1] + s);
+	return b;
+}
+
+export type AreaPlacement = {
+	id: string;
+	colStart: number;
+	colEnd: number;
+	rowStart: number;
+	rowEnd: number;
+};
+
+export function computePlacements(layout: GridLayout): AreaPlacement[] {
+	const rows = layout.areas.length;
+	const cols = layout.colSizes.length;
+	const visited = new Set<number>();
+	const result: AreaPlacement[] = [];
+
+	for (let r = 0; r < rows; r++) {
+		for (let c = 0; c < cols; c++) {
+			const id = layout.areas[r]?.[c] ?? '';
+			if (!id || visited.has(r * cols + c)) continue;
+
+			let maxCol = c;
+			while (maxCol + 1 < cols && layout.areas[r][maxCol + 1] === id) maxCol++;
+
+			let maxRow = r;
+			outer: while (maxRow + 1 < rows) {
+				for (let cc = c; cc <= maxCol; cc++) {
+					if (layout.areas[maxRow + 1]?.[cc] !== id) break outer;
+				}
+				maxRow++;
+			}
+
+			for (let rr = r; rr <= maxRow; rr++) {
+				for (let cc = c; cc <= maxCol; cc++) {
+					visited.add(rr * cols + cc);
+				}
+			}
+
+			result.push({ id, colStart: c + 1, colEnd: maxCol + 2, rowStart: r + 1, rowEnd: maxRow + 2 });
+		}
+	}
+	return result;
+}
+
+// --- Display result (from engine) ---
+
+export type RenderedCard = {
+	name: string;
+	content: string;
+};
+
+export type RenderedRegion = {
+	id: string;
+	name: string;
+	cards: RenderedCard[];
+};
+
+// --- Session ---
+
+export type Session = {
+	id: string;
+	name: string;
+	botId: string;
+	storage: unknown;
+};

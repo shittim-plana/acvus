@@ -7,12 +7,10 @@ model = "gemini-2.5-flash"
 input = 16000
 
 [self]
-self_bind = '@raw | map(x -> x.content) | join("")'
-initial_value = '""'
 
 [strategy]
 mode = "history"
-inline_history_bind = "@raw"
+inline_history_bind = "@self"
 
 [[messages]]
 role = "system"

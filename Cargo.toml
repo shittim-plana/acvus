@@ -13,5 +13,10 @@ members = [
     "acvus-orchestration",
     "acvus-chat",
     "acvus-chat-cli",
-    "acvus-ext"
+    "acvus-ext",
+    "pomollu-engine"
 ]
+
+[profile.release]
+opt-level = 'z'
+lto = true

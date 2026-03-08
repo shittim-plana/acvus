@@ -188,41 +188,30 @@ where
             }
         }
 
-        // Spawn via Node trait
-        debug!(node = %node.name, "spawning coroutine");
-        let (mut coroutine, first_key) = self.node_table[idx].spawn(local.clone());
-        let raw_output = self
-            .eval_coroutine(&mut coroutine, first_key, &HashMap::new(), state)
-            .await?;
-
-        // Build bind local context
-        let mut bind_local = HashMap::new();
-        bind_local.insert("raw".into(), Arc::new(raw_output));
-
-        let new_self = if matches!(node.strategy, CompiledStrategy::Always) {
-            debug!(node = %node.name, "evaluating self_bind (always)");
-            self.eval_script(&node.self_spec.self_bind, &bind_local, state)
-                .await?
-        } else {
-            // Load previous @self (or initial_value on first run)
+        // If initial_value is Some, load @self and inject into local context
+        if let Some(ref init_script) = node.self_spec.initial_value {
             let prev_self = if let Some(arc) = state.storage.get(&node.name) {
                 Value::clone(&arc)
             } else if let Some(arc) = state.turn_context.get(&node.name) {
                 Value::clone(arc)
             } else {
                 debug!(node = %node.name, "evaluating initial_value (first run)");
-                self.eval_script(&node.self_spec.initial_value, &HashMap::new(), state)
+                self.eval_script(init_script, &HashMap::new(), state)
                     .await?
             };
-            bind_local.insert("self".into(), Arc::new(prev_self));
-            debug!(node = %node.name, "evaluating self_bind");
-            self.eval_script(&node.self_spec.self_bind, &bind_local, state)
-                .await?
-        };
+            local.insert("self".into(), Arc::new(prev_self));
+        }
 
-        // Assert: evaluate after new_self, before storing.
-        // bind_local already has @raw; add @self = new_self for the assert script.
+        // Spawn via Node trait
+        debug!(node = %node.name, "spawning coroutine");
+        let (mut coroutine, first_key) = self.node_table[idx].spawn(local.clone());
+        let new_self = self
+            .eval_coroutine(&mut coroutine, first_key, &HashMap::new(), state)
+            .await?;
+
+        // Assert: evaluate after new_self (= raw output), before storing.
         if let Some(ref assert_script) = node.assert {
+            let mut bind_local = HashMap::new();
             bind_local.insert("self".into(), Arc::new(new_self.clone()));
             debug!(node = %node.name, "evaluating assert");
             let result = self
@@ -266,11 +255,12 @@ where
             }
             CompiledStrategy::History { history_bind } => {
                 state.storage.set(node.name.clone(), new_self.clone());
-                bind_local.insert("self".into(), Arc::new(new_self));
+                let mut hist_local = HashMap::new();
+                hist_local.insert("self".into(), Arc::new(new_self));
 
                 debug!(node = %node.name, "evaluating history_bind");
                 let entry = self
-                    .eval_script(history_bind, &bind_local, state)
+                    .eval_script(history_bind, &hist_local, state)
                     .await?;
                 // Buffer entry — flushed to @turn.history at turn end.
                 state.history_entries.insert(node.name.clone(), entry);
@@ -328,16 +318,11 @@ where
             }
         }
 
-        // self_bind/initial_value/strategy scripts: always eager
-        eager.extend(node.self_spec.self_bind.context_keys.iter().cloned());
-        if storage.get(&node.name).is_none() {
-            eager.extend(
-                node.self_spec
-                    .initial_value
-                    .context_keys
-                    .iter()
-                    .cloned(),
-            );
+        // initial_value/strategy scripts: always eager
+        if let Some(ref iv) = node.self_spec.initial_value {
+            if storage.get(&node.name).is_none() {
+                eager.extend(iv.context_keys.iter().cloned());
+            }
         }
         match &node.strategy {
             CompiledStrategy::History { history_bind } => {

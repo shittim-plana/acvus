@@ -4,3 +4,6 @@ target/
 *.md
 wit/
 acvus-mir-test/tests/snapshots/
+pomollu-frontend/node_modules/
+pomollu-frontend/.svelte-kit/
+pomollu-frontend/build/

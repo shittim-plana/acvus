@@ -176,8 +176,7 @@ async fn main() {
                 output_ty: tail_ty,
             }),
             self_spec: SelfSpec {
-                self_bind: "@raw".into(),
-                initial_value: r#""""#.into(),
+                initial_value: None,
             },
             strategy: Strategy::default(),
             retry: 0,
@@ -291,6 +290,7 @@ async fn main() {
             extern_fns,
             storage,
             &spec.entrypoint,
+            &[],
         )
         .await
         .unwrap_or_else(|e| {
@@ -313,6 +313,7 @@ async fn main() {
             extern_fns,
             storage,
             &spec.entrypoint,
+            &[],
         )
         .await
         .unwrap_or_else(|e| {
@@ -327,6 +328,7 @@ async fn main() {
                     process::exit(1);
                 });
                 println!("{}", format_output(&response));
+                println!("{:#?}", engine.state.storage.entries);
             }
         } else {
             let response = engine.turn(&resolver).await.unwrap_or_else(|e| {

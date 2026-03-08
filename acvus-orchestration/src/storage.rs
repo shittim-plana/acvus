@@ -5,12 +5,11 @@ use acvus_interpreter::Value;
 
 /// Storage backend trait for passing data between orchestration nodes.
 ///
-/// Stores `Value` wrapped in `Arc` for cheap cloning. `get_mut` uses
-/// `Arc::make_mut` for copy-on-write — safe as long as all coroutines
-/// that may hold clones have been dropped before mutation.
+/// Stores `Value` wrapped in `Arc` for cheap cloning.
+/// All mutations go through `set` / `remove` so implementations can
+/// intercept writes (e.g. forward to JS for real-time sync).
 pub trait Storage {
     fn get(&self, key: &str) -> Option<Arc<Value>>;
-    fn get_mut(&mut self, key: &str) -> Option<&mut Value>;
     fn set(&mut self, key: String, value: Value);
     fn remove(&mut self, key: &str);
 }
@@ -18,7 +17,7 @@ pub trait Storage {
 /// Simple in-memory storage backed by a `HashMap`.
 #[derive(Debug)]
 pub struct HashMapStorage {
-    entries: HashMap<String, Arc<Value>>,
+    pub entries: HashMap<String, Arc<Value>>,
 }
 
 impl Default for HashMapStorage {
@@ -38,10 +37,6 @@ impl HashMapStorage {
 impl Storage for HashMapStorage {
     fn get(&self, key: &str) -> Option<Arc<Value>> {
         self.entries.get(key).cloned()
-    }
-
-    fn get_mut(&mut self, key: &str) -> Option<&mut Value> {
-        self.entries.get_mut(key).map(Arc::make_mut)
     }
 
     fn set(&mut self, key: String, value: Value) {

@@ -3,5 +3,3 @@ kind = "plain"
 template = "output.acvus"
 
 [self]
-self_bind = "@raw"
-initial_value = '""'

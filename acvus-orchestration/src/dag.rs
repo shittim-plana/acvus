@@ -82,33 +82,12 @@ pub fn build_dag(nodes: &[CompiledNode]) -> Result<Dag, Vec<OrchError>> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
-    use acvus_mir::ir::MirModule;
-
-    use crate::compile::{CompiledScript, CompiledSelf, CompiledStrategy};
+    use crate::compile::{CompiledSelf, CompiledStrategy};
     use crate::{CompiledLlm, CompiledNodeKind};
 
     use super::*;
 
     fn make_node(name: &str, context_keys: Vec<&str>) -> CompiledNode {
-        // Dummy compiled self for DAG tests (never executed)
-        let module = MirModule {
-            main: Default::default(),
-            closures: HashMap::new(),
-            tag_names: Vec::new(),
-            extern_names: HashMap::new(),
-        };
-        let val_def = acvus_mir_pass::AnalysisPass::run(
-            &acvus_mir_pass::analysis::val_def::ValDefMapAnalysis,
-            &module,
-            (),
-        );
-        let dummy_script = CompiledScript {
-            module,
-            context_keys: Default::default(),
-            val_def,
-        };
         CompiledNode {
             name: name.into(),
             kind: CompiledNodeKind::Llm(CompiledLlm {
@@ -123,8 +102,7 @@ mod tests {
             }),
             all_context_keys: context_keys.into_iter().map(Into::into).collect(),
             self_spec: CompiledSelf {
-                self_bind: dummy_script.clone(),
-                initial_value: dummy_script,
+                initial_value: None,
             },
             strategy: CompiledStrategy::Always,
             retry: 0,

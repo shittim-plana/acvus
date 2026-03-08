@@ -34,6 +34,8 @@ pub struct TypeChecker<'a> {
     type_map: TypeMap,
     /// Accumulated errors.
     errors: Vec<MirError>,
+    /// Analysis mode: unknown contexts get fresh Vars instead of errors.
+    analysis_mode: bool,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -57,7 +59,15 @@ impl<'a> TypeChecker<'a> {
             infer_vars: HashMap::new(),
             type_map: TypeMap::new(),
             errors: Vec::new(),
+            analysis_mode: false,
         }
+    }
+
+    /// Enable analysis mode: unknown `@context` refs produce fresh type
+    /// variables instead of errors, allowing partial type inference.
+    pub fn with_analysis_mode(mut self) -> Self {
+        self.analysis_mode = true;
+        self
     }
 
     pub fn check_template(
@@ -107,14 +117,28 @@ impl<'a> TypeChecker<'a> {
         };
         // Unify tail with expected type hint (if provided) to resolve ambiguous literals
         if let Some(expected) = expected_tail {
-            let _ = self.subst.unify(&tail_ty, expected);
+            if self.subst.unify(&tail_ty, expected).is_err() {
+                let span = script
+                    .tail
+                    .as_ref()
+                    .map(|e| e.span())
+                    .unwrap_or(acvus_ast::Span { start: 0, end: 0 });
+                self.error(
+                    MirErrorKind::UnificationFailure {
+                        expected: self.subst.resolve(expected),
+                        got: self.subst.resolve(&tail_ty),
+                    },
+                    span,
+                );
+            }
         }
         if !self.errors.is_empty() {
             return Err(self.errors);
         }
         let resolved_tail = self.subst.resolve(&tail_ty);
-        // Check for unresolved type variables (e.g. `[]` without hint)
-        if contains_var(&resolved_tail) {
+        // Check for unresolved type variables (e.g. `[]` without hint).
+        // In analysis mode, unresolved vars are expected and allowed.
+        if !self.analysis_mode && contains_var(&resolved_tail) {
             let span = script
                 .tail
                 .as_ref()
@@ -339,6 +363,11 @@ impl<'a> TypeChecker<'a> {
                             .or_insert_with(|| self.subst.fresh_var())
                             .clone(),
                         Some(ty) => ty.clone(),
+                        None if self.analysis_mode => self
+                            .infer_vars
+                            .entry(name.clone())
+                            .or_insert_with(|| self.subst.fresh_var())
+                            .clone(),
                         None => {
                             self.error(MirErrorKind::UndefinedContext(name.clone()), *span);
                             Ty::Error
@@ -828,7 +857,17 @@ impl<'a> TypeChecker<'a> {
                 span,
             } => {
                 let result_ty = match self.context_types.get(name) {
+                    Some(Ty::Infer) => self
+                        .infer_vars
+                        .entry(name.clone())
+                        .or_insert_with(|| self.subst.fresh_var())
+                        .clone(),
                     Some(ty) => ty.clone(),
+                    None if self.analysis_mode => self
+                        .infer_vars
+                        .entry(name.clone())
+                        .or_insert_with(|| self.subst.fresh_var())
+                        .clone(),
                     None => {
                         self.error(MirErrorKind::UndefinedContext(name.clone()), *span);
                         Ty::Error

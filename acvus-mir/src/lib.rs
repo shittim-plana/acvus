@@ -69,6 +69,47 @@ pub fn compile_script_with_hint(
     Ok((module, hints, tail_ty))
 }
 
+/// Compile a template in analysis mode: unknown `@context` refs get fresh
+/// type variables instead of errors, enabling partial type inference.
+pub fn compile_analysis(
+    template: &Template,
+    context_types: &HashMap<String, Ty>,
+    registry: &ExternRegistry,
+    user_types: &UserTypeRegistry,
+) -> Result<(MirModule, HintTable), Vec<MirError>> {
+    let checker = TypeChecker::new(context_types, registry, user_types).with_analysis_mode();
+    let (type_map, variant_registry) = checker.check_template(template)?;
+    let lowerer = Lowerer::new(type_map, variant_registry, registry);
+    let (module, hints) = lowerer.lower_template(template);
+    Ok((module, hints))
+}
+
+/// Compile a script in analysis mode.
+pub fn compile_script_analysis(
+    script: &Script,
+    context_types: &HashMap<String, Ty>,
+    registry: &ExternRegistry,
+    user_types: &UserTypeRegistry,
+) -> Result<(MirModule, HintTable, Ty), Vec<MirError>> {
+    compile_script_analysis_with_tail(script, context_types, registry, user_types, None)
+}
+
+/// Compile a script in analysis mode with an expected tail type hint.
+pub fn compile_script_analysis_with_tail(
+    script: &Script,
+    context_types: &HashMap<String, Ty>,
+    registry: &ExternRegistry,
+    user_types: &UserTypeRegistry,
+    expected_tail: Option<&Ty>,
+) -> Result<(MirModule, HintTable, Ty), Vec<MirError>> {
+    let checker = TypeChecker::new(context_types, registry, user_types).with_analysis_mode();
+    let (type_map, tail_ty, variant_registry) =
+        checker.check_script_with_hint(script, expected_tail)?;
+    let lowerer = Lowerer::new(type_map, variant_registry, registry);
+    let (module, hints) = lowerer.lower_script(script);
+    Ok((module, hints, tail_ty))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

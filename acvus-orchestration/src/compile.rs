@@ -21,10 +21,12 @@ use crate::kind::{
 use crate::storage::Storage;
 
 /// Compiled self specification for a node.
+///
+/// Stored value = raw output (identity). No bind transformation.
+/// When `initial_value` is `Some`, `@self` is available in the node body.
 #[derive(Debug, Clone)]
 pub struct CompiledSelf {
-    pub self_bind: CompiledScript,
-    pub initial_value: CompiledScript,
+    pub initial_value: Option<CompiledScript>,
 }
 
 /// Compiled execution strategy.
@@ -388,15 +390,15 @@ pub fn compile_node(
     };
 
     // self_spec context keys contribute to dependencies
-    all_context_keys.extend(compiled_self.self_bind.context_keys.iter().cloned());
-    all_context_keys.extend(compiled_self.initial_value.context_keys.iter().cloned());
+    if let Some(ref iv) = compiled_self.initial_value {
+        all_context_keys.extend(iv.context_keys.iter().cloned());
+    }
 
     // assert context keys contribute
     let compiled_assert = if let Some(ref assert_src) = spec.assert {
-        // assert context: @self = new stored value, @raw = raw output, plus all context
+        // assert context: @self = stored value (= raw output), plus all context
         let mut assert_ctx = context_types.clone();
         assert_ctx.insert("self".into(), stored_ty.clone());
-        assert_ctx.insert("raw".into(), spec.kind.raw_output_ty());
         let (script, _ty) = compile_script_with_hint(assert_src, &assert_ctx, registry, Some(&Ty::Bool))
             .map_err(|e| vec![e])?;
         all_context_keys.extend(script.context_keys.iter().cloned());
@@ -427,6 +429,125 @@ pub fn compile_node(
     })
 }
 
+/// Result of computing external context types from node specs.
+///
+/// `context_types` contains all externally-visible types:
+/// - injected types (from project.toml / bindings)
+/// - `@nodeName` → stored type (from self_bind tail)
+/// - `@turn` → computed from history nodes
+///
+/// Local types (`@self`, `@raw`) are NOT included.
+/// Per-node local types visible inside the node (e.g. @raw, @self).
+#[derive(Debug, Clone)]
+pub struct NodeLocalTypes {
+    pub raw_ty: Ty,
+    pub self_ty: Ty,
+}
+
+pub struct ExternalContextEnv {
+    pub context_types: HashMap<String, Ty>,
+    /// Types of values stored in storage (node self types + @turn).
+    /// Does not include injected types (those come from the resolver, not storage).
+    pub storage_types: HashMap<String, Ty>,
+    /// Per-node local types, indexed by node name.
+    pub node_locals: HashMap<String, NodeLocalTypes>,
+    pub(crate) stored_types: Vec<Ty>,
+}
+
+/// Compute all externally-visible context types from node specs.
+///
+/// This performs steps 1-3 of the full compilation pipeline:
+/// 1. Determine stored types (= raw_output_ty, identity)
+/// 2. Register stored types as context (`@nodeName`)
+/// 3. Compile history_bind → compute `@turn` type
+///
+/// The result can be used for typechecking binding scripts or passed
+/// to `compile_nodes_with_env` for full compilation.
+pub fn compute_external_context_env(
+    specs: &[NodeSpec],
+    injected_types: &HashMap<String, Ty>,
+    registry: &ExternRegistry,
+) -> Result<ExternalContextEnv, Vec<OrchError>> {
+    let mut context_types = injected_types.clone();
+
+    // 1. stored type = raw_output_ty for concrete nodes (LLM, Plain, LlmCache)
+    //    Expr nodes start as Ty::Infer — resolved in step 3 after @turn is available.
+    let mut stored_types: Vec<Ty> = specs.iter().map(|s| s.kind.raw_output_ty()).collect();
+
+    // 2. Register concrete (non-Infer) stored types so other nodes can reference @name
+    for (spec, ty) in specs.iter().zip(stored_types.iter()) {
+        if *ty != Ty::Infer {
+            context_types.insert(spec.name.clone(), ty.clone());
+        }
+    }
+
+    // 3. Compile history_bind → compute @turn type for History nodes
+    let history_specs: Vec<(usize, &str)> = specs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| match &s.strategy {
+            Strategy::History { history_bind } => Some((i, history_bind.as_str())),
+            _ => None,
+        })
+        .collect();
+    if !history_specs.is_empty() {
+        let store_ctx = context_types.clone();
+        let mut entry_fields = BTreeMap::new();
+        for &(i, bind_src) in &history_specs {
+            let mut hist_ctx = store_ctx.clone();
+            hist_ctx.insert("self".into(), stored_types[i].clone());
+            let ty = compile_script(bind_src, &hist_ctx, registry)
+                .map(|(_, ty)| ty)
+                .unwrap_or(Ty::Error);
+            entry_fields.insert(specs[i].name.clone(), ty);
+        }
+        let history_ty = Ty::List(Box::new(Ty::Object(entry_fields)));
+        let turn_fields = BTreeMap::from([
+            ("index".into(), Ty::Int),
+            ("history".into(), history_ty),
+        ]);
+        context_types.insert("turn".into(), Ty::Object(turn_fields));
+    }
+
+    // 4. Resolve Expr node types: compile source with full context (including @turn)
+    for (i, spec) in specs.iter().enumerate() {
+        if stored_types[i] != Ty::Infer {
+            continue;
+        }
+        if let NodeKind::Expr(expr_spec) = &spec.kind {
+            stored_types[i] = compile_script(&expr_spec.source, &context_types, registry)
+                .map(|(_, ty)| ty)
+                .unwrap_or(Ty::Error);
+        }
+        context_types.insert(spec.name.clone(), stored_types[i].clone());
+    }
+
+    let mut node_locals = HashMap::new();
+    for (spec, stored_ty) in specs.iter().zip(stored_types.iter()) {
+        node_locals.insert(
+            spec.name.clone(),
+            NodeLocalTypes {
+                raw_ty: spec.kind.raw_output_ty(),
+                self_ty: stored_ty.clone(),
+            },
+        );
+    }
+
+    // storage_types = context_types minus injected_types
+    let storage_types: HashMap<String, Ty> = context_types
+        .iter()
+        .filter(|(k, _)| !injected_types.contains_key(k.as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    Ok(ExternalContextEnv {
+        context_types,
+        storage_types,
+        node_locals,
+        stored_types,
+    })
+}
+
 /// Compile multiple node specs, merging their output types into context automatically.
 ///
 /// `injected_types` are externally declared context types (from project.toml).
@@ -436,50 +557,36 @@ pub fn compile_nodes(
     injected_types: &HashMap<String, Ty>,
     registry: &ExternRegistry,
 ) -> Result<Vec<CompiledNode>, Vec<OrchError>> {
-    let mut context_types = injected_types.clone();
+    let env = compute_external_context_env(specs, injected_types, registry)?;
+    compile_nodes_with_env(specs, registry, env)
+}
+
+/// Compile nodes using a pre-computed external context environment.
+///
+/// Use this when you already called `compute_external_context_env` (e.g. for
+/// typechecking binding scripts) and want to avoid recomputation.
+pub fn compile_nodes_with_env(
+    specs: &[NodeSpec],
+    registry: &ExternRegistry,
+    env: ExternalContextEnv,
+) -> Result<Vec<CompiledNode>, Vec<OrchError>> {
+    let context_types = env.context_types;
+    let stored_types = env.stored_types;
     let mut errors = Vec::new();
 
-    // 1. Compile self_bind with @self = Ty::Infer, @raw = raw_ty.
-    //    The type checker infers @self's type from usage, anchored by @raw.
-    //    self_bind tail type = stored type.
-    let mut stored_types: Vec<Ty> = Vec::new();
-    let mut bind_scripts: Vec<CompiledScript> = Vec::new();
-    for spec in specs {
-        let raw_ty = spec.kind.raw_output_ty();
-        let mut bind_ctx = context_types.clone();
-        bind_ctx.insert("self".into(), Ty::Infer);
-        bind_ctx.insert("raw".into(), raw_ty);
-        let (script, tail_ty) = match compile_script(
-            &spec.self_spec.self_bind,
-            &bind_ctx,
-            registry,
-        ) {
-            Ok(v) => v,
-            Err(e) => {
-                errors.push(e);
-                stored_types.push(Ty::Error);
-                bind_scripts.push(dummy_script());
-                continue;
-            }
-        };
-        stored_types.push(tail_ty);
-        bind_scripts.push(script);
-    }
-
-    // 2. Register stored types as context types (so other nodes can reference @name)
-    for (spec, ty) in specs.iter().zip(stored_types.iter()) {
-        context_types.insert(spec.name.clone(), ty.clone());
-    }
-
-    // 3. Compile initial_value scripts with stored type as expected tail hint
-    let mut initial_value_scripts: Vec<CompiledScript> = Vec::new();
+    // Compile initial_value scripts (only when Some) with stored type as expected tail hint
+    let mut initial_value_scripts: Vec<Option<CompiledScript>> = Vec::new();
     for (i, spec) in specs.iter().enumerate() {
+        let Some(ref init_src) = spec.self_spec.initial_value else {
+            initial_value_scripts.push(None);
+            continue;
+        };
         let hint = match &stored_types[i] {
             Ty::Error => None,
             ty => Some(ty),
         };
         let (script, init_ty) = match compile_script_with_hint(
-            &spec.self_spec.initial_value,
+            init_src,
             &context_types,
             registry,
             hint,
@@ -487,7 +594,7 @@ pub fn compile_nodes(
             Ok(v) => v,
             Err(e) => {
                 errors.push(e);
-                initial_value_scripts.push(dummy_script());
+                initial_value_scripts.push(None);
                 continue;
             }
         };
@@ -498,42 +605,10 @@ pub fn compile_nodes(
         ) {
             errors.push(e);
         }
-        initial_value_scripts.push(script);
+        initial_value_scripts.push(Some(script));
     }
 
-    // 4. Compile strategy scripts + inject @turn types for History nodes
-    let history_specs: Vec<(usize, &str)> = specs
-        .iter()
-        .enumerate()
-        .filter_map(|(i, s)| match &s.strategy {
-            Strategy::History { history_bind } => Some((i, history_bind.as_str())),
-            _ => None,
-        })
-        .collect();
-    if !history_specs.is_empty() {
-        // Compile history_bind scripts to infer element type
-        // history_bind context: @self = completed stored value, @raw = raw output, plus all context
-        let store_ctx = context_types.clone();
-        let mut entry_fields = BTreeMap::new();
-        for &(i, bind_src) in &history_specs {
-            let mut hist_ctx = store_ctx.clone();
-            hist_ctx.insert("self".into(), stored_types[i].clone());
-            hist_ctx.insert("raw".into(), specs[i].kind.raw_output_ty());
-            let ty = compile_script(bind_src, &hist_ctx, registry)
-                .map(|(_, ty)| ty)
-                .unwrap_or(Ty::Error);
-            entry_fields.insert(specs[i].name.clone(), ty);
-        }
-        // @turn.history = List<{node_a: T, node_b: U, ...}> — one entry per turn
-        let history_ty = Ty::List(Box::new(Ty::Object(entry_fields)));
-        let turn_fields = BTreeMap::from([
-            ("index".into(), Ty::Int),
-            ("history".into(), history_ty),
-        ]);
-        context_types.insert("turn".into(), Ty::Object(turn_fields));
-    }
-
-    // 5. Compile strategy for each node
+    // Compile strategy for each node
     let mut compiled_strategies: Vec<CompiledStrategy> = Vec::new();
     for (i, spec) in specs.iter().enumerate() {
         let strat = match &spec.strategy {
@@ -542,7 +617,6 @@ pub fn compile_nodes(
             Strategy::History { history_bind } => {
                 let mut hist_ctx = context_types.clone();
                 hist_ctx.insert("self".into(), stored_types[i].clone());
-                hist_ctx.insert("raw".into(), spec.kind.raw_output_ty());
                 let (script, _ty) = match compile_script(history_bind, &hist_ctx, registry) {
                     Ok(v) => v,
                     Err(e) => {
@@ -601,8 +675,11 @@ pub fn compile_nodes(
         if let Some(params) = tool_param_types.get(&spec.name) {
             node_ctx.extend(params.iter().map(|(k, v)| (k.clone(), v.clone())));
         }
+        // When initial_value is Some, @self is available in the node body
+        if initial_value_scripts[i].is_some() {
+            node_ctx.insert("self".into(), stored_types[i].clone());
+        }
         let compiled_self = CompiledSelf {
-            self_bind: bind_scripts[i].clone(),
             initial_value: initial_value_scripts[i].clone(),
         };
         let compiled_strategy = compiled_strategies[i].clone();
@@ -639,22 +716,6 @@ pub fn compile_nodes(
         Ok(nodes)
     } else {
         Err(errors)
-    }
-}
-
-/// Create a dummy compiled script (used as placeholder when errors are accumulated).
-fn dummy_script() -> CompiledScript {
-    let module = MirModule {
-        main: Default::default(),
-        closures: HashMap::new(),
-        tag_names: Vec::new(),
-        extern_names: HashMap::new(),
-    };
-    let val_def = ValDefMapAnalysis.run(&module, ());
-    CompiledScript {
-        module,
-        context_keys: HashSet::new(),
-        val_def,
     }
 }
 

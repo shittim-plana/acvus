@@ -20,10 +20,9 @@ enum NodeKindDef {
     },
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct SelfDef {
-    pub self_bind: String,
-    pub initial_value: String,
+    pub initial_value: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -48,7 +47,7 @@ pub struct NodeDef {
     #[serde(default)]
     generation: GenerationParamsDef,
     cache_key: Option<String>,
-    #[serde(rename = "self")]
+    #[serde(rename = "self", default)]
     self_spec: SelfDef,
     #[serde(default)]
     retry: u32,
@@ -210,7 +209,6 @@ pub fn resolve_node(
     };
 
     let self_spec = SelfSpec {
-        self_bind: def.self_spec.self_bind,
         initial_value: def.self_spec.initial_value,
     };
 

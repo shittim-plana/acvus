@@ -20,10 +20,11 @@ pub struct ChatEngine<S> {
     node_table: Vec<Arc<dyn Node>>,
     name_to_idx: HashMap<String, usize>,
     extern_fns: ExternFnRegistry,
-    state: State<S>,
+    pub state: State<S>,
     bind_cache: HashMap<String, Vec<(Value, Arc<Value>)>>,
     entrypoint_idx: usize,
     history_nodes: Vec<String>,
+    side_effect_idxs: Vec<usize>,
 }
 
 impl<S> ChatEngine<S>
@@ -37,6 +38,7 @@ where
         extern_fns: ExternFnRegistry,
         mut storage: S,
         entrypoint: &str,
+        side_effects: &[String],
     ) -> Result<Self, ChatError>
     where
         F: Fetch + 'static,
@@ -116,14 +118,12 @@ where
             storage.set("context".into(), Value::Object(context_obj));
         }
 
-        // Seed @turn = { index: 0, history: [] }
-        if !history_nodes.is_empty() {
-            let turn_obj = BTreeMap::from([
-                ("index".into(), Value::Int(0)),
-                ("history".into(), Value::List(Vec::new())),
-            ]);
-            storage.set("turn".into(), Value::Object(turn_obj));
-        }
+
+        // Resolve side_effect node indices
+        let side_effect_idxs: Vec<usize> = side_effects
+            .iter()
+            .filter_map(|name| name_to_idx.get(name.as_str()).copied())
+            .collect();
 
         // Build node table — one match, uniform Arc<dyn Node> from here
         let node_table = build_node_table(&nodes, &providers, Arc::new(fetch), &extern_fns);
@@ -137,6 +137,7 @@ where
             bind_cache: HashMap::new(),
             entrypoint_idx,
             history_nodes,
+            side_effect_idxs,
         })
     }
 
@@ -148,10 +149,25 @@ where
         let entrypoint = &self.nodes[self.entrypoint_idx].name;
         tracing::info!(entrypoint = %entrypoint, "turn start");
 
-        // Update @turn.index to current turn count
-        if let Some(Value::Object(turn)) = self.state.storage.get_mut("turn") {
-            turn.insert("index".into(), Value::Int(self.state.turn as i64));
-        }
+        // Ensure @turn exists; compute next index
+        let turn_index = if let Some(arc) = self.state.storage.get("turn") {
+            let Value::Object(ref turn) = *arc else {
+                panic!("@turn must be an Object");
+            };
+            let Value::Int(i) = turn.get("index").expect("@turn.index missing") else {
+                panic!("@turn.index must be Int");
+            };
+            *i + 1
+        } else {
+            self.state.storage.set(
+                "turn".into(),
+                Value::Object(BTreeMap::from([
+                    ("index".into(), Value::Int(0)),
+                    ("history".into(), Value::List(Vec::new())),
+                ])),
+            );
+            0
+        };
 
         // Always-strategy nodes re-resolve every turn
         for node in &self.nodes {
@@ -189,20 +205,38 @@ where
             }
         }
 
-        // Flush buffered history entries to @turn.history (single get_mut)
-        if !rs.history_entries.is_empty() {
-            if let Some(Value::Object(turn)) = rs.storage.get_mut("turn")
-                && let Some(Value::List(history)) = turn.get_mut("history")
-            {
-                history.push(Value::Object(std::mem::take(&mut rs.history_entries)));
+        // Flush history + update turn index
+        {
+            let mut turn_val = rs.storage.get("turn")
+                .map(|arc| Value::clone(&arc))
+                .unwrap_or_else(|| Value::Object(BTreeMap::new()));
+
+            if let Value::Object(ref mut turn) = turn_val {
+                turn.insert("index".into(), Value::Int(turn_index));
+                if !rs.history_entries.is_empty() {
+                    let history = turn.entry("history".into())
+                        .or_insert_with(|| Value::List(Vec::new()));
+                    if let Value::List(list) = history {
+                        list.push(Value::Object(std::mem::take(&mut rs.history_entries)));
+                    }
+                }
             }
+            rs.storage.set("turn".into(), turn_val);
+        }
+
+        self.state.turn = turn_index as usize;
+
+        // Resolve side-effect nodes after history flush + turn increment
+        for &idx in &self.side_effect_idxs {
+            ctx.resolve_node(idx, &mut rs, HashMap::new())
+                .await
+                .map_err(|e| ChatError::Resolve(e.to_string()))?;
         }
 
         // Restore persistent state
         self.state.storage = rs.storage;
         self.bind_cache = rs.bind_cache;
 
-        self.state.turn += 1;
         tracing::info!(turn = self.state.turn, "turn complete");
 
         let name = &self.nodes[self.entrypoint_idx].name;
@@ -214,6 +248,10 @@ where
         Ok(Value::clone(&result))
     }
 
+    pub fn extern_fns(&self) -> &ExternFnRegistry {
+        &self.extern_fns
+    }
+
     pub fn history_len(&self) -> usize {
         self.state.turn
     }
@@ -223,10 +261,14 @@ where
             return;
         }
         self.state.turn -= 1;
-        if let Some(Value::Object(turn)) = self.state.storage.get_mut("turn")
-            && let Some(Value::List(history)) = turn.get_mut("history")
-        {
-            history.pop();
+        if let Some(arc) = self.state.storage.get("turn") {
+            let mut turn_val = Value::clone(&arc);
+            if let Value::Object(ref mut turn) = turn_val
+                && let Some(Value::List(history)) = turn.get_mut("history")
+            {
+                history.pop();
+            }
+            self.state.storage.set("turn".into(), turn_val);
         }
     }
 
@@ -240,10 +282,14 @@ where
             "re_execute index out of bounds: {index} > {}",
             self.state.turn,
         );
-        if let Some(Value::Object(turn)) = self.state.storage.get_mut("turn")
-            && let Some(Value::List(history)) = turn.get_mut("history")
-        {
-            history.truncate(index);
+        if let Some(arc) = self.state.storage.get("turn") {
+            let mut turn_val = Value::clone(&arc);
+            if let Value::Object(ref mut turn) = turn_val
+                && let Some(Value::List(history)) = turn.get_mut("history")
+            {
+                history.truncate(index);
+            }
+            self.state.storage.set("turn".into(), turn_val);
         }
         self.state.turn = index;
         self.turn(resolver).await
@@ -372,15 +418,13 @@ mod tests {
 
     fn plain_self_spec() -> SelfSpec {
         SelfSpec {
-            self_bind: "@raw".into(),
-            initial_value: r#""""#.into(),
+            initial_value: None,
         }
     }
 
     fn llm_self_spec() -> SelfSpec {
         SelfSpec {
-            self_bind: r#"@raw | map(x -> x.content) | join("")"#.into(),
-            initial_value: r#""""#.into(),
+            initial_value: None,
         }
     }
 
@@ -404,6 +448,7 @@ mod tests {
             ExternFnRegistry::new(),
             HashMapStorage::new(),
             "main",
+            &[],
         )
         .await;
         assert!(result.is_ok());
@@ -429,6 +474,7 @@ mod tests {
             ExternFnRegistry::new(),
             HashMapStorage::new(),
             "nonexistent",
+            &[],
         )
         .await;
         assert!(matches!(result, Err(ChatError::EntrypointNotFound(_))));
@@ -454,6 +500,7 @@ mod tests {
             ExternFnRegistry::new(),
             HashMapStorage::new(),
             "main",
+            &[],
         )
         .await
         .unwrap();
@@ -493,12 +540,21 @@ mod tests {
             ExternFnRegistry::new(),
             HashMapStorage::new(),
             "main",
+            &[],
         )
         .await
         .unwrap();
 
         let result = engine.turn(&noop_resolver()).await.unwrap();
-        assert_eq!(result, Value::String("hello from LLM".into()));
+        // stored value = raw output (List of messages)
+        let Value::List(msgs) = &result else {
+            panic!("expected List, got {result:?}");
+        };
+        assert_eq!(msgs.len(), 1);
+        let Value::Object(msg) = &msgs[0] else {
+            panic!("expected Object");
+        };
+        assert_eq!(msg.get("content"), Some(&Value::String("hello from LLM".into())));
     }
 
     #[tokio::test]
@@ -552,32 +608,40 @@ mod tests {
             ExternFnRegistry::new(),
             HashMapStorage::new(),
             "main",
+            &[],
         )
         .await
         .unwrap();
 
         let result = engine.turn(&noop_resolver()).await.unwrap();
-        assert_eq!(result, Value::String("final answer".into()));
+        // stored value = raw output (List of messages)
+        let Value::List(msgs) = &result else {
+            panic!("expected List, got {result:?}");
+        };
+        let Value::Object(msg) = msgs.last().unwrap() else {
+            panic!("expected Object");
+        };
+        assert_eq!(msg.get("content"), Some(&Value::String("final answer".into())));
     }
 
     // -- regression tests -------------------------------------------------------
 
     /// #6: initial_value must be evaluated on first run (not Unit).
     /// OncePerTurn: first turn uses initial_value as @self, subsequent turns use persisted @self.
+    /// With self_bind removed, accumulation is done in the node body template using @self.
     #[tokio::test]
     async fn initial_value_evaluated_on_first_run() {
-        // self_bind = [@self, @raw] | join("") → accumulates.
-        // initial_value = "A". raw = "B".
-        // Turn 1: @self = "A" (initial), @raw = "B" → "AB"
-        // Turn 2: @self = "AB" (persisted), @raw = "B" → "ABB"
+        // Template uses @self (previous) to accumulate.
+        // initial_value = "A".
+        // Turn 1: @self = "A" (initial), template = "{{@self}}B" → "AB"
+        // Turn 2: @self = "AB" (persisted), template = "{{@self}}B" → "ABB"
         let nodes = compile_test_nodes(&[NodeSpec {
             name: "main".into(),
             kind: NodeKind::Plain(PlainSpec {
-                source: "B".into(),
+                source: "{{@self}}B".into(),
             }),
             self_spec: SelfSpec {
-                self_bind: r#"[@self, @raw] | join("")"#.into(),
-                initial_value: r#""A""#.into(),
+                initial_value: Some(r#""A""#.into()),
             },
             strategy: Strategy::OncePerTurn,
             retry: 0,
@@ -591,6 +655,7 @@ mod tests {
             ExternFnRegistry::new(),
             HashMapStorage::new(),
             "main",
+            &[],
         )
         .await
         .unwrap();
@@ -638,6 +703,7 @@ mod tests {
             ExternFnRegistry::new(),
             HashMapStorage::new(),
             "main",
+            &[],
         )
         .await
         .unwrap();
@@ -679,6 +745,7 @@ mod tests {
             ExternFnRegistry::new(),
             HashMapStorage::new(),
             "main",
+            &[],
         )
         .await
         .unwrap();
@@ -702,9 +769,9 @@ mod tests {
         );
     }
 
-    /// #6b (history_bind @raw): history_bind must have access to @raw without panic.
+    /// #6b (history_bind @self): history_bind must have access to @self without panic.
     #[tokio::test]
-    async fn history_bind_accesses_raw() {
+    async fn history_bind_accesses_self() {
         let nodes = compile_test_nodes(&[NodeSpec {
             name: "main".into(),
             kind: NodeKind::Llm(LlmSpec {
@@ -720,13 +787,10 @@ mod tests {
                 cache_key: None,
                 max_tokens: MaxTokens::default(),
             }),
-            self_spec: SelfSpec {
-                self_bind: r#"@raw | map(x -> x.content) | join("")"#.into(),
-                initial_value: r#""""#.into(),
-            },
-            // history_bind accesses @raw (List) and extracts first content
+            self_spec: llm_self_spec(),
+            // history_bind accesses @self (= raw output = List) and extracts content
             strategy: Strategy::History {
-                history_bind: r#"@raw | map(x -> x.content) | join("")"#.into(),
+                history_bind: r#"@self | map(x -> x.content) | join("")"#.into(),
             },
             retry: 0,
             assert: None,
@@ -739,28 +803,36 @@ mod tests {
             ExternFnRegistry::new(),
             HashMapStorage::new(),
             "main",
+            &[],
         )
         .await
         .unwrap();
 
-        // Should not panic (previously FieldGet on Unit)
+        // Should not panic — @self = raw output = List<{role, content, content_type}>
         let result = engine.turn(&noop_resolver()).await.unwrap();
-        assert_eq!(result, Value::String("hello".into()));
+        let Value::List(msgs) = &result else {
+            panic!("expected List, got {result:?}");
+        };
+        let Value::Object(msg) = &msgs[0] else {
+            panic!("expected Object");
+        };
+        assert_eq!(msg.get("content"), Some(&Value::String("hello".into())));
     }
 
-    /// self_bind: @self = previous value, @raw = raw output (not mixed up).
-    /// Uses OncePerTurn so @self accumulates across turns.
+    /// @self in node body: accumulates across turns.
+    /// Uses OncePerTurn so @self persists.
     #[tokio::test]
-    async fn self_bind_separates_self_and_raw() {
-        // self_bind concatenates @self (previous) + @raw (current raw output).
-        // Turn 1: @self = initial "A", @raw = "B" → stored = "AB"
-        // Turn 2: @self = "AB", @raw = "B" → stored = "ABB"
+    async fn node_body_accesses_self() {
+        // Template concatenates @self (previous) + "B".
+        // Turn 1: @self = initial "A", template = "{{@self}}B" → stored = "AB"
+        // Turn 2: @self = "AB", template = "{{@self}}B" → stored = "ABB"
         let nodes = compile_test_nodes(&[NodeSpec {
             name: "main".into(),
-            kind: NodeKind::Plain(PlainSpec { source: "B".into() }),
+            kind: NodeKind::Plain(PlainSpec {
+                source: "{{@self}}B".into(),
+            }),
             self_spec: SelfSpec {
-                self_bind: r#"[@self, @raw] | join("")"#.into(),
-                initial_value: r#""A""#.into(),
+                initial_value: Some(r#""A""#.into()),
             },
             strategy: Strategy::OncePerTurn,
             retry: 0,
@@ -774,16 +846,16 @@ mod tests {
             ExternFnRegistry::new(),
             HashMapStorage::new(),
             "main",
+            &[],
         )
         .await
         .unwrap();
 
-        // raw output of Plain("B") = "B"
-        // Turn 1: @self = "A" (initial), @raw = "B" → "AB"
+        // Turn 1: @self = "A" (initial), output = "AB"
         let r1 = engine.turn(&noop_resolver()).await.unwrap();
         assert_eq!(r1, Value::String("AB".into()));
 
-        // Turn 2: @self = "AB" (persisted), @raw = "B" → "ABB"
+        // Turn 2: @self = "AB" (persisted), output = "ABB"
         let r2 = engine.turn(&noop_resolver()).await.unwrap();
         assert_eq!(r2, Value::String("ABB".into()));
     }

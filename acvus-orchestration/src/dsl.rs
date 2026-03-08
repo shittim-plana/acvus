@@ -1,17 +1,14 @@
 use crate::kind::NodeKind;
 
-/// Self specification — how to transform raw output into stored value.
+/// Self specification — stored value = raw output (identity).
 ///
-/// Inside `self_bind`:
-///   `@self` = previous stored value (or initial_value on first run)
-///   `@raw`  = raw output from node kind
-/// Result = new @self = value exposed as @name externally.
+/// When `initial_value` is `Some`, `@self` is available in the node body
+/// (previous stored value, or initial_value on first run).
+/// When `None`, `@self` is not available.
 #[derive(Debug, Clone)]
 pub struct SelfSpec {
-    /// Script: @self(previous) + @raw(raw output) → new @self.
-    pub self_bind: String,
-    /// Script to produce the initial @self before any execution.
-    pub initial_value: String,
+    /// Optional initial state. When Some, @self is available in the node body.
+    pub initial_value: Option<String>,
 }
 
 /// Node specification — pure compilation input, no Serde.

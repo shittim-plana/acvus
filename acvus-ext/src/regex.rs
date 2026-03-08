@@ -58,6 +58,12 @@ pub fn regex_module(fn_reg: &mut ExternFnRegistry) -> ExternModule {
         Ty::List(Box::new(Ty::String)),
         false,
     );
+    module.add_fn(
+        "regex_extract",
+        vec![Ty::String, opaque_ty()],
+        Ty::List(Box::new(Ty::String)),
+        false,
+    );
 
     fn_reg.register(RegexCompile);
     fn_reg.register(RegexMatch);
@@ -65,6 +71,7 @@ pub fn regex_module(fn_reg: &mut ExternFnRegistry) -> ExternModule {
     fn_reg.register(RegexFindAll);
     fn_reg.register(RegexReplace);
     fn_reg.register(RegexSplit);
+    fn_reg.register(RegexExtract);
 
     module
 }
@@ -193,6 +200,30 @@ impl ExternFn for RegexSplit {
     }
 }
 
+struct RegexExtract;
+impl ExternFn for RegexExtract {
+    fn name(&self) -> &str {
+        "regex_extract"
+    }
+    fn sig(&self) -> ExternFnSig {
+        ExternFnSig {
+            params: vec![Ty::String, opaque_ty()],
+            ret: Ty::List(Box::new(Ty::String)),
+            effectful: false,
+        }
+    }
+    fn into_body(self) -> ExternFnBody {
+        ExternFnBody::from_fn(|s: String, re: Value| async move {
+            let re = extract_regex(&re);
+            let parts: Vec<Value> = re
+                .captures_iter(&s)
+                .filter_map(|c| c.get(1).map(|m| Value::String(m.as_str().to_string())))
+                .collect();
+            Value::List(parts)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use acvus_interpreter::ExternFnRegistry;
@@ -308,5 +339,52 @@ mod tests {
                 Value::String("d".into()),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn extract_capture_groups() {
+        let (_mir, fns) = setup();
+        let re = call(
+            &fns,
+            "regex",
+            vec![Value::String(r"(?s)<thinking>(.*?)</thinking>".into())],
+        )
+        .await;
+        let result = call(
+            &fns,
+            "regex_extract",
+            vec![
+                Value::String("hello <thinking>inner1</thinking> mid <thinking>inner2</thinking> end".into()),
+                re,
+            ],
+        )
+        .await;
+        let Value::List(items) = result else {
+            panic!("expected List");
+        };
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0], Value::String("inner1".into()));
+        assert_eq!(items[1], Value::String("inner2".into()));
+    }
+
+    #[tokio::test]
+    async fn extract_no_capture_group() {
+        let (_mir, fns) = setup();
+        let re = call(
+            &fns,
+            "regex",
+            vec![Value::String(r"\d+".into())],
+        )
+        .await;
+        let result = call(
+            &fns,
+            "regex_extract",
+            vec![Value::String("abc123def".into()), re],
+        )
+        .await;
+        let Value::List(items) = result else {
+            panic!("expected List");
+        };
+        assert!(items.is_empty());
     }
 }

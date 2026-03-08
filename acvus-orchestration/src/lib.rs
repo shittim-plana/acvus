@@ -1,6 +1,7 @@
 mod compile;
 mod convert;
 mod dag;
+mod display;
 mod dsl;
 mod error;
 pub(crate) mod kind;
@@ -14,9 +15,15 @@ mod storage;
 pub use acvus_mir_pass::analysis::reachable_context::ContextKeyPartition;
 pub use compile::{
     CompiledBlock, CompiledMessage, CompiledNode, CompiledScript, CompiledSelf, CompiledStrategy,
-    compile_node, compile_nodes, compile_script,
+    ExternalContextEnv, NodeLocalTypes, compile_node, compile_nodes, compile_nodes_with_env,
+    compile_script, compute_external_context_env,
 };
 pub use convert::{json_to_value, value_to_literal};
+pub use display::{
+    CompiledDisplayEntry, CompiledIterableDisplay, CompiledStaticDisplay, DisplayEntrySpec,
+    IterableDisplaySpec, RenderedDisplayEntry, StaticDisplaySpec, compile_iterable_display,
+    compile_static_display, render_display, render_display_with_idx,
+};
 pub use dag::{Dag, build_dag};
 pub use dsl::{MessageSpec, NodeSpec, SelfSpec, Strategy, TokenBudget};
 pub use error::{OrchError, OrchErrorKind};
