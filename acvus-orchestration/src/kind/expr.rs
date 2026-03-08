@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use acvus_mir::extern_module::ExternRegistry;
 use acvus_mir::ty::Ty;
 
-use crate::compile::{CompiledScript, compile_script};
+use crate::compile::{CompiledScript, compile_script_with_hint};
 use crate::error::OrchError;
 
 /// Expr node spec — evaluates a script expression and stores the result.
@@ -25,8 +25,12 @@ pub fn compile_expr(
     context_types: &std::collections::HashMap<String, Ty>,
     registry: &ExternRegistry,
 ) -> Result<(CompiledExpr, HashSet<String>), Vec<OrchError>> {
+    let hint = match &spec.output_ty {
+        Ty::Infer => None,
+        ty => Some(ty),
+    };
     let (script, _ty) =
-        compile_script(&spec.source, context_types, registry).map_err(|e| vec![e])?;
+        compile_script_with_hint(&spec.source, context_types, registry, hint).map_err(|e| vec![e])?;
     let keys = script.context_keys.clone();
     Ok((CompiledExpr { script }, keys))
 }

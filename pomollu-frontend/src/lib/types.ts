@@ -185,8 +185,14 @@ export type ContextBinding = {
 export const HISTORY_BINDING_NAME = 'history';
 export const HISTORY_ENTRY_TYPE = 'List<{content: String, content_type: String, role: String}>';
 
+/** Type of each entry in @context lists. */
+export const CONTEXT_ENTRY_TYPE = '{name: String, description: String, content: String, content_type: String}';
+
+/** Fixed type of @context — always available, lists are empty by default. */
+export const CONTEXT_TYPE = `{system: List<${CONTEXT_ENTRY_TYPE}>, character: List<${CONTEXT_ENTRY_TYPE}>, world_info: List<${CONTEXT_ENTRY_TYPE}>, lorebook: List<${CONTEXT_ENTRY_TYPE}>, memory: List<${CONTEXT_ENTRY_TYPE}>, custom: List<{name: String, description: String, content: String, content_type: String, type: String}>}`;
+
 /** Context refs provided by the engine (not user-defined). */
-export const BUILTIN_CONTEXT_REFS = new Set(['turn', 'raw', 'self', 'content']);
+export const BUILTIN_CONTEXT_REFS = new Set(['turn', 'raw', 'self', 'content', 'context']);
 
 export type Prompt = {
 	id: string;

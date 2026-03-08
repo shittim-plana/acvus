@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ContextBinding, ContextParam } from '$lib/types.js';
-	import { HISTORY_BINDING_NAME, HISTORY_ENTRY_TYPE } from '$lib/types.js';
+	import { HISTORY_BINDING_NAME, HISTORY_ENTRY_TYPE, CONTEXT_TYPE } from '$lib/types.js';
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
@@ -74,14 +74,18 @@
 
 	function runAnalysis() {
 		if (!prompt) return;
+		const nodeNames = collectNodeNames(prompt.children);
+		nodeNames.add('context');
+		const baseTypes: Record<string, string> = { context: CONTEXT_TYPE };
 		const { discoveredTypes, unresolvedKeys } = analyzeLevel({
 			scripts: [
 				...collectScriptsFromBindings(prompt.contextBindings),
 				...collectScriptsFromTree(prompt.children),
 			],
-			nodeNames: collectNodeNames(prompt.children),
+			nodeNames,
 			providedKeys: new Set(prompt.contextBindings.map((b) => b.name).filter((n) => n)),
 			existingParams: prompt.contextParams,
+			baseTypes,
 			children: prompt.children,
 			getApi: (id) => providerStore.get(id)?.api ?? 'openai',
 		});

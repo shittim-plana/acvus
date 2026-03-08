@@ -23,6 +23,7 @@
 	} from '$lib/param-resolver.js';
 	import type { ContextEnvResult } from '$lib/param-resolver.js';
 	import type { BlockNode } from '$lib/types.js';
+	import { CONTEXT_TYPE } from '$lib/types.js';
 	import { onMount } from 'svelte';
 
 	let activeTab = $derived(uiState.activeTab);
@@ -45,13 +46,16 @@
 				const prompt = promptStore.get(owner.promptId);
 				if (!prompt) return EMPTY_ENV;
 				const injected = buildInjectedTypes(prompt.contextParams);
+				injected['context'] = CONTEXT_TYPE;
 				const scripts = [
 					...collectScriptsFromBindings(prompt.contextBindings),
 					...collectScriptsFromTree(prompt.children),
 				];
+				const nodeNames = collectNodeNames(prompt.children);
+				nodeNames.add('context');
 				const discovered = collectUnresolvedParams({
 					scripts,
-					nodeNames: collectNodeNames(prompt.children),
+					nodeNames,
 					providedKeys: new Set(prompt.contextBindings.map((b) => b.name).filter((n) => n)),
 					contextTypes: injected,
 				});
@@ -64,9 +68,12 @@
 				const profile = profileStore.get(owner.profileId);
 				if (!profile) return EMPTY_ENV;
 				const injected = buildInjectedTypes(profile.contextParams);
+				injected['context'] = CONTEXT_TYPE;
+				const nodeNames = collectNodeNames(profile.children);
+				nodeNames.add('context');
 				const discovered = collectUnresolvedParams({
 					scripts: collectScriptsFromTree(profile.children),
-					nodeNames: collectNodeNames(profile.children),
+					nodeNames,
 					providedKeys: new Set(),
 					contextTypes: injected,
 				});
@@ -86,6 +93,13 @@
 					...bot.contextParams,
 				];
 				const injected = buildInjectedTypes(allParams);
+				injected['context'] = CONTEXT_TYPE;
+
+				const allChildren: BlockNode[] = [
+					...(prompt?.children ?? []),
+					...(profile?.children ?? []),
+					...bot.children,
+				];
 
 				const providedKeys = new Set<string>();
 				if (prompt) {
@@ -100,18 +114,13 @@
 				if (prompt) for (const n of collectNodeNames(prompt.children)) nodeNames.add(n);
 				if (profile) for (const n of collectNodeNames(profile.children)) nodeNames.add(n);
 				for (const n of collectNodeNames(bot.children)) nodeNames.add(n);
+				nodeNames.add('context');
 
 				const scripts = [
 					...(prompt ? collectScriptsFromBindings(prompt.contextBindings) : []),
 					...(prompt ? collectScriptsFromTree(prompt.children) : []),
 					...(profile ? collectScriptsFromTree(profile.children) : []),
 					...collectScriptsFromTree(bot.children),
-				];
-
-				const allChildren: BlockNode[] = [
-					...(prompt?.children ?? []),
-					...(profile?.children ?? []),
-					...bot.children,
 				];
 
 				const discovered = collectUnresolvedParams({

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { DisplayEntry, DisplayRegion, GridLayout, BotDisplay, ContextParam } from '$lib/types.js';
-	import { GRID_HISTORY, HISTORY_ENTRY_TYPE, createDefaultLayout } from '$lib/types.js';
+	import { GRID_HISTORY, HISTORY_ENTRY_TYPE, CONTEXT_TYPE, createDefaultLayout } from '$lib/types.js';
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import { Input } from '$lib/components/ui/input';
 	import { Textarea } from '$lib/components/ui/textarea';
@@ -178,6 +178,8 @@
 		if (profile) for (const n of collectNodeNames(profile.children)) nodeNames.add(n);
 		for (const n of collectNodeNames(bot.children)) nodeNames.add(n);
 
+		nodeNames.add('context');
+
 		// Collect all scripts across hierarchy
 		// NOTE: display/region entry scripts are excluded — they run inside
 		// iterator context where @item/@index are provided, not unresolved.
@@ -209,6 +211,7 @@
 			...(prompt?.contextParams ?? []),
 			...(profile?.contextParams ?? []),
 		]);
+		baseTypes['context'] = CONTEXT_TYPE;
 
 		const { discoveredTypes, unresolvedKeys } = analyzeLevel({
 			scripts,

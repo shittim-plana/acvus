@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { ContextParam } from '$lib/types.js';
+	import { CONTEXT_TYPE } from '$lib/types.js';
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
@@ -28,11 +29,15 @@
 
 	function runAnalysis() {
 		if (!profile) return;
+		const nodeNames = collectNodeNames(profile.children);
+		nodeNames.add('context');
+		const baseTypes: Record<string, string> = { context: CONTEXT_TYPE };
 		const { discoveredTypes, unresolvedKeys } = analyzeLevel({
 			scripts: collectScriptsFromTree(profile.children),
-			nodeNames: collectNodeNames(profile.children),
+			nodeNames,
 			providedKeys: new Set(),
 			existingParams: profile.contextParams,
+			baseTypes,
 			children: profile.children,
 			getApi: (id) => providerStore.get(id)?.api ?? 'openai',
 		});

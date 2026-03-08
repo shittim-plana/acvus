@@ -1,5 +1,5 @@
 import type { Bot, Node, MessageDef, Block, RawBlock, ScriptBlock, ContextBlock, ContextBinding } from './types.js';
-import { isRawBlock, isScriptBlock, isContextBlock } from './types.js';
+import { isRawBlock, isScriptBlock, isContextBlock, CONTEXT_TYPE } from './types.js';
 import type { SessionConfig, NodeConfig, MessageConfig, ProviderConfig, StrategyConfig } from './engine.js';
 import { collectNodes, collectBlocks } from './block-tree.js';
 import { promptStore, profileStore, providerStore } from './stores.svelte.js';
@@ -113,7 +113,8 @@ function escapeAcvusString(s: string): string {
 
 function tagsToAcvus(tags: Record<string, string>): string {
 	const entries = Object.entries(tags).map(([k, v]) => `${k}: ${escapeAcvusString(v)}`);
-	return `{${entries.join(', ')}}`;
+	if (entries.length === 0) return '{}';
+	return `{${entries.join(', ')},}`;
 }
 
 /**
@@ -146,7 +147,7 @@ function buildContextNodes(allBlocks: Block[]): NodeConfig[] {
 				retry: 0
 			});
 
-			const entry = `{name: ${escapeAcvusString(b.name)}, description: ${escapeAcvusString(b.info.description)}, tags: ${tagsToAcvus(b.info.tags)}, content: @${partNodeName}, content_type: ${escapeAcvusString(part.content_type)}}`;
+			const entry = `{name: ${escapeAcvusString(b.name)}, description: ${escapeAcvusString(b.info.description)}, tags: ${tagsToAcvus(b.info.tags)}, content: @${partNodeName}, content_type: ${escapeAcvusString(part.content_type)},}`;
 
 			const type = b.info.type;
 			if (!groups.has(type)) groups.set(type, []);
@@ -154,18 +155,30 @@ function buildContextNodes(allBlocks: Block[]): NodeConfig[] {
 		}
 	}
 
-	if (groups.size > 0) {
-		const fields = [...groups.entries()].map(
-			([type, entries]) => `${type}: [${entries.join(', ')}]`
-		);
-		nodes.push({
-			name: 'context',
-			kind: 'expr',
-			template: `{${fields.join(', ')}}`,
-			strategy: { mode: 'once-per-turn' },
-			retry: 0
-		});
+	// Always create @context with all standard fields (empty lists by default)
+	const standardTypes = ['system', 'character', 'world_info', 'lorebook', 'memory'];
+	const fields: string[] = [];
+	for (const type of standardTypes) {
+		const entries = groups.get(type) ?? [];
+		fields.push(`${type}: [${entries.join(', ')}]`);
 	}
+	// Custom types go into context.custom with an extra `type` field
+	const customEntries: string[] = [];
+	for (const [type, entries] of groups) {
+		if (!standardTypes.includes(type)) {
+			customEntries.push(...entries);
+		}
+	}
+	fields.push(`custom: [${customEntries.join(', ')}]`);
+
+	nodes.push({
+		name: 'context',
+		kind: 'expr',
+		template: `{${fields.join(', ')},}`,
+		strategy: { mode: 'once-per-turn' },
+		retry: 0,
+		output_ty: CONTEXT_TYPE
+	});
 
 	return nodes;
 }
