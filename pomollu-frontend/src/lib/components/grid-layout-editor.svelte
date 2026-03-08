@@ -55,6 +55,62 @@
 	let colBoundaries = $derived(cumulativeBoundaries(layout.colSizes));
 	let rowBoundaries = $derived(cumulativeBoundaries(layout.rowSizes));
 
+	// --- Editor placements (merges adjacent same-value cells, including empty) ---
+
+	type EditorPlacement = {
+		value: string;
+		row: number; col: number;
+		rowSpan: number; colSpan: number;
+		colStart: number; colEnd: number;
+		rowStart: number; rowEnd: number;
+	};
+
+	let editorPlacements = $derived.by(() => {
+		const rowCount = layout.areas.length;
+		const colCount = layout.colSizes.length;
+		const visited = new Set<number>();
+		const result: EditorPlacement[] = [];
+
+		for (let r = 0; r < rowCount; r++) {
+			for (let c = 0; c < colCount; c++) {
+				if (visited.has(r * colCount + c)) continue;
+				const value = layout.areas[r]?.[c] ?? '';
+
+				let maxCol = c;
+				while (maxCol + 1 < colCount && !visited.has(r * colCount + (maxCol + 1)) && layout.areas[r][maxCol + 1] === value) maxCol++;
+
+				let maxRow = r;
+				outer: while (maxRow + 1 < rowCount) {
+					for (let cc = c; cc <= maxCol; cc++) {
+						if (visited.has((maxRow + 1) * colCount + cc) || layout.areas[maxRow + 1]?.[cc] !== value) break outer;
+					}
+					maxRow++;
+				}
+
+				for (let rr = r; rr <= maxRow; rr++) {
+					for (let cc = c; cc <= maxCol; cc++) {
+						visited.add(rr * colCount + cc);
+					}
+				}
+
+				result.push({
+					value,
+					row: r, col: c,
+					rowSpan: maxRow - r + 1, colSpan: maxCol - c + 1,
+					colStart: c + 1, colEnd: maxCol + 2,
+					rowStart: r + 1, rowEnd: maxRow + 2,
+				});
+			}
+		}
+		return result;
+	});
+
+	function sumSizes(sizes: number[], from: number, to: number): number {
+		let sum = 0;
+		for (let i = from; i < to; i++) sum += sizes[i];
+		return sum;
+	}
+
 	function selectCell(row: number, col: number) {
 		if (selectedCell?.row === row && selectedCell?.col === col) {
 			selectedCell = null;
@@ -63,22 +119,39 @@
 		}
 	}
 
+	function findPlacement(row: number, col: number): EditorPlacement | undefined {
+		return editorPlacements.find((p) => p.row === row && p.col === col);
+	}
+
 	function assignCell(value: string) {
 		if (!selectedCell) return;
+		const p = findPlacement(selectedCell.row, selectedCell.col);
+		if (!p) return;
 		const newAreas = layout.areas.map((row) => [...row]);
-		newAreas[selectedCell.row][selectedCell.col] = value;
+		for (let r = p.row; r < p.row + p.rowSpan; r++) {
+			for (let c = p.col; c < p.col + p.colSpan; c++) {
+				newAreas[r][c] = value;
+			}
+		}
 		onupdate({ ...layout, areas: newAreas });
 	}
 
 	function splitVertical() {
 		if (cols >= 6) return;
 		const idx = selectedCell?.col ?? largestIndex(layout.colSizes);
+		const selectedRow = selectedCell?.row;
 		const half = layout.colSizes[idx] / 2;
 		const newColSizes = [...layout.colSizes];
 		newColSizes.splice(idx, 1, half, half);
-		const newAreas = layout.areas.map((row) => {
+		const newAreas = layout.areas.map((row, ri) => {
 			const newRow = [...row];
-			newRow.splice(idx, 0, '');
+			if (selectedRow != null && ri !== selectedRow) {
+				// Not the selected row: duplicate value to maintain span
+				newRow.splice(idx + 1, 0, row[idx]);
+			} else {
+				// Selected row (or no selection): insert empty
+				newRow.splice(idx + 1, 0, '');
+			}
 			return newRow;
 		});
 		onupdate({ ...layout, colSizes: newColSizes, areas: newAreas });
@@ -88,12 +161,16 @@
 	function splitHorizontal() {
 		if (rows >= 6) return;
 		const idx = selectedCell?.row ?? largestIndex(layout.rowSizes);
+		const selectedCol = selectedCell?.col;
 		const half = layout.rowSizes[idx] / 2;
 		const newRowSizes = [...layout.rowSizes];
 		newRowSizes.splice(idx, 1, half, half);
 		const newAreas = [...layout.areas];
-		const newRow = Array(cols).fill('');
-		newAreas.splice(idx, 0, newRow);
+		const newRow = layout.areas[idx].map((cell, ci) => {
+			if (selectedCol != null && ci === selectedCol) return '';
+			return selectedCol != null ? cell : '';
+		});
+		newAreas.splice(idx + 1, 0, newRow);
 		onupdate({ ...layout, rowSizes: newRowSizes, areas: newAreas });
 		selectedCell = null;
 	}
@@ -222,10 +299,10 @@
 <div class="space-y-2">
 	<div class="flex items-center gap-1 flex-wrap">
 		<Button variant="outline" size="sm" class="h-7 text-xs gap-1" disabled={cols >= 6} onclick={splitVertical}>
-			<SplitSquareVertical class="h-3.5 w-3.5" /> Split V
+			<SplitSquareHorizontal class="h-3.5 w-3.5" /> Split V
 		</Button>
 		<Button variant="outline" size="sm" class="h-7 text-xs gap-1" disabled={rows >= 6} onclick={splitHorizontal}>
-			<SplitSquareHorizontal class="h-3.5 w-3.5" /> Split H
+			<SplitSquareVertical class="h-3.5 w-3.5" /> Split H
 		</Button>
 		<div class="ml-auto">
 			<Select.Root
@@ -252,24 +329,22 @@
 			class="grid-canvas"
 			style="{computedGridStyle} aspect-ratio: {canvasAspect};"
 		>
-		{#each layout.areas as row, ri}
-			{#each row as cell, ci}
-				{@const isSelected = selectedCell?.row === ri && selectedCell?.col === ci}
-				{@const w = layout.colSizes[ci]}
-				{@const h = layout.rowSizes[ri]}
-				<button
-					type="button"
-					class="grid-cell"
-					class:selected={isSelected}
-					style="--cell-color: {cellColor(cell)};"
-					onclick={() => selectCell(ri, ci)}
-				>
-					{#if w > 12 && h > 15}
-						<span class="cell-label">{cellLabel(cell)}</span>
-					{/if}
-					<span class="cell-size">{Math.round(w)}×{Math.round(h)}</span>
-				</button>
-			{/each}
+		{#each editorPlacements as p}
+			{@const isSelected = selectedCell?.row === p.row && selectedCell?.col === p.col}
+			{@const w = sumSizes(layout.colSizes, p.col, p.col + p.colSpan)}
+			{@const h = sumSizes(layout.rowSizes, p.row, p.row + p.rowSpan)}
+			<button
+				type="button"
+				class="grid-cell"
+				class:selected={isSelected}
+				style="--cell-color: {cellColor(p.value)}; grid-column: {p.colStart} / {p.colEnd}; grid-row: {p.rowStart} / {p.rowEnd};"
+				onclick={() => selectCell(p.row, p.col)}
+			>
+				{#if w > 12 && h > 15}
+					<span class="cell-label">{cellLabel(p.value)}</span>
+				{/if}
+				<span class="cell-size">{Math.round(w)}×{Math.round(h)}</span>
+			</button>
 		{/each}
 
 		<!-- Column dividers -->
