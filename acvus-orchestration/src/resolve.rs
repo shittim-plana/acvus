@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::future::Future;
+use Future;
 use std::pin::Pin;
 use std::sync::Arc;
 

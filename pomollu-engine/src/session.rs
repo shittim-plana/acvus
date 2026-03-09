@@ -90,9 +90,9 @@ fn json_to_pure(interner: &Interner, v: &serde_json::Value) -> Option<PureValue>
 struct UnsafeSend<T>(T);
 unsafe impl<T> Send for UnsafeSend<T> {}
 
-impl<T> std::future::Future for UnsafeSend<T>
+impl<T> Future for UnsafeSend<T>
 where
-    T: std::future::Future,
+    T: Future,
 {
     type Output = T::Output;
     fn poll(
@@ -114,7 +114,7 @@ impl acvus_orchestration::Fetch for WebFetch {
     fn fetch(
         &self,
         request: &HttpRequest,
-    ) -> impl std::future::Future<Output = Result<serde_json::Value, String>> + Send {
+    ) -> impl Future<Output = Result<serde_json::Value, String>> + Send {
         let url = request.url.clone();
         let headers = request.headers.clone();
         let body = request.body.clone();
@@ -281,13 +281,11 @@ impl SessionStorage {
 // ChatSession -- wasm_bindgen wrapper around ChatEngine
 // ---------------------------------------------------------------------------
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
+#[serde(default)]
 struct DisplayEntryJson {
-    #[serde(default)]
     name: String,
-    #[serde(default)]
     condition: String,
-    #[serde(default)]
     template: String,
 }
 
@@ -331,53 +329,50 @@ struct ContextDecl {
 #[derive(Deserialize)]
 struct NodeConfig {
     name: String,
-    kind: String,
-    #[serde(default)]
     initial_value: Option<String>,
     strategy: StrategyConfig,
     #[serde(default)]
     retry: u32,
-    #[serde(default)]
     assert_script: Option<String>,
-
-    // LLM-specific
-    #[serde(default)]
-    provider: Option<String>,
-    #[serde(default)]
-    api: Option<String>,
-    #[serde(default)]
-    model: Option<String>,
-    #[serde(default)]
-    temperature: Option<f64>,
-    #[serde(default)]
-    max_tokens: Option<MaxTokensJson>,
-    #[serde(default)]
-    messages: Option<Vec<MessageConfig>>,
-    #[serde(default)]
-    tools: Option<Vec<ToolConfig>>,
-
-    // Plain/Expr-specific
-    #[serde(default)]
-    template: Option<String>,
-    #[serde(default)]
-    output_ty: Option<String>,
+    #[serde(flatten)]
+    kind: NodeKindConfig,
 }
 
 #[derive(Deserialize)]
+#[serde(tag = "kind")]
+enum NodeKindConfig {
+    #[serde(rename = "llm")]
+    Llm {
+        provider: String,
+        api: String,
+        model: String,
+        temperature: Option<f64>,
+        max_tokens: Option<MaxTokensJson>,
+        messages: Vec<MessageConfig>,
+        #[serde(default)]
+        tools: Vec<ToolConfig>,
+    },
+    #[serde(rename = "plain")]
+    Plain { template: String },
+    #[serde(rename = "expr")]
+    Expr {
+        template: String,
+        output_ty: Option<String>,
+    },
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
 struct ToolConfig {
     name: String,
-    #[serde(default)]
     description: String,
     node: String,
-    #[serde(default)]
     params: FxHashMap<String, String>,
 }
 
 #[derive(Deserialize)]
 struct MaxTokensJson {
-    #[serde(default)]
     input: Option<u32>,
-    #[serde(default)]
     output: Option<u32>,
 }
 
@@ -420,28 +415,20 @@ enum StrategyConfig {
 }
 
 fn convert_node(interner: &Interner, cfg: &NodeConfig) -> Result<NodeSpec, String> {
-    let kind = match cfg.kind.as_str() {
-        "llm" => {
-            let api_str = cfg
-                .api
-                .as_ref()
-                .ok_or_else(|| format!("node '{}': llm requires 'api'", cfg.name))?;
-            let api = ApiKind::parse(api_str)
-                .ok_or_else(|| format!("node '{}': unknown api '{api_str}'", cfg.name))?;
-            let provider = cfg
-                .provider
-                .as_ref()
-                .ok_or_else(|| format!("node '{}': llm requires 'provider'", cfg.name))?;
-            let model = cfg
-                .model
-                .as_ref()
-                .ok_or_else(|| format!("node '{}': llm requires 'model'", cfg.name))?;
-            let messages_cfg = cfg
-                .messages
-                .as_ref()
-                .ok_or_else(|| format!("node '{}': llm requires 'messages'", cfg.name))?;
+    let kind = match &cfg.kind {
+        NodeKindConfig::Llm {
+            provider,
+            api,
+            model,
+            temperature,
+            max_tokens,
+            messages,
+            tools,
+        } => {
+            let api = ApiKind::parse(api)
+                .ok_or_else(|| format!("node '{}': unknown api '{api}'", cfg.name))?;
 
-            let messages: Vec<MessageSpec> = messages_cfg
+            let messages: Vec<MessageSpec> = messages
                 .iter()
                 .filter_map(|m| {
                     if let Some(iter) = &m.iterator {
@@ -469,34 +456,26 @@ fn convert_node(interner: &Interner, cfg: &NodeConfig) -> Result<NodeSpec, Strin
                 })
                 .collect();
 
-            let tools: Vec<ToolBinding> = cfg
-                .tools
-                .as_ref()
-                .map(|ts| {
-                    ts.iter()
-                        .map(|t| ToolBinding {
-                            name: t.name.clone(),
-                            description: t.description.clone(),
-                            node: t.node.clone(),
-                            params: t.params.clone(),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-
             NodeKind::Llm(LlmSpec {
                 api,
                 provider: provider.clone(),
                 model: model.clone(),
                 messages,
-                tools,
+                tools: tools
+                    .iter()
+                    .map(|t| ToolBinding {
+                        name: t.name.clone(),
+                        description: t.description.clone(),
+                        node: t.node.clone(),
+                        params: t.params.clone(),
+                    })
+                    .collect(),
                 generation: GenerationParams {
-                    temperature: cfg.temperature,
+                    temperature: *temperature,
                     ..Default::default()
                 },
                 cache_key: None,
-                max_tokens: cfg
-                    .max_tokens
+                max_tokens: max_tokens
                     .as_ref()
                     .map(|mt| MaxTokens {
                         input: mt.input,
@@ -505,31 +484,22 @@ fn convert_node(interner: &Interner, cfg: &NodeConfig) -> Result<NodeSpec, Strin
                     .unwrap_or_default(),
             })
         }
-        "expr" => {
-            let source = cfg
-                .template
-                .as_ref()
-                .ok_or_else(|| format!("node '{}': expr requires 'template'", cfg.name))?;
-            let output_ty = cfg
-                .output_ty
+        NodeKindConfig::Expr {
+            template,
+            output_ty,
+        } => {
+            let output_ty = output_ty
                 .as_deref()
                 .and_then(|s| crate::parse_ty(interner, s))
                 .unwrap_or(Ty::Infer);
             NodeKind::Expr(ExprSpec {
-                source: source.clone(),
+                source: template.clone(),
                 output_ty,
             })
         }
-        "plain" => {
-            let source = cfg
-                .template
-                .as_ref()
-                .ok_or_else(|| format!("node '{}': plain requires 'template'", cfg.name))?;
-            NodeKind::Plain(PlainSpec {
-                source: source.clone(),
-            })
-        }
-        other => return Err(format!("node '{}': unknown kind '{other}'", cfg.name)),
+        NodeKindConfig::Plain { template } => NodeKind::Plain(PlainSpec {
+            source: template.clone(),
+        }),
     };
 
     let strategy = match &cfg.strategy {
