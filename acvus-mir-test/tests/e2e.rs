@@ -1861,6 +1861,53 @@ fn structural_enum_payload_type_propagates_through_context() {
     assert!(ir.contains("Err"), "variant Err missing:\n{ir}");
 }
 
+// ── Variant unification inside Tuple/List patterns ─────────────
+// Regression: nested Variant patterns inside Tuple/List must merge
+// variant sets across match arms via the shared Var chain.
+
+#[test]
+fn variant_merge_inside_tuple_pattern() {
+    // Two arms with different variants nested inside a tuple pattern.
+    // Both A and B must appear in the final merged Enum type.
+    let i = Interner::new();
+    let src = r#"{{ (S::A, x) = @t }}{{ x }}{{ (S::B, y) = }}{{ y }}{{_}}??{{/}}"#;
+    let template = acvus_ast::parse(&i, src).unwrap();
+    let (module, _) = acvus_mir::compile_analysis(
+        &i, &template, &FxHashMap::default(), &ExternRegistry::new(),
+    ).unwrap();
+    let ir = acvus_mir::printer::dump_with(&i, &module);
+    assert!(ir.contains("A"), "variant A missing from IR:\n{ir}");
+    assert!(ir.contains("B"), "variant B missing from IR:\n{ir}");
+}
+
+#[test]
+fn variant_merge_inside_tuple_three_arms() {
+    let i = Interner::new();
+    let src = r#"{{ (S::X, _) = @t }}x{{ (S::Y, _) = }}y{{ (S::Z, _) = }}z{{_}}??{{/}}"#;
+    let template = acvus_ast::parse(&i, src).unwrap();
+    let (module, _) = acvus_mir::compile_analysis(
+        &i, &template, &FxHashMap::default(), &ExternRegistry::new(),
+    ).unwrap();
+    let ir = acvus_mir::printer::dump_with(&i, &module);
+    assert!(ir.contains("X"), "variant X missing:\n{ir}");
+    assert!(ir.contains("Y"), "variant Y missing:\n{ir}");
+    assert!(ir.contains("Z"), "variant Z missing:\n{ir}");
+}
+
+#[test]
+fn variant_merge_inside_list_pattern() {
+    // Variant inside list head pattern should merge across arms.
+    let i = Interner::new();
+    let src = r#"{{ [S::A, ..] = @lst }}a{{ [S::B, ..] = }}b{{_}}??{{/}}"#;
+    let template = acvus_ast::parse(&i, src).unwrap();
+    let (module, _) = acvus_mir::compile_analysis(
+        &i, &template, &FxHashMap::default(), &ExternRegistry::new(),
+    ).unwrap();
+    let ir = acvus_mir::printer::dump_with(&i, &module);
+    assert!(ir.contains("A"), "variant A missing:\n{ir}");
+    assert!(ir.contains("B"), "variant B missing:\n{ir}");
+}
+
 #[test]
 fn infer_unifies_with_concrete_type() {
     // Ty::Infer in context types should not block unification.

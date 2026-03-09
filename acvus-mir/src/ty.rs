@@ -215,7 +215,7 @@ impl TySubst {
     }
 
     /// Shallow-resolve: follow Var chains but don't recurse into structure.
-    fn shallow_resolve(&self, ty: &Ty) -> Ty {
+    pub fn shallow_resolve(&self, ty: &Ty) -> Ty {
         match ty {
             Ty::Var(v) => {
                 if let Some(bound) = self.bindings.get(v) {

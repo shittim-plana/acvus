@@ -1072,21 +1072,27 @@ impl<'a> TypeChecker<'a> {
             }
 
             Pattern::List { head, tail, .. } => {
-                // Source must be List<T>.
-                let elem_ty = self.subst.fresh_var();
-                let list_ty = Ty::List(Box::new(elem_ty.clone()));
-                if self.subst.unify(&source_resolved, &list_ty).is_err() {
-                    self.error(
-                        MirErrorKind::PatternTypeMismatch {
-                            pattern_ty: list_ty,
-                            source_ty: source_resolved,
-                        },
-                        span,
-                    );
-                    return;
-                }
-                // Pass unresolved elem_ty so nested Variant patterns can
-                // trace the Var chain and merge variant sets across arms.
+                // Reuse existing element Var when source already resolves to a
+                // List. Same rationale as Tuple above.
+                let shallow = self.subst.shallow_resolve(source_ty);
+                let elem_ty = match shallow {
+                    Ty::List(ref inner) => (**inner).clone(),
+                    _ => {
+                        let var = self.subst.fresh_var();
+                        let list_ty = Ty::List(Box::new(var.clone()));
+                        if self.subst.unify(source_ty, &list_ty).is_err() {
+                            self.error(
+                                MirErrorKind::PatternTypeMismatch {
+                                    pattern_ty: list_ty,
+                                    source_ty: source_resolved,
+                                },
+                                span,
+                            );
+                            return;
+                        }
+                        var
+                    }
+                };
                 for p in head.iter().chain(tail.iter()) {
                     self.check_pattern(p, &elem_ty, span);
                 }
@@ -1153,27 +1159,37 @@ impl<'a> TypeChecker<'a> {
             }
 
             Pattern::Tuple { elements, .. } => {
-                // Source must be Tuple with matching arity.
-                let elem_vars: Vec<Ty> = elements.iter().map(|_| self.subst.fresh_var()).collect();
-                let tuple_ty = Ty::Tuple(elem_vars.clone());
-                if self.subst.unify(&source_resolved, &tuple_ty).is_err() {
-                    self.error(
-                        MirErrorKind::PatternTypeMismatch {
-                            pattern_ty: tuple_ty,
-                            source_ty: source_resolved,
-                        },
-                        span,
-                    );
-                    return;
-                }
+                // Reuse existing element Vars when source already resolves to a
+                // Tuple. This preserves the Var chain so nested Variant patterns
+                // can accumulate merged variant sets across match arms via
+                // find_leaf_var.
+                let shallow = self.subst.shallow_resolve(source_ty);
+                let elem_tys = match shallow {
+                    Ty::Tuple(ref existing) if existing.len() == elements.len() => {
+                        existing.clone()
+                    }
+                    _ => {
+                        let vars: Vec<Ty> =
+                            elements.iter().map(|_| self.subst.fresh_var()).collect();
+                        let tuple_ty = Ty::Tuple(vars.clone());
+                        if self.subst.unify(source_ty, &tuple_ty).is_err() {
+                            self.error(
+                                MirErrorKind::PatternTypeMismatch {
+                                    pattern_ty: tuple_ty,
+                                    source_ty: source_resolved,
+                                },
+                                span,
+                            );
+                            return;
+                        }
+                        vars
+                    }
+                };
                 for (i, elem) in elements.iter().enumerate() {
                     let TuplePatternElem::Pattern(pat) = elem else {
                         continue; // Wildcard: no binding, skip.
                     };
-                    // Pass the unresolved elem_var so that nested Variant
-                    // patterns can trace the Var chain via find_leaf_var and
-                    // accumulate merged variant sets across match arms.
-                    self.check_pattern(pat, &elem_vars[i], span);
+                    self.check_pattern(pat, &elem_tys[i], span);
                 }
             }
 
