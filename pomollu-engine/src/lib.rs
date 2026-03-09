@@ -251,6 +251,21 @@ fn extract_context_keys_with_types(
         }
     }
 
+    // Pruned keys: in dead branches, not needed at runtime, but the
+    // typechecker compiles all branches and needs their types injected.
+    // Reported so the caller can inject types without showing them in the UI.
+    for name in &partition.pruned {
+        if !seen.contains(name) {
+            seen.insert(*name);
+            let ty = type_map.get(name).cloned().unwrap_or(Ty::Infer);
+            keys.push(ContextKey {
+                name: interner.resolve(*name).to_string(),
+                ty: ty_to_desc(interner, &ty),
+                status: "pruned".to_string(),
+            });
+        }
+    }
+
     keys.sort_by(|a, b| a.name.cmp(&b.name));
     keys
 }

@@ -291,12 +291,18 @@ impl<'a> TypeChecker<'a> {
 
         for arm in &mb.arms {
             let match_ty = self.pattern_match_type(&arm.pattern, &resolved_source);
-            // For variant patterns, pass the unresolved source so unify can
-            // trace the Var chain and rebind the merged enum type.
-            let pattern_source = if matches!(&arm.pattern, Pattern::Variant { .. }) {
-                source_ty.clone()
-            } else {
-                match_ty
+            // For patterns that destructure the source as a whole and may
+            // contain nested variants (Variant, Tuple, List), pass the
+            // unresolved source so unify can trace the Var chain and rebind
+            // the merged type. This ensures variant sets from all arms are
+            // accumulated into the same type variable.
+            // Object patterns are NOT included because they go through the
+            // iteration path (pattern_match_type extracts element types).
+            let pattern_source = match &arm.pattern {
+                Pattern::Variant { .. }
+                | Pattern::Tuple { .. }
+                | Pattern::List { .. } => source_ty.clone(),
+                _ => match_ty,
             };
 
             self.push_scope();

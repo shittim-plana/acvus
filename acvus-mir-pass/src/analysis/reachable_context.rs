@@ -19,6 +19,10 @@ pub struct ContextKeyPartition {
     /// These are excluded from eager/lazy (already resolved for orchestration)
     /// but tracked separately for UI discovery.
     pub reachable_known: FxHashSet<Astr>,
+    /// Keys in dead (pruned) branches — not needed at runtime, but the
+    /// typechecker still sees these references and needs their types injected.
+    /// Callers should include these in type injection but NOT in unresolved params.
+    pub pruned: FxHashSet<Astr>,
 }
 
 /// A known context value for branch pruning.
@@ -305,20 +309,28 @@ fn partition_from_body(
 
     // Collect ContextLoads by reach level
     for (i, block) in blocks.iter().enumerate() {
-        if reach[i] == Reach::Unreachable {
-            continue;
-        }
+        let block_reach = reach[i];
         for &inst_idx in &block.insts {
             if let InstKind::ContextLoad { name, .. } = &insts[inst_idx].kind {
-                if known.contains_key(name) {
-                    // Known key on a reachable path — track for UI discovery.
-                    partition.reachable_known.insert(*name);
-                } else {
-                    match reach[i] {
-                        Reach::Definite => partition.eager.insert(*name),
-                        Reach::Conditional => partition.lazy.insert(*name),
-                        Reach::Unreachable => unreachable!(),
-                    };
+                match block_reach {
+                    Reach::Unreachable => {
+                        // Dead branch: not needed at runtime, but the typechecker
+                        // still compiles all branches and needs these types injected.
+                        if !known.contains_key(name) {
+                            partition.pruned.insert(*name);
+                        }
+                    }
+                    _ => {
+                        if known.contains_key(name) {
+                            partition.reachable_known.insert(*name);
+                        } else {
+                            match block_reach {
+                                Reach::Definite => partition.eager.insert(*name),
+                                Reach::Conditional => partition.lazy.insert(*name),
+                                Reach::Unreachable => unreachable!(),
+                            };
+                        }
+                    }
                 }
             }
         }

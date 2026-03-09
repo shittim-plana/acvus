@@ -88,7 +88,7 @@ export function collectUnresolvedParams(opts: {
 	contextTypes: Record<string, TypeDesc>;
 	knownScripts?: Record<string, string>;
 }): CollectParamsResult {
-	const seen = new Map<string, { type: TypeDesc; status: 'eager' | 'lazy' }>();
+	const seen = new Map<string, { type: TypeDesc; status: 'eager' | 'lazy' | 'pruned' }>();
 
 	const knownEntries = opts.knownScripts ? Object.entries(opts.knownScripts) : [];
 	for (const { source, mode } of opts.scripts) {
@@ -104,13 +104,13 @@ export function collectUnresolvedParams(opts: {
 		const filteredKeys = result.context_keys.filter(
 			(k) => !BUILTIN_CONTEXT_REFS.has(k.name) && !opts.nodeNames.has(k.name) && !opts.providedKeys.has(k.name)
 		);
-		if (filteredKeys.length > 0) {
-			console.log('[collectUnresolvedParams] script:', mode, source.slice(0, 60), '→ keys:', filteredKeys.map((k) => `${k.name}(${k.status})`));
-		}
 		for (const key of filteredKeys) {
 			const existing = seen.get(key.name);
 			if (!existing || isUnknownType(existing.type)) {
 				seen.set(key.name, { type: key.type, status: key.status });
+			} else if (existing.status === 'pruned' && key.status !== 'pruned') {
+				// Pruned key found on a live path in another script → upgrade
+				seen.set(key.name, { type: existing.type, status: key.status });
 			} else if (existing.status === 'lazy' && key.status === 'eager') {
 				seen.set(key.name, { type: existing.type, status: 'eager' });
 			}
@@ -120,7 +120,6 @@ export function collectUnresolvedParams(opts: {
 	const keys = Array.from(seen.entries())
 		.map(([name, { type, status }]) => ({ name, type, status }))
 		.sort((a, b) => a.name.localeCompare(b.name));
-	console.log('[collectUnresolvedParams] RESULT:', keys.map((k) => `${k.name}(${k.status})`));
 	return { ok: true, keys };
 }
 
@@ -178,9 +177,6 @@ export function analyzeLevel(opts: {
 		return { ok: false, errors: collectResult.errors, phase: 'analysis' };
 	}
 
-	console.log('[analyzeLevel] Phase 1 OK — discovered:', collectResult.keys.map((k) => `${k.name}(${k.status})`));
-	console.log('[analyzeLevel] typesFromParams:', Object.keys(typesFromParams));
-
 	// Phase 2: Typecheck
 	const injectedTypes: Record<string, TypeDesc> = { ...typesFromParams };
 	for (const k of collectResult.keys) {
@@ -189,10 +185,11 @@ export function analyzeLevel(opts: {
 		}
 	}
 
-	console.log('[analyzeLevel] Phase 2 injectedTypes:', Object.keys(injectedTypes));
 	const env = computeExternalContextEnv(opts.children, injectedTypes, opts.getApi);
-	console.log('[analyzeLevel] Phase 2 OK — contextTypes:', Object.keys(env.contextTypes));
-	return { ok: true, discoveredTypes: env.contextTypes, unresolvedKeys: collectResult.keys };
+	// Only report eager/lazy keys as unresolved — pruned keys (in dead branches)
+	// had their types injected above but should not appear in the UI.
+	const unresolvedKeys = collectResult.keys.filter((k) => k.status !== 'pruned');
+	return { ok: true, discoveredTypes: env.contextTypes, unresolvedKeys };
 }
 
 /**

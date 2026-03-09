@@ -15,7 +15,7 @@ import {
 
 export type CheckResult = { ok: true } | { ok: false; message: string };
 
-export type ContextKeyInfo = { name: string; type: TypeDesc; status: 'eager' | 'lazy' };
+export type ContextKeyInfo = { name: string; type: TypeDesc; status: 'eager' | 'lazy' | 'pruned' };
 
 export type AnalyzeResult = {
 	ok: true;
