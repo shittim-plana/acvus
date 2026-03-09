@@ -165,7 +165,7 @@
 		analysisErrors = [];
 		discoveredContextTypes = result.env.contextTypes;
 		botStore.update(bot.id, (b) => ({
-			...b, contextParams: result.params
+			...b, contextParams: result.ownParams
 		}));
 	}
 

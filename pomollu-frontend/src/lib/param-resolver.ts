@@ -165,7 +165,7 @@ function collectUnresolvedParams(opts: {
  * Other levels' params are passed as providedKeys (already resolved).
  */
 export type TwoPassResult =
-	| { ok: true; env: ContextEnvResult; params: ContextParam[]; activeParams: ContextParam[] }
+	| { ok: true; env: ContextEnvResult; params: ContextParam[]; activeParams: ContextParam[]; ownParams: ContextParam[] }
 	| { ok: false; errors: string[] };
 
 export function twoPassAnalysis(opts: {
@@ -260,7 +260,7 @@ export function twoPassAnalysis(opts: {
 	});
 
 	const activeParams = params.filter((p) => p.active);
-	return { ok: true, env, params, activeParams };
+	return { ok: true, env, params, activeParams, ownParams: params };
 }
 
 type GetApi = (providerId: string) => string;
@@ -372,14 +372,15 @@ export function analyzeBot(bot: Bot, prompt: Prompt, profile: Profile, getApi: G
 
 	// Merge all 3 levels' params into the result.
 	// Bot analysis discovers bot-only params; prompt/profile params are already resolved.
+	const ownParams = result.params;
 	const allParams = [
 		...prompt.contextParams,
 		...profile.contextParams,
-		...result.params,
+		...ownParams,
 	];
 	const allActiveParams = allParams.filter((p) => p.active !== false);
 
-	return { ok: true, env: result.env, params: allParams, activeParams: allActiveParams };
+	return { ok: true, env: result.env, params: allParams, activeParams: allActiveParams, ownParams };
 }
 
 /**
