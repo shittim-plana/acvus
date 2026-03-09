@@ -23,7 +23,7 @@ expression: ir
     14 │   jump L0
     15 │ L1:
     17 │   yield T2
-    18 │ L0:
+    18 │ L0:  ; merge_of L2
 
     ; r0 (@role) : String
     ; r1 (v1) : Bool

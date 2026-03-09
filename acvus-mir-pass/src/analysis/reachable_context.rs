@@ -88,6 +88,10 @@ struct Block {
     /// Instruction indices (non-terminator)
     insts: Vec<usize>,
     terminator: Term,
+    /// If set, this block is the merge point of a match expression.
+    /// The label points to the first arm's test block, whose reachability
+    /// the merge point should inherit.
+    merge_of: Option<Label>,
 }
 
 enum Term {
@@ -106,24 +110,32 @@ fn build_blocks(insts: &[acvus_mir::ir::Inst]) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut label: Option<Label> = None;
     let mut inst_indices = Vec::new();
+    let mut current_merge_of: Option<Label> = None;
 
     for (i, inst) in insts.iter().enumerate() {
         match &inst.kind {
-            InstKind::BlockLabel { label: l, .. } => {
+            InstKind::BlockLabel {
+                label: l,
+                merge_of,
+                ..
+            } => {
                 if !inst_indices.is_empty() || label.is_some() {
                     blocks.push(Block {
                         label: label.take(),
                         insts: std::mem::take(&mut inst_indices),
                         terminator: Term::Fallthrough,
+                        merge_of: current_merge_of.take(),
                     });
                 }
                 label = Some(*l);
+                current_merge_of = *merge_of;
             }
             InstKind::Jump { label: target, .. } => {
                 blocks.push(Block {
                     label: label.take(),
                     insts: std::mem::take(&mut inst_indices),
                     terminator: Term::Jump(*target),
+                    merge_of: current_merge_of.take(),
                 });
             }
             InstKind::JumpIf {
@@ -140,6 +152,7 @@ fn build_blocks(insts: &[acvus_mir::ir::Inst]) -> Vec<Block> {
                         then_label: *then_label,
                         else_label: *else_label,
                     },
+                    merge_of: current_merge_of.take(),
                 });
             }
             InstKind::Return(_) => {
@@ -147,6 +160,7 @@ fn build_blocks(insts: &[acvus_mir::ir::Inst]) -> Vec<Block> {
                     label: label.take(),
                     insts: std::mem::take(&mut inst_indices),
                     terminator: Term::Return,
+                    merge_of: current_merge_of.take(),
                 });
             }
             _ => {
@@ -160,6 +174,7 @@ fn build_blocks(insts: &[acvus_mir::ir::Inst]) -> Vec<Block> {
             label,
             insts: inst_indices,
             terminator: Term::Fallthrough,
+            merge_of: current_merge_of,
         });
     }
 
@@ -203,7 +218,18 @@ fn partition_from_body(
 
     while let Some(idx) = queue.pop_front() {
         let block = &blocks[idx];
-        let block_reach = reach[idx];
+        let mut block_reach = reach[idx];
+
+        // Merge point upgrade: the match structure guarantees this block
+        // is reached whenever the first arm's test block is reached.
+        if let Some(source_label) = block.merge_of {
+            if let Some(&source_idx) = label_to_block.get(&source_label) {
+                if reach[source_idx] > block_reach {
+                    block_reach = reach[source_idx];
+                    reach[idx] = block_reach;
+                }
+            }
+        }
 
         match &block.terminator {
             Term::Jump(target) => {
@@ -543,6 +569,7 @@ mod tests {
             inst(InstKind::BlockLabel {
                 label: Label(1),
                 params: vec![],
+                merge_of: None,
             }),
             inst(InstKind::ContextLoad {
                 dst: ValueId(2),
@@ -553,6 +580,7 @@ mod tests {
             inst(InstKind::BlockLabel {
                 label: Label(2),
                 params: vec![],
+                merge_of: None,
             }),
             inst(InstKind::ContextLoad {
                 dst: ValueId(3),
@@ -596,6 +624,7 @@ mod tests {
             inst(InstKind::BlockLabel {
                 label: Label(1),
                 params: vec![],
+                merge_of: None,
             }),
             inst(InstKind::ContextLoad {
                 dst: ValueId(2),
@@ -606,6 +635,7 @@ mod tests {
             inst(InstKind::BlockLabel {
                 label: Label(2),
                 params: vec![],
+                merge_of: None,
             }),
             inst(InstKind::ContextLoad {
                 dst: ValueId(3),
@@ -648,6 +678,7 @@ mod tests {
             inst(InstKind::BlockLabel {
                 label: Label(1),
                 params: vec![],
+                merge_of: None,
             }),
             inst(InstKind::ContextLoad {
                 dst: ValueId(2),
@@ -658,6 +689,7 @@ mod tests {
             inst(InstKind::BlockLabel {
                 label: Label(2),
                 params: vec![],
+                merge_of: None,
             }),
             inst(InstKind::ContextLoad {
                 dst: ValueId(3),
@@ -701,6 +733,7 @@ mod tests {
             inst(InstKind::BlockLabel {
                 label: Label(3),
                 params: vec![],
+                merge_of: None,
             }),
             inst(InstKind::ContextLoad {
                 dst: ValueId(2),
@@ -714,6 +747,7 @@ mod tests {
             inst(InstKind::BlockLabel {
                 label: Label(1),
                 params: vec![],
+                merge_of: None,
             }),
             inst(InstKind::ContextLoad {
                 dst: ValueId(3),
@@ -727,6 +761,7 @@ mod tests {
             inst(InstKind::BlockLabel {
                 label: Label(0),
                 params: vec![],
+                merge_of: None,
             }),
         ]);
 
@@ -765,6 +800,7 @@ mod tests {
             inst(InstKind::BlockLabel {
                 label: Label(1),
                 params: vec![],
+                merge_of: None,
             }),
             inst(InstKind::ContextLoad {
                 dst: ValueId(2),
@@ -775,6 +811,7 @@ mod tests {
             inst(InstKind::BlockLabel {
                 label: Label(2),
                 params: vec![],
+                merge_of: None,
             }),
             inst(InstKind::ContextLoad {
                 dst: ValueId(3),
@@ -817,6 +854,7 @@ mod tests {
             inst(InstKind::BlockLabel {
                 label: Label(10),
                 params: vec![],
+                merge_of: None,
             }),
             inst(InstKind::ContextLoad {
                 dst: ValueId(2),
@@ -830,6 +868,7 @@ mod tests {
             inst(InstKind::BlockLabel {
                 label: Label(20),
                 params: vec![],
+                merge_of: None,
             }),
             inst(InstKind::TestLiteral {
                 dst: ValueId(3),
@@ -846,6 +885,7 @@ mod tests {
             inst(InstKind::BlockLabel {
                 label: Label(30),
                 params: vec![],
+                merge_of: None,
             }),
             inst(InstKind::ContextLoad {
                 dst: ValueId(4),
@@ -859,6 +899,7 @@ mod tests {
             inst(InstKind::BlockLabel {
                 label: Label(40),
                 params: vec![],
+                merge_of: None,
             }),
             inst(InstKind::ContextLoad {
                 dst: ValueId(5),
@@ -872,6 +913,7 @@ mod tests {
             inst(InstKind::BlockLabel {
                 label: Label(99),
                 params: vec![],
+                merge_of: None,
             }),
         ]);
 
@@ -948,6 +990,7 @@ mod tests {
                 inst(InstKind::BlockLabel {
                     label: Label(10),
                     params: vec![],
+                    merge_of: None,
                 }),
                 inst(InstKind::ContextLoad {
                     dst: ValueId(2),
@@ -962,6 +1005,7 @@ mod tests {
                 inst(InstKind::BlockLabel {
                     label: Label(20),
                     params: vec![],
+                    merge_of: None,
                 }),
                 inst(InstKind::ContextLoad {
                     dst: ValueId(3),
@@ -975,6 +1019,7 @@ mod tests {
                 inst(InstKind::BlockLabel {
                     label: Label(99),
                     params: vec![],
+                    merge_of: None,
                 }),
             ],
             val_types,
@@ -1025,6 +1070,7 @@ mod tests {
                 inst(InstKind::BlockLabel {
                     label: Label(1),
                     params: vec![],
+                    merge_of: None,
                 }),
                 inst(InstKind::ContextLoad {
                     dst: ValueId(2),
@@ -1035,6 +1081,7 @@ mod tests {
                 inst(InstKind::BlockLabel {
                     label: Label(2),
                     params: vec![],
+                    merge_of: None,
                 }),
                 inst(InstKind::ContextLoad {
                     dst: ValueId(3),
@@ -1103,6 +1150,7 @@ mod tests {
                 inst(InstKind::BlockLabel {
                     label: Label(10),
                     params: vec![],
+                    merge_of: None,
                 }),
                 inst(InstKind::ContextLoad {
                     dst: ValueId(2),
@@ -1117,6 +1165,7 @@ mod tests {
                 inst(InstKind::BlockLabel {
                     label: Label(20),
                     params: vec![],
+                    merge_of: None,
                 }),
                 inst(InstKind::TestVariant {
                     dst: ValueId(3),
@@ -1134,6 +1183,7 @@ mod tests {
                 inst(InstKind::BlockLabel {
                     label: Label(30),
                     params: vec![],
+                    merge_of: None,
                 }),
                 inst(InstKind::ContextLoad {
                     dst: ValueId(4),
@@ -1148,6 +1198,7 @@ mod tests {
                 inst(InstKind::BlockLabel {
                     label: Label(40),
                     params: vec![],
+                    merge_of: None,
                 }),
                 inst(InstKind::ContextLoad {
                     dst: ValueId(5),
@@ -1161,6 +1212,7 @@ mod tests {
                 inst(InstKind::BlockLabel {
                     label: Label(99),
                     params: vec![],
+                    merge_of: None,
                 }),
             ],
             val_types,
@@ -1223,6 +1275,7 @@ mod tests {
                 inst(InstKind::BlockLabel {
                     label: Label(10),
                     params: vec![],
+                    merge_of: None,
                 }),
                 inst(InstKind::ContextLoad {
                     dst: ValueId(2),
@@ -1237,6 +1290,7 @@ mod tests {
                 inst(InstKind::BlockLabel {
                     label: Label(20),
                     params: vec![],
+                    merge_of: None,
                 }),
                 inst(InstKind::TestVariant {
                     dst: ValueId(3),
@@ -1254,6 +1308,7 @@ mod tests {
                 inst(InstKind::BlockLabel {
                     label: Label(30),
                     params: vec![],
+                    merge_of: None,
                 }),
                 inst(InstKind::ContextLoad {
                     dst: ValueId(4),
@@ -1268,6 +1323,7 @@ mod tests {
                 inst(InstKind::BlockLabel {
                     label: Label(40),
                     params: vec![],
+                    merge_of: None,
                 }),
                 inst(InstKind::ContextLoad {
                     dst: ValueId(5),
@@ -1281,6 +1337,7 @@ mod tests {
                 inst(InstKind::BlockLabel {
                     label: Label(99),
                     params: vec![],
+                    merge_of: None,
                 }),
             ],
             val_types,
@@ -1350,6 +1407,7 @@ mod tests {
                 inst(InstKind::BlockLabel {
                     label: Label(10),
                     params: vec![],
+                    merge_of: None,
                 }),
                 inst(InstKind::ContextLoad {
                     dst: ValueId(2),
@@ -1360,6 +1418,7 @@ mod tests {
                 inst(InstKind::BlockLabel {
                     label: Label(20),
                     params: vec![],
+                    merge_of: None,
                 }),
                 inst(InstKind::ContextLoad {
                     dst: ValueId(3),
@@ -1382,5 +1441,258 @@ mod tests {
         assert!(p.lazy.contains(&i.intern("b_data")));
         assert!(!p.eager.contains(&i.intern("a_data")));
         assert!(!p.eager.contains(&i.intern("b_data")));
+    }
+
+    /// Match merge point upgrades reachability to Definite.
+    ///
+    /// Structure:
+    ///   entry: ContextLoad "scrutinee" → TestVariant → JumpIf(arm_body, next_test)
+    ///   arm_body: ContextLoad "arm_data" → Jump(end_label)
+    ///   next_test: ContextLoad "other_arm" → Jump(end_label)
+    ///   end_label (merge_of = first_test_label): ContextLoad "post_match"
+    ///
+    /// Because end_label is the merge point of the match, "post_match" should
+    /// be Definite (eager), not Conditional (lazy).
+    #[test]
+    fn merge_point_upgrades_to_definite() {
+        let i = Interner::new();
+        let a = i.intern("A");
+        let b = i.intern("B");
+
+        let mut val_types = FxHashMap::default();
+        val_types.insert(
+            ValueId(0),
+            Ty::Enum {
+                name: i.intern("AB"),
+                variants: FxHashMap::from_iter([(a, None), (b, None)]),
+            },
+        );
+
+        let module = make_module_with_types(
+            vec![
+                // Entry: load scrutinee then jump to first test
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(0),
+                    name: i.intern("scrutinee"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::Jump {
+                    label: Label(1),
+                    args: vec![],
+                }),
+                // Label(1): first arm test block
+                inst(InstKind::BlockLabel {
+                    label: Label(1),
+                    params: vec![],
+                    merge_of: None,
+                }),
+                inst(InstKind::TestVariant {
+                    dst: ValueId(1),
+                    src: ValueId(0),
+                    tag: a,
+                }),
+                inst(InstKind::JumpIf {
+                    cond: ValueId(1),
+                    then_label: Label(10),
+                    then_args: vec![],
+                    else_label: Label(20),
+                    else_args: vec![],
+                }),
+                // Label(10): A arm body
+                inst(InstKind::BlockLabel {
+                    label: Label(10),
+                    params: vec![],
+                    merge_of: None,
+                }),
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(2),
+                    name: i.intern("arm_data"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::Jump {
+                    label: Label(99),
+                    args: vec![],
+                }),
+                // Label(20): B arm body
+                inst(InstKind::BlockLabel {
+                    label: Label(20),
+                    params: vec![],
+                    merge_of: None,
+                }),
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(3),
+                    name: i.intern("other_arm"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::Jump {
+                    label: Label(99),
+                    args: vec![],
+                }),
+                // Label(99): merge point of the match, merge_of = Label(1)
+                inst(InstKind::BlockLabel {
+                    label: Label(99),
+                    params: vec![],
+                    merge_of: Some(Label(1)),
+                }),
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(4),
+                    name: i.intern("post_match"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::Return(ValueId(4))),
+            ],
+            val_types,
+        );
+
+        let val_def = build_val_def(&module);
+        let p = partition_context_keys(&module, &FxHashMap::default(), &val_def);
+
+        // "post_match" should be eager (Definite) because the merge point
+        // inherits reachability from the first test block (Label(1) = Definite).
+        assert!(
+            p.eager.contains(&i.intern("post_match")),
+            "post_match should be eager, got lazy={}, eager={}",
+            p.lazy.contains(&i.intern("post_match")),
+            p.eager.contains(&i.intern("post_match")),
+        );
+        assert!(!p.lazy.contains(&i.intern("post_match")));
+
+        // arm_data and other_arm are behind unknown branches → lazy
+        assert!(p.lazy.contains(&i.intern("arm_data")));
+        assert!(p.lazy.contains(&i.intern("other_arm")));
+    }
+
+    /// When the scrutinee block is itself Conditional (behind an unknown branch),
+    /// the merge point should inherit Conditional, not Definite.
+    #[test]
+    fn merge_point_inherits_conditional() {
+        let i = Interner::new();
+        let a = i.intern("A");
+        let b = i.intern("B");
+
+        let mut val_types = FxHashMap::default();
+        val_types.insert(
+            ValueId(10),
+            Ty::Enum {
+                name: i.intern("AB"),
+                variants: FxHashMap::from_iter([(a, None), (b, None)]),
+            },
+        );
+
+        let module = make_module_with_types(
+            vec![
+                // Entry: unknown branch → the match is only conditionally reachable
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(0),
+                    name: i.intern("flag"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::TestLiteral {
+                    dst: ValueId(1),
+                    src: ValueId(0),
+                    value: Literal::String("yes".into()),
+                }),
+                inst(InstKind::JumpIf {
+                    cond: ValueId(1),
+                    then_label: Label(1), // goes to the match
+                    then_args: vec![],
+                    else_label: Label(50), // skips the match entirely
+                    else_args: vec![],
+                }),
+                // Label(1): first arm test (Conditional because flag is unknown)
+                inst(InstKind::BlockLabel {
+                    label: Label(1),
+                    params: vec![],
+                    merge_of: None,
+                }),
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(10),
+                    name: i.intern("scrutinee"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::TestVariant {
+                    dst: ValueId(11),
+                    src: ValueId(10),
+                    tag: a,
+                }),
+                inst(InstKind::JumpIf {
+                    cond: ValueId(11),
+                    then_label: Label(10),
+                    then_args: vec![],
+                    else_label: Label(20),
+                    else_args: vec![],
+                }),
+                // Label(10): A arm
+                inst(InstKind::BlockLabel {
+                    label: Label(10),
+                    params: vec![],
+                    merge_of: None,
+                }),
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(12),
+                    name: i.intern("arm_a"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::Jump {
+                    label: Label(99),
+                    args: vec![],
+                }),
+                // Label(20): B arm
+                inst(InstKind::BlockLabel {
+                    label: Label(20),
+                    params: vec![],
+                    merge_of: None,
+                }),
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(13),
+                    name: i.intern("arm_b"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::Jump {
+                    label: Label(99),
+                    args: vec![],
+                }),
+                // Label(99): merge point, merge_of = Label(1)
+                inst(InstKind::BlockLabel {
+                    label: Label(99),
+                    params: vec![],
+                    merge_of: Some(Label(1)),
+                }),
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(14),
+                    name: i.intern("post_match"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::Jump {
+                    label: Label(50),
+                    args: vec![],
+                }),
+                // Label(50): after everything
+                inst(InstKind::BlockLabel {
+                    label: Label(50),
+                    params: vec![],
+                    merge_of: None,
+                }),
+                inst(InstKind::Return(ValueId(0))),
+            ],
+            val_types,
+        );
+
+        let val_def = build_val_def(&module);
+        let p = partition_context_keys(&module, &FxHashMap::default(), &val_def);
+
+        // Label(1) is Conditional (reached via unknown branch on "flag").
+        // The merge point Label(99) inherits Conditional from Label(1).
+        // Therefore "post_match" should be lazy (Conditional), not eager.
+        assert!(
+            p.lazy.contains(&i.intern("post_match")),
+            "post_match should be lazy (conditional), got eager={}, lazy={}",
+            p.eager.contains(&i.intern("post_match")),
+            p.lazy.contains(&i.intern("post_match")),
+        );
+        assert!(!p.eager.contains(&i.intern("post_match")));
+
+        // scrutinee is also lazy (behind unknown branch)
+        assert!(p.lazy.contains(&i.intern("scrutinee")));
     }
 }

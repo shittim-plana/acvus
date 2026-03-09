@@ -400,6 +400,7 @@ mod tests {
             inst(InstKind::BlockLabel {
                 label: acvus_mir::ir::Label(0),
                 params: vec![ValueId(1)],
+                merge_of: None,
             }),
             inst(InstKind::MakeObject {
                 dst: ValueId(2),

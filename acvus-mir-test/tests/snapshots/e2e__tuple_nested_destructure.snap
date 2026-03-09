@@ -20,7 +20,7 @@ expression: ir
     18 │   yield r12
     19 │   jump L0
     20 │ L1:
-    21 │ L0:
+    21 │ L0:  ; merge_of L2
 
     ; r0 (@data) : (String, {x: Int})
     ; r1 (v1) : Bool

@@ -324,6 +324,7 @@ fn insert_inner(
                 kind: InstKind::BlockLabel {
                     label: dead_label,
                     params: vec![],
+                    merge_of: None,
                 },
             });
             new_result.extend(dead);
@@ -340,6 +341,7 @@ fn insert_inner(
                 kind: InstKind::BlockLabel {
                     label: continue_label,
                     params: vec![],
+                    merge_of: None,
                 },
             });
 

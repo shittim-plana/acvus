@@ -733,6 +733,7 @@ fn make_stage_c_closure_body(variant: u32, interner: &Interner) -> ClosureBody {
         kind: InstKind::BlockLabel {
             label: l_header,
             params: vec![v_i, v_accum],
+            merge_of: None,
         },
     });
 
@@ -766,6 +767,7 @@ fn make_stage_c_closure_body(variant: u32, interner: &Interner) -> ClosureBody {
         kind: InstKind::BlockLabel {
             label: l_body,
             params: vec![v_body_i, v_body_accum],
+            merge_of: None,
         },
     });
 
@@ -1049,6 +1051,7 @@ fn make_stage_c_closure_body(variant: u32, interner: &Interner) -> ClosureBody {
         kind: InstKind::BlockLabel {
             label: l_exit,
             params: vec![v_result_param],
+            merge_of: None,
         },
     });
     insts.push(Inst {

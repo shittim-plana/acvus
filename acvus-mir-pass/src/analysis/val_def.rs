@@ -179,6 +179,7 @@ mod tests {
         let module = make_module(vec![inst(InstKind::BlockLabel {
             label: acvus_mir::ir::Label(0),
             params: vec![ValueId(0), ValueId(1)],
+            merge_of: None,
         })]);
         let result = ValDefMapAnalysis.run(&module, ());
         assert_eq!(result.0[&ValueId(0)], 0);

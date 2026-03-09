@@ -30,7 +30,7 @@ expression: ir
     21 │   jump L0
     22 │ L1:
     24 │   yield T3
-    25 │ L0:
+    25 │ L0:  ; merge_of L2
 
     ; r0 (@score) : Int
     ; r1 (v1) : Bool

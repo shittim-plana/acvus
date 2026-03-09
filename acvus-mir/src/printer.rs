@@ -474,9 +474,13 @@ fn write_body(
             )?,
 
             // Control flow
-            InstKind::BlockLabel { label, params } => {
+            InstKind::BlockLabel { label, params, merge_of } => {
+                let merge_suffix = match merge_of {
+                    Some(m) => format!("  ; merge_of {}", fmt_label(*m)),
+                    None => String::new(),
+                };
                 if params.is_empty() {
-                    writeln!(f, "{}:", fmt_label(*label))?
+                    writeln!(f, "{}:{merge_suffix}", fmt_label(*label))?
                 } else {
                     let params_str = params
                         .iter()
@@ -490,7 +494,7 @@ fn write_body(
                         })
                         .collect::<Vec<_>>()
                         .join(", ");
-                    writeln!(f, "{}({params_str}):", fmt_label(*label))?
+                    writeln!(f, "{}({params_str}):{merge_suffix}", fmt_label(*label))?
                 }
             }
             InstKind::Jump { label, args } => {

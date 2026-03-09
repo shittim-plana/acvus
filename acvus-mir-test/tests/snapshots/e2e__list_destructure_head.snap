@@ -28,7 +28,7 @@ expression: ir
     22 │   jump L0
     23 │ L1:
     25 │   yield T0
-    26 │ L0:
+    26 │ L0:  ; merge_of L2
 
     ; r0 (@items) : List<Int>
     ; r1 (v1) : Bool

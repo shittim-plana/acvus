@@ -266,6 +266,7 @@ impl<'a> Lowerer<'a> {
             InstKind::BlockLabel {
                 label,
                 params: vec![],
+                merge_of: None,
             },
         );
     }
@@ -338,6 +339,7 @@ impl<'a> Lowerer<'a> {
             InstKind::BlockLabel {
                 label: result_label,
                 params: vec![result_param],
+                merge_of: None,
             },
         );
         result_param
@@ -948,7 +950,18 @@ impl<'a> Lowerer<'a> {
             self.pop_scope();
         }
 
-        self.emit_label(mb.span, end_label);
+        // Merge point: annotate with the first arm's test label so that
+        // reachability analysis can restore the scrutinee block's reach level
+        // (all arms or catch-all jump here, so this block is reached whenever
+        // the first arm test is reached).
+        self.emit_inst(
+            mb.span,
+            InstKind::BlockLabel {
+                label: end_label,
+                params: vec![],
+                merge_of: Some(arm_labels[0]),
+            },
+        );
     }
 
     // --- Iter block lowering ---

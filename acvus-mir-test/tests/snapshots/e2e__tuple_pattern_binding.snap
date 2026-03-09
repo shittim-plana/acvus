@@ -16,7 +16,7 @@ expression: ir
     13 │   yield r8
     14 │   jump L0
     15 │ L1:
-    16 │ L0:
+    16 │ L0:  ; merge_of L2
 
     ; r0 (@pair) : (String, Int)
     ; r1 (v1) : Bool

@@ -16,7 +16,7 @@ expression: ir
      7 │   jump L0
      8 │ L1:
     10 │   yield T1
-    11 │ L0:
+    11 │ L0:  ; merge_of L2
 
     ; r0 (@opt) : Option<Int>
     ; r1 (v1) : Bool

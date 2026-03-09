@@ -18,7 +18,7 @@ expression: ir
      9 │   jump L0
     10 │ L1:
     12 │   yield T1
-    13 │ L0:
+    13 │ L0:  ; merge_of L2
 
     ; r0 (@a) : Int
     ; r1 (@b) : Int

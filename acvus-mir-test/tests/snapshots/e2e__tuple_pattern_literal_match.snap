@@ -35,7 +35,7 @@ expression: ir
     28 │   jump L0
     29 │ L1:
     31 │   yield T2
-    32 │ L0:
+    32 │ L0:  ; merge_of L2
 
     ; r0 (@a) : Int
     ; r1 (@b) : Int

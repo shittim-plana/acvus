@@ -95,6 +95,7 @@ fn flatten_shuffle(insts: Vec<Inst>, ctx: &mut PassState, rng: &mut StdRng) -> V
         kind: InstKind::BlockLabel {
             label: exit_label,
             params: vec![],
+            merge_of: None,
         },
     });
 
@@ -200,6 +201,7 @@ fn flatten_dispatcher(insts: Vec<Inst>, ctx: &mut PassState, rng: &mut StdRng) -
         kind: InstKind::BlockLabel {
             label: dispatcher_label,
             params: vec![],
+            merge_of: None,
         },
     });
 
@@ -274,6 +276,7 @@ fn flatten_dispatcher(insts: Vec<Inst>, ctx: &mut PassState, rng: &mut StdRng) -
                 kind: InstKind::BlockLabel {
                     label: next_check,
                     params: vec![],
+                    merge_of: None,
                 },
             });
         }
@@ -287,6 +290,7 @@ fn flatten_dispatcher(insts: Vec<Inst>, ctx: &mut PassState, rng: &mut StdRng) -
             kind: InstKind::BlockLabel {
                 label: chunk_labels[idx],
                 params: vec![],
+                merge_of: None,
             },
         });
         out.extend(raw_chunks[idx].iter().cloned());
@@ -316,6 +320,7 @@ fn flatten_dispatcher(insts: Vec<Inst>, ctx: &mut PassState, rng: &mut StdRng) -
         kind: InstKind::BlockLabel {
             label: exit_label,
             params: vec![],
+            merge_of: None,
         },
     });
     out
@@ -333,6 +338,7 @@ fn emit_chunk(out: &mut Vec<Inst>, chunk: Chunk) {
             kind: InstKind::BlockLabel {
                 label,
                 params: vec![],
+                merge_of: None,
             },
         });
     }

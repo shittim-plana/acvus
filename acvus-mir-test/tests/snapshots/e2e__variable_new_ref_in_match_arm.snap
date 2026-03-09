@@ -16,7 +16,7 @@ expression: ir
      7 │   jump L0
      8 │ L1:
     10 │   var_store $selected = T1
-    11 │ L0:
+    11 │ L0:  ; merge_of L2
     12 │   r4 = var_load $selected
     13 │   yield r4
 

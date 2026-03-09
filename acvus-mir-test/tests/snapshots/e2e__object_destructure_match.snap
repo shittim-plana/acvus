@@ -24,7 +24,7 @@ expression: ir
     18 │   jump L0
     19 │ L1:
     21 │   yield T0
-    22 │ L0:
+    22 │ L0:  ; merge_of L2
 
     ; r0 (@user) : {age: Int, email: String, name: String}
     ; r1 (v1) : Bool
