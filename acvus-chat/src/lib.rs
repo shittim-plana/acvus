@@ -67,10 +67,10 @@ where
             .collect();
 
         // Validate: no dependency cycles
-        build_dag(&nodes).map_err(|errs| {
+        build_dag(interner, &nodes).map_err(|errs| {
             let msg = errs
                 .iter()
-                .map(|e| e.to_string())
+                .map(|e| e.display(interner).to_string())
                 .collect::<Vec<_>>()
                 .join("; ");
             ChatError::CycleDetected(msg)
@@ -155,10 +155,9 @@ where
         S: Default,
         R: AsyncFn(Astr) -> Resolved + Sync,
     {
-        let entrypoint = &self.nodes[self.entrypoint_idx].name;
-        tracing::info!(entrypoint = %entrypoint, "turn start");
-
         let interner = &self.interner;
+        let entrypoint_name = &self.nodes[self.entrypoint_idx].name;
+        tracing::info!(entrypoint = %interner.resolve(*entrypoint_name), "turn start");
         let index_key = interner.intern("index");
         let history_key = interner.intern("history");
         let turn_key = interner.intern("turn");

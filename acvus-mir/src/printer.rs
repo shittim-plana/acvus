@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 use acvus_ast::{BinOp, Literal, RangeKind, UnaryOp};
-use acvus_utils::Astr;
+use acvus_utils::{Astr, Interner};
 
 use crate::extern_module::ExternFnId;
 use crate::ir::{CallTarget, ClosureBody, InstKind, Label, MirBody, MirModule, ValueId};
@@ -68,6 +68,7 @@ fn fmt_range_kind(kind: RangeKind) -> &'static str {
 }
 
 struct PrintCtx<'a> {
+    interner: &'a Interner,
     lit_to_tidx: &'a HashMap<String, usize>,
     extern_names: &'a HashMap<ExternFnId, Astr>,
     tag_names: &'a [Astr],
@@ -80,7 +81,7 @@ impl PrintCtx<'_> {
             CallTarget::Extern(id) => self
                 .extern_names
                 .get(id)
-                .map(|v| format!("{v}"))
+                .map(|v| self.interner.resolve(*v).to_string())
                 .unwrap_or_else(|| format!("extern#{}", id.0)),
         }
     }
@@ -88,7 +89,7 @@ impl PrintCtx<'_> {
     fn tag_name(&self, tag: &crate::variant::VariantTagId) -> String {
         self.tag_names
             .get(tag.0 as usize)
-            .map(|s| format!("{s}"))
+            .map(|s| self.interner.resolve(*s).to_string())
             .unwrap_or_else(|| "?".to_string())
     }
 }
@@ -199,24 +200,25 @@ fn write_body(
                 name,
                 bindings,
             } => {
+                let name_str = ctx.interner.resolve(*name);
                 if bindings.is_empty() {
-                    writeln!(f, "{} = context_load @{name}", fmt_val(*dst))?
+                    writeln!(f, "{} = context_load @{name_str}", fmt_val(*dst))?
                 } else {
                     let args: Vec<String> = bindings
                         .iter()
-                        .map(|(k, v)| format!("{k}: {}", fmt_use(*v, &consts, &texts)))
+                        .map(|(k, v)| format!("{}: {}", ctx.interner.resolve(*k), fmt_use(*v, &consts, &texts)))
                         .collect();
                     writeln!(
                         f,
-                        "{} = context_call @{name} {{ {} }}",
+                        "{} = context_call @{name_str} {{ {} }}",
                         fmt_val(*dst),
                         args.join(", ")
                     )?
                 }
             }
-            InstKind::VarLoad { dst, name } => writeln!(f, "{} = var_load ${name}", fmt_val(*dst))?,
+            InstKind::VarLoad { dst, name } => writeln!(f, "{} = var_load ${}", fmt_val(*dst), ctx.interner.resolve(*name))?,
             InstKind::VarStore { name, src } => {
-                writeln!(f, "var_store ${name} = {}", fmt_use(*src, &consts, &texts))?
+                writeln!(f, "var_store ${} = {}", ctx.interner.resolve(*name), fmt_use(*src, &consts, &texts))?
             }
 
             // Arithmetic / logic
@@ -242,9 +244,10 @@ fn write_body(
             )?,
             InstKind::FieldGet { dst, object, field } => writeln!(
                 f,
-                "{} = {}.{field}",
+                "{} = {}.{}",
                 fmt_val(*dst),
-                fmt_use(*object, &consts, &texts)
+                fmt_use(*object, &consts, &texts),
+                ctx.interner.resolve(*field),
             )?,
 
             // Calls
@@ -279,7 +282,7 @@ fn write_body(
             InstKind::MakeObject { dst, fields } => {
                 let fields_str: String = fields
                     .iter()
-                    .map(|(k, r)| format!("{k}: {}", fmt_use(*r, &consts, &texts)))
+                    .map(|(k, r)| format!("{}: {}", ctx.interner.resolve(*k), fmt_use(*r, &consts, &texts)))
                     .collect::<Vec<_>>()
                     .join(", ");
                 writeln!(f, "{} = object {{{fields_str}}}", fmt_val(*dst))?
@@ -334,9 +337,10 @@ fn write_body(
             }
             InstKind::TestObjectKey { dst, src, key } => writeln!(
                 f,
-                "{} = test has_key({}, \"{key}\")",
+                "{} = test has_key({}, \"{}\")",
                 fmt_val(*dst),
-                fmt_use(*src, &consts, &texts)
+                fmt_use(*src, &consts, &texts),
+                ctx.interner.resolve(*key),
             )?,
             InstKind::TestRange {
                 dst,
@@ -377,9 +381,10 @@ fn write_body(
             )?,
             InstKind::ObjectGet { dst, object, key } => writeln!(
                 f,
-                "{} = {}.{key}",
+                "{} = {}.{}",
                 fmt_val(*dst),
-                fmt_use(*object, &consts, &texts)
+                fmt_use(*object, &consts, &texts),
+                ctx.interner.resolve(*key),
             )?,
 
             // Variant
@@ -463,7 +468,7 @@ fn write_body(
                             let ty = body
                                 .val_types
                                 .get(v)
-                                .map(|t| format!("{t}"))
+                                .map(|t| format!("{}", t.display(ctx.interner)))
                                 .unwrap_or_else(|| "?".into());
                             format!("{}: {ty}", fmt_val(*v))
                         })
@@ -528,26 +533,39 @@ fn write_body(
         let mut entries: Vec<_> = body.val_types.iter().collect();
         entries.sort_by_key(|(v, _)| v.0);
         for (val, ty) in entries {
-            let origin = body.debug.label(*val);
-            writeln!(f, "{indent}  ; {} ({origin}) : {ty}", fmt_val(*val))?;
+            let origin = body.debug.label(*val, ctx.interner);
+            writeln!(
+                f,
+                "{indent}  ; {} ({origin}) : {}",
+                fmt_val(*val),
+                ty.display(ctx.interner),
+            )?;
         }
     }
 
     Ok(())
 }
 
-impl fmt::Display for MirModule {
+/// Display wrapper for MirModule that requires an interner.
+pub struct MirModuleDisplay<'a> {
+    module: &'a MirModule,
+    interner: &'a Interner,
+}
+
+impl fmt::Display for MirModuleDisplay<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let module = self.module;
+
         // Collect unique String/List literals across all bodies -> text table.
         let mut lit_to_tidx: HashMap<String, usize> = HashMap::new();
         let mut text_entries: Vec<String> = Vec::new();
 
-        collect_texts_from_body(&self.main, &mut lit_to_tidx, &mut text_entries);
-        let mut labels: Vec<_> = self.closures.keys().collect();
+        collect_texts_from_body(&module.main, &mut lit_to_tidx, &mut text_entries);
+        let mut labels: Vec<_> = module.closures.keys().collect();
         labels.sort_by_key(|l| l.0);
         for label in &labels {
             collect_texts_from_body(
-                &self.closures[label].body,
+                &module.closures[label].body,
                 &mut lit_to_tidx,
                 &mut text_entries,
             );
@@ -562,20 +580,31 @@ impl fmt::Display for MirModule {
         }
 
         let ctx = PrintCtx {
+            interner: self.interner,
             lit_to_tidx: &lit_to_tidx,
-            extern_names: &self.extern_names,
-            tag_names: &self.tag_names,
+            extern_names: &module.extern_names,
+            tag_names: &module.tag_names,
         };
 
         writeln!(f, "=== main ===")?;
-        write_body(f, &self.main, "  ", &ctx)?;
+        write_body(f, &module.main, "  ", &ctx)?;
 
         for label in &labels {
-            let closure = &self.closures[label];
+            let closure = &module.closures[label];
             write_closure(f, **label, closure, &ctx)?;
         }
 
         Ok(())
+    }
+}
+
+impl MirModule {
+    /// Create a display wrapper that resolves Astr values via the interner.
+    pub fn display<'a>(&'a self, interner: &'a Interner) -> MirModuleDisplay<'a> {
+        MirModuleDisplay {
+            module: self,
+            interner,
+        }
     }
 }
 
@@ -591,11 +620,15 @@ fn write_closure(
         if i > 0 {
             write!(f, ", ")?;
         }
-        write!(f, "{name}")?;
+        write!(f, "{}", ctx.interner.resolve(*name))?;
     }
     write!(f, ")")?;
     if !closure.capture_names.is_empty() {
-        let captures: Vec<String> = closure.capture_names.iter().map(|n| format!("{n}")).collect();
+        let captures: Vec<String> = closure
+            .capture_names
+            .iter()
+            .map(|n| ctx.interner.resolve(*n).to_string())
+            .collect();
         write!(f, " [captures: {}]", captures.join(", "))?;
     }
     writeln!(f, " ===")?;
@@ -603,28 +636,44 @@ fn write_closure(
     Ok(())
 }
 
-impl fmt::Display for MirBody {
+/// Display wrapper for MirBody that requires an interner.
+pub struct MirBodyDisplay<'a> {
+    body: &'a MirBody,
+    interner: &'a Interner,
+}
+
+impl fmt::Display for MirBodyDisplay<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let empty_lits = HashMap::new();
         let empty_externs = HashMap::new();
         let ctx = PrintCtx {
+            interner: self.interner,
             lit_to_tidx: &empty_lits,
             extern_names: &empty_externs,
             tag_names: &[],
         };
-        write_body(f, self, "", &ctx)
+        write_body(f, self.body, "", &ctx)
     }
 }
 
-/// Convenience: dump a MirModule to a String.
-/// If you have an interner, prefer `dump_with` for proper Astr resolution.
-pub fn dump(module: &MirModule) -> String {
-    module.to_string()
+impl MirBody {
+    /// Create a display wrapper that resolves Astr values via the interner.
+    pub fn display<'a>(&'a self, interner: &'a Interner) -> MirBodyDisplay<'a> {
+        MirBodyDisplay {
+            body: self,
+            interner,
+        }
+    }
 }
 
-/// Dump a MirModule to a String with interner context for Astr resolution.
-pub fn dump_with(interner: &acvus_utils::Interner, module: &MirModule) -> String {
-    acvus_utils::with_interner_context(interner, || module.to_string())
+/// Dump a MirModule to a String, resolving Astr values via the interner.
+pub fn dump(interner: &Interner, module: &MirModule) -> String {
+    format!("{}", module.display(interner))
+}
+
+/// Alias for `dump`. Kept for backward compatibility.
+pub fn dump_with(interner: &Interner, module: &MirModule) -> String {
+    dump(interner, module)
 }
 
 #[cfg(test)]
@@ -633,7 +682,7 @@ mod tests {
     use crate::extern_module::{ExternModule, ExternRegistry};
     use crate::ty::Ty;
     use crate::user_type::UserTypeRegistry;
-    use acvus_utils::{Interner, with_interner_context};
+    use acvus_utils::Interner;
     use std::collections::HashMap;
 
     fn compile_and_dump(
@@ -642,10 +691,10 @@ mod tests {
         registry: &ExternRegistry,
         interner: &Interner,
     ) -> String {
-        let template = acvus_ast::parse(interner, &source).expect("parse failed");
-        let (module, _) = crate::compile(interner, &template, context, registry, &UserTypeRegistry::new(), )
+        let template = acvus_ast::parse(interner, source).expect("parse failed");
+        let (module, _) = crate::compile(interner, &template, context, registry, &UserTypeRegistry::new())
             .expect("compile failed");
-        with_interner_context(interner, || dump(&module))
+        dump(interner, &module)
     }
 
     #[test]

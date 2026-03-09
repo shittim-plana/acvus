@@ -214,7 +214,7 @@ impl Interpreter {
 
     pub fn execute(self) -> (Coroutine<Value, RuntimeError>, ResumeKey<Value>) {
         acvus_utils::coroutine(|handle| async move {
-            acvus_utils::set_thread_interner(&self.interner);
+            crate::set_interner_ctx(&self.interner);
             let insts = self.module.main.insts.clone();
             let label_map = build_label_map(&self.module.main);
             let frame = Frame::new(self.module.main.val_count, label_map);
@@ -240,7 +240,7 @@ impl Interpreter {
                     let name = need.name();
                     let v = context
                         .get(&name)
-                        .unwrap_or_else(|| panic!("ContextLoad: undefined context @{name}"));
+                        .unwrap_or_else(|| panic!("ContextLoad: undefined context @{:?}", name));
                     key = need.into_key(Arc::new(v.clone()));
                 }
                 Stepped::Done => break,
@@ -347,14 +347,14 @@ impl Interpreter {
                 InstKind::FieldGet { dst, object, field } => {
                     let v = expect_object(frame.get(*object), "FieldGet")
                         .get(field)
-                        .unwrap_or_else(|| panic!("FieldGet: key '{field}' not found"))
+                        .unwrap_or_else(|| panic!("FieldGet: key '{}' not found", field.display(&this.interner)))
                         .clone();
                     frame.set_new(*dst, v);
                 }
                 InstKind::ObjectGet { dst, object, key } => {
                     let v = expect_object(frame.get(*object), "ObjectGet")
                         .get(key)
-                        .unwrap_or_else(|| panic!("ObjectGet: key '{key}' not found"))
+                        .unwrap_or_else(|| panic!("ObjectGet: key '{}' not found", key.display(&this.interner)))
                         .clone();
                     frame.set_new(*dst, v);
                 }
@@ -494,7 +494,7 @@ impl Interpreter {
                     let v = this
                         .variables
                         .get(name)
-                        .unwrap_or_else(|| panic!("VarLoad: undefined variable ${name}"));
+                        .unwrap_or_else(|| panic!("VarLoad: undefined variable ${}", name.display(&this.interner)));
                     frame.set(*dst, Arc::clone(v));
                 }
                 InstKind::VarStore { name, src } => {

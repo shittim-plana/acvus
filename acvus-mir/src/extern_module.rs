@@ -35,7 +35,7 @@ impl ExternModule {
     pub fn add_opaque(&mut self, name: Astr) -> &mut Self {
         assert!(
             self.opaque_types.insert(name),
-            "duplicate opaque type in ExternModule '{}': {name}",
+            "duplicate opaque type in ExternModule '{:?}': {name:?}",
             self.name,
         );
         self
@@ -54,7 +54,7 @@ impl ExternModule {
     ) -> &mut Self {
         assert!(
             !self.fns.contains_key(&name),
-            "duplicate function in ExternModule '{}': {name}",
+            "duplicate function in ExternModule '{:?}': {name:?}",
             self.name,
         );
         self.fns.insert(
@@ -103,14 +103,14 @@ impl ExternRegistry {
         for name in &module.opaque_types {
             assert!(
                 self.opaque_types.insert(*name),
-                "duplicate opaque type '{name}' (from module '{}')",
+                "duplicate opaque type '{name:?}' (from module '{:?}')",
                 module.name,
             );
         }
         for (name, def) in &module.fns {
             assert!(
                 !self.fn_id_index.contains_key(name),
-                "duplicate extern function '{name}' (from module '{}')",
+                "duplicate extern function '{name:?}' (from module '{:?}')",
                 module.name,
             );
             let id = ExternFnId(self.fn_list.len() as u32);

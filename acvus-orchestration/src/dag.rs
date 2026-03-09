@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use acvus_utils::Astr;
+use acvus_utils::{Astr, Interner};
 
 use crate::compile::CompiledNode;
 use crate::error::{OrchError, OrchErrorKind};
@@ -21,7 +21,7 @@ pub struct Dag {
 /// External keys (not produced by any node) are allowed.
 ///
 /// Uses Kahn's algorithm for topological sort + cycle detection.
-pub fn build_dag(nodes: &[CompiledNode]) -> Result<Dag, Vec<OrchError>> {
+pub fn build_dag(interner: &Interner, nodes: &[CompiledNode]) -> Result<Dag, Vec<OrchError>> {
     let name_to_idx: HashMap<Astr, usize> = nodes
         .iter()
         .enumerate()
@@ -67,7 +67,7 @@ pub fn build_dag(nodes: &[CompiledNode]) -> Result<Dag, Vec<OrchError>> {
     if topo_order.len() != n {
         let in_cycle: Vec<String> = (0..n)
             .filter(|i| in_degree[*i] > 0)
-            .map(|i| format!("{}", nodes[i].name))
+            .map(|i| interner.resolve(nodes[i].name).to_string())
             .collect();
         return Err(vec![OrchError::new(OrchErrorKind::CycleDetected {
             nodes: in_cycle,
@@ -122,7 +122,7 @@ mod tests {
             make_node(&interner, "B", vec!["A"]),
             make_node(&interner, "C", vec!["B"]),
         ];
-        let dag = build_dag(&nodes).unwrap();
+        let dag = build_dag(&interner, &nodes).unwrap();
         assert_eq!(dag.topo_order.len(), 3);
         let pos_a = dag.topo_order.iter().position(|&i| i == 0).unwrap();
         let pos_b = dag.topo_order.iter().position(|&i| i == 1).unwrap();
@@ -140,7 +140,7 @@ mod tests {
             make_node(&interner, "C", vec!["A"]),
             make_node(&interner, "D", vec!["B", "C"]),
         ];
-        let dag = build_dag(&nodes).unwrap();
+        let dag = build_dag(&interner, &nodes).unwrap();
         assert_eq!(dag.topo_order.len(), 4);
         let pos_a = dag.topo_order.iter().position(|&i| i == 0).unwrap();
         let pos_b = dag.topo_order.iter().position(|&i| i == 1).unwrap();
@@ -156,7 +156,7 @@ mod tests {
     fn cycle_detected() {
         let interner = Interner::new();
         let nodes = vec![make_node(&interner, "A", vec!["B"]), make_node(&interner, "B", vec!["A"])];
-        let err = build_dag(&nodes).unwrap_err();
+        let err = build_dag(&interner, &nodes).unwrap_err();
         assert!(matches!(err[0].kind, OrchErrorKind::CycleDetected { .. }));
     }
 
@@ -164,7 +164,7 @@ mod tests {
     fn no_deps() {
         let interner = Interner::new();
         let nodes = vec![make_node(&interner, "A", vec![]), make_node(&interner, "B", vec![])];
-        let dag = build_dag(&nodes).unwrap();
+        let dag = build_dag(&interner, &nodes).unwrap();
         assert_eq!(dag.topo_order.len(), 2);
     }
 
@@ -172,7 +172,7 @@ mod tests {
     fn external_key_ignored() {
         let interner = Interner::new();
         let nodes = vec![make_node(&interner, "A", vec![]), make_node(&interner, "B", vec!["ext"])];
-        let dag = build_dag(&nodes).unwrap();
+        let dag = build_dag(&interner, &nodes).unwrap();
         assert_eq!(dag.topo_order.len(), 2);
         assert!(dag.deps[1].is_empty());
     }

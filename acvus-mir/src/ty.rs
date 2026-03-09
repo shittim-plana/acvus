@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use acvus_utils::Astr;
+use acvus_utils::{Astr, Interner};
 
 use crate::user_type::UserTypeId;
 
@@ -47,11 +47,20 @@ impl Ty {
     pub fn bytes() -> Ty {
         Ty::List(Box::new(Ty::Byte))
     }
+
+    pub fn display<'a>(&'a self, interner: &'a Interner) -> TyDisplay<'a> {
+        TyDisplay { ty: self, interner }
+    }
 }
 
-impl fmt::Display for Ty {
+pub struct TyDisplay<'a> {
+    ty: &'a Ty,
+    interner: &'a Interner,
+}
+
+impl<'a> fmt::Display for TyDisplay<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        match self.ty {
             Ty::Int => write!(f, "Int"),
             Ty::Float => write!(f, "Float"),
             Ty::String => write!(f, "String"),
@@ -59,16 +68,16 @@ impl fmt::Display for Ty {
             Ty::Unit => write!(f, "Unit"),
             Ty::Range => write!(f, "Range"),
             Ty::Byte => write!(f, "Byte"),
-            Ty::List(inner) => write!(f, "List<{inner}>"),
+            Ty::List(inner) => write!(f, "List<{}>", inner.display(self.interner)),
             Ty::Object(fields) => {
                 let mut sorted: Vec<_> = fields.iter().collect();
-                sorted.sort_by_key(|(k, _)| format!("{k}"));
+                sorted.sort_by_key(|(k, _)| self.interner.resolve(**k).to_string());
                 write!(f, "{{")?;
                 for (i, (k, v)) in sorted.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{k}: {v}")?;
+                    write!(f, "{}: {}", self.interner.resolve(**k), v.display(self.interner))?;
                 }
                 write!(f, "}}")
             }
@@ -78,7 +87,7 @@ impl fmt::Display for Ty {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{e}")?;
+                    write!(f, "{}", e.display(self.interner))?;
                 }
                 write!(f, ")")
             }
@@ -88,17 +97,23 @@ impl fmt::Display for Ty {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{p}")?;
+                    write!(f, "{}", p.display(self.interner))?;
                 }
-                write!(f, ") -> {ret}")
+                write!(f, ") -> {}", ret.display(self.interner))
             }
-            Ty::Option(inner) => write!(f, "Option<{inner}>"),
+            Ty::Option(inner) => write!(f, "Option<{}>", inner.display(self.interner)),
             Ty::Opaque(name) => write!(f, "{name}"),
             Ty::UserType(id) => write!(f, "UserType({})", id.0),
             Ty::Var(v) => write!(f, "?{}", v.0),
             Ty::Infer => write!(f, "<infer>"),
             Ty::Error => write!(f, "<error>"),
         }
+    }
+}
+
+impl<'a> fmt::Debug for TyDisplay<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }
 

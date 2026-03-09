@@ -1,11 +1,9 @@
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use parking_lot::RwLock;
-use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // Global interner ID counter
@@ -25,7 +23,13 @@ pub struct Astr {
 
 impl PartialEq for Astr {
     fn eq(&self, other: &Self) -> bool {
-        self.interner_id == other.interner_id && self.id == other.id
+        assert!(
+            self.interner_id == other.interner_id,
+            "Comparing Astr values from different interners ({} != {})",
+            self.interner_id,
+            other.interner_id
+        );
+        self.id == other.id
     }
 }
 
@@ -38,96 +42,37 @@ impl Hash for Astr {
     }
 }
 
+impl Astr {
+    /// Explicit display wrapper — requires an interner reference.
+    pub fn display<'a>(&self, interner: &'a Interner) -> AstrDisplay<'a> {
+        AstrDisplay {
+            astr: *self,
+            interner,
+        }
+    }
+}
+
+/// Explicit display wrapper for Astr. Created via `astr.display(interner)`.
+pub struct AstrDisplay<'a> {
+    astr: Astr,
+    interner: &'a Interner,
+}
+
+impl std::fmt::Display for AstrDisplay<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.interner.resolve(self.astr))
+    }
+}
+
+impl std::fmt::Debug for AstrDisplay<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.interner.resolve(self.astr))
+    }
+}
+
 impl std::fmt::Debug for Astr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        THREAD_INTERNER.with(|c| {
-            let opt = c.take();
-            let result = match &opt {
-                Some(interner) if interner.id == self.interner_id => {
-                    write!(f, "{:?}", interner.resolve(*self))
-                }
-                _ => write!(f, "Astr({}:{})", self.interner_id, self.id),
-            };
-            c.set(opt);
-            result
-        })
-    }
-}
-
-impl std::fmt::Display for Astr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        THREAD_INTERNER.with(|c| {
-            let opt = c.take();
-            let result = match &opt {
-                Some(interner) if interner.id == self.interner_id => {
-                    write!(f, "{}", interner.resolve(*self))
-                }
-                _ => write!(f, "#{}", self.id),
-            };
-            c.set(opt);
-            result
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Serde support via thread_local interner
-// ---------------------------------------------------------------------------
-
-thread_local! {
-    static THREAD_INTERNER: Cell<Option<Interner>> = const { Cell::new(None) };
-}
-
-/// Run a closure with the given interner set as thread-local context.
-/// Used by Astr's Display, Serialize, and Deserialize impls.
-pub fn with_interner_context<T>(interner: &Interner, f: impl FnOnce() -> T) -> T {
-    THREAD_INTERNER.with(|c| c.set(Some(interner.clone())));
-    let result = f();
-    THREAD_INTERNER.with(|c| c.set(None));
-    result
-}
-
-/// Set the thread-local interner context (for use across `.await` points).
-/// Call `clear_thread_interner()` when done.
-pub fn set_thread_interner(interner: &Interner) {
-    THREAD_INTERNER.with(|c| c.set(Some(interner.clone())));
-}
-
-/// Clear the thread-local interner context.
-pub fn clear_thread_interner() {
-    THREAD_INTERNER.with(|c| c.set(None));
-}
-
-pub fn get_thread_interner() -> Option<Interner> {
-    THREAD_INTERNER.with(|c| {
-        let i = c.take();
-        let cloned = i.clone();
-        c.set(i);
-        cloned
-    })
-}
-
-impl Serialize for Astr {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let interner = get_thread_interner()
-            .expect("Astr::serialize requires with_interner_context()");
-        let s = interner.resolve(*self);
-        s.serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Astr {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        let interner = get_thread_interner()
-            .expect("Astr::deserialize requires with_interner_context()");
-        Ok(interner.intern(&s))
+        write!(f, "Astr({}:{})", self.interner_id, self.id)
     }
 }
 
@@ -322,12 +267,13 @@ mod tests {
     }
 
     #[test]
-    fn different_interners_not_equal() {
+    #[should_panic(expected = "Comparing Astr values from different interners")]
+    fn different_interners_panics() {
         let i1 = Interner::new();
         let i2 = Interner::new();
         let a = i1.intern("same");
         let b = i2.intern("same");
-        assert_ne!(a, b);
+        let _ = a == b;
     }
 
     #[test]
@@ -347,22 +293,6 @@ mod tests {
         assert_eq!(i2.resolve(a), "shared");
         let b = i2.intern("new");
         assert_eq!(i1.resolve(b), "new");
-    }
-
-    #[test]
-    fn serde_roundtrip() {
-        let interner = Interner::new();
-        let a = interner.intern("hello");
-
-        let json = with_interner_context(&interner, || {
-            serde_json::to_string(&a).unwrap()
-        });
-        assert_eq!(json, "\"hello\"");
-
-        let b: Astr = with_interner_context(&interner, || {
-            serde_json::from_str(&json).unwrap()
-        });
-        assert_eq!(a, b);
     }
 
     #[test]

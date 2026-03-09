@@ -186,7 +186,7 @@ where
                 return value;
             }
             acvus_interpreter::Stepped::NeedContext(need) => {
-                let name = need.name().to_string();
+                let name = interner.resolve(need.name()).to_string();
                 let Some(value) = local
                     .get(&name)
                     .cloned()
@@ -226,7 +226,7 @@ where
                 key = next_key;
             }
             acvus_interpreter::Stepped::NeedContext(need) => {
-                let name = need.name().to_string();
+                let name = interner.resolve(need.name()).to_string();
                 let Some(value) = local
                     .get(&name)
                     .cloned()

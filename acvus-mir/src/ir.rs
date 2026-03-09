@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use acvus_ast::{BinOp, Literal, RangeKind, Span, UnaryOp};
-use acvus_utils::Astr;
+use acvus_utils::{Astr, Interner};
 
 use crate::builtins::BuiltinId;
 use crate::extern_module::ExternFnId;
@@ -258,14 +258,13 @@ impl DebugInfo {
     }
 
     /// Human-readable label for a Val.
-    /// Uses Astr::Display (thread-local interner context).
-    pub fn label(&self, val: ValueId) -> String {
+    pub fn label(&self, val: ValueId, interner: &Interner) -> String {
         match self.val_origins.get(&val) {
-            Some(ValOrigin::Named(name)) => format!("{name}"),
-            Some(ValOrigin::Context(name)) => format!("@{name}"),
-            Some(ValOrigin::Variable(name)) => format!("${name}"),
-            Some(ValOrigin::Field(_, field)) => format!("{field}"),
-            Some(ValOrigin::Call(func)) => format!("{func}(...)"),
+            Some(ValOrigin::Named(name)) => interner.resolve(*name).to_string(),
+            Some(ValOrigin::Context(name)) => format!("@{}", interner.resolve(*name)),
+            Some(ValOrigin::Variable(name)) => format!("${}", interner.resolve(*name)),
+            Some(ValOrigin::Field(_, field)) => interner.resolve(*field).to_string(),
+            Some(ValOrigin::Call(func)) => format!("{}(...)", interner.resolve(*func)),
             Some(ValOrigin::Expr) | None => format!("v{}", val.0),
         }
     }

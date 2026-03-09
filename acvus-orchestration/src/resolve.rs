@@ -143,7 +143,8 @@ where
     {
         let node = &self.nodes[idx];
         let interner = self.interner;
-        info!(node = %node.name, "resolve node start");
+        let node_name_str = interner.resolve(node.name);
+        info!(node = %node_name_str, "resolve node start");
 
         // IfModified: evaluate key, check cache
         if let CompiledStrategy::IfModified { key } = &node.strategy {
@@ -151,13 +152,13 @@ where
             if let Some(entries) = state.bind_cache.get(&node.name)
                 && let Some((_, cached_output)) = entries.iter().find(|(v, _)| v == &key_value)
             {
-                debug!(node = %node.name, "if_modified cache hit, skipping execution");
+                debug!(node = %node_name_str, "if_modified cache hit, skipping execution");
                 state
                     .storage
                     .set(interner.resolve(node.name).to_string(), Value::clone(cached_output));
                 return Ok(());
             }
-            debug!(node = %node.name, "if_modified cache miss, will execute");
+            debug!(node = %node_name_str, "if_modified cache miss, will execute");
             local.insert(interner.intern("bind"), Arc::new(key_value));
         }
 
@@ -182,7 +183,7 @@ where
                 .map(|&i| interner.resolve(self.nodes[i].name))
                 .collect();
             debug!(
-                node = %node.name,
+                node = %node_name_str,
                 deps = ?dep_names,
                 "prefetching eager dependencies",
             );
@@ -199,7 +200,7 @@ where
             } else if let Some(arc) = state.turn_context.get(&node.name) {
                 Value::clone(arc)
             } else {
-                debug!(node = %node.name, "evaluating initial_value (first run)");
+                debug!(node = %node_name_str, "evaluating initial_value (first run)");
                 self.eval_script(init_script, &HashMap::new(), state)
                     .await?
             };
@@ -207,7 +208,7 @@ where
         }
 
         // Spawn via Node trait
-        debug!(node = %node.name, "spawning coroutine");
+        debug!(node = %node_name_str, "spawning coroutine");
         let (mut coroutine, first_key) = self.node_table[idx].spawn(local.clone());
         let new_self = self
             .eval_coroutine(&mut coroutine, first_key, &HashMap::new(), state)
@@ -217,7 +218,7 @@ where
         if let Some(ref assert_script) = node.assert {
             let mut bind_local = HashMap::new();
             bind_local.insert(interner.intern("self"), Arc::new(new_self.clone()));
-            debug!(node = %node.name, "evaluating assert");
+            debug!(node = %node_name_str, "evaluating assert");
             let result = self
                 .eval_script(assert_script, &bind_local, state)
                 .await?;
@@ -228,7 +229,7 @@ where
                 });
             };
             if !passed {
-                info!(node = %node.name, "assert failed, triggering retry");
+                info!(node = %node_name_str, "assert failed, triggering retry");
                 return Err(ResolveError::Runtime {
                     node: interner.resolve(node.name).to_string(),
                     error: RuntimeError::other("assert failed"),
@@ -263,7 +264,7 @@ where
                 let mut hist_local = HashMap::new();
                 hist_local.insert(interner.intern("self"), Arc::new(new_self));
 
-                debug!(node = %node.name, "evaluating history_bind");
+                debug!(node = %node_name_str, "evaluating history_bind");
                 let entry = self
                     .eval_script(history_bind, &hist_local, state)
                     .await?;
@@ -272,7 +273,7 @@ where
             }
         }
 
-        info!(node = %node.name, "resolve node complete");
+        info!(node = %node_name_str, "resolve node complete");
         Ok(())
     }
 
@@ -375,9 +376,10 @@ where
         S: Storage,
     {
         Box::pin(async move {
+            let ctx_name_str = self.interner.resolve(name);
             // Tool call: resolve target node with bindings as local context
             if !bindings.is_empty() {
-                debug!(context = %name, "resolving context with bindings (tool call)");
+                debug!(context = %ctx_name_str, "resolving context with bindings (tool call)");
                 if let Some(&idx) = self.name_to_idx.get(&name) {
                     let local = bindings
                         .into_iter()
@@ -391,10 +393,10 @@ where
             // Node: resolve if needed
             if let Some(&idx) = self.name_to_idx.get(&name) {
                 if !self.needs_resolve(idx, state) {
-                    debug!(context = %name, "context already available");
+                    debug!(context = %ctx_name_str, "context already available");
                     return self.lookup(name, state).await;
                 }
-                debug!(context = %name, "resolving context on-demand");
+                debug!(context = %ctx_name_str, "resolving context on-demand");
                 self.resolve_node(idx, state, HashMap::new()).await?;
             }
 
@@ -469,11 +471,12 @@ where
                     }
                     Stepped::NeedContext(need) => {
                         let name = need.name();
+                        let name_str = self.interner.resolve(name);
                         if let Some(arc) = local.get(&name) {
-                            debug!(context = %name, "need_context resolved from local");
+                            debug!(context = %name_str, "need_context resolved from local");
                             key = need.into_key(Arc::clone(arc));
                         } else {
-                            debug!(context = %name, "need_context delegating to resolve_context");
+                            debug!(context = %name_str, "need_context delegating to resolve_context");
                             let bindings = need.bindings().clone();
                             let value = self
                                 .resolve_context(name, bindings, state)

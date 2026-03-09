@@ -1,6 +1,7 @@
 use std::fmt;
 
 use acvus_ast::Span;
+use acvus_utils::Interner;
 
 use crate::ty::Ty;
 
@@ -65,26 +66,60 @@ pub enum MirErrorKind {
     },
 }
 
-impl fmt::Display for MirError {
+impl MirError {
+    pub fn display<'a>(&'a self, interner: &'a Interner) -> MirErrorDisplay<'a> {
+        MirErrorDisplay {
+            error: self,
+            interner,
+        }
+    }
+}
+
+pub struct MirErrorDisplay<'a> {
+    error: &'a MirError,
+    interner: &'a Interner,
+}
+
+impl<'a> fmt::Display for MirErrorDisplay<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.kind {
+        let interner = self.interner;
+        match &self.error.kind {
             MirErrorKind::TypeMismatchBinOp { op, left, right } => {
-                write!(f, "type mismatch in `{op}`: {left} vs {right}")
+                write!(
+                    f,
+                    "type mismatch in `{op}`: {} vs {}",
+                    left.display(interner),
+                    right.display(interner)
+                )
             }
             MirErrorKind::EmitNotString { actual } => {
-                write!(f, "emit requires String, got {actual}")
+                write!(f, "emit requires String, got {}", actual.display(interner))
             }
             MirErrorKind::RangeBoundsNotInt { actual } => {
-                write!(f, "range bounds must be Int, got {actual}")
+                write!(
+                    f,
+                    "range bounds must be Int, got {}",
+                    actual.display(interner)
+                )
             }
             MirErrorKind::HeterogeneousList { expected, got } => {
-                write!(f, "heterogeneous list: expected {expected}, got {got}")
+                write!(
+                    f,
+                    "heterogeneous list: expected {}, got {}",
+                    expected.display(interner),
+                    got.display(interner)
+                )
             }
             MirErrorKind::AmbiguousEmptyList => {
                 write!(f, "cannot infer type of empty list `[]` without context")
             }
             MirErrorKind::UnificationFailure { expected, got } => {
-                write!(f, "type mismatch: expected {expected}, got {got}")
+                write!(
+                    f,
+                    "type mismatch: expected {}, got {}",
+                    expected.display(interner),
+                    got.display(interner)
+                )
             }
             MirErrorKind::UndefinedVariable(name) => {
                 write!(f, "undefined variable `{name}`")
@@ -93,7 +128,11 @@ impl fmt::Display for MirError {
                 write!(f, "undefined function `{name}`")
             }
             MirErrorKind::UndefinedField { object_ty, field } => {
-                write!(f, "no field `{field}` on type {object_ty}")
+                write!(
+                    f,
+                    "no field `{field}` on type {}",
+                    object_ty.display(interner)
+                )
             }
             MirErrorKind::UndefinedContext(name) => {
                 write!(f, "undefined context `@{name}`")
@@ -107,7 +146,9 @@ impl fmt::Display for MirError {
             } => {
                 write!(
                     f,
-                    "pattern type {pattern_ty} incompatible with source type {source_ty}"
+                    "pattern type {} incompatible with source type {}",
+                    pattern_ty.display(interner),
+                    source_ty.display(interner)
                 )
             }
             MirErrorKind::ContextWriteAttempt(name) => {
@@ -116,7 +157,8 @@ impl fmt::Display for MirError {
             MirErrorKind::SourceNotIterable { actual } => {
                 write!(
                     f,
-                    "source type `{actual}` is not iterable (expected List or Range)"
+                    "source type `{}` is not iterable (expected List or Range)",
+                    actual.display(interner)
                 )
             }
             MirErrorKind::BuiltinConstraint(msg) => {
@@ -135,5 +177,3 @@ impl fmt::Display for MirError {
         }
     }
 }
-
-impl std::error::Error for MirError {}

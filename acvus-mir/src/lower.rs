@@ -635,7 +635,7 @@ impl<'a> Lowerer<'a> {
                 let tag_id = self
                     .variant_registry
                     .resolve_tag(*enum_name, *tag)
-                    .unwrap_or_else(|| panic!("unknown variant tag: {tag}"));
+                    .unwrap_or_else(|| panic!("unknown variant tag: {}", self.interner.resolve(*tag)));
                 self.emit_inst(
                     *span,
                     InstKind::MakeVariant { dst, tag: tag_id, payload: payload_val },
@@ -694,7 +694,7 @@ impl<'a> Lowerer<'a> {
         let extern_id = self
             .extern_registry
             .resolve(*name)
-            .unwrap_or_else(|| panic!("unknown function: {name}"));
+            .unwrap_or_else(|| panic!("unknown function: {}", self.interner.resolve(*name)));
         let future_reg = self.alloc_val();
         self.set_val_type(future_reg, Ty::Unit);
         self.emit_inst(
@@ -1015,7 +1015,7 @@ impl<'a> Lowerer<'a> {
                 let tag_id = self
                     .variant_registry
                     .resolve_tag(*enum_name, *tag)
-                    .unwrap_or_else(|| panic!("unknown variant tag: {tag}"));
+                    .unwrap_or_else(|| panic!("unknown variant tag: {}", self.interner.resolve(*tag)));
                 let tag_ok = self.alloc_val();
                 self.set_val_type(tag_ok, Ty::Bool);
                 self.emit_inst(span, InstKind::TestVariant { dst: tag_ok, src: src_reg, tag: tag_id });

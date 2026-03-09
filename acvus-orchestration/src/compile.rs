@@ -237,8 +237,8 @@ pub(crate) fn expect_list(context: &str, ty: Ty) -> Result<Ty, OrchError> {
         Ty::Error => Ok(Ty::Error),
         other => Err(OrchError::new(OrchErrorKind::ScriptTypeMismatch {
             context: context.into(),
-            expected: "List<_>".into(),
-            got: format!("{other}"),
+            expected: Ty::List(Box::new(Ty::Infer)),
+            got: other,
         })),
     }
 }
@@ -250,8 +250,8 @@ pub(crate) fn expect_ty(context: &str, ty: &Ty, expected: &Ty) -> Result<(), Orc
     } else {
         Err(OrchError::new(OrchErrorKind::ScriptTypeMismatch {
             context: context.into(),
-            expected: format!("{expected}"),
-            got: format!("{ty}"),
+            expected: expected.clone(),
+            got: ty.clone(),
         }))
     }
 }
@@ -613,7 +613,7 @@ pub fn compile_nodes_with_env(
             }
         };
         if let Err(e) = expect_ty(
-            &format!("node '{}' initial_value type", spec.name),
+            &format!("node '{}' initial_value type", interner.resolve(spec.name)),
             &init_ty,
             &stored_types[i],
         ) {

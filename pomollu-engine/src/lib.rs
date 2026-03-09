@@ -19,8 +19,8 @@ use wasm_bindgen::prelude::*;
 
 /// Serialize any Serialize type to JsValue via JSON.
 fn to_js<T: Serialize>(value: &T) -> JsValue {
-    let json_str = serde_json::to_string(value).unwrap_or_default();
-    js_sys::JSON::parse(&json_str).unwrap_or(JsValue::NULL)
+    let json_str = serde_json::to_string(value).expect("Serialize impl should not fail");
+    js_sys::JSON::parse(&json_str).expect("serde_json output is always valid JSON")
 }
 
 fn default_registry(interner: &Interner) -> ExternRegistry {
@@ -56,18 +56,17 @@ fn extract_context_keys_with_types(interner: &Interner, module: &MirModule) -> V
         .into_iter()
         .map(|(name, ty)| ContextKey {
             name: interner.resolve(name).to_string(),
-            ty: format_ty(&ty),
+            ty: format_ty(interner, &ty),
         })
         .collect();
     keys.sort_by(|a, b| a.name.cmp(&b.name));
     keys
 }
 
-fn format_ty(ty: &Ty) -> String {
+fn format_ty(interner: &Interner, ty: &Ty) -> String {
     match ty {
-        Ty::Var(_) | Ty::Infer => "?".to_string(),
-        Ty::Error => "?".to_string(),
-        other => format!("{other}"),
+        Ty::Var(_) | Ty::Infer | Ty::Error => "?".to_string(),
+        other => other.display(interner).to_string(),
     }
 }
 
@@ -138,7 +137,8 @@ fn parse_ty(interner: &Interner, s: &str) -> Option<Ty> {
 /// Parse a JSON map of `name -> type_string` into `HashMap<Astr, Ty>`.
 /// Returns an error string if any type string fails to parse.
 fn parse_context_types(interner: &Interner, json: &str) -> Result<HashMap<Astr, Ty>, String> {
-    let raw: HashMap<String, String> = serde_json::from_str(json).unwrap_or_default();
+    let raw: HashMap<String, String> = serde_json::from_str(json)
+        .map_err(|e| format!("failed to parse context types JSON: {e}"))?;
     let mut result = HashMap::new();
     for (k, v) in raw {
         let ty = parse_ty(interner, &v).ok_or_else(|| format!("failed to parse type for @{k}: {v}"))?;
@@ -217,7 +217,7 @@ fn do_analyze(
                 }
                 Err(errs) => AnalyzeResult {
                     ok: false,
-                    errors: errs.into_iter().map(|e| format!("{e}")).collect(),
+                    errors: errs.into_iter().map(|e| e.display(interner).to_string()).collect(),
                     context_keys: vec![],
                     tail_type: String::new(),
                 },
@@ -249,12 +249,12 @@ fn do_analyze(
                         ok: true,
                         errors: vec![],
                         context_keys: keys,
-                        tail_type: format_ty(&tail_ty),
+                        tail_type: format_ty(interner, &tail_ty),
                     }
                 }
                 Err(errs) => AnalyzeResult {
                     ok: false,
-                    errors: errs.into_iter().map(|e| format!("{e}")).collect(),
+                    errors: errs.into_iter().map(|e| e.display(interner).to_string()).collect(),
                     context_keys: vec![],
                     tail_type: String::new(),
                 },
@@ -359,7 +359,7 @@ fn do_typecheck(
         Ok(()) => CheckResult { ok: true, message: None },
         Err(errs) => CheckResult {
             ok: false,
-            message: Some(errs.into_iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n")),
+            message: Some(errs.into_iter().map(|e| e.display(interner).to_string()).collect::<Vec<_>>().join("\n")),
         },
     }
 }
@@ -432,8 +432,8 @@ pub fn typecheck_nodes(nodes_json: &str, injected_types_json: &str) -> JsValue {
         Ok(v) => v,
         Err(e) => {
             let result = HashMap::from([("error".to_string(), format!("json parse: {e}"))]);
-            let json = serde_json::to_string(&result).unwrap_or_default();
-            return js_sys::JSON::parse(&json).unwrap_or(JsValue::NULL);
+            let json = serde_json::to_string(&result).expect("internal serialization should not fail");
+            return js_sys::JSON::parse(&json).expect("serde_json output is always valid JSON");
         }
     };
 
@@ -441,8 +441,8 @@ pub fn typecheck_nodes(nodes_json: &str, injected_types_json: &str) -> JsValue {
         Ok(t) => t,
         Err(e) => {
             let result = HashMap::from([("error".to_string(), e)]);
-            let json = serde_json::to_string(&result).unwrap_or_default();
-            return js_sys::JSON::parse(&json).unwrap_or(JsValue::NULL);
+            let json = serde_json::to_string(&result).expect("internal serialization should not fail");
+            return js_sys::JSON::parse(&json).expect("serde_json output is always valid JSON");
         }
     };
 
@@ -450,8 +450,8 @@ pub fn typecheck_nodes(nodes_json: &str, injected_types_json: &str) -> JsValue {
         Ok(specs) => specs,
         Err(e) => {
             let result = HashMap::from([("error".to_string(), e)]);
-            let json = serde_json::to_string(&result).unwrap_or_default();
-            return js_sys::JSON::parse(&json).unwrap_or(JsValue::NULL);
+            let json = serde_json::to_string(&result).expect("internal serialization should not fail");
+            return js_sys::JSON::parse(&json).expect("serde_json output is always valid JSON");
         }
     };
     let registry = default_registry(&interner);
@@ -460,17 +460,17 @@ pub fn typecheck_nodes(nodes_json: &str, injected_types_json: &str) -> JsValue {
     let env = match acvus_orchestration::compute_external_context_env(&interner, &specs, &injected_types, &registry) {
         Ok(env) => env,
         Err(errs) => {
-            let msg = errs.into_iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n");
+            let msg = errs.into_iter().map(|e| e.display(&interner).to_string()).collect::<Vec<_>>().join("\n");
             let result = HashMap::from([("error".to_string(), msg)]);
-            let json = serde_json::to_string(&result).unwrap_or_default();
-            return js_sys::JSON::parse(&json).unwrap_or(JsValue::NULL);
+            let json = serde_json::to_string(&result).expect("internal serialization should not fail");
+            return js_sys::JSON::parse(&json).expect("serde_json output is always valid JSON");
         }
     };
 
     let context_types_str: HashMap<String, String> = env
         .context_types
         .iter()
-        .map(|(k, v)| (interner.resolve(*k).to_string(), format_ty(v)))
+        .map(|(k, v)| (interner.resolve(*k).to_string(), format_ty(&interner, v)))
         .collect();
 
     let node_locals_str: HashMap<String, HashMap<String, String>> = env
@@ -478,8 +478,8 @@ pub fn typecheck_nodes(nodes_json: &str, injected_types_json: &str) -> JsValue {
         .iter()
         .map(|(name, locals)| {
             let mut m = HashMap::new();
-            m.insert("raw".into(), format_ty(&locals.raw_ty));
-            m.insert("self".into(), format_ty(&locals.self_ty));
+            m.insert("raw".into(), format_ty(&interner, &locals.raw_ty));
+            m.insert("self".into(), format_ty(&interner, &locals.self_ty));
             (interner.resolve(*name).to_string(), m)
         })
         .collect();
@@ -557,7 +557,7 @@ pub fn typecheck_nodes(nodes_json: &str, injected_types_json: &str) -> JsValue {
             }
         }
         if !msg_errors.is_empty() {
-            field_errors.insert("messages".into(), serde_json::to_string(&msg_errors).unwrap_or_default());
+            field_errors.insert("messages".into(), serde_json::to_string(&msg_errors).expect("internal serialization should not fail"));
         }
 
         if !field_errors.is_empty() {
@@ -567,11 +567,11 @@ pub fn typecheck_nodes(nodes_json: &str, injected_types_json: &str) -> JsValue {
 
     // 3. Serialize result
     let mut result = HashMap::new();
-    result.insert("contextTypes", serde_json::to_value(&context_types_str).unwrap_or_default());
-    result.insert("nodeLocals", serde_json::to_value(&node_locals_str).unwrap_or_default());
-    result.insert("nodeErrors", serde_json::to_value(&node_errors).unwrap_or_default());
-    let json = serde_json::to_string(&result).unwrap_or_default();
-    js_sys::JSON::parse(&json).unwrap_or(JsValue::NULL)
+    result.insert("contextTypes", serde_json::to_value(&context_types_str).expect("internal serialization should not fail"));
+    result.insert("nodeLocals", serde_json::to_value(&node_locals_str).expect("internal serialization should not fail"));
+    result.insert("nodeErrors", serde_json::to_value(&node_errors).expect("internal serialization should not fail"));
+    let json = serde_json::to_string(&result).expect("internal serialization should not fail");
+    js_sys::JSON::parse(&json).expect("serde_json output is always valid JSON")
 }
 
 /// Helper: typecheck a script, returning error string if any.
@@ -590,7 +590,7 @@ fn check_script(
     };
     match acvus_mir::compile_script_with_hint(interner, &script, context_types, registry, user_types, expected_tail) {
         Ok(_) => None,
-        Err(errs) => Some(errs.into_iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n")),
+        Err(errs) => Some(errs.into_iter().map(|e| e.display(interner).to_string()).collect::<Vec<_>>().join("\n")),
     }
 }
 
@@ -609,7 +609,7 @@ fn check_template(
     };
     match acvus_mir::compile(interner, &ast, context_types, registry, user_types) {
         Ok(_) => None,
-        Err(errs) => Some(errs.into_iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n")),
+        Err(errs) => Some(errs.into_iter().map(|e| e.display(interner).to_string()).collect::<Vec<_>>().join("\n")),
     }
 }
 
@@ -626,7 +626,8 @@ pub async fn evaluate(source: &str, mode: &str, context_json: &str) -> Result<Js
     let interner = Interner::new();
 
     let context_values: HashMap<String, serde_json::Value> =
-        serde_json::from_str(context_json).unwrap_or_default();
+        serde_json::from_str(context_json)
+        .map_err(|e| JsValue::from_str(&format!("invalid context JSON: {e}")))?;
 
     // Infer context types from values
     let mut context_types: HashMap<Astr, Ty> = HashMap::new();
@@ -644,7 +645,7 @@ pub async fn evaluate(source: &str, mode: &str, context_json: &str) -> Result<Js
             acvus_mir::compile_analysis(&interner, &ast, &context_types, &registry, &user_types)
                 .map(|(module, _)| module)
                 .map_err(|errs| {
-                    let msg = errs.into_iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n");
+                    let msg = errs.into_iter().map(|e| e.display(&interner).to_string()).collect::<Vec<_>>().join("\n");
                     JsValue::from_str(&format!("compile error: {msg}"))
                 })?
         }
@@ -654,7 +655,7 @@ pub async fn evaluate(source: &str, mode: &str, context_json: &str) -> Result<Js
             acvus_mir::compile_script_analysis(&interner, &script, &context_types, &registry, &user_types)
                 .map(|(module, _, _)| module)
                 .map_err(|errs| {
-                    let msg = errs.into_iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n");
+                    let msg = errs.into_iter().map(|e| e.display(&interner).to_string()).collect::<Vec<_>>().join("\n");
                     JsValue::from_str(&format!("compile error: {msg}"))
                 })?
         }
@@ -688,7 +689,12 @@ pub async fn evaluate(source: &str, mode: &str, context_json: &str) -> Result<Js
                 }
                 Stepped::NeedContext(need) => {
                     let name = need.name();
-                    let v = ctx.get(&name).cloned().unwrap_or(Value::Unit);
+                    let v = ctx.get(&name).cloned().ok_or_else(|| {
+                        JsValue::from_str(&format!(
+                            "runtime error: context key '{}' not found",
+                            interner.resolve(name)
+                        ))
+                    })?;
                     key = need.into_key(Arc::new(v));
                 }
                 Stepped::Done => break,
@@ -738,7 +744,7 @@ fn json_to_value(interner: &Interner, v: &serde_json::Value) -> acvus_interprete
             if let Some(i) = n.as_i64() {
                 Value::Int(i)
             } else {
-                Value::Float(n.as_f64().unwrap_or(0.0))
+                Value::Float(n.as_f64().expect("JSON number should be representable as f64"))
             }
         }
         serde_json::Value::String(s) => Value::String(s.clone()),
@@ -813,16 +819,18 @@ mod tests {
 
     #[test]
     fn test_format_ty_var() {
-        assert_eq!(format_ty(&Ty::Var(acvus_mir::ty::TyVar(0))), "?");
-        assert_eq!(format_ty(&Ty::Infer), "?");
-        assert_eq!(format_ty(&Ty::Error), "?");
+        let interner = test_interner();
+        assert_eq!(format_ty(&interner, &Ty::Var(acvus_mir::ty::TyVar(0))), "?");
+        assert_eq!(format_ty(&interner, &Ty::Infer), "?");
+        assert_eq!(format_ty(&interner, &Ty::Error), "?");
     }
 
     #[test]
     fn test_format_ty_concrete() {
-        assert_eq!(format_ty(&Ty::Int), "Int");
+        let interner = test_interner();
+        assert_eq!(format_ty(&interner, &Ty::Int), "Int");
         assert_eq!(
-            format_ty(&Ty::List(Box::new(Ty::String))),
+            format_ty(&interner, &Ty::List(Box::new(Ty::String))),
             "List<String>"
         );
     }

@@ -1,3 +1,5 @@
+use acvus_utils::Interner;
+
 use crate::ty::{Ty, TySubst};
 
 /// Numeric identifier for a builtin function.
@@ -126,7 +128,7 @@ impl BuiltinId {
 
 /// Post-unification constraint on resolved arg types.
 /// Returns `Some(error_message)` if the constraint is violated.
-pub type BuiltinConstraint = fn(&[Ty]) -> Option<String>;
+pub type BuiltinConstraint = fn(&[Ty], &Interner) -> Option<String>;
 
 pub trait BuiltinSig {
     fn id(&self) -> BuiltinId;
@@ -144,21 +146,25 @@ fn is_scalar(ty: &Ty) -> bool {
     matches!(ty, Ty::Int | Ty::Float | Ty::String | Ty::Bool | Ty::Byte)
 }
 
-fn require_scalar(args: &[Ty]) -> Option<String> {
+fn require_scalar(args: &[Ty], interner: &Interner) -> Option<String> {
     match &args[0] {
         ty if is_scalar(ty) => None,
         Ty::Var(_) | Ty::Error => None, // not yet resolved or error — skip
         ty => Some(format!(
-            "`to_string` requires a scalar type (Int, Float, Bool, String, Byte), got {ty}",
+            "`to_string` requires a scalar type (Int, Float, Bool, String, Byte), got {}",
+            ty.display(interner),
         )),
     }
 }
 
-fn require_to_int(args: &[Ty]) -> Option<String> {
+fn require_to_int(args: &[Ty], interner: &Interner) -> Option<String> {
     match &args[0] {
         Ty::Float | Ty::Byte => None,
         Ty::Var(_) | Ty::Error => None,
-        ty => Some(format!("`to_int` requires Float or Byte, got {ty}",)),
+        ty => Some(format!(
+            "`to_int` requires Float or Byte, got {}",
+            ty.display(interner),
+        )),
     }
 }
 

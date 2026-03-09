@@ -198,9 +198,9 @@ impl SessionStorage {
         let Some(ref cb) = self.on_change else { return };
         let js_key = JsValue::from_str(key);
         let json_str = serde_json::to_string(&pure_to_json(&self.interner, &value.clone().into_pure()))
-            .unwrap_or_default();
+            .expect("internal serialization should not fail");
 
-        let js_val = js_sys::JSON::parse(&json_str).unwrap_or(JsValue::NULL);
+        let js_val = js_sys::JSON::parse(&json_str).expect("serde_json output is always valid JSON");
         let _ = cb.0.call2(&JsValue::NULL, &js_key, &js_val);
     }
 
@@ -236,8 +236,8 @@ impl SessionStorage {
             .iter()
             .map(|(k, v)| (k.as_str(), pure_to_json(&self.interner, &v.as_ref().clone().into_pure())))
             .collect();
-        let json_str = serde_json::to_string(&map).unwrap_or_default();
-        js_sys::JSON::parse(&json_str).unwrap_or(JsValue::NULL)
+        let json_str = serde_json::to_string(&map).expect("internal serialization should not fail");
+        js_sys::JSON::parse(&json_str).expect("serde_json output is always valid JSON")
     }
 
     pub fn export_json(&self) -> JsValue {
@@ -248,10 +248,10 @@ impl SessionStorage {
         let json_str = js_sys::JSON::stringify(&js)
             .ok()
             .and_then(|s| s.as_string())
-            .unwrap_or_default();
+            .expect("storage JS value must be JSON-stringifiable");
 
         let map: HashMap<String, serde_json::Value> =
-            serde_json::from_str(&json_str).unwrap_or_default();
+            serde_json::from_str(&json_str).expect("storage JSON must be a valid object");
 
         // Convert JSON values back to PureValue -> Value
         let entries: HashMap<String, Arc<Value>> = map
@@ -576,14 +576,14 @@ impl ChatSession {
             &extern_registry,
         )
         .map_err(|errs| {
-            let msg = errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
+            let msg = errs.iter().map(|e| e.display(&interner).to_string()).collect::<Vec<_>>().join("\n");
             JsValue::from_str(&msg)
         })?;
         let storage_types = env.storage_types.clone();
 
         let compiled = acvus_orchestration::compile_nodes_with_env(&interner, &specs, &extern_registry, env)
             .map_err(|errs| {
-                let msg = errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
+                let msg = errs.iter().map(|e| e.display(&interner).to_string()).collect::<Vec<_>>().join("\n");
                 JsValue::from_str(&msg)
             })?;
 
@@ -712,7 +712,7 @@ impl ChatSession {
             &self.storage_types,
             &registry,
         )
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        .map_err(|e| JsValue::from_str(&e.display(&self.interner).to_string()))?;
 
         let interp = Interpreter::new(&self.interner, compiled.module.clone(), self.engine.extern_fns());
         let (mut coroutine, mut key) = interp.execute();
@@ -750,7 +750,8 @@ impl ChatSession {
         index: usize,
     ) -> Result<JsValue, JsValue> {
         let entries: Vec<DisplayEntryJson> =
-            serde_json::from_str(entries_json).unwrap_or_default();
+            serde_json::from_str(entries_json)
+                .map_err(|e| JsValue::from_str(&format!("invalid entries JSON: {e}")))?;
         let spec = IterableDisplaySpec {
             iterator: iterator_script.to_string(),
             entries: entries
@@ -765,7 +766,7 @@ impl ChatSession {
         let registry = default_registry(&self.interner);
         let compiled = compile_iterable_display(&self.interner, &spec, &self.storage_types, &registry)
             .map_err(|errs| {
-                let msg = errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
+                let msg = errs.iter().map(|e| e.display(&self.interner).to_string()).collect::<Vec<_>>().join("\n");
                 JsValue::from_str(&msg)
             })?;
         let result =
@@ -783,7 +784,7 @@ impl ChatSession {
         let registry = default_registry(&self.interner);
         let compiled = compile_static_display(&self.interner, &spec, &self.storage_types, &registry)
             .map_err(|errs| {
-                let msg = errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
+                let msg = errs.iter().map(|e| e.display(&self.interner).to_string()).collect::<Vec<_>>().join("\n");
                 JsValue::from_str(&msg)
             })?;
         let result =

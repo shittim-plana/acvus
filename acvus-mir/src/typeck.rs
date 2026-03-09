@@ -794,7 +794,7 @@ impl<'a> TypeChecker<'a> {
                 else {
                     self.error(
                         MirErrorKind::UndefinedFunction(
-                            format!("unknown variant: {tag}"),
+                            format!("unknown variant: {}", self.interner.resolve(*tag)),
                         ),
                         *span,
                     );
@@ -882,7 +882,7 @@ impl<'a> TypeChecker<'a> {
             if let Some(check) = b.constraint() {
                 let resolved_args: Vec<Ty> =
                     arg_types.iter().map(|t| self.subst.resolve(t)).collect();
-                if let Some(msg) = check(&resolved_args) {
+                if let Some(msg) = check(&resolved_args, self.interner) {
                     self.error(MirErrorKind::BuiltinConstraint(msg), call_span);
                 }
             }
@@ -1113,7 +1113,7 @@ impl<'a> TypeChecker<'a> {
                 else {
                     self.error(
                         MirErrorKind::UndefinedFunction(
-                            format!("unknown variant: {tag}"),
+                            format!("unknown variant: {}", self.interner.resolve(*tag)),
                         ),
                         span,
                     );

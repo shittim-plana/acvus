@@ -242,9 +242,8 @@ mod tests {
     }
 
     async fn call(interner: &Interner, fn_reg: &ExternFnRegistry, name: &str, args: Vec<Value>) -> Value {
-        acvus_utils::set_thread_interner(interner);
+        acvus_interpreter::set_interner_ctx(interner);
         let result = fn_reg.get(interner.intern(name)).unwrap().call(args).await.unwrap();
-        acvus_utils::clear_thread_interner();
         result
     }
 

@@ -30,7 +30,7 @@ impl UserTypeRegistry {
         let id = UserTypeId(self.enums.len() as u32);
         assert!(
             !self.name_index.contains_key(&def.name),
-            "duplicate user type: {}",
+            "duplicate user type: {:?}",
             def.name,
         );
         self.name_index.insert(def.name, id);

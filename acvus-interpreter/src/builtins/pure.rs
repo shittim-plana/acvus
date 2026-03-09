@@ -1,5 +1,3 @@
-use acvus_utils::get_thread_interner;
-
 use crate::value::Value;
 
 pub(crate) fn builtin_to_string(v: Value) -> Value {
@@ -129,7 +127,7 @@ pub(crate) fn builtin_repeat_str(s: String, n: i64) -> String {
 }
 
 pub(crate) fn builtin_unwrap(v: Value) -> Value {
-    let interner = get_thread_interner()
+    let interner = crate::interner_ctx::get_interner()
         .expect("builtin_unwrap: requires interner context");
     let some_tag = interner.intern("Some");
     let none_tag = interner.intern("None");

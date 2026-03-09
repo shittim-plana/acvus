@@ -1,5 +1,3 @@
-use acvus_utils::get_thread_interner;
-
 use crate::error::RuntimeError;
 use crate::value::Value;
 
@@ -117,7 +115,7 @@ where
     T: IntoValue,
 {
     fn into_value(self) -> Value {
-        let interner = get_thread_interner()
+        let interner = crate::interner_ctx::get_interner()
             .expect("IntoValue<Option>: requires interner context");
         match self {
             Some(v) => Value::Variant {
@@ -137,7 +135,7 @@ where
     T: FromValue,
 {
     fn from_value(v: Value) -> Self {
-        let interner = get_thread_interner()
+        let interner = crate::interner_ctx::get_interner()
             .expect("FromValue<Option>: requires interner context");
         let some_tag = interner.intern("Some");
         let none_tag = interner.intern("None");

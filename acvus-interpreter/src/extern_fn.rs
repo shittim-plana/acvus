@@ -151,7 +151,7 @@ impl ExternFnRegistry {
             let body = self
                 .fns
                 .get(name)
-                .unwrap_or_else(|| panic!("extern fn not found: {name}"));
+                .unwrap_or_else(|| panic!("extern fn not found: {}", name.display(&self.interner)));
             table[id.0 as usize] = Some(body.1.clone());
         }
         table.into_iter().map(|b| b.unwrap()).collect()

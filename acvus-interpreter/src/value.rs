@@ -5,11 +5,13 @@ use std::sync::Arc;
 
 use acvus_mir::ir::Label;
 use acvus_utils::Astr;
-use serde::{Deserialize, Serialize};
 
 /// Data-only value — no functions, no closures.
-/// Serializable, cloneable, used at context boundaries.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Cloneable, used at context boundaries.
+///
+/// For serialization, use explicit conversion functions (e.g. `pure_to_json`).
+/// `Astr` fields require an interner for resolution.
+#[derive(Debug, Clone, PartialEq)]
 pub enum PureValue {
     Int(i64),
     Float(f64),

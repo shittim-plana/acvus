@@ -154,11 +154,11 @@ pub async fn run_capturing_context_calls(
                 let name = need.name();
                 let bindings = need.bindings().clone();
                 if !bindings.is_empty() {
-                    calls.push((name.to_string(), bindings));
+                    calls.push((interner.resolve(name).to_string(), bindings));
                 }
                 let v = values
                     .get(&name)
-                    .unwrap_or_else(|| panic!("undefined context @{name}"));
+                    .unwrap_or_else(|| panic!("undefined context @{}", interner.resolve(name)));
                 key = need.into_key(Arc::new(v.clone()));
             }
             Stepped::Done => break,
@@ -199,7 +199,7 @@ pub async fn run_expect_error(
                 let name = need.name();
                 let v = context_values
                     .get(&name)
-                    .unwrap_or_else(|| panic!("undefined context @{name}"));
+                    .unwrap_or_else(|| panic!("undefined context @{}", interner.resolve(name)));
                 key = need.into_key(Arc::new(v.clone()));
             }
             Stepped::Done => panic!("expected error, got Done"),

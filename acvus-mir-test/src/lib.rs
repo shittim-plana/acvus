@@ -20,7 +20,7 @@ pub fn compile_to_ir(
             .map_err(|errors| {
                 errors
                     .iter()
-                    .map(|e| format!("[{}..{}] {}", e.span.start, e.span.end, e))
+                    .map(|e| format!("[{}..{}] {}", e.span.start, e.span.end, e.display(interner)))
                     .collect::<Vec<_>>()
                     .join("\n")
             })?;

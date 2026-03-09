@@ -168,7 +168,7 @@ async fn main() {
         };
         let (_script, tail_ty) =
             compile_script(&interner, &source, &context_types, &registry).unwrap_or_else(|e| {
-                eprintln!("expr '{}' compile error: {e}", expr_def.name);
+                eprintln!("expr '{}' compile error: {}", expr_def.name, e.display(&interner));
                 process::exit(1);
             });
         let expr_name = interner.intern(&expr_def.name);
@@ -220,7 +220,7 @@ async fn main() {
         Ok(nodes) => nodes,
         Err(errors) => {
             for e in &errors {
-                eprintln!("compile error: {e}");
+                eprintln!("compile error: {}", e.display(&interner));
             }
             process::exit(1);
         }

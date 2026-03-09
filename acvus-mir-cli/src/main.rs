@@ -5,15 +5,15 @@ use std::{env, fs, process};
 use acvus_mir::extern_module::{ExternModule, ExternRegistry};
 use acvus_mir::printer::dump;
 use acvus_mir::ty::Ty;
-use acvus_utils::{Astr, Interner, with_interner_context};
+use acvus_utils::Interner;
 use serde::Deserialize;
 
 #[derive(Deserialize, Default)]
 struct Context {
     #[serde(default)]
-    context: HashMap<Astr, TypeDef>,
+    context: HashMap<String, TypeDef>,
     #[serde(default)]
-    extern_fns: HashMap<Astr, FnDef>,
+    extern_fns: HashMap<String, FnDef>,
 }
 
 #[derive(Deserialize)]
@@ -34,7 +34,7 @@ enum TypeDef {
     Unit,
     Range,
     List(Box<TypeDef>),
-    Object(HashMap<Astr, TypeDef>),
+    Object(HashMap<String, TypeDef>),
 }
 
 impl TypeDef {
@@ -48,7 +48,7 @@ impl TypeDef {
             TypeDef::Range => Ty::Range,
             TypeDef::List(inner) => Ty::List(Box::new(inner.to_ty(interner))),
             TypeDef::Object(fields) => {
-                Ty::Object(fields.iter().map(|(k, v)| (*k, v.to_ty(interner))).collect())
+                Ty::Object(fields.iter().map(|(k, v)| (interner.intern(k), v.to_ty(interner))).collect())
             }
         }
     }
@@ -100,11 +100,9 @@ fn main() {
             eprintln!("error: failed to read {ctx_path}: {e}");
             process::exit(1);
         });
-        with_interner_context(&interner, || {
-            serde_json::from_str(&json).unwrap_or_else(|e| {
-                eprintln!("error: failed to parse context JSON: {e}");
-                process::exit(1);
-            })
+        serde_json::from_str(&json).unwrap_or_else(|e| {
+            eprintln!("error: failed to parse context JSON: {e}");
+            process::exit(1);
         })
     } else {
         Context::default()
@@ -113,13 +111,13 @@ fn main() {
     let context_types = ctx
         .context
         .iter()
-        .map(|(k, v)| (*k, v.to_ty(&interner)))
+        .map(|(k, v)| (interner.intern(k), v.to_ty(&interner)))
         .collect();
 
     let mut extern_module = ExternModule::new(interner.intern("cli"));
     for (name, def) in &ctx.extern_fns {
         let params: Vec<Ty> = def.params.iter().map(|p| p.to_ty(&interner)).collect();
-        extern_module.add_fn(*name, params, def.ret.to_ty(&interner), def.effectful);
+        extern_module.add_fn(interner.intern(name), params, def.ret.to_ty(&interner), def.effectful);
     }
     let mut registry = ExternRegistry::new();
     registry.register(&extern_module);
@@ -153,11 +151,11 @@ fn main() {
                 use acvus_mir_pass::optimize::ConstDedupPass;
                 module = acvus_mir_pass::TransformPass::transform(&ConstDedupPass, module, ());
             }
-            println!("{}", dump(&module));
+            println!("{}", dump(&interner, &module));
         }
         Err(errors) => {
             for e in &errors {
-                eprintln!("error [{}..{}]: {}", e.span.start, e.span.end, e);
+                eprintln!("error [{}..{}]: {}", e.span.start, e.span.end, e.display(&interner));
             }
             process::exit(1);
         }

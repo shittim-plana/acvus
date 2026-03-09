@@ -81,7 +81,7 @@ impl VariantRegistry {
             self.tag_id_index.push((enum_idx, var_idx));
 
             let prev = self.tag_index.insert(variant.tag, tag_id);
-            assert!(prev.is_none(), "duplicate variant tag: {}", variant.tag);
+            assert!(prev.is_none(), "duplicate variant tag: {:?}", variant.tag);
 
             self.enum_tag_index
                 .insert((def.name, variant.tag), tag_id);

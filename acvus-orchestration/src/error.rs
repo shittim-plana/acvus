@@ -1,6 +1,8 @@
 use std::fmt;
 
 use acvus_mir::error::MirError;
+use acvus_mir::ty::Ty;
+use acvus_utils::Interner;
 
 #[derive(Debug)]
 pub struct OrchError {
@@ -30,8 +32,8 @@ pub enum OrchErrorKind {
     },
     ScriptTypeMismatch {
         context: String,
-        expected: String,
-        got: String,
+        expected: Ty,
+        got: Ty,
     },
 
     // DAG
@@ -64,11 +66,24 @@ impl OrchError {
     pub fn new(kind: OrchErrorKind) -> Self {
         Self { kind }
     }
+
+    pub fn display<'a>(&'a self, interner: &'a Interner) -> OrchErrorDisplay<'a> {
+        OrchErrorDisplay {
+            error: self,
+            interner,
+        }
+    }
 }
 
-impl fmt::Display for OrchError {
+pub struct OrchErrorDisplay<'a> {
+    error: &'a OrchError,
+    interner: &'a Interner,
+}
+
+impl<'a> fmt::Display for OrchErrorDisplay<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.kind {
+        let interner = self.interner;
+        match &self.error.kind {
             OrchErrorKind::InvalidConfig(msg) => write!(f, "invalid config: {msg}"),
             OrchErrorKind::TemplateParse { block, error } => {
                 write!(f, "template parse error in block {block}: {error}")
@@ -76,7 +91,13 @@ impl fmt::Display for OrchError {
             OrchErrorKind::TemplateCompile { block, errors } => {
                 writeln!(f, "compile errors in block {block}:")?;
                 for e in errors {
-                    writeln!(f, "  [{}..{}] {e}", e.span.start, e.span.end)?;
+                    writeln!(
+                        f,
+                        "  [{}..{}] {}",
+                        e.span.start,
+                        e.span.end,
+                        e.display(interner)
+                    )?;
                 }
                 Ok(())
             }
@@ -86,7 +107,13 @@ impl fmt::Display for OrchError {
             OrchErrorKind::ScriptCompile { context, errors } => {
                 writeln!(f, "script compile errors ({context}):")?;
                 for e in errors {
-                    writeln!(f, "  [{}..{}] {e}", e.span.start, e.span.end)?;
+                    writeln!(
+                        f,
+                        "  [{}..{}] {}",
+                        e.span.start,
+                        e.span.end,
+                        e.display(interner)
+                    )?;
                 }
                 Ok(())
             }
@@ -97,7 +124,9 @@ impl fmt::Display for OrchError {
             } => {
                 write!(
                     f,
-                    "script type mismatch ({context}): expected {expected}, got {got}"
+                    "script type mismatch ({context}): expected {}, got {}",
+                    expected.display(interner),
+                    got.display(interner)
                 )
             }
             OrchErrorKind::CycleDetected { nodes } => {
@@ -128,5 +157,3 @@ impl fmt::Display for OrchError {
         }
     }
 }
-
-impl std::error::Error for OrchError {}
