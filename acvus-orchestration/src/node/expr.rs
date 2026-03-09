@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use acvus_interpreter::{
-    Coroutine, ExternFnRegistry, Interpreter, ResumeKey, RuntimeError, Stepped, Value,
-};
+use acvus_interpreter::{ExternFnRegistry, Interpreter, RuntimeError, Stepped, Value};
 use acvus_utils::{Astr, Interner};
 use rustc_hash::FxHashMap;
 
@@ -32,29 +30,28 @@ impl Node for ExprNode {
     fn spawn(
         &self,
         local: FxHashMap<Astr, Arc<Value>>,
-    ) -> (Coroutine<Value, RuntimeError>, ResumeKey<Value>) {
+    ) -> acvus_utils::Coroutine<Value, RuntimeError> {
         let interp = Interpreter::new(&self.interner, self.module.clone(), &self.extern_fns);
-        let (mut inner, mut key) = interp.execute();
+        let mut inner = interp.execute();
         acvus_utils::coroutine(move |handle| async move {
             loop {
-                match inner.resume(key).await {
-                    Stepped::Emit(emit) => {
-                        let (value, _) = emit.into_parts();
+                match inner.resume().await {
+                    Stepped::Emit(value) => {
                         handle.yield_val(value).await;
                         return Ok(());
                     }
-                    Stepped::NeedContext(need) => {
-                        let name = need.name();
+                    Stepped::NeedContext(request) => {
+                        let name = request.name();
                         if let Some(arc) = local.get(&name) {
-                            key = need.into_key(Arc::clone(arc));
+                            request.resolve(Arc::clone(arc));
                         } else {
-                            let bindings = need.bindings().clone();
+                            let bindings = request.bindings().clone();
                             let value = if bindings.is_empty() {
                                 handle.request_context(name).await
                             } else {
                                 handle.request_context_with(name, bindings).await
                             };
-                            key = need.into_key(value);
+                            request.resolve(value);
                         }
                     }
                     Stepped::Done => {

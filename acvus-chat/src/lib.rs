@@ -331,7 +331,6 @@ where
 /// Drive an interpreter coroutine to a single value, resolving contexts from storage + local.
 async fn drive_script<S>(
     coroutine: &mut acvus_utils::Coroutine<Value, acvus_interpreter::RuntimeError>,
-    mut key: acvus_utils::ResumeKey<Value>,
     storage: &S,
     local: &FxHashMap<Astr, Arc<Value>>,
     interner: &Interner,
@@ -340,17 +339,16 @@ where
     S: Storage,
 {
     loop {
-        match coroutine.resume(key).await {
-            acvus_utils::Stepped::Emit(emit) => {
-                let (value, _) = emit.into_parts();
+        match coroutine.resume().await {
+            acvus_utils::Stepped::Emit(value) => {
                 return value;
             }
-            acvus_utils::Stepped::NeedContext(need) => {
-                let name = need.name();
+            acvus_utils::Stepped::NeedContext(request) => {
+                let name = request.name();
                 if let Some(arc) = local.get(&name) {
-                    key = need.into_key(Arc::clone(arc));
+                    request.resolve(Arc::clone(arc));
                 } else if let Some(arc) = storage.get(interner.resolve(name)) {
-                    key = need.into_key(arc);
+                    request.resolve(arc);
                 } else {
                     return Value::Unit;
                 }

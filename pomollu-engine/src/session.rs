@@ -733,23 +733,22 @@ impl ChatSession {
             compiled.module.clone(),
             self.engine.extern_fns(),
         );
-        let (mut coroutine, mut key) = interp.execute();
+        let mut coroutine = interp.execute();
         loop {
-            match coroutine.resume(key).await {
-                Stepped::Emit(emit) => {
-                    let (value, _) = emit.into_parts();
+            match coroutine.resume().await {
+                Stepped::Emit(value) => {
                     let Value::List(items) = value else {
                         return Ok(0);
                     };
                     return Ok(items.len());
                 }
-                Stepped::NeedContext(need) => {
-                    let name = need.name();
+                Stepped::NeedContext(request) => {
+                    let name = request.name();
                     let Some(value) = self.engine.state.storage.get(self.interner.resolve(name))
                     else {
                         return Ok(0);
                     };
-                    key = need.into_key(value);
+                    request.resolve(value);
                 }
                 Stepped::Done => return Ok(0),
                 Stepped::Error(e) => return Err(JsValue::from_str(&format!("display error: {e}"))),

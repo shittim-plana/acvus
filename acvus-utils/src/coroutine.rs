@@ -1,7 +1,8 @@
-use Future;
+use std::collections::VecDeque;
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, Waker};
 
 use parking_lot::Mutex;
 use rustc_hash::FxHashMap;
@@ -9,17 +10,21 @@ use rustc_hash::FxHashMap;
 use crate::Astr;
 
 // ---------------------------------------------------------------------------
-// Signal — unified coroutine communication
+// CoroutineShared — internal shared state
 // ---------------------------------------------------------------------------
 
-enum Signal<V> {
-    Empty,
-    Yield(V),
-    NeedContext {
-        name: Astr,
-        bindings: FxHashMap<Astr, V>,
-    },
-    ContextReady(Arc<V>),
+struct CoroutineShared<V> {
+    new_requests: VecDeque<ContextRequest<V>>,
+    yield_slot: Option<V>,
+}
+
+// ---------------------------------------------------------------------------
+// ContextSlot — shared between ContextFuture and ContextRequest
+// ---------------------------------------------------------------------------
+
+struct ContextSlot<V> {
+    value: Option<Arc<V>>,
+    waker: Option<Waker>,
 }
 
 // ---------------------------------------------------------------------------
@@ -28,7 +33,7 @@ enum Signal<V> {
 
 #[derive(Clone)]
 pub struct YieldHandle<V> {
-    shared: Arc<Mutex<Signal<V>>>,
+    shared: Arc<Mutex<CoroutineShared<V>>>,
 }
 
 impl<V> YieldHandle<V> {
@@ -42,8 +47,11 @@ impl<V> YieldHandle<V> {
     pub fn request_context(&self, name: Astr) -> ContextFuture<'_, V> {
         ContextFuture {
             shared: &self.shared,
-            name: Some(name),
-            bindings: FxHashMap::default(),
+            slot: Arc::new(Mutex::new(ContextSlot {
+                value: None,
+                waker: None,
+            })),
+            request_data: Some((name, FxHashMap::default())),
         }
     }
 
@@ -54,8 +62,11 @@ impl<V> YieldHandle<V> {
     ) -> ContextFuture<'_, V> {
         ContextFuture {
             shared: &self.shared,
-            name: Some(name),
-            bindings,
+            slot: Arc::new(Mutex::new(ContextSlot {
+                value: None,
+                waker: None,
+            })),
+            request_data: Some((name, bindings)),
         }
     }
 }
@@ -65,7 +76,7 @@ impl<V> YieldHandle<V> {
 // ---------------------------------------------------------------------------
 
 pub struct YieldFuture<'a, V> {
-    shared: &'a Arc<Mutex<Signal<V>>>,
+    shared: &'a Arc<Mutex<CoroutineShared<V>>>,
     value: Option<V>,
 }
 
@@ -78,7 +89,7 @@ where
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
         let this = self.get_mut();
         if let Some(value) = this.value.take() {
-            *this.shared.lock() = Signal::Yield(value);
+            this.shared.lock().yield_slot = Some(value);
             Poll::Pending
         } else {
             Poll::Ready(())
@@ -91,9 +102,10 @@ where
 // ---------------------------------------------------------------------------
 
 pub struct ContextFuture<'a, V> {
-    shared: &'a Arc<Mutex<Signal<V>>>,
-    name: Option<Astr>,
-    bindings: FxHashMap<Astr, V>,
+    shared: &'a Arc<Mutex<CoroutineShared<V>>>,
+    slot: Arc<Mutex<ContextSlot<V>>>,
+    /// (name, bindings) — consumed on first poll to register the request.
+    request_data: Option<(Astr, FxHashMap<Astr, V>)>,
 }
 
 impl<V> Future for ContextFuture<'_, V>
@@ -102,62 +114,54 @@ where
 {
     type Output = Arc<V>;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Arc<V>> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Arc<V>> {
         let this = self.get_mut();
-        let mut signal = this.shared.lock();
 
-        if let Some(name) = this.name.take() {
-            *signal = Signal::NeedContext {
+        if let Some((name, bindings)) = this.request_data.take() {
+            // First poll: register the request
+            this.shared.lock().new_requests.push_back(ContextRequest {
                 name,
-                bindings: std::mem::take(&mut this.bindings),
-            };
+                bindings,
+                slot: Arc::clone(&this.slot),
+            });
+            this.slot.lock().waker = Some(cx.waker().clone());
             Poll::Pending
-        } else if let Signal::ContextReady(_) = &*signal {
-            let Signal::ContextReady(value) = std::mem::replace(&mut *signal, Signal::Empty) else {
-                unreachable!()
-            };
-            Poll::Ready(value)
         } else {
-            Poll::Pending
+            // Subsequent polls: check if resolved
+            let mut slot = this.slot.lock();
+            if let Some(value) = slot.value.take() {
+                Poll::Ready(value)
+            } else {
+                slot.waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        }
+    }
+}
+
+impl<V> Drop for ContextFuture<'_, V> {
+    fn drop(&mut self) {
+        if self.request_data.is_none() {
+            // Was registered; remove from new_requests if still pending
+            let mut shared = self.shared.lock();
+            shared
+                .new_requests
+                .retain(|r| !Arc::ptr_eq(&r.slot, &self.slot));
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Resume API — public types
+// ContextRequest — public, returned to executor via Stepped::NeedContext
 // ---------------------------------------------------------------------------
 
-pub struct ResumeKey<V>(ResumeKeyInner<V>);
-
-enum ResumeKeyInner<V> {
-    Start,
-    Context(Arc<V>),
-}
-
-pub enum Stepped<V, E> {
-    Emit(EmitStepped<V>),
-    NeedContext(NeedContextStepped<V>),
-    Done,
-    Error(E),
-}
-
-pub struct EmitStepped<V> {
-    value: V,
-    key: ResumeKey<V>,
-}
-
-impl<V> EmitStepped<V> {
-    pub fn into_parts(self) -> (V, ResumeKey<V>) {
-        (self.value, self.key)
-    }
-}
-
-pub struct NeedContextStepped<V> {
+pub struct ContextRequest<V> {
     name: Astr,
     bindings: FxHashMap<Astr, V>,
+    slot: Arc<Mutex<ContextSlot<V>>>,
 }
 
-impl<V> NeedContextStepped<V> {
+impl<V> ContextRequest<V> {
     pub fn name(&self) -> Astr {
         self.name
     }
@@ -166,13 +170,25 @@ impl<V> NeedContextStepped<V> {
         &self.bindings
     }
 
-    pub fn into_parts(self) -> (Astr, FxHashMap<Astr, V>) {
-        (self.name, self.bindings)
+    /// Provide the resolved value. Wakes the coroutine if it is waiting.
+    pub fn resolve(self, value: Arc<V>) {
+        let mut slot = self.slot.lock();
+        slot.value = Some(value);
+        if let Some(waker) = slot.waker.take() {
+            waker.wake();
+        }
     }
+}
 
-    pub fn into_key(self, value: Arc<V>) -> ResumeKey<V> {
-        ResumeKey(ResumeKeyInner::Context(value))
-    }
+// ---------------------------------------------------------------------------
+// Stepped — resume result
+// ---------------------------------------------------------------------------
+
+pub enum Stepped<V, E> {
+    Emit(V),
+    NeedContext(ContextRequest<V>),
+    Done,
+    Error(E),
 }
 
 // ---------------------------------------------------------------------------
@@ -180,16 +196,20 @@ impl<V> NeedContextStepped<V> {
 // ---------------------------------------------------------------------------
 
 pub struct Coroutine<V, E> {
-    shared: Arc<Mutex<Signal<V>>>,
+    shared: Arc<Mutex<CoroutineShared<V>>>,
     fut: Option<Pin<Box<dyn Future<Output = Result<(), E>> + Send>>>,
 }
 
 impl<V, E> Coroutine<V, E> {
-    pub fn resume(&mut self, key: ResumeKey<V>) -> ResumeFuture<'_, V, E> {
-        if let ResumeKeyInner::Context(arc) = key.0 {
-            *self.shared.lock() = Signal::ContextReady(arc);
-        }
+    pub fn resume(&mut self) -> ResumeFuture<'_, V, E> {
         ResumeFuture { coroutine: self }
+    }
+
+    /// Ownership-passing step. Takes self, returns self back with the stepped result.
+    /// Enables use in FuturesUnordered without borrow issues.
+    pub async fn step(mut self) -> (Self, Stepped<V, E>) {
+        let stepped = self.resume().await;
+        (self, stepped)
     }
 }
 
@@ -212,36 +232,35 @@ impl<V, E> Future for ResumeFuture<'_, V, E> {
         };
 
         let poll_result = fut.poll(cx);
-        let mut signal = this.coroutine.shared.lock();
+        let mut shared = this.coroutine.shared.lock();
 
-        match std::mem::replace(&mut *signal, Signal::Empty) {
-            Signal::Yield(value) => {
-                if poll_result.is_ready() {
-                    this.coroutine.fut = None;
-                }
-                Poll::Ready(Stepped::Emit(EmitStepped {
-                    value,
-                    key: ResumeKey(ResumeKeyInner::Start),
-                }))
+        // Check yield slot
+        if let Some(value) = shared.yield_slot.take() {
+            if poll_result.is_ready() {
+                drop(shared);
+                this.coroutine.fut = None;
             }
-            Signal::NeedContext { name, bindings } => {
-                Poll::Ready(Stepped::NeedContext(NeedContextStepped { name, bindings }))
+            return Poll::Ready(Stepped::Emit(value));
+        }
+
+        // Check for new context requests
+        if let Some(request) = shared.new_requests.pop_front() {
+            return Poll::Ready(Stepped::NeedContext(request));
+        }
+
+        // No signals
+        match poll_result {
+            Poll::Ready(Ok(())) => {
+                drop(shared);
+                this.coroutine.fut = None;
+                Poll::Ready(Stepped::Done)
             }
-            other => {
-                // put back unconsumed signal (e.g. ContextReady mid-processing)
-                *signal = other;
-                match poll_result {
-                    Poll::Ready(Ok(())) => {
-                        this.coroutine.fut = None;
-                        Poll::Ready(Stepped::Done)
-                    }
-                    Poll::Ready(Err(e)) => {
-                        this.coroutine.fut = None;
-                        Poll::Ready(Stepped::Error(e))
-                    }
-                    Poll::Pending => Poll::Pending,
-                }
+            Poll::Ready(Err(e)) => {
+                drop(shared);
+                this.coroutine.fut = None;
+                Poll::Ready(Stepped::Error(e))
             }
+            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -250,23 +269,23 @@ impl<V, E> Future for ResumeFuture<'_, V, E> {
 // Constructor
 // ---------------------------------------------------------------------------
 
-pub fn coroutine<V, E, F, Fut>(f: F) -> (Coroutine<V, E>, ResumeKey<V>)
+pub fn coroutine<V, E, F, Fut>(f: F) -> Coroutine<V, E>
 where
     F: FnOnce(YieldHandle<V>) -> Fut,
     Fut: Future<Output = Result<(), E>> + Send + 'static,
 {
-    let shared = Arc::new(Mutex::new(Signal::Empty));
+    let shared = Arc::new(Mutex::new(CoroutineShared {
+        new_requests: VecDeque::new(),
+        yield_slot: None,
+    }));
     let handle = YieldHandle {
         shared: Arc::clone(&shared),
     };
     let fut = f(handle);
-    (
-        Coroutine {
-            shared,
-            fut: Some(Box::pin(fut)),
-        },
-        ResumeKey(ResumeKeyInner::Start),
-    )
+    Coroutine {
+        shared,
+        fut: Some(Box::pin(fut)),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -278,78 +297,73 @@ mod tests {
     use super::*;
     use crate::Interner;
 
-    async fn step<V, E>(co: &mut Coroutine<V, E>, key: ResumeKey<V>) -> Stepped<V, E> {
-        co.resume(key).await
+    async fn step<V, E>(co: &mut Coroutine<V, E>) -> Stepped<V, E> {
+        co.resume().await
     }
 
     #[tokio::test]
     async fn empty_coroutine() {
-        let (mut co, key) = coroutine::<i32, (), _, _>(|_handle| async move { Ok(()) });
-        assert!(matches!(step(&mut co, key).await, Stepped::Done));
+        let mut co = coroutine::<i32, (), _, _>(|_handle| async move { Ok(()) });
+        assert!(matches!(step(&mut co).await, Stepped::Done));
     }
 
     #[tokio::test]
     async fn single_yield() {
-        let (mut co, key) = coroutine::<_, (), _, _>(|handle| async move {
+        let mut co = coroutine::<_, (), _, _>(|handle| async move {
             handle.yield_val(42).await;
             Ok(())
         });
 
-        let Stepped::Emit(emit) = step(&mut co, key).await else {
+        let Stepped::Emit(value) = step(&mut co).await else {
             panic!("expected Emit");
         };
-        let (value, key) = emit.into_parts();
         assert_eq!(value, 42);
 
-        assert!(matches!(step(&mut co, key).await, Stepped::Done));
+        assert!(matches!(step(&mut co).await, Stepped::Done));
     }
 
     #[tokio::test]
     async fn multiple_yields() {
-        let (mut co, key) = coroutine::<_, (), _, _>(|handle| async move {
+        let mut co = coroutine::<_, (), _, _>(|handle| async move {
             handle.yield_val(1).await;
             handle.yield_val(2).await;
             handle.yield_val(3).await;
             Ok(())
         });
 
-        let mut key = key;
         for expected in [1, 2, 3] {
-            let Stepped::Emit(emit) = step(&mut co, key).await else {
+            let Stepped::Emit(value) = step(&mut co).await else {
                 panic!("expected Emit({expected})");
             };
-            let (value, next_key) = emit.into_parts();
             assert_eq!(value, expected);
-            key = next_key;
         }
 
-        assert!(matches!(step(&mut co, key).await, Stepped::Done));
+        assert!(matches!(step(&mut co).await, Stepped::Done));
     }
 
     #[tokio::test]
     async fn context_request() {
         let interner = Interner::new();
         let user = interner.intern("user");
-        let (mut co, key) = coroutine::<_, (), _, _>(|handle| async move {
+        let mut co = coroutine::<_, (), _, _>(|handle| async move {
             let ctx = handle.request_context(user).await;
             handle.yield_val(format!("got: {ctx}")).await;
             Ok(())
         });
 
-        let Stepped::NeedContext(need) = step(&mut co, key).await else {
+        let Stepped::NeedContext(request) = step(&mut co).await else {
             panic!("expected NeedContext");
         };
-        assert_eq!(need.name(), user);
-        assert!(need.bindings().is_empty());
+        assert_eq!(request.name(), user);
+        assert!(request.bindings().is_empty());
+        request.resolve(Arc::new("alice".to_string()));
 
-        let key = need.into_key(Arc::new("alice".to_string()));
-        let Stepped::Emit(emit) = step(&mut co, key).await else {
+        let Stepped::Emit(value) = step(&mut co).await else {
             panic!("expected Emit");
         };
-        let (value, key) = emit.into_parts();
         assert_eq!(value, "got: alice");
 
-        assert!(matches!(step(&mut co, key).await, Stepped::Done));
+        assert!(matches!(step(&mut co).await, Stepped::Done));
     }
 
     #[tokio::test]
@@ -357,7 +371,7 @@ mod tests {
         let interner = Interner::new();
         let user = interner.intern("user");
         let role = interner.intern("role");
-        let (mut co, key) = coroutine::<_, (), _, _>(|handle| async move {
+        let mut co = coroutine::<_, (), _, _>(|handle| async move {
             let mut bindings = FxHashMap::default();
             bindings.insert(role, "admin".into());
             let ctx = handle.request_context_with(user, bindings).await;
@@ -365,20 +379,19 @@ mod tests {
             Ok(())
         });
 
-        let Stepped::NeedContext(need) = step(&mut co, key).await else {
+        let Stepped::NeedContext(request) = step(&mut co).await else {
             panic!("expected NeedContext");
         };
-        assert_eq!(need.name(), user);
-        assert_eq!(need.bindings().get(&role), Some(&"admin".to_string()));
+        assert_eq!(request.name(), user);
+        assert_eq!(request.bindings().get(&role), Some(&"admin".to_string()));
+        request.resolve(Arc::new("bob".to_string()));
 
-        let key = need.into_key(Arc::new("bob".to_string()));
-        let Stepped::Emit(emit) = step(&mut co, key).await else {
+        let Stepped::Emit(value) = step(&mut co).await else {
             panic!("expected Emit");
         };
-        let (value, key) = emit.into_parts();
         assert_eq!(value, "got: bob");
 
-        assert!(matches!(step(&mut co, key).await, Stepped::Done));
+        assert!(matches!(step(&mut co).await, Stepped::Done));
     }
 
     #[tokio::test]
@@ -386,7 +399,7 @@ mod tests {
         let interner = Interner::new();
         let name_key = interner.intern("name");
         let age_key = interner.intern("age");
-        let (mut co, key) = coroutine::<_, (), _, _>(|handle| async move {
+        let mut co = coroutine::<_, (), _, _>(|handle| async move {
             handle.yield_val("start".to_string()).await;
             let name = handle.request_context(name_key).await;
             handle.yield_val(format!("hello {name}")).await;
@@ -396,41 +409,38 @@ mod tests {
         });
 
         // yield "start"
-        let Stepped::Emit(emit) = step(&mut co, key).await else {
+        let Stepped::Emit(value) = step(&mut co).await else {
             panic!("expected Emit");
         };
-        let (value, key) = emit.into_parts();
         assert_eq!(value, "start");
 
         // need context "name"
-        let Stepped::NeedContext(need) = step(&mut co, key).await else {
+        let Stepped::NeedContext(request) = step(&mut co).await else {
             panic!("expected NeedContext");
         };
-        assert_eq!(need.name(), name_key);
-        let key = need.into_key(Arc::new("eve".to_string()));
+        assert_eq!(request.name(), name_key);
+        request.resolve(Arc::new("eve".to_string()));
 
         // yield "hello eve"
-        let Stepped::Emit(emit) = step(&mut co, key).await else {
+        let Stepped::Emit(value) = step(&mut co).await else {
             panic!("expected Emit");
         };
-        let (value, key) = emit.into_parts();
         assert_eq!(value, "hello eve");
 
         // need context "age"
-        let Stepped::NeedContext(need) = step(&mut co, key).await else {
+        let Stepped::NeedContext(request) = step(&mut co).await else {
             panic!("expected NeedContext");
         };
-        assert_eq!(need.name(), age_key);
-        let key = need.into_key(Arc::new("30".to_string()));
+        assert_eq!(request.name(), age_key);
+        request.resolve(Arc::new("30".to_string()));
 
         // yield "eve is 30"
-        let Stepped::Emit(emit) = step(&mut co, key).await else {
+        let Stepped::Emit(value) = step(&mut co).await else {
             panic!("expected Emit");
         };
-        let (value, key) = emit.into_parts();
         assert_eq!(value, "eve is 30");
 
-        assert!(matches!(step(&mut co, key).await, Stepped::Done));
+        assert!(matches!(step(&mut co).await, Stepped::Done));
     }
 
     #[tokio::test]
@@ -438,117 +448,108 @@ mod tests {
         let interner = Interner::new();
         let a_key = interner.intern("a");
         let b_key = interner.intern("b");
-        let (mut co, key) = coroutine::<_, (), _, _>(|handle| async move {
+        let mut co = coroutine::<_, (), _, _>(|handle| async move {
             let a = handle.request_context(a_key).await;
             let b = handle.request_context(b_key).await;
             handle.yield_val(format!("{a}+{b}")).await;
             Ok(())
         });
 
-        let Stepped::NeedContext(need) = step(&mut co, key).await else {
+        let Stepped::NeedContext(request) = step(&mut co).await else {
             panic!("expected NeedContext a");
         };
-        assert_eq!(need.name(), a_key);
-        let key = need.into_key(Arc::new("1".to_string()));
+        assert_eq!(request.name(), a_key);
+        request.resolve(Arc::new("1".to_string()));
 
-        let Stepped::NeedContext(need) = step(&mut co, key).await else {
+        let Stepped::NeedContext(request) = step(&mut co).await else {
             panic!("expected NeedContext b");
         };
-        assert_eq!(need.name(), b_key);
-        let key = need.into_key(Arc::new("2".to_string()));
+        assert_eq!(request.name(), b_key);
+        request.resolve(Arc::new("2".to_string()));
 
-        let Stepped::Emit(emit) = step(&mut co, key).await else {
+        let Stepped::Emit(value) = step(&mut co).await else {
             panic!("expected Emit");
         };
-        let (value, key) = emit.into_parts();
         assert_eq!(value, "1+2");
 
-        assert!(matches!(step(&mut co, key).await, Stepped::Done));
+        assert!(matches!(step(&mut co).await, Stepped::Done));
     }
 
     #[tokio::test]
     async fn done_after_done_is_idempotent() {
-        let (mut co, key) = coroutine::<i32, (), _, _>(|_handle| async move { Ok(()) });
+        let mut co = coroutine::<i32, (), _, _>(|_handle| async move { Ok(()) });
 
-        assert!(matches!(step(&mut co, key).await, Stepped::Done));
-
-        let key = ResumeKey(ResumeKeyInner::Start);
-        assert!(matches!(step(&mut co, key).await, Stepped::Done));
-
-        let key = ResumeKey(ResumeKeyInner::Start);
-        assert!(matches!(step(&mut co, key).await, Stepped::Done));
+        assert!(matches!(step(&mut co).await, Stepped::Done));
+        assert!(matches!(step(&mut co).await, Stepped::Done));
+        assert!(matches!(step(&mut co).await, Stepped::Done));
     }
 
     #[tokio::test]
     async fn yield_handle_clone() {
-        let (mut co, key) = coroutine::<_, (), _, _>(|handle| async move {
+        let mut co = coroutine::<_, (), _, _>(|handle| async move {
             let h2 = handle.clone();
             handle.yield_val(1).await;
             h2.yield_val(2).await;
             Ok(())
         });
 
-        let Stepped::Emit(emit) = step(&mut co, key).await else {
+        let Stepped::Emit(value) = step(&mut co).await else {
             panic!("expected Emit(1)");
         };
-        let (value, key) = emit.into_parts();
         assert_eq!(value, 1);
 
-        let Stepped::Emit(emit) = step(&mut co, key).await else {
+        let Stepped::Emit(value) = step(&mut co).await else {
             panic!("expected Emit(2)");
         };
-        let (value, key) = emit.into_parts();
         assert_eq!(value, 2);
 
-        assert!(matches!(step(&mut co, key).await, Stepped::Done));
+        assert!(matches!(step(&mut co).await, Stepped::Done));
     }
 
     #[tokio::test]
     async fn context_without_yield() {
         let interner = Interner::new();
         let ignored = interner.intern("ignored");
-        let (mut co, key) = coroutine::<String, (), _, _>(|handle| async move {
+        let mut co = coroutine::<String, (), _, _>(|handle| async move {
             let _ctx = handle.request_context(ignored).await;
             Ok(())
         });
 
-        let Stepped::NeedContext(need) = step(&mut co, key).await else {
+        let Stepped::NeedContext(request) = step(&mut co).await else {
             panic!("expected NeedContext");
         };
-        let key = need.into_key(Arc::new("value".to_string()));
-        assert!(matches!(step(&mut co, key).await, Stepped::Done));
+        request.resolve(Arc::new("value".to_string()));
+        assert!(matches!(step(&mut co).await, Stepped::Done));
     }
 
     #[tokio::test]
     async fn error_propagation() {
-        let (mut co, key) = coroutine::<i32, String, _, _>(|_handle| async move {
+        let mut co = coroutine::<i32, String, _, _>(|_handle| async move {
             Err("something went wrong".to_string())
         });
 
-        let Stepped::Error(e) = step(&mut co, key).await else {
+        let Stepped::Error(e) = step(&mut co).await else {
             panic!("expected Error");
         };
         assert_eq!(e, "something went wrong");
 
         // After error, further resumes return Done
-        let key = ResumeKey(ResumeKeyInner::Start);
-        assert!(matches!(step(&mut co, key).await, Stepped::Done));
+        assert!(matches!(step(&mut co).await, Stepped::Done));
     }
 
     #[tokio::test]
     async fn error_after_yield() {
-        let (mut co, key) = coroutine::<i32, String, _, _>(|handle| async move {
+        let mut co = coroutine::<i32, String, _, _>(|handle| async move {
             handle.yield_val(1).await;
             Err("failed after yield".to_string())
         });
 
-        let Stepped::Emit(emit) = step(&mut co, key).await else {
+        let Stepped::Emit(value) = step(&mut co).await else {
             panic!("expected Emit");
         };
-        let (value, key) = emit.into_parts();
         assert_eq!(value, 1);
 
-        let Stepped::Error(e) = step(&mut co, key).await else {
+        let Stepped::Error(e) = step(&mut co).await else {
             panic!("expected Error");
         };
         assert_eq!(e, "failed after yield");

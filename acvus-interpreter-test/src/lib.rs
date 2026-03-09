@@ -151,29 +151,25 @@ pub async fn run_capturing_context_calls(
     .expect("compile failed");
     let ext = ExternFnRegistry::new(interner);
     let interp = Interpreter::new(interner, module, &ext);
-    let (mut coroutine, mut key) = interp.execute();
+    let mut coroutine = interp.execute();
     let mut output = String::new();
     let mut calls = Vec::new();
     loop {
-        match coroutine.resume(key).await {
-            Stepped::Emit(emit) => {
-                let (value, next_key) = emit.into_parts();
-                match value {
-                    Value::String(s) => output.push_str(&s),
-                    other => panic!("expected String, got {other:?}"),
-                }
-                key = next_key;
-            }
-            Stepped::NeedContext(need) => {
-                let name = need.name();
-                let bindings = need.bindings().clone();
+        match coroutine.resume().await {
+            Stepped::Emit(value) => match value {
+                Value::String(s) => output.push_str(&s),
+                other => panic!("expected String, got {other:?}"),
+            },
+            Stepped::NeedContext(request) => {
+                let name = request.name();
+                let bindings = request.bindings().clone();
                 if !bindings.is_empty() {
                     calls.push((interner.resolve(name).to_string(), bindings));
                 }
                 let v = values
                     .get(&name)
                     .unwrap_or_else(|| panic!("undefined context @{}", interner.resolve(name)));
-                key = need.into_key(Arc::new(v.clone()));
+                request.resolve(Arc::new(v.clone()));
             }
             Stepped::Done => break,
             Stepped::Error(e) => panic!("runtime error: {e}"),
@@ -202,19 +198,16 @@ pub async fn run_expect_error(
     .expect("compile failed");
 
     let interp = Interpreter::new(interner, module, &extern_fns);
-    let (mut coroutine, mut key) = interp.execute();
+    let mut coroutine = interp.execute();
     loop {
-        match coroutine.resume(key).await {
-            Stepped::Emit(emit) => {
-                let (_, next_key) = emit.into_parts();
-                key = next_key;
-            }
-            Stepped::NeedContext(need) => {
-                let name = need.name();
+        match coroutine.resume().await {
+            Stepped::Emit(_) => {}
+            Stepped::NeedContext(request) => {
+                let name = request.name();
                 let v = context_values
                     .get(&name)
                     .unwrap_or_else(|| panic!("undefined context @{}", interner.resolve(name)));
-                key = need.into_key(Arc::new(v.clone()));
+                request.resolve(Arc::new(v.clone()));
             }
             Stepped::Done => panic!("expected error, got Done"),
             Stepped::Error(e) => return e,

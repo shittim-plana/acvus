@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use acvus_interpreter::{Coroutine, ExternFnRegistry, ResumeKey, RuntimeError, Value};
+use acvus_interpreter::{ExternFnRegistry, RuntimeError, Value};
 use acvus_utils::{Astr, Interner};
 
 use rustc_hash::FxHashMap;
@@ -54,7 +54,7 @@ where
     fn spawn(
         &self,
         local: FxHashMap<Astr, Arc<Value>>,
-    ) -> (Coroutine<Value, RuntimeError>, ResumeKey<Value>) {
+    ) -> acvus_utils::Coroutine<Value, RuntimeError> {
         let messages = self.messages.clone();
         let model = self.model.clone();
         let ttl = self.ttl.clone();

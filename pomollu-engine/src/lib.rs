@@ -833,24 +833,23 @@ pub async fn evaluate(source: &str, mode: &str, context_json: &str) -> Result<Js
         Ok(JsValue::from_str(&result))
     } else {
         // Script: return the first emitted value (tail expression)
-        let (mut coroutine, mut key) = interp.execute();
+        let mut coroutine = interp.execute();
         let mut result_value = Value::Unit;
         loop {
-            match coroutine.resume(key).await {
-                Stepped::Emit(emit) => {
-                    let (value, _next_key) = emit.into_parts();
+            match coroutine.resume().await {
+                Stepped::Emit(value) => {
                     result_value = value;
                     break;
                 }
-                Stepped::NeedContext(need) => {
-                    let name = need.name();
+                Stepped::NeedContext(request) => {
+                    let name = request.name();
                     let v = ctx.get(&name).cloned().ok_or_else(|| {
                         JsValue::from_str(&format!(
                             "runtime error: context key '{}' not found",
                             interner.resolve(name)
                         ))
                     })?;
-                    key = need.into_key(Arc::new(v));
+                    request.resolve(Arc::new(v));
                 }
                 Stepped::Done => break,
                 Stepped::Error(e) => {

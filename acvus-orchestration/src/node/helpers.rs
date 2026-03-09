@@ -18,30 +18,28 @@ pub async fn render_block_in_coroutine(
     handle: &YieldHandle<Value>,
 ) -> String {
     let interp = Interpreter::new(interner, module.clone(), extern_fns);
-    let (mut inner, mut key) = interp.execute();
+    let mut inner = interp.execute();
     let mut output = String::new();
     loop {
-        match inner.resume(key).await {
-            Stepped::Emit(emit) => {
-                let (value, next_key) = emit.into_parts();
+        match inner.resume().await {
+            Stepped::Emit(value) => {
                 let Value::String(s) = value else {
                     panic!("render_block: expected String, got {value:?}");
                 };
                 output.push_str(&s);
-                key = next_key;
             }
-            Stepped::NeedContext(need) => {
-                let name = need.name();
+            Stepped::NeedContext(request) => {
+                let name = request.name();
                 if let Some(arc) = local.get(&name) {
-                    key = need.into_key(Arc::clone(arc));
+                    request.resolve(Arc::clone(arc));
                 } else {
-                    let bindings = need.bindings().clone();
+                    let bindings = request.bindings().clone();
                     let value = if bindings.is_empty() {
                         handle.request_context(name).await
                     } else {
                         handle.request_context_with(name, bindings).await
                     };
-                    key = need.into_key(value);
+                    request.resolve(value);
                 }
             }
             Stepped::Done => return output,
@@ -58,25 +56,24 @@ pub async fn eval_script_in_coroutine(
     handle: &YieldHandle<Value>,
 ) -> Value {
     let interp = Interpreter::new(interner, script.module.clone(), extern_fns);
-    let (mut inner, mut key) = interp.execute();
+    let mut inner = interp.execute();
     loop {
-        match inner.resume(key).await {
-            Stepped::Emit(emit) => {
-                let (value, _) = emit.into_parts();
+        match inner.resume().await {
+            Stepped::Emit(value) => {
                 return value;
             }
-            Stepped::NeedContext(need) => {
-                let name = need.name();
+            Stepped::NeedContext(request) => {
+                let name = request.name();
                 if let Some(arc) = local.get(&name) {
-                    key = need.into_key(Arc::clone(arc));
+                    request.resolve(Arc::clone(arc));
                 } else {
-                    let bindings = need.bindings().clone();
+                    let bindings = request.bindings().clone();
                     let value = if bindings.is_empty() {
                         handle.request_context(name).await
                     } else {
                         handle.request_context_with(name, bindings).await
                     };
-                    key = need.into_key(value);
+                    request.resolve(value);
                 }
             }
             Stepped::Done => return Value::Unit,

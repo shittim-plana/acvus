@@ -179,19 +179,18 @@ where
     S: Storage,
 {
     let interp = Interpreter::new(interner, script.module.clone(), extern_fns);
-    let (mut coroutine, mut key) = interp.execute();
+    let mut coroutine = interp.execute();
     loop {
-        match coroutine.resume(key).await {
-            acvus_interpreter::Stepped::Emit(emit) => {
-                let (value, _) = emit.into_parts();
+        match coroutine.resume().await {
+            acvus_interpreter::Stepped::Emit(value) => {
                 return value;
             }
-            acvus_interpreter::Stepped::NeedContext(need) => {
-                let name = interner.resolve(need.name()).to_string();
+            acvus_interpreter::Stepped::NeedContext(request) => {
+                let name = interner.resolve(request.name()).to_string();
                 let Some(value) = local.get(&name).cloned().or_else(|| storage.get(&name)) else {
                     return Value::Unit;
                 };
-                key = need.into_key(value);
+                request.resolve(value);
             }
             acvus_interpreter::Stepped::Done => return Value::Unit,
             acvus_interpreter::Stepped::Error(e) => panic!("display runtime error: {e}"),
@@ -210,24 +209,20 @@ where
     S: Storage,
 {
     let interp = Interpreter::new(interner, script.module.clone(), extern_fns);
-    let (mut coroutine, mut key) = interp.execute();
+    let mut coroutine = interp.execute();
     let mut output = String::new();
     loop {
-        match coroutine.resume(key).await {
-            acvus_interpreter::Stepped::Emit(emit) => {
-                let (value, next_key) = emit.into_parts();
-                match value {
-                    Value::String(s) => output.push_str(&s),
-                    other => panic!("display template: expected String, got {other:?}"),
-                }
-                key = next_key;
-            }
-            acvus_interpreter::Stepped::NeedContext(need) => {
-                let name = interner.resolve(need.name()).to_string();
+        match coroutine.resume().await {
+            acvus_interpreter::Stepped::Emit(value) => match value {
+                Value::String(s) => output.push_str(&s),
+                other => panic!("display template: expected String, got {other:?}"),
+            },
+            acvus_interpreter::Stepped::NeedContext(request) => {
+                let name = interner.resolve(request.name()).to_string();
                 let Some(value) = local.get(&name).cloned().or_else(|| storage.get(&name)) else {
                     break;
                 };
-                key = need.into_key(value);
+                request.resolve(value);
             }
             acvus_interpreter::Stepped::Done => break,
             acvus_interpreter::Stepped::Error(e) => panic!("display runtime error: {e}"),

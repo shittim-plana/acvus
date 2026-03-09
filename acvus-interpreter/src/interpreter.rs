@@ -15,7 +15,7 @@ use crate::builtins;
 use crate::error::RuntimeError;
 use crate::extern_fn::{ExternFnBody, ExternFnRegistry};
 use crate::value::{FnValue, Value};
-use acvus_utils::{Coroutine, ResumeKey, Stepped, YieldHandle};
+use acvus_utils::{Coroutine, Stepped, YieldHandle};
 
 pub struct Interpreter {
     interner: Interner,
@@ -213,7 +213,7 @@ impl Interpreter {
         }
     }
 
-    pub fn execute(self) -> (Coroutine<Value, RuntimeError>, ResumeKey<Value>) {
+    pub fn execute(self) -> Coroutine<Value, RuntimeError> {
         acvus_utils::coroutine(|handle| async move {
             crate::set_interner_ctx(&self.interner);
             let insts = self.module.main.insts.clone();
@@ -225,24 +225,20 @@ impl Interpreter {
     }
 
     pub async fn execute_to_string(self, context: FxHashMap<Astr, Value>) -> String {
-        let (mut coroutine, mut key) = self.execute();
+        let mut coroutine = self.execute();
         let mut output = String::new();
         loop {
-            match coroutine.resume(key).await {
-                Stepped::Emit(emit) => {
-                    let (value, next_key) = emit.into_parts();
-                    match value {
-                        Value::String(s) => output.push_str(&s),
-                        other => panic!("execute_to_string: expected String, got {other:?}"),
-                    }
-                    key = next_key;
-                }
-                Stepped::NeedContext(need) => {
-                    let name = need.name();
+            match coroutine.resume().await {
+                Stepped::Emit(value) => match value {
+                    Value::String(s) => output.push_str(&s),
+                    other => panic!("execute_to_string: expected String, got {other:?}"),
+                },
+                Stepped::NeedContext(request) => {
+                    let name = request.name();
                     let v = context
                         .get(&name)
                         .unwrap_or_else(|| panic!("ContextLoad: undefined context @{:?}", name));
-                    key = need.into_key(Arc::new(v.clone()));
+                    request.resolve(Arc::new(v.clone()));
                 }
                 Stepped::Done => break,
                 Stepped::Error(e) => panic!("runtime error: {e}"),

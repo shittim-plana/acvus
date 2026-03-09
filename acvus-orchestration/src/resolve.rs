@@ -1,19 +1,16 @@
-
-use Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use acvus_interpreter::{ExternFnRegistry, Interpreter, RuntimeError, Stepped, Value};
 use acvus_mir_pass::analysis::reachable_context::partition_context_keys;
-use acvus_utils::{Astr, Interner};
+use acvus_utils::{Astr, ContextRequest, Coroutine, Interner};
+use futures::stream::{FuturesUnordered, StreamExt};
 use rustc_hash::{FxHashMap, FxHashSet};
 use tracing::{debug, info, warn};
 
 use crate::compile::{CompiledMessage, CompiledNode, CompiledScript, CompiledStrategy};
 use crate::node::Node;
 use crate::storage::Storage;
-
-type Fut<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 // ---------------------------------------------------------------------------
 // ResolveState — bundled mutable context
@@ -67,18 +64,33 @@ pub enum Resolved {
 }
 
 // ---------------------------------------------------------------------------
+// Event loop types
+// ---------------------------------------------------------------------------
+
+/// Output of one coroutine step from FuturesUnordered.
+struct StepOutput {
+    node_idx: usize,
+    coroutine: Coroutine<Value, RuntimeError>,
+    stepped: Stepped<Value, RuntimeError>,
+    local: FxHashMap<Astr, Arc<Value>>,
+}
+
+/// A parked coroutine waiting for a dependency to be resolved.
+struct PendingWork {
+    node_idx: usize,
+    coroutine: Coroutine<Value, RuntimeError>,
+    local: FxHashMap<Astr, Arc<Value>>,
+    request: ContextRequest<Value>,
+}
+
+// ---------------------------------------------------------------------------
 // Resolver
 // ---------------------------------------------------------------------------
 
 /// Dependency-aware node resolver.
 ///
-/// Before spawning a node's coroutine, eagerly pre-resolves dependencies
-/// that are *definitely* needed (on unconditionally reachable code paths).
-/// As each dependency resolves, the known-value set grows, potentially
-/// pruning dead branches and revealing new eager dependencies.
-///
-/// Lazy dependencies (behind unknown branch conditions) are still resolved
-/// on-demand when the coroutine emits `NeedContext`.
+/// Uses a flat FuturesUnordered event loop to drive coroutines and resolve
+/// dependencies without recursive Box::pin calls.
 pub struct Resolver<'a, R> {
     pub nodes: &'a [CompiledNode],
     pub node_table: &'a [Arc<dyn Node>],
@@ -92,51 +104,57 @@ impl<'a, R> Resolver<'a, R>
 where
     R: AsyncFn(Astr) -> Resolved + Sync,
 {
-    pub fn resolve_node<S>(
-        &'a self,
+    // -----------------------------------------------------------------------
+    // Public entry point
+    // -----------------------------------------------------------------------
+
+    pub async fn resolve_node<S>(
+        &self,
         idx: usize,
-        state: &'a mut ResolveState<S>,
+        state: &mut ResolveState<S>,
         local: FxHashMap<Astr, Arc<Value>>,
-    ) -> Fut<'a, Result<(), ResolveError>>
+    ) -> Result<(), ResolveError>
     where
         S: Storage,
     {
-        Box::pin(async move {
-            let max_retries = self.nodes[idx].retry;
-            let mut attempt = 0u32;
-            loop {
-                match self.resolve_node_impl(idx, state, local.clone()).await {
-                    Ok(()) => return Ok(()),
-                    Err(ResolveError::Runtime {
-                        ref node,
-                        ref error,
-                    }) => {
-                        if attempt < max_retries {
-                            attempt += 1;
-                            warn!(
-                                node = %node,
-                                attempt = attempt,
-                                max = max_retries,
-                                error = %error,
-                                "retrying node after runtime error",
-                            );
-                            continue;
-                        }
-                        return Err(ResolveError::Runtime {
-                            node: node.clone(),
-                            error: error.clone(),
-                        });
+        let max_retries = self.nodes[idx].retry;
+        let mut attempt = 0u32;
+        loop {
+            match self.resolve_node_impl(idx, state, local.clone()).await {
+                Ok(()) => return Ok(()),
+                Err(ResolveError::Runtime {
+                    ref node,
+                    ref error,
+                }) => {
+                    if attempt < max_retries {
+                        attempt += 1;
+                        warn!(
+                            node = %node,
+                            attempt = attempt,
+                            max = max_retries,
+                            error = %error,
+                            "retrying node after runtime error",
+                        );
+                        continue;
                     }
-                    Err(e) => return Err(e),
+                    return Err(ResolveError::Runtime {
+                        node: node.clone(),
+                        error: error.clone(),
+                    });
                 }
+                Err(e) => return Err(e),
             }
-        })
+        }
     }
 
+    // -----------------------------------------------------------------------
+    // Node lifecycle: prepare → drive → finalize
+    // -----------------------------------------------------------------------
+
     async fn resolve_node_impl<S>(
-        &'a self,
+        &self,
         idx: usize,
-        state: &'a mut ResolveState<S>,
+        state: &mut ResolveState<S>,
         mut local: FxHashMap<Astr, Arc<Value>>,
     ) -> Result<(), ResolveError>
     where
@@ -147,9 +165,11 @@ where
         let node_name_str = interner.resolve(node.name);
         info!(node = %node_name_str, "resolve node start");
 
+        // === PRE-PHASES ===
+
         // IfModified: evaluate key, check cache
         if let CompiledStrategy::IfModified { key } = &node.strategy {
-            let key_value = self.eval_script(key, &FxHashMap::default(), state).await?;
+            let key_value = self.drive_script(key, &FxHashMap::default(), state).await?;
             if let Some(entries) = state.bind_cache.get(&node.name)
                 && let Some((_, cached_output)) = entries.iter().find(|(v, _)| v == &key_value)
             {
@@ -164,38 +184,9 @@ where
             local.insert(interner.intern("bind"), Arc::new(key_value));
         }
 
-        // Prefetch: iteratively resolve eager deps until stable.
-        // Each resolved dep may reveal new eager deps via branch pruning.
-        // Always-strategy nodes are skipped — they re-execute every
-        // invocation and are handled on-demand via NeedContext.
-        loop {
-            let eager = self.eager_node_deps(idx, &state.storage);
-            let unresolved: Vec<usize> = eager
-                .into_iter()
-                .filter(|&i| {
-                    !matches!(self.nodes[i].strategy, CompiledStrategy::Always)
-                        && !state.is_available(self.nodes[i].name, interner)
-                })
-                .collect();
-            if unresolved.is_empty() {
-                break;
-            }
-            let dep_names: Vec<&str> = unresolved
-                .iter()
-                .map(|&i| interner.resolve(self.nodes[i].name))
-                .collect();
-            debug!(
-                node = %node_name_str,
-                deps = ?dep_names,
-                "prefetching eager dependencies",
-            );
-            for dep_idx in unresolved {
-                self.resolve_node(dep_idx, state, FxHashMap::default())
-                    .await?;
-            }
-        }
+        // Dependencies are resolved lazily via NeedContext in drive_with_deps.
 
-        // If initial_value is Some, load @self and inject into local context
+        // initial_value: load @self
         if let Some(ref init_script) = node.self_spec.initial_value {
             let name_str = interner.resolve(node.name);
             let prev_self = if let Some(arc) = state.storage.get(name_str) {
@@ -204,25 +195,28 @@ where
                 Value::clone(arc)
             } else {
                 debug!(node = %node_name_str, "evaluating initial_value (first run)");
-                self.eval_script(init_script, &FxHashMap::default(), state)
+                self.drive_script(init_script, &FxHashMap::default(), state)
                     .await?
             };
             local.insert(interner.intern("self"), Arc::new(prev_self));
         }
 
-        // Spawn via Node trait
+        // === MAIN COROUTINE (flat event loop) ===
+
         debug!(node = %node_name_str, "spawning coroutine");
-        let (mut coroutine, first_key) = self.node_table[idx].spawn(local.clone());
+        let coroutine = self.node_table[idx].spawn(local.clone());
         let new_self = self
-            .eval_coroutine(&mut coroutine, first_key, &FxHashMap::default(), state)
+            .drive_with_deps(idx, coroutine, &local, state)
             .await?;
 
-        // Assert: evaluate after new_self (= raw output), before storing.
+        // === POST-PHASES ===
+
+        // Assert
         if let Some(ref assert_script) = node.assert {
             let mut bind_local = FxHashMap::default();
             bind_local.insert(interner.intern("self"), Arc::new(new_self.clone()));
             debug!(node = %node_name_str, "evaluating assert");
-            let result = self.eval_script(assert_script, &bind_local, state).await?;
+            let result = self.drive_script(assert_script, &bind_local, state).await?;
             let Value::Bool(passed) = result else {
                 return Err(ResolveError::Runtime {
                     node: interner.resolve(node.name).to_string(),
@@ -264,8 +258,7 @@ where
                 hist_local.insert(interner.intern("self"), Arc::new(new_self));
 
                 debug!(node = %node_name_str, "evaluating history_bind");
-                let entry = self.eval_script(history_bind, &hist_local, state).await?;
-                // Buffer entry — flushed to @turn.history at turn end.
+                let entry = self.drive_script(history_bind, &hist_local, state).await?;
                 state.history_entries.insert(node.name, entry);
             }
         }
@@ -275,13 +268,306 @@ where
     }
 
     // -----------------------------------------------------------------------
+    // Flat event loop — FuturesUnordered
+    // -----------------------------------------------------------------------
+
+    /// Drive the root coroutine to completion, resolving dependencies via
+    /// a flat FuturesUnordered event loop. No recursive Box::pin.
+    async fn drive_with_deps<S>(
+        &self,
+        root_idx: usize,
+        root_coroutine: Coroutine<Value, RuntimeError>,
+        root_local: &FxHashMap<Astr, Arc<Value>>,
+        state: &mut ResolveState<S>,
+    ) -> Result<Value, ResolveError>
+    where
+        S: Storage,
+    {
+        let mut futs: FuturesUnordered<
+            Pin<Box<dyn Future<Output = StepOutput> + Send + '_>>,
+        > = FuturesUnordered::new();
+        let mut pending: FxHashMap<Astr, Vec<PendingWork>> = FxHashMap::default();
+        let mut in_flight: FxHashSet<usize> = FxHashSet::default();
+
+        // Start root coroutine
+        enqueue_step(&mut futs, root_idx, root_coroutine, root_local.clone());
+
+        while let Some(output) = futs.next().await {
+            let StepOutput {
+                node_idx,
+                coroutine,
+                stepped,
+                local,
+            } = output;
+
+            match stepped {
+                Stepped::Emit(value) => {
+                    if node_idx == root_idx {
+                        return Ok(value);
+                    }
+                    // Dependency node completed — finalize and wake waiters
+                    self.finalize_dep(node_idx, &value, state);
+                    let arc = Arc::new(value);
+                    let name = self.nodes[node_idx].name;
+                    if let Some(waiters) = pending.remove(&name) {
+                        for w in waiters {
+                            w.request.resolve(Arc::clone(&arc));
+                            enqueue_step(&mut futs, w.node_idx, w.coroutine, w.local);
+                        }
+                    }
+                }
+                Stepped::NeedContext(request) => {
+                    self.handle_need_context(
+                        node_idx,
+                        coroutine,
+                        local,
+                        request,
+                        state,
+                        &mut futs,
+                        &mut pending,
+                        &mut in_flight,
+                    )
+                    .await?;
+                }
+                Stepped::Done => {
+                    if node_idx == root_idx {
+                        warn!("root coroutine finished without emit");
+                        return Ok(Value::Unit);
+                    }
+                    // Dep finished without emit — treat as Unit
+                    let name = self.nodes[node_idx].name;
+                    self.finalize_dep(node_idx, &Value::Unit, state);
+                    let arc = Arc::new(Value::Unit);
+                    if let Some(waiters) = pending.remove(&name) {
+                        for w in waiters {
+                            w.request.resolve(Arc::clone(&arc));
+                            enqueue_step(&mut futs, w.node_idx, w.coroutine, w.local);
+                        }
+                    }
+                }
+                Stepped::Error(e) => {
+                    return Err(ResolveError::Runtime {
+                        node: self
+                            .interner
+                            .resolve(self.nodes[node_idx].name)
+                            .to_string(),
+                        error: e,
+                    });
+                }
+            }
+        }
+
+        // All futures drained without root emitting
+        Err(ResolveError::UnresolvedContext(
+            "event loop exhausted without root node completing".to_string(),
+        ))
+    }
+
+    /// Handle a NeedContext from a coroutine in the event loop.
+    async fn handle_need_context<S>(
+        &self,
+        node_idx: usize,
+        coroutine: Coroutine<Value, RuntimeError>,
+        local: FxHashMap<Astr, Arc<Value>>,
+        request: ContextRequest<Value>,
+        state: &mut ResolveState<S>,
+        futs: &mut FuturesUnordered<Pin<Box<dyn Future<Output = StepOutput> + Send + '_>>>,
+        pending: &mut FxHashMap<Astr, Vec<PendingWork>>,
+        in_flight: &mut FxHashSet<usize>,
+    ) -> Result<(), ResolveError>
+    where
+        S: Storage,
+    {
+        let name = request.name();
+        let name_str = self.interner.resolve(name);
+
+        // 1. Try local context
+        if let Some(arc) = local.get(&name) {
+            debug!(context = %name_str, "resolved from local");
+            request.resolve(Arc::clone(arc));
+            enqueue_step(futs, node_idx, coroutine, local);
+            return Ok(());
+        }
+
+        // 2. Try turn_context
+        if let Some(arc) = state.turn_context.get(&name).cloned() {
+            debug!(context = %name_str, "resolved from turn_context");
+            request.resolve(arc);
+            enqueue_step(futs, node_idx, coroutine, local);
+            return Ok(());
+        }
+
+        // 3. Try storage
+        if let Some(arc) = state.storage.get(name_str) {
+            debug!(context = %name_str, "resolved from storage");
+            request.resolve(arc);
+            enqueue_step(futs, node_idx, coroutine, local);
+            return Ok(());
+        }
+
+        // 4. Is it a node?
+        let bindings = request.bindings().clone();
+        if let Some(&dep_idx) = self.name_to_idx.get(&name) {
+            let is_tool_call = !bindings.is_empty();
+            let needs_spawn = is_tool_call
+                || !in_flight.contains(&dep_idx) && self.needs_resolve(dep_idx, state);
+
+            if needs_spawn {
+                debug!(context = %name_str, tool_call = is_tool_call, "spawning dependency node");
+                let dep_local: FxHashMap<Astr, Arc<Value>> = if is_tool_call {
+                    bindings.into_iter().map(|(k, v)| (k, Arc::new(v))).collect()
+                } else {
+                    FxHashMap::default()
+                };
+
+                // Prepare the dependency (pre-phases inline)
+                if let Some(dep_co) = self.prepare_dep(dep_idx, state, dep_local.clone()).await? {
+                    if !is_tool_call {
+                        in_flight.insert(dep_idx);
+                    }
+                    enqueue_step(futs, dep_idx, dep_co, dep_local);
+                } else {
+                    // IfModified cache hit — value already in storage
+                    let value = self.lookup(name, state).await?;
+                    request.resolve(value);
+                    enqueue_step(futs, node_idx, coroutine, local);
+                    return Ok(());
+                }
+            }
+
+            // Park this coroutine until the dependency completes
+            pending.entry(name).or_default().push(PendingWork {
+                node_idx,
+                coroutine,
+                local,
+                request,
+            });
+            return Ok(());
+        }
+
+        // 5. External resolver
+        debug!(context = %name_str, "calling external resolver");
+        let value = self.lookup(name, state).await?;
+        request.resolve(value);
+        enqueue_step(futs, node_idx, coroutine, local);
+        Ok(())
+    }
+
+    /// Prepare a dependency node (pre-phases only). Returns the spawned
+    /// coroutine, or None if IfModified cache hit resolved it.
+    async fn prepare_dep<S>(
+        &self,
+        idx: usize,
+        state: &mut ResolveState<S>,
+        mut local: FxHashMap<Astr, Arc<Value>>,
+    ) -> Result<Option<Coroutine<Value, RuntimeError>>, ResolveError>
+    where
+        S: Storage,
+    {
+        let node = &self.nodes[idx];
+        let interner = self.interner;
+        let node_name_str = interner.resolve(node.name);
+
+        // IfModified: check cache
+        if let CompiledStrategy::IfModified { key } = &node.strategy {
+            let key_value = self.drive_script(key, &FxHashMap::default(), state).await?;
+            if let Some(entries) = state.bind_cache.get(&node.name)
+                && let Some((_, cached_output)) = entries.iter().find(|(v, _)| v == &key_value)
+            {
+                debug!(node = %node_name_str, "dep if_modified cache hit");
+                state.storage.set(
+                    interner.resolve(node.name).to_string(),
+                    Value::clone(cached_output),
+                );
+                return Ok(None);
+            }
+            local.insert(interner.intern("bind"), Arc::new(key_value));
+        }
+
+        // initial_value
+        if let Some(ref init_script) = node.self_spec.initial_value {
+            let name_str = interner.resolve(node.name);
+            let prev_self = if let Some(arc) = state.storage.get(name_str) {
+                Value::clone(&arc)
+            } else if let Some(arc) = state.turn_context.get(&node.name) {
+                Value::clone(arc)
+            } else {
+                self.drive_script(init_script, &FxHashMap::default(), state)
+                    .await?
+            };
+            local.insert(interner.intern("self"), Arc::new(prev_self));
+        }
+
+        Ok(Some(self.node_table[idx].spawn(local)))
+    }
+
+    /// Finalize a dependency node after it emits: store result.
+    fn finalize_dep<S>(&self, idx: usize, value: &Value, state: &mut ResolveState<S>)
+    where
+        S: Storage,
+    {
+        let node = &self.nodes[idx];
+        let interner = self.interner;
+        let name_str = interner.resolve(node.name).to_string();
+
+        match &node.strategy {
+            CompiledStrategy::Always => {
+                state
+                    .turn_context
+                    .insert(node.name, Arc::new(value.clone()));
+            }
+            _ => {
+                state.storage.set(name_str, value.clone());
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Script driver (flat, non-recursive)
+    // -----------------------------------------------------------------------
+
+    /// Drive a compiled script to completion.
+    /// Resolves NeedContext from local → turn_context → storage → external.
+    /// Does NOT resolve nodes — scripts must reference already-available values.
+    async fn drive_script<S>(
+        &self,
+        script: &CompiledScript,
+        local: &FxHashMap<Astr, Arc<Value>>,
+        state: &mut ResolveState<S>,
+    ) -> Result<Value, ResolveError>
+    where
+        S: Storage,
+    {
+        let interp = Interpreter::new(self.interner, script.module.clone(), self.extern_fns);
+        let mut coroutine = interp.execute();
+        loop {
+            match coroutine.resume().await {
+                Stepped::Emit(value) => return Ok(value),
+                Stepped::NeedContext(request) => {
+                    let name = request.name();
+                    if let Some(arc) = local.get(&name) {
+                        request.resolve(Arc::clone(arc));
+                    } else {
+                        let value = self.lookup(name, state).await?;
+                        request.resolve(value);
+                    }
+                }
+                Stepped::Done => return Ok(Value::Unit),
+                Stepped::Error(e) => {
+                    return Err(ResolveError::Runtime {
+                        node: String::new(),
+                        error: e,
+                    })
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Eager dependency resolution
     // -----------------------------------------------------------------------
 
     /// Compute node indices that are *definitely* needed by `nodes[idx]`.
-    ///
-    /// Uses dead-branch analysis: context keys behind unknown branch
-    /// conditions are excluded (they will be resolved lazily).
     fn eager_node_deps<S>(&self, idx: usize, storage: &S) -> Vec<usize>
     where
         S: Storage,
@@ -290,7 +576,6 @@ where
         let known = node.known_from_storage(self.interner, storage);
         let mut eager = FxHashSet::default();
 
-        // Message blocks (Llm/LlmCache): proper eager/lazy partition
         for msg in node.kind.messages() {
             if let CompiledMessage::Block(block) = msg {
                 let p = partition_context_keys(&block.module, &known, &block.val_def);
@@ -298,7 +583,6 @@ where
             }
         }
 
-        // Plain/Expr (no messages): partition via the node's main module.
         if node.kind.messages().is_empty() {
             match &node.kind {
                 crate::kind::CompiledNodeKind::Plain(plain) => {
@@ -315,7 +599,6 @@ where
             }
         }
 
-        // initial_value/strategy scripts: always eager
         if let Some(ref iv) = node.self_spec.initial_value
             && storage.get(self.interner.resolve(node.name)).is_none()
         {
@@ -331,7 +614,6 @@ where
             _ => {}
         }
 
-        // Filter to node indices, exclude self
         eager
             .iter()
             .filter_map(|name| self.name_to_idx.get(name).copied())
@@ -352,48 +634,8 @@ where
     }
 
     // -----------------------------------------------------------------------
-    // Context resolution
+    // Lookup
     // -----------------------------------------------------------------------
-
-    /// Resolve a context value by name.
-    /// Resolution: node → turn_context → storage → external resolver.
-    fn resolve_context<S>(
-        &'a self,
-        name: Astr,
-        bindings: FxHashMap<Astr, Value>,
-        state: &'a mut ResolveState<S>,
-    ) -> Fut<'a, Result<Arc<Value>, ResolveError>>
-    where
-        S: Storage,
-    {
-        Box::pin(async move {
-            let ctx_name_str = self.interner.resolve(name);
-            // Tool call: resolve target node with bindings as local context
-            if !bindings.is_empty() {
-                debug!(context = %ctx_name_str, "resolving context with bindings (tool call)");
-                if let Some(&idx) = self.name_to_idx.get(&name) {
-                    let local = bindings
-                        .into_iter()
-                        .map(|(k, v)| (k, Arc::new(v)))
-                        .collect();
-                    self.resolve_node(idx, state, local).await?;
-                }
-                return self.lookup(name, state).await;
-            }
-
-            // Node: resolve if needed
-            if let Some(&idx) = self.name_to_idx.get(&name) {
-                if !self.needs_resolve(idx, state) {
-                    debug!(context = %ctx_name_str, "context already available");
-                    return self.lookup(name, state).await;
-                }
-                debug!(context = %ctx_name_str, "resolving context on-demand");
-                self.resolve_node(idx, state, FxHashMap::default()).await?;
-            }
-
-            self.lookup(name, state).await
-        })
-    }
 
     /// Look up a value: turn_context → storage → external resolver.
     async fn lookup<S>(
@@ -433,75 +675,27 @@ where
             }
         }
     }
+}
 
-    // -----------------------------------------------------------------------
-    // Coroutine evaluation
-    // -----------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Helper: enqueue a step into FuturesUnordered
+// ---------------------------------------------------------------------------
 
-    /// Drive any coroutine to completion. The single core loop.
-    /// Resolution: local → resolve_context (turn_context → storage → external).
-    fn eval_coroutine<S>(
-        &'a self,
-        coroutine: &'a mut acvus_utils::Coroutine<Value, RuntimeError>,
-        first_key: acvus_utils::ResumeKey<Value>,
-        local: &'a FxHashMap<Astr, Arc<Value>>,
-        state: &'a mut ResolveState<S>,
-    ) -> Fut<'a, Result<Value, ResolveError>>
-    where
-        S: Storage,
-    {
-        Box::pin(async move {
-            let mut key = first_key;
-            loop {
-                match coroutine.resume(key).await {
-                    Stepped::Emit(emit) => {
-                        let (value, _) = emit.into_parts();
-                        return Ok(value);
-                    }
-                    Stepped::NeedContext(need) => {
-                        let name = need.name();
-                        let name_str = self.interner.resolve(name);
-                        if let Some(arc) = local.get(&name) {
-                            debug!(context = %name_str, "need_context resolved from local");
-                            key = need.into_key(Arc::clone(arc));
-                        } else {
-                            debug!(context = %name_str, "need_context delegating to resolve_context");
-                            let bindings = need.bindings().clone();
-                            let value = self.resolve_context(name, bindings, state).await?;
-                            key = need.into_key(value);
-                        }
-                    }
-                    Stepped::Done => {
-                        warn!("coroutine finished without emit");
-                        return Ok(Value::Unit);
-                    }
-                    Stepped::Error(e) => {
-                        return Err(ResolveError::Runtime {
-                            node: String::new(),
-                            error: e,
-                        });
-                    }
-                }
-            }
-        })
-    }
-
-    /// Run a compiled script. Convenience over eval_coroutine.
-    fn eval_script<S>(
-        &'a self,
-        script: &'a CompiledScript,
-        local: &'a FxHashMap<Astr, Arc<Value>>,
-        state: &'a mut ResolveState<S>,
-    ) -> Fut<'a, Result<Value, ResolveError>>
-    where
-        S: Storage,
-    {
-        Box::pin(async move {
-            let interp = Interpreter::new(self.interner, script.module.clone(), self.extern_fns);
-            let (mut coroutine, key) = interp.execute();
-            self.eval_coroutine(&mut coroutine, key, local, state).await
-        })
-    }
+fn enqueue_step<'a>(
+    futs: &mut FuturesUnordered<Pin<Box<dyn Future<Output = StepOutput> + Send + 'a>>>,
+    node_idx: usize,
+    coroutine: Coroutine<Value, RuntimeError>,
+    local: FxHashMap<Astr, Arc<Value>>,
+) {
+    futs.push(Box::pin(async move {
+        let (coroutine, stepped) = coroutine.step().await;
+        StepOutput {
+            node_idx,
+            coroutine,
+            stepped,
+            local,
+        }
+    }));
 }
 
 // ---------------------------------------------------------------------------

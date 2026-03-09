@@ -5,9 +5,7 @@ mod interner_ctx;
 mod interpreter;
 mod value;
 
-pub use acvus_utils::{
-    Coroutine, EmitStepped, NeedContextStepped, ResumeKey, Stepped, YieldHandle,
-};
+pub use acvus_utils::{ContextRequest, Coroutine, Stepped, YieldHandle};
 
 /// Concrete coroutine type used throughout the interpreter/orchestration.
 pub type ValueCoroutine = Coroutine<Value, RuntimeError>;
