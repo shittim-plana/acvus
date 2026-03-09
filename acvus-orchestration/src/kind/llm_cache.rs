@@ -1,9 +1,9 @@
-use std::collections::HashSet;
+
 
 use acvus_mir::extern_module::ExternRegistry;
 use acvus_mir::ty::Ty;
 use acvus_utils::{Astr, Interner};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::compile::CompiledMessage;
 use crate::dsl::MessageSpec;
@@ -46,7 +46,7 @@ pub fn compile_llm_cache(
     spec: &LlmCacheSpec,
     context_types: &FxHashMap<Astr, Ty>,
     registry: &ExternRegistry,
-) -> Result<(CompiledLlmCache, HashSet<Astr>), Vec<OrchError>> {
+) -> Result<(CompiledLlmCache, FxHashSet<Astr>), Vec<OrchError>> {
     let elem_ty = spec.api.message_elem_ty(interner);
     let (compiled_messages, keys) = crate::compile::compile_messages(
         interner,

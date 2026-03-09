@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+
 
 use acvus_ast::Literal;
 use acvus_mir::extern_module::ExternRegistry;
@@ -10,7 +10,7 @@ use acvus_mir_pass::analysis::reachable_context::{
 };
 use acvus_mir_pass::analysis::val_def::{ValDefMap, ValDefMapAnalysis};
 use acvus_utils::{Astr, Interner};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::TokenBudget;
 use crate::convert::value_to_literal;
@@ -45,7 +45,7 @@ pub enum CompiledStrategy {
 pub struct CompiledNode {
     pub name: Astr,
     pub kind: CompiledNodeKind,
-    pub all_context_keys: HashSet<Astr>,
+    pub all_context_keys: FxHashSet<Astr>,
     pub self_spec: CompiledSelf,
     pub strategy: CompiledStrategy,
     pub retry: u32,
@@ -56,7 +56,7 @@ pub struct CompiledNode {
 #[derive(Debug, Clone)]
 pub struct CompiledScript {
     pub module: MirModule,
-    pub context_keys: HashSet<Astr>,
+    pub context_keys: FxHashSet<Astr>,
     pub val_def: ValDefMap,
 }
 
@@ -77,7 +77,7 @@ pub enum CompiledMessage {
 pub struct CompiledBlock {
     pub role: Astr,
     pub module: MirModule,
-    pub context_keys: HashSet<Astr>,
+    pub context_keys: FxHashSet<Astr>,
     pub val_def: ValDefMap,
 }
 
@@ -86,7 +86,7 @@ impl CompiledBlock {
     ///
     /// Uses dead branch pruning: if a known value resolves a branch condition,
     /// context loads in the dead branch are excluded.
-    pub fn required_context_keys(&self, known: &FxHashMap<Astr, Literal>) -> HashSet<Astr> {
+    pub fn required_context_keys(&self, known: &FxHashMap<Astr, Literal>) -> FxHashSet<Astr> {
         reachable_context_keys(&self.module, known, &self.val_def)
     }
 }
@@ -99,9 +99,9 @@ impl CompiledNode {
     pub fn required_context_keys(
         &self,
         known: &FxHashMap<Astr, Literal>,
-        resolvable: &HashSet<Astr>,
-    ) -> HashSet<Astr> {
-        let mut needed = HashSet::new();
+        resolvable: &FxHashSet<Astr>,
+    ) -> FxHashSet<Astr> {
+        let mut needed = FxHashSet::default();
         for msg in self.kind.messages() {
             if let CompiledMessage::Block(block) = msg {
                 needed.extend(block.required_context_keys(known));
@@ -119,8 +119,8 @@ impl CompiledNode {
         &self,
         interner: &Interner,
         storage: &S,
-        resolvable: &HashSet<Astr>,
-    ) -> HashSet<Astr>
+        resolvable: &FxHashSet<Astr>,
+    ) -> FxHashSet<Astr>
     where
         S: Storage,
     {
@@ -134,7 +134,7 @@ impl CompiledNode {
         &self,
         interner: &Interner,
         storage: &S,
-        resolvable: &HashSet<Astr>,
+        resolvable: &FxHashSet<Astr>,
     ) -> ContextKeyPartition
     where
         S: Storage,
@@ -308,9 +308,9 @@ pub(crate) fn compile_messages(
     context_types: &FxHashMap<Astr, Ty>,
     registry: &ExternRegistry,
     iterator_elem_ty: &Ty,
-) -> Result<(Vec<CompiledMessage>, HashSet<Astr>), Vec<OrchError>> {
+) -> Result<(Vec<CompiledMessage>, FxHashSet<Astr>), Vec<OrchError>> {
     let mut compiled_messages = Vec::new();
-    let mut all_context_keys = HashSet::new();
+    let mut all_context_keys = FxHashSet::default();
     let mut errors = Vec::new();
 
     for (i, msg) in messages.iter().enumerate() {
@@ -387,7 +387,7 @@ pub fn compile_node(
     compiled_strategy: CompiledStrategy,
     stored_ty: &Ty,
 ) -> Result<CompiledNode, Vec<OrchError>> {
-    let (kind, mut all_context_keys) = match &spec.kind {
+    let (kind, mut all_context_keys): (_, FxHashSet<_>) = match &spec.kind {
         NodeKind::Plain(plain_spec) => {
             let (compiled, keys) = compile_plain(interner, plain_spec, context_types, registry)?;
             (CompiledNodeKind::Plain(compiled), keys)
@@ -747,7 +747,7 @@ pub fn compile_nodes_with_env(
     // Tool targets are not captured in all_context_keys (they are invoked
     // dynamically by the model, not via @ref in templates), so we validate
     // their existence separately.
-    let node_names: HashSet<Astr> = nodes.iter().map(|n| n.name).collect();
+    let node_names: FxHashSet<Astr> = nodes.iter().map(|n| n.name).collect();
     for node in &nodes {
         if let CompiledNodeKind::Llm(llm) = &node.kind {
             for tool in &llm.tools {
@@ -770,8 +770,8 @@ pub fn compile_nodes_with_env(
 }
 
 /// Extract all context keys referenced by `ContextLoad` instructions in a module.
-fn extract_context_keys(module: &MirModule) -> HashSet<Astr> {
-    let mut keys = HashSet::new();
+fn extract_context_keys(module: &MirModule) -> FxHashSet<Astr> {
+    let mut keys = FxHashSet::default();
 
     for inst in &module.main.insts {
         if let InstKind::ContextLoad { name, .. } = &inst.kind {

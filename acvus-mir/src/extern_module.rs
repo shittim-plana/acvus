@@ -1,7 +1,7 @@
-use std::collections::HashSet;
+
 
 use acvus_utils::Astr;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ty::Ty;
 
@@ -21,7 +21,7 @@ pub struct ExternFnDef {
 pub struct ExternModule {
     pub name: Astr,
     fns: FxHashMap<Astr, ExternFnDef>,
-    opaque_types: HashSet<Astr>,
+    opaque_types: FxHashSet<Astr>,
 }
 
 impl ExternModule {
@@ -29,7 +29,7 @@ impl ExternModule {
         Self {
             name,
             fns: FxHashMap::default(),
-            opaque_types: HashSet::new(),
+            opaque_types: FxHashSet::default(),
         }
     }
 
@@ -42,7 +42,7 @@ impl ExternModule {
         self
     }
 
-    pub fn opaque_types(&self) -> &HashSet<Astr> {
+    pub fn opaque_types(&self) -> &FxHashSet<Astr> {
         &self.opaque_types
     }
 
@@ -72,7 +72,7 @@ impl ExternModule {
 /// Panics on duplicate function names across modules.
 #[derive(Debug, Clone)]
 pub struct ExternRegistry {
-    opaque_types: HashSet<Astr>,
+    opaque_types: FxHashSet<Astr>,
     /// ID-indexed storage: ExternFnId(n) -> (name, def).
     fn_list: Vec<(Astr, ExternFnDef)>,
     /// Name -> ExternFnId mapping.
@@ -88,7 +88,7 @@ impl Default for ExternRegistry {
 impl ExternRegistry {
     pub fn new() -> Self {
         Self {
-            opaque_types: HashSet::new(),
+            opaque_types: FxHashSet::default(),
             fn_list: Vec::new(),
             fn_id_index: FxHashMap::default(),
         }

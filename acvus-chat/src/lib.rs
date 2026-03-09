@@ -1,9 +1,9 @@
 mod error;
 
 pub use error::ChatError;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use acvus_interpreter::{ExternFnRegistry, Value};
@@ -75,7 +75,7 @@ where
         })?;
 
         // Validate: history nodes must be reachable from entrypoint via BFS
-        let mut reachable = HashSet::new();
+        let mut reachable = FxHashSet::default();
         let mut queue = VecDeque::new();
         queue.push_back(entrypoint_idx);
         reachable.insert(entrypoint_idx);

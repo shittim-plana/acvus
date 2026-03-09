@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+
 
 use acvus_ast::{
     Expr, IndentModifier, IterBlock, Literal, MatchBlock, Node, ObjectExprField,
@@ -6,7 +6,7 @@ use acvus_ast::{
     TuplePatternElem,
 };
 use acvus_utils::{Astr, Interner};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::builtins::BuiltinId;
 use crate::extern_module::ExternRegistry;
@@ -540,7 +540,7 @@ impl<'a> Lowerer<'a> {
 
             Expr::Lambda { params, body, span } => {
                 // Capture analysis: find free variables in body.
-                let param_names: HashSet<Astr> = params.iter().map(|p| p.name).collect();
+                let param_names: FxHashSet<Astr> = params.iter().map(|p| p.name).collect();
                 let free_vars = self.free_vars_in_expr(body, &param_names);
 
                 let capture_regs: Vec<ValueId> = free_vars
@@ -1394,9 +1394,9 @@ impl<'a> Lowerer<'a> {
 
     // --- Free variable analysis ---
 
-    fn free_vars_in_expr(&self, expr: &Expr, bound: &HashSet<Astr>) -> Vec<Astr> {
+    fn free_vars_in_expr(&self, expr: &Expr, bound: &FxHashSet<Astr>) -> Vec<Astr> {
         let mut free = Vec::new();
-        let mut seen = HashSet::new();
+        let mut seen = FxHashSet::default();
         self.collect_free_vars(expr, bound, &mut free, &mut seen);
         free
     }
@@ -1404,9 +1404,9 @@ impl<'a> Lowerer<'a> {
     fn collect_free_vars(
         &self,
         expr: &Expr,
-        bound: &HashSet<Astr>,
+        bound: &FxHashSet<Astr>,
         free: &mut Vec<Astr>,
-        seen: &mut HashSet<Astr>,
+        seen: &mut FxHashSet<Astr>,
     ) {
         match expr {
             Expr::Ident {

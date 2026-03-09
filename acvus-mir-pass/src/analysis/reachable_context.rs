@@ -1,9 +1,9 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 
 use acvus_ast::{BinOp, Literal, RangeKind};
 use acvus_mir::ir::{InstKind, Label, MirModule, ValueId};
 use acvus_utils::Astr;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::analysis::val_def::ValDefMap;
 
@@ -11,9 +11,9 @@ use crate::analysis::val_def::ValDefMap;
 #[derive(Debug, Clone, Default)]
 pub struct ContextKeyPartition {
     /// Keys on unconditionally reachable paths — fetch upfront.
-    pub eager: HashSet<Astr>,
+    pub eager: FxHashSet<Astr>,
     /// Keys behind unknown branch conditions — resolve lazily via coroutine.
-    pub lazy: HashSet<Astr>,
+    pub lazy: FxHashSet<Astr>,
 }
 
 /// Determine which context keys are actually needed by a MIR module,
@@ -30,7 +30,7 @@ pub fn reachable_context_keys(
     module: &MirModule,
     known: &FxHashMap<Astr, Literal>,
     val_def: &ValDefMap,
-) -> HashSet<Astr> {
+) -> FxHashSet<Astr> {
     let p = partition_context_keys(module, known, val_def);
     let mut all = p.eager;
     all.extend(p.lazy);
@@ -421,7 +421,7 @@ mod tests {
         ]);
         let val_def = build_val_def(&module);
         let needed = reachable_context_keys(&module, &FxHashMap::default(), &val_def);
-        assert_eq!(needed, HashSet::from([i.intern("user"), i.intern("role")]));
+        assert_eq!(needed, FxHashSet::from_iter([i.intern("user"), i.intern("role")]));
     }
 
     /// Known context key is excluded from needed set.
@@ -443,7 +443,7 @@ mod tests {
         let val_def = build_val_def(&module);
         let known = FxHashMap::from_iter([(i.intern("user"), Literal::String("alice".into()))]);
         let needed = reachable_context_keys(&module, &known, &val_def);
-        assert_eq!(needed, HashSet::from([i.intern("role")]));
+        assert_eq!(needed, FxHashSet::from_iter([i.intern("role")]));
     }
 
     /// Match on known context value — dead branch pruned.

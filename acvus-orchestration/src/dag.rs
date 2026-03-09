@@ -1,7 +1,7 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 
 use acvus_utils::{Astr, Interner};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::compile::CompiledNode;
 use crate::error::{OrchError, OrchErrorKind};
@@ -10,8 +10,8 @@ use crate::error::{OrchError, OrchErrorKind};
 #[derive(Debug, Clone)]
 pub struct Dag {
     pub name_to_idx: FxHashMap<Astr, usize>,
-    pub deps: Vec<HashSet<usize>>,
-    pub rdeps: Vec<HashSet<usize>>,
+    pub deps: Vec<FxHashSet<usize>>,
+    pub rdeps: Vec<FxHashSet<usize>>,
     pub topo_order: Vec<usize>,
 }
 
@@ -27,8 +27,8 @@ pub fn build_dag(interner: &Interner, nodes: &[CompiledNode]) -> Result<Dag, Vec
         nodes.iter().enumerate().map(|(i, n)| (n.name, i)).collect();
 
     let n = nodes.len();
-    let mut deps: Vec<HashSet<usize>> = vec![HashSet::new(); n];
-    let mut rdeps: Vec<HashSet<usize>> = vec![HashSet::new(); n];
+    let mut deps: Vec<FxHashSet<usize>> = vec![FxHashSet::default(); n];
+    let mut rdeps: Vec<FxHashSet<usize>> = vec![FxHashSet::default(); n];
 
     for (i, node) in nodes.iter().enumerate() {
         for key in &node.all_context_keys {

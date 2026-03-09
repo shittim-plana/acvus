@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+
 use Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -6,7 +6,7 @@ use std::sync::Arc;
 use acvus_interpreter::{ExternFnRegistry, Interpreter, RuntimeError, Stepped, Value};
 use acvus_mir_pass::analysis::reachable_context::partition_context_keys;
 use acvus_utils::{Astr, Interner};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use tracing::{debug, info, warn};
 
 use crate::compile::{CompiledMessage, CompiledNode, CompiledScript, CompiledStrategy};
@@ -288,7 +288,7 @@ where
     {
         let node = &self.nodes[idx];
         let known = node.known_from_storage(self.interner, storage);
-        let mut eager = HashSet::new();
+        let mut eager = FxHashSet::default();
 
         // Message blocks (Llm/LlmCache): proper eager/lazy partition
         for msg in node.kind.messages() {

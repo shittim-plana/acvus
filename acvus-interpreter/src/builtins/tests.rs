@@ -1,8 +1,6 @@
-use std::collections::HashSet;
-
 use acvus_mir::builtins::BuiltinId;
 use acvus_utils::Interner;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::*;
 
@@ -111,11 +109,11 @@ const HOF_NAMES: &[&str] = &[
 
 #[test]
 fn all_mir_builtins_handled() {
-    let mir_names: HashSet<&str> = acvus_mir::builtins::builtins()
+    let mir_names: FxHashSet<&str> = acvus_mir::builtins::builtins()
         .iter()
         .map(|(_, b)| b.name())
         .collect();
-    let handled: HashSet<&str> = PURE_NAMES.iter().chain(HOF_NAMES.iter()).copied().collect();
+    let handled: FxHashSet<&str> = PURE_NAMES.iter().chain(HOF_NAMES.iter()).copied().collect();
     let missing: Vec<&&str> = mir_names.difference(&handled).collect();
     assert!(
         missing.is_empty(),

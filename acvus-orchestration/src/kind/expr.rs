@@ -1,9 +1,9 @@
-use std::collections::HashSet;
+
 
 use acvus_mir::extern_module::ExternRegistry;
 use acvus_mir::ty::Ty;
 use acvus_utils::{Astr, Interner};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::compile::{CompiledScript, compile_script_with_hint};
 use crate::error::OrchError;
@@ -27,7 +27,7 @@ pub fn compile_expr(
     spec: &ExprSpec,
     context_types: &FxHashMap<Astr, Ty>,
     registry: &ExternRegistry,
-) -> Result<(CompiledExpr, HashSet<Astr>), Vec<OrchError>> {
+) -> Result<(CompiledExpr, FxHashSet<Astr>), Vec<OrchError>> {
     let hint = match &spec.output_ty {
         Ty::Infer => None,
         ty => Some(ty),

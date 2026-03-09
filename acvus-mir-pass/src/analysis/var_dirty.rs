@@ -1,9 +1,9 @@
-use std::collections::HashSet;
+
 
 use acvus_mir::hints::InstIdx;
 use acvus_mir::ir::{InstKind, MirModule, ValueId};
 use acvus_utils::Astr;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::AnalysisPass;
 use crate::analysis::val_def::ValDefMap;
@@ -15,8 +15,8 @@ pub enum FieldStatus {
     AllDirty,
     /// Exactly these fields are dirty/clean.
     Fields {
-        dirty: HashSet<Astr>,
-        clean: HashSet<Astr>,
+        dirty: FxHashSet<Astr>,
+        clean: FxHashSet<Astr>,
     },
 }
 
@@ -77,8 +77,8 @@ fn analyze_store(
         return FieldStatus::AllDirty;
     };
 
-    let mut dirty = HashSet::new();
-    let mut clean = HashSet::new();
+    let mut dirty = FxHashSet::default();
+    let mut clean = FxHashSet::default();
 
     for (field_name, field_val) in fields {
         if is_clean_field(insts, val_def, store_name, *field_name, *field_val) {

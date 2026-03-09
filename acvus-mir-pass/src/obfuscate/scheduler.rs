@@ -7,12 +7,12 @@
 //!   3. Topological sort with random tie-breaking.
 //!   4. Reassemble.
 
-use std::collections::HashSet;
+
 
 use acvus_mir::ir::{Inst, InstKind, ValueId};
 use rand::Rng;
 use rand::rngs::StdRng;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 pub fn reorder(insts: Vec<Inst>, rng: &mut StdRng) -> Vec<Inst> {
     let blocks = split_basic_blocks(insts);
@@ -74,7 +74,7 @@ fn schedule_block(block: Vec<Inst>, rng: &mut StdRng) -> Vec<Inst> {
     }
 
     // Build dependency edges: deps[i] = set of instruction indices that must come before i.
-    let mut deps: Vec<HashSet<usize>> = vec![HashSet::new(); n];
+    let mut deps: Vec<FxHashSet<usize>> = vec![FxHashSet::default(); n];
 
     // Map: ValueId → index of instruction that defines it.
     let mut def_map: FxHashMap<ValueId, usize> = FxHashMap::default();
@@ -144,7 +144,7 @@ fn schedule_block(block: Vec<Inst>, rng: &mut StdRng) -> Vec<Inst> {
 
     // Fallback: if some instructions weren't scheduled (shouldn't happen), append them.
     if order.len() < n {
-        let scheduled: HashSet<usize> = order.iter().copied().collect();
+        let scheduled: FxHashSet<usize> = order.iter().copied().collect();
         for i in 0..n {
             if !scheduled.contains(&i) {
                 order.push(i);
