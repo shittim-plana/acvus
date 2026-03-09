@@ -11,7 +11,7 @@ use acvus_mir::ir::{InstKind, MirModule};
 use acvus_mir::ty::Ty;
 use acvus_orchestration::NodeSpec;
 use acvus_utils::{Astr, Interner};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Serialize, Deserialize};
 use wasm_bindgen::prelude::*;
 
@@ -156,37 +156,94 @@ pub(crate) fn desc_to_ty(interner: &Interner, desc: &TypeDesc) -> Ty {
     }
 }
 
+/// Try to compile a short script and extract a single constant literal.
+/// Returns None if the script is not a simple constant expression.
+fn try_extract_literal(
+    interner: &Interner,
+    source: &str,
+    context_types: &FxHashMap<Astr, Ty>,
+    registry: &ExternRegistry,
+) -> Option<acvus_ast::Literal> {
+    if source.trim().is_empty() {
+        return None;
+    }
+    let script = acvus_ast::parse_script(interner, source).ok()?;
+    let (module, _, _) = acvus_mir::compile_script_analysis(interner, &script, context_types, registry).ok()?;
+    // Look for a Const instruction in the main body
+    for inst in &module.main.insts {
+        if let InstKind::Const { value, .. } = &inst.kind {
+            return Some(value.clone());
+        }
+    }
+    None
+}
+
 fn extract_context_keys_with_types(
     interner: &Interner,
     module: &MirModule,
+    known: &FxHashMap<Astr, acvus_ast::Literal>,
 ) -> Vec<ContextKey> {
-    let mut seen = FxHashMap::<Astr, Ty>::default();
+    use acvus_mir_pass::AnalysisPass;
+    use acvus_mir_pass::analysis::val_def::ValDefMapAnalysis;
+    use acvus_mir_pass::analysis::reachable_context::partition_context_keys;
 
-    let mut collect = |insts: &[acvus_mir::ir::Inst],
-                       val_types: &FxHashMap<acvus_mir::ir::ValueId, Ty>| {
+    let val_def = ValDefMapAnalysis.run(module, ());
+    let partition = partition_context_keys(module, known, &val_def);
+
+    // Collect types from val_types for each ContextLoad
+    let mut type_map = FxHashMap::<Astr, Ty>::default();
+    let mut collect_types = |insts: &[acvus_mir::ir::Inst],
+                             val_types: &FxHashMap<acvus_mir::ir::ValueId, Ty>| {
         for inst in insts {
             if let InstKind::ContextLoad { dst, name, .. } = &inst.kind {
-                if seen.contains_key(name) {
-                    continue;
-                }
-                let ty = val_types.get(dst).cloned().unwrap_or(Ty::Infer);
-                seen.insert(*name, ty);
+                type_map
+                    .entry(*name)
+                    .or_insert_with(|| val_types.get(dst).cloned().unwrap_or(Ty::Infer));
             }
         }
     };
-
-    collect(&module.main.insts, &module.main.val_types);
+    collect_types(&module.main.insts, &module.main.val_types);
     for body in module.closures.values() {
-        collect(&body.body.insts, &body.body.val_types);
+        collect_types(&body.body.insts, &body.body.val_types);
     }
 
-    let mut keys: Vec<_> = seen
-        .into_iter()
-        .map(|(name, ty)| ContextKey {
-            name: interner.resolve(name).to_string(),
+    let mut seen = FxHashSet::<Astr>::default();
+    let mut keys = Vec::new();
+
+    for name in &partition.eager {
+        seen.insert(*name);
+        let ty = type_map.get(name).cloned().unwrap_or(Ty::Infer);
+        keys.push(ContextKey {
+            name: interner.resolve(*name).to_string(),
             ty: ty_to_desc(interner, &ty),
-        })
-        .collect();
+            status: "eager".to_string(),
+        });
+    }
+    for name in &partition.lazy {
+        seen.insert(*name);
+        let ty = type_map.get(name).cloned().unwrap_or(Ty::Infer);
+        keys.push(ContextKey {
+            name: interner.resolve(*name).to_string(),
+            ty: ty_to_desc(interner, &ty),
+            status: "lazy".to_string(),
+        });
+    }
+
+    // Re-add known keys that appear on reachable paths.
+    // Keys behind dead branches are NOT re-added — this is how
+    // value-based pruning hides params from the UI.
+    for name in &partition.reachable_known {
+        if !seen.contains(name) {
+            seen.insert(*name);
+            let ty = type_map.get(name).cloned().unwrap_or(Ty::Infer);
+            keys.push(ContextKey {
+                name: interner.resolve(*name).to_string(),
+                ty: ty_to_desc(interner, &ty),
+                status: "eager".to_string(),
+            });
+        }
+    }
+
     keys.sort_by(|a, b| a.name.cmp(&b.name));
     keys
 }
@@ -207,6 +264,8 @@ struct ContextKey {
     name: String,
     #[serde(rename = "type")]
     ty: TypeDesc,
+    /// "eager" = unconditionally needed, "lazy" = conditionally needed
+    status: String,
 }
 
 #[derive(Serialize)]
@@ -223,6 +282,7 @@ fn do_analyze(
     mode: &str,
     context_types: &FxHashMap<Astr, Ty>,
     expected_tail: Option<&Ty>,
+    known: &FxHashMap<Astr, acvus_ast::Literal>,
 ) -> AnalyzeResult {
     let registry = default_registry(interner);
 
@@ -242,7 +302,7 @@ fn do_analyze(
             match acvus_mir::compile_analysis(interner, &ast, context_types, &registry)
             {
                 Ok((module, _hints)) => {
-                    let keys = extract_context_keys_with_types(interner, &module);
+                    let keys = extract_context_keys_with_types(interner, &module, known);
                     AnalyzeResult {
                         ok: true,
                         errors: vec![],
@@ -281,7 +341,7 @@ fn do_analyze(
                 expected_tail,
             ) {
                 Ok((module, _hints, tail_ty)) => {
-                    let keys = extract_context_keys_with_types(interner, &module);
+                    let keys = extract_context_keys_with_types(interner, &module, known);
                     AnalyzeResult {
                         ok: true,
                         errors: vec![],
@@ -309,7 +369,7 @@ fn do_analyze(
 pub fn analyze(source: &str, mode: &str) -> JsValue {
     let interner = Interner::new();
     let context_types = FxHashMap::default();
-    let result = do_analyze(&interner, source, mode, &context_types, None);
+    let result = do_analyze(&interner, source, mode, &context_types, None, &FxHashMap::default());
     to_js(&result)
 }
 
@@ -330,7 +390,7 @@ pub fn analyze_with_types(source: &str, mode: &str, context_types_json: &str) ->
             return to_js(&result);
         }
     };
-    let result = do_analyze(&interner, source, mode, &context_types, None);
+    let result = do_analyze(&interner, source, mode, &context_types, None, &FxHashMap::default());
     to_js(&result)
 }
 
@@ -377,7 +437,50 @@ pub fn analyze_with_tail(
         mode,
         &context_types,
         expected_tail.as_ref(),
+        &FxHashMap::default(),
     );
+    to_js(&result)
+}
+
+/// Analyze with context types and known static values for branch pruning.
+/// `known_scripts_json` is JSON: `{"name": "\"search\"", "level": "42"}` — each value is an acvus expression.
+#[wasm_bindgen]
+pub fn analyze_with_known(
+    source: &str,
+    mode: &str,
+    context_types_json: &str,
+    known_scripts_json: &str,
+) -> JsValue {
+    let interner = Interner::new();
+    let context_types = match parse_context_types(&interner, context_types_json) {
+        Ok(t) => t,
+        Err(e) => {
+            let result = AnalyzeResult {
+                ok: false,
+                errors: vec![e],
+                context_keys: vec![],
+                tail_type: TypeDesc::Unsupported { raw: String::new() },
+            };
+            return to_js(&result);
+        }
+    };
+
+    // Parse known scripts and try to extract literals
+    let known_scripts: FxHashMap<String, String> = match serde_json::from_str(known_scripts_json) {
+        Ok(v) => v,
+        Err(_) => FxHashMap::default(),
+    };
+    let registry = default_registry(&interner);
+    let mut known = FxHashMap::default();
+    let mut failed = Vec::new();
+    for (name, script) in &known_scripts {
+        if let Some(lit) = try_extract_literal(&interner, script, &context_types, &registry) {
+            known.insert(interner.intern(name), lit);
+        } else {
+            failed.push(name.as_str());
+        }
+    }
+    let result = do_analyze(&interner, source, mode, &context_types, None, &known);
     to_js(&result)
 }
 
@@ -977,7 +1080,7 @@ mod tests {
         mode: &str,
         ctx: &FxHashMap<Astr, Ty>,
     ) -> AnalyzeResult {
-        do_analyze(interner, source, mode, ctx, None)
+        do_analyze(interner, source, mode, ctx, None, &FxHashMap::default())
     }
 
     /// Helper: serialize a TypeDesc to a JSON string for comparison.
@@ -1091,7 +1194,7 @@ mod tests {
     fn test_tail_type_mismatch() {
         let interner = test_interner();
         let ctx = FxHashMap::default();
-        let result = do_analyze(&interner, "\"hello\"", "script", &ctx, Some(&Ty::Int));
+        let result = do_analyze(&interner, "\"hello\"", "script", &ctx, Some(&Ty::Int), &FxHashMap::default());
         assert!(!result.ok, "should fail: String vs Int");
     }
 
@@ -1099,7 +1202,7 @@ mod tests {
     fn test_tail_type_match() {
         let interner = test_interner();
         let ctx = FxHashMap::default();
-        let result = do_analyze(&interner, "1 + 2", "script", &ctx, Some(&Ty::Int));
+        let result = do_analyze(&interner, "1 + 2", "script", &ctx, Some(&Ty::Int), &FxHashMap::default());
         assert!(result.ok, "should succeed: Int vs Int");
     }
 

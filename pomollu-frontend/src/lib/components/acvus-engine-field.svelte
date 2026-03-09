@@ -19,6 +19,8 @@
 		// (strategy key/history bind, initial value, assert, messages, iterators).
 		// Do NOT enable for context bindings, display entries, or regions.
 		discoverContext = false,
+		// When non-empty, skip inline typecheck entirely (parent handles errors).
+		analysisErrors = [],
 	}: {
 		value: string;
 		oninput: (value: string) => void;
@@ -29,15 +31,22 @@
 		contextTypes?: Record<string, TypeDesc>;
 		expectedTailType?: TypeDesc;
 		discoverContext?: boolean;
+		analysisErrors?: string[];
 	} = $props();
 
-	let error = $state('');
+	let typecheckError = $state('');
 	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 	let hlHtml = $state('');
 	let textareaEl = $state<HTMLTextAreaElement | null>(null);
 	let hlEl = $state<HTMLDivElement | null>(null);
 
 	const DEBOUNCE_MS = 400;
+
+	// analysisErrors first, then typecheck error.
+	let hasError = $derived(analysisErrors.length > 0 || !!typecheckError);
+	let displayErrors = $derived(
+		analysisErrors.length > 0 ? analysisErrors : typecheckError ? [typecheckError] : []
+	);
 
 	function updateHighlight(source: string) {
 		if (mode === 'template') {
@@ -53,13 +62,17 @@
 	});
 
 	async function check(source: string) {
+		// Skip typecheck when parent has analysis errors.
+		if (analysisErrors.length > 0) {
+			typecheckError = '';
+			return;
+		}
 		if (source === '') {
-			error = '';
+			typecheckError = '';
 			return;
 		}
 		let types = contextTypes;
 		if (discoverContext) {
-			// Pass 1: analyze (lenient) — discover unresolved context keys
 			const analysis = analyzeWithTypes(source, mode, contextTypes);
 			if (analysis.ok) {
 				const merged = { ...contextTypes };
@@ -71,11 +84,10 @@
 				types = merged;
 			}
 		}
-		// Pass 2 (or only pass): typecheck (hard)
 		const result = expectedTailType
 			? typecheckWithTail(source, mode, types, expectedTailType)
 			: typecheckWithTypes(source, mode, types);
-		error = result.ok ? '' : result.message;
+		typecheckError = result.ok ? '' : result.message;
 	}
 
 	function scheduleCheck(source: string) {
@@ -140,7 +152,7 @@
 		<div class="sf-hl" bind:this={hlEl} aria-hidden="true">{@html hlHtml}</div>
 		<textarea
 			class="sf-textarea"
-			class:sf-error={!!error}
+			class:sf-error={hasError}
 			{rows}
 			{placeholder}
 			{value}
@@ -152,9 +164,9 @@
 			bind:this={textareaEl}
 		></textarea>
 	</div>
-	{#if error}
-		<p class="sf-error-msg">{error}</p>
-	{/if}
+	{#each displayErrors as err}
+		<p class="sf-error-msg">{err}</p>
+	{/each}
 </div>
 
 <style>

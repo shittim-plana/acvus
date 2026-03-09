@@ -268,13 +268,13 @@ export function buildSessionConfig(bot: Bot): BuildResult | null {
 		}
 	}
 
-	// Build context types from all context params (prompt + profile + bot)
+	// Build context types from all active context params (prompt + profile + bot)
 	const context: Record<string, { type?: TypeDesc }> = {};
 	const allParams = [
 		...(prompt?.contextParams ?? []),
 		...(profile?.contextParams ?? []),
 		...(bot.contextParams ?? [])
-	];
+	].filter((p) => p.active !== false);
 	for (const param of allParams) {
 		const ty: TypeDesc | undefined = param.userType || (isUnknownType(param.inferredType) ? undefined : param.inferredType);
 		if (param.resolution.kind === 'static') {

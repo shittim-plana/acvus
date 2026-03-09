@@ -37,14 +37,35 @@
 	const ENV_DEBOUNCE_MS = 300;
 
 	let ownerEnv = $state<ContextEnvResult>(EMPTY_ENV);
+	let ownerAnalysisErrors = $state<string[]>([]);
 	let envTimer: ReturnType<typeof setTimeout> | null = null;
 	let lastOwnerKey: string | null = null;
 
-	type FullEnvResult = { env: ContextEnvResult; discovered: ContextKeyInfo[] };
+	type FullEnvResult = { env: ContextEnvResult; discovered: ContextKeyInfo[]; errors?: string[] };
 
 	/** Full env computation with inline type discovery. */
 	function computeFullEnv(owner: BlockOwner): FullEnvResult {
 		const getApi = (pid: string) => providerStore.get(pid)?.api ?? 'openai';
+
+		function doCollect(
+			scripts: { source: string; mode: 'script' | 'template' }[],
+			nodeNames: Set<string>,
+			providedKeys: Set<string>,
+			injected: Record<string, import('$lib/type-parser.js').TypeDesc>,
+			knownScripts: Record<string, string>,
+			children: import('$lib/types.js').BlockNode[],
+		): FullEnvResult {
+			const collectResult = collectUnresolvedParams({
+				scripts, nodeNames, providedKeys, contextTypes: injected, knownScripts,
+			});
+			if (!collectResult.ok) {
+				return { env: EMPTY_ENV, discovered: [], errors: collectResult.errors };
+			}
+			for (const k of collectResult.keys) {
+				if (!isUnknownType(k.type) && !(k.name in injected)) injected[k.name] = k.type;
+			}
+			return { env: computeExternalContextEnv(children, injected, getApi), discovered: collectResult.keys };
+		}
 
 		switch (owner.kind) {
 			case 'prompt': {
@@ -58,16 +79,16 @@
 				];
 				const nodeNames = collectNodeNames(prompt.children);
 				nodeNames.add('context');
-				const discovered = collectUnresolvedParams({
-					scripts,
-					nodeNames,
-					providedKeys: new Set(prompt.contextBindings.map((b) => b.name).filter((n) => n)),
-					contextTypes: injected,
-				});
-				for (const k of discovered) {
-					if (!isUnknownType(k.type) && !(k.name in injected)) injected[k.name] = k.type;
+				const knownScripts: Record<string, string> = {};
+				for (const p of prompt.contextParams) {
+					if (p.resolution.kind === 'static' && p.resolution.value.trim()) {
+						knownScripts[p.name] = p.resolution.value;
+						scripts.push({ source: p.resolution.value, mode: 'script' as const });
+					}
 				}
-				return { env: computeExternalContextEnv(prompt.children, injected, getApi), discovered };
+				return doCollect(scripts, nodeNames,
+					new Set(prompt.contextBindings.map((b) => b.name).filter((n) => n)),
+					injected, knownScripts, prompt.children);
 			}
 			case 'profile': {
 				const profile = profileStore.get(owner.profileId);
@@ -76,16 +97,15 @@
 				injected['context'] = CONTEXT_TYPE;
 				const nodeNames = collectNodeNames(profile.children);
 				nodeNames.add('context');
-				const discovered = collectUnresolvedParams({
-					scripts: collectScriptsFromTree(profile.children),
-					nodeNames,
-					providedKeys: new Set(),
-					contextTypes: injected,
-				});
-				for (const k of discovered) {
-					if (!isUnknownType(k.type) && !(k.name in injected)) injected[k.name] = k.type;
+				const knownScripts: Record<string, string> = {};
+				const scripts = collectScriptsFromTree(profile.children);
+				for (const p of profile.contextParams) {
+					if (p.resolution.kind === 'static' && p.resolution.value.trim()) {
+						knownScripts[p.name] = p.resolution.value;
+						scripts.push({ source: p.resolution.value, mode: 'script' as const });
+					}
 				}
-				return { env: computeExternalContextEnv(profile.children, injected, getApi), discovered };
+				return doCollect(scripts, nodeNames, new Set(), injected, knownScripts, profile.children);
 			}
 			case 'bot': {
 				const bot = botStore.get(owner.botId);
@@ -100,7 +120,7 @@
 				const injected = buildInjectedTypes(allParams);
 				injected['context'] = CONTEXT_TYPE;
 
-				const allChildren: BlockNode[] = [
+				const allChildren: import('$lib/types.js').BlockNode[] = [
 					...(prompt?.children ?? []),
 					...(profile?.children ?? []),
 					...bot.children,
@@ -128,13 +148,14 @@
 					...collectScriptsFromTree(bot.children),
 				];
 
-				const discovered = collectUnresolvedParams({
-					scripts, nodeNames, providedKeys, contextTypes: injected,
-				});
-				for (const k of discovered) {
-					if (!isUnknownType(k.type) && !(k.name in injected)) injected[k.name] = k.type;
+				const knownScripts: Record<string, string> = {};
+				for (const p of [...(prompt?.contextParams ?? []), ...(profile?.contextParams ?? []), ...bot.contextParams]) {
+					if (p.resolution.kind === 'static' && p.resolution.value.trim()) {
+						knownScripts[p.name] = p.resolution.value;
+						scripts.push({ source: p.resolution.value, mode: 'script' as const });
+					}
 				}
-				return { env: computeExternalContextEnv(allChildren, injected, getApi), discovered };
+				return doCollect(scripts, nodeNames, providedKeys, injected, knownScripts, allChildren);
 			}
 		}
 	}
@@ -196,9 +217,12 @@
 
 	// First load (tab switch) = immediate. Content changes = debounced. Both compute from scratch.
 	function applyFullEnv(owner: BlockOwner) {
-		const { env, discovered } = computeFullEnv(owner);
+		const { env, discovered, errors } = computeFullEnv(owner);
 		ownerEnv = env;
-		syncOwnerParams(owner, discovered);
+		ownerAnalysisErrors = errors ?? [];
+		if (!errors?.length) {
+			syncOwnerParams(owner, discovered);
+		}
 	}
 
 	$effect(() => {
@@ -312,7 +336,7 @@
 					{/if}
 					<div class="flex-1 overflow-hidden">
 						{#if activeTab?.kind === 'block'}
-							<BlockEditorPage blockId={activeTab.blockId} owner={activeTab.owner} contextTypes={ownerEnv.contextTypes} />
+							<BlockEditorPage blockId={activeTab.blockId} owner={activeTab.owner} contextTypes={ownerEnv.contextTypes} analysisErrors={ownerAnalysisErrors} />
 						{:else if activeTab?.kind === 'prompt'}
 							<PromptSettings promptId={activeTab.promptId} />
 						{:else if activeTab?.kind === 'profile'}
@@ -320,7 +344,7 @@
 						{:else if activeTab?.kind === 'provider'}
 							<ProviderSettings providerId={activeTab.providerId} />
 						{:else if activeTab?.kind === 'node'}
-							<NodeSettings nodeId={activeTab.nodeId} owner={activeTab.owner} contextTypes={ownerEnv.contextTypes} nodeLocals={ownerEnv.nodeLocals} nodeErrors={ownerEnv.nodeErrors} />
+							<NodeSettings nodeId={activeTab.nodeId} owner={activeTab.owner} contextTypes={ownerEnv.contextTypes} nodeLocals={ownerEnv.nodeLocals} nodeErrors={ownerEnv.nodeErrors} analysisErrors={ownerAnalysisErrors} />
 						{:else if activeTab?.kind === 'bot-settings'}
 							<BotSettings botId={activeTab.botId} />
 						{:else if activeTab?.kind === 'chat'}

@@ -26,13 +26,15 @@
 
 	let analyzeTimer: ReturnType<typeof setTimeout> | null = null;
 	let discoveredContextTypes = $state<Record<string, import('$lib/type-parser.js').TypeDesc>>({});
+	let analysisErrors = $state<string[]>([]);
+	let analysisErrorPhase = $state<'analysis' | 'typecheck' | null>(null);
 
 	function runAnalysis() {
 		if (!profile) return;
 		const nodeNames = collectNodeNames(profile.children);
 		nodeNames.add('context');
 		const baseTypes: Record<string, import('$lib/type-parser.js').TypeDesc> = { context: CONTEXT_TYPE };
-		const { discoveredTypes, unresolvedKeys } = analyzeLevel({
+		const result = analyzeLevel({
 			scripts: collectScriptsFromTree(profile.children),
 			nodeNames,
 			providedKeys: new Set(),
@@ -41,9 +43,17 @@
 			children: profile.children,
 			getApi: (id) => providerStore.get(id)?.api ?? 'openai',
 		});
-		discoveredContextTypes = discoveredTypes;
+		if (!result.ok) {
+			analysisErrors = result.errors;
+			analysisErrorPhase = result.phase;
+			discoveredContextTypes = {};
+			return;
+		}
+		analysisErrors = [];
+		analysisErrorPhase = null;
+		discoveredContextTypes = result.discoveredTypes;
 		profileStore.update(profileId, (p) => ({
-			...p, contextParams: mergeDiscoveredParams(p.contextParams, unresolvedKeys)
+			...p, contextParams: mergeDiscoveredParams(p.contextParams, result.unresolvedKeys)
 		}));
 	}
 
@@ -55,7 +65,10 @@
 		}, 200);
 	}
 
-	let analysisKey = $derived(JSON.stringify(profile?.children));
+	let analysisKey = $derived(JSON.stringify([
+		profile?.children,
+		profile?.contextParams?.map((p) => [p.name, p.resolution, p.userType]),
+	]));
 
 	let isFirstRun = true;
 
@@ -124,6 +137,7 @@
 							onupdate={handleParamsUpdate}
 							onTypeChange={handleTypeChange}
 							contextTypes={discoveredContextTypes}
+							{analysisErrors}
 						/>
 					</div>
 				{/if}

@@ -17,12 +17,14 @@
 		contextTypes = {},
 		nodeLocals = {},
 		nodeErrors = {},
+		analysisErrors = [],
 	}: {
 		nodeId: string;
 		owner: BlockOwner;
 		contextTypes?: Record<string, import('$lib/type-parser.js').TypeDesc>;
 		nodeLocals?: Record<string, { raw: import('$lib/type-parser.js').TypeDesc; self: import('$lib/type-parser.js').TypeDesc }>;
 		nodeErrors?: Record<string, Record<string, string>>;
+		analysisErrors?: string[];
 	} = $props();
 
 	let node = $derived.by(() => {
@@ -285,6 +287,7 @@
 									value={strategy.key}
 									oninput={(v) => updateNode((n) => ({ ...n, strategy: { mode: 'if-modified', key: v } }))}
 									contextTypes={mergedContextTypes}
+									analysisErrors={analysisErrors}
 									discoverContext
 								/>
 								<p class="hint">Script expression. Re-executes when this value changes.</p>
@@ -298,6 +301,7 @@
 									value={strategy.historyBind}
 									oninput={(v) => updateNode((n) => ({ ...n, strategy: { mode: 'history', historyBind: v } }))}
 									contextTypes={mergedContextTypes}
+									analysisErrors={analysisErrors}
 									discoverContext
 								/>
 								<p class="hint">Script that produces each history entry. Appended to @turn.history.&#123;name&#125;.</p>
@@ -313,6 +317,7 @@
 								oninput={(v) => updateNode((n) => ({ ...n, selfSpec: { ...n.selfSpec, initialValue: v } }))}
 								contextTypes={mergedContextTypes}
 								expectedTailType={locals?.self}
+								analysisErrors={analysisErrors}
 								discoverContext
 							/>
 							{#if fieldErrors['initialValue']}
@@ -341,6 +346,7 @@
 									oninput={(v) => updateNode((n) => ({ ...n, assert: v }))}
 									contextTypes={mergedContextTypes}
 									expectedTailType={{ kind: 'primitive', name: 'Bool' }}
+									analysisErrors={analysisErrors}
 									discoverContext
 								/>
 								{#if fieldErrors['assert']}
@@ -467,6 +473,7 @@
 															value={src.template}
 															oninput={(v) => setMessageSource(i, { type: 'inline', template: v })}
 															contextTypes={mergedContextTypes}
+															analysisErrors={analysisErrors}
 															discoverContext
 														/>
 													{:else}
@@ -498,6 +505,7 @@
 														value={msg.iterator}
 														oninput={(v) => updateMessage(i, { iterator: v })}
 														contextTypes={mergedContextTypes}
+														analysisErrors={analysisErrors}
 														discoverContext
 													/>
 													<!-- Slice -->

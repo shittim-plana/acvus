@@ -150,6 +150,8 @@
 
 	let analyzeTimer: ReturnType<typeof setTimeout> | null = null;
 	let discoveredContextTypes = $state<Record<string, import('$lib/type-parser.js').TypeDesc>>({});
+	let analysisErrors = $state<string[]>([]);
+	let analysisErrorPhase = $state<'analysis' | 'typecheck' | null>(null);
 
 	function runAnalysis() {
 		if (!bot) return;
@@ -213,7 +215,7 @@
 		]);
 		baseTypes['context'] = CONTEXT_TYPE;
 
-		const { discoveredTypes, unresolvedKeys } = analyzeLevel({
+		const result = analyzeLevel({
 			scripts,
 			nodeNames,
 			providedKeys,
@@ -222,9 +224,17 @@
 			children: allChildren,
 			getApi: (id) => providerStore.get(id)?.api ?? 'openai',
 		});
-		discoveredContextTypes = discoveredTypes;
+		if (!result.ok) {
+			analysisErrors = result.errors;
+			analysisErrorPhase = result.phase;
+			discoveredContextTypes = {};
+			return;
+		}
+		analysisErrors = [];
+		analysisErrorPhase = null;
+		discoveredContextTypes = result.discoveredTypes;
 		botStore.update(bot.id, (b) => ({
-			...b, contextParams: mergeDiscoveredParams(b.contextParams, unresolvedKeys)
+			...b, contextParams: mergeDiscoveredParams(b.contextParams, result.unresolvedKeys)
 		}));
 	}
 
@@ -236,7 +246,12 @@
 		}, 200);
 	}
 
-	// Stable key: only re-analyze when relevant content changes, not contextParams.
+	// Stable key: re-analyze when content or user-set param values change.
+	// Includes resolution/userType (not inferredType/active) to trigger liveness re-check
+	// when static param values change, without causing circular dependency.
+	const paramUserKey = (params?: ContextParam[]) =>
+		params?.map((p) => [p.name, p.resolution, p.userType]);
+
 	let analysisKey = $derived(JSON.stringify([
 		bot?.display,
 		bot?.regions,
@@ -246,6 +261,9 @@
 		promptStore.get(bot?.promptId ?? '')?.contextBindings,
 		promptStore.get(bot?.promptId ?? '')?.children,
 		profileStore.get(bot?.profileId ?? '')?.children,
+		paramUserKey(bot?.contextParams),
+		paramUserKey(promptStore.get(bot?.promptId ?? '')?.contextParams),
+		paramUserKey(profileStore.get(bot?.profileId ?? '')?.contextParams),
 	]));
 
 	let isFirstRun = true;
@@ -405,6 +423,7 @@
 							value={bot.display.iterator}
 							oninput={(v) => updateDisplay('iterator', v)}
 							contextTypes={displayContextTypes}
+							{analysisErrors}
 						/>
 						<p class="text-xs text-muted-foreground">Expression that produces a list to iterate over.</p>
 					</div>
@@ -432,6 +451,7 @@
 										value={entry.condition}
 										oninput={(v) => updateEntry(entry.id, { condition: v })}
 										contextTypes={computeIterableEntryTypes(bot.display.iterator, displayContextTypes)}
+										{analysisErrors}
 									/>
 								</div>
 								<div class="space-y-1">
@@ -442,6 +462,7 @@
 										value={entry.template}
 										oninput={(v) => updateEntry(entry.id, { template: v })}
 										contextTypes={computeIterableEntryTypes(bot.display.iterator, displayContextTypes)}
+										{analysisErrors}
 									/>
 								</div>
 							</div>
@@ -494,6 +515,7 @@
 										value={region.template}
 										oninput={(v) => updateRegion(region.id, { template: v })}
 										contextTypes={displayContextTypes}
+										{analysisErrors}
 									/>
 								</div>
 							{:else}
@@ -505,6 +527,7 @@
 										value={region.iterator}
 										oninput={(v) => updateRegion(region.id, { iterator: v })}
 										contextTypes={displayContextTypes}
+										{analysisErrors}
 									/>
 								</div>
 
@@ -531,6 +554,7 @@
 													value={entry.condition}
 													oninput={(v) => updateRegionEntry(region.id, entry.id, { condition: v })}
 													contextTypes={computeIterableEntryTypes(region.iterator, displayContextTypes)}
+													{analysisErrors}
 												/>
 											</div>
 											<div class="space-y-1">
@@ -541,6 +565,7 @@
 													value={entry.template}
 													oninput={(v) => updateRegionEntry(region.id, entry.id, { template: v })}
 													contextTypes={computeIterableEntryTypes(region.iterator, displayContextTypes)}
+													{analysisErrors}
 												/>
 											</div>
 										</div>
@@ -576,6 +601,7 @@
 							onupdate={handleParamsUpdate}
 							onTypeChange={handleTypeChange}
 							contextTypes={discoveredContextTypes}
+							{analysisErrors}
 						/>
 					</div>
 				{/if}

@@ -234,6 +234,22 @@ function escapeAcvusString(s: string): string {
 	return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
+function unescapeAcvusString(s: string): string {
+	let result = '';
+	for (let i = 0; i < s.length; i++) {
+		if (s[i] === '\\' && i + 1 < s.length) {
+			const next = s[i + 1];
+			if (next === '\\' || next === '"') {
+				result += next;
+				i++;
+				continue;
+			}
+		}
+		result += s[i];
+	}
+	return result;
+}
+
 export function generateScript(value: StructuredValue, desc: TypeDesc): string {
 	switch (value.kind) {
 		case 'primitive': {
@@ -280,4 +296,99 @@ export function generateScript(value: StructuredValue, desc: TypeDesc): string {
 		case 'raw':
 			return value.script;
 	}
+}
+
+// ---------------------------------------------------------------------------
+// parseScript — acvus script expression → StructuredValue (inverse of generateScript)
+// Returns null if the script cannot be parsed for the given type.
+// ---------------------------------------------------------------------------
+
+export function parseScript(script: string, desc: TypeDesc): StructuredValue | null {
+	const s = script.trim();
+	if (!s) return null;
+
+	switch (desc.kind) {
+		case 'primitive':
+			return parsePrimitive(s, desc.name);
+		case 'option':
+			return parseOptionScript(s, desc);
+		case 'enum':
+			return parseEnumScript(s, desc);
+		case 'object':
+			return parseObjectScript(s, desc);
+		default:
+			return null;
+	}
+}
+
+function parsePrimitive(s: string, name: string): StructuredValue | null {
+	switch (name) {
+		case 'String':
+			if (s.startsWith('"') && s.endsWith('"') && s.length >= 2) {
+				return { kind: 'primitive', value: unescapeAcvusString(s.slice(1, -1)) };
+			}
+			return null;
+		case 'Int':
+			if (/^-?\d+$/.test(s)) return { kind: 'primitive', value: s };
+			return null;
+		case 'Float':
+			if (/^-?\d+(\.\d+)?$/.test(s)) return { kind: 'primitive', value: s };
+			return null;
+		case 'Bool':
+			if (s === 'true' || s === 'false') return { kind: 'primitive', value: s };
+			return null;
+	}
+	return null;
+}
+
+function parseOptionScript(s: string, desc: { kind: 'option'; inner: TypeDesc }): StructuredValue | null {
+	if (s === 'None') return { kind: 'option-none' };
+	if (s.startsWith('Some(') && s.endsWith(')')) {
+		const inner = parseScript(s.slice(5, -1), desc.inner);
+		if (inner) return { kind: 'option-some', inner };
+	}
+	return null;
+}
+
+function parseEnumScript(
+	s: string,
+	desc: { kind: 'enum'; name: string; variants: { tag: string; hasPayload: boolean; payloadType?: TypeDesc }[] },
+): StructuredValue | null {
+	const prefix = desc.name ? `${desc.name}::` : '';
+	for (const variant of desc.variants) {
+		const qualified = prefix + variant.tag;
+		if (s === qualified) {
+			return { kind: 'enum-variant', tag: variant.tag };
+		}
+		if (s.startsWith(qualified + '(') && s.endsWith(')')) {
+			const payloadStr = s.slice(qualified.length + 1, -1);
+			const payload = variant.payloadType ? parseScript(payloadStr, variant.payloadType) : null;
+			return { kind: 'enum-variant', tag: variant.tag, payload: payload ?? undefined };
+		}
+	}
+	return null;
+}
+
+function parseObjectScript(
+	s: string,
+	desc: { kind: 'object'; fields: { name: string; type: TypeDesc }[] },
+): StructuredValue | null {
+	if (!s.startsWith('{') || !s.endsWith('}')) return null;
+	const inner = s.slice(1, -1).trim();
+	if (!inner) return { kind: 'object', fields: {} };
+
+	const parts = splitTopLevel(inner, ',').filter((p) => p.trim());
+	const fields: Record<string, StructuredValue> = {};
+	for (const part of parts) {
+		const colonIdx = part.indexOf(':');
+		if (colonIdx === -1) return null;
+		const fieldName = part.slice(0, colonIdx).trim();
+		const fieldValue = part.slice(colonIdx + 1).trim();
+		const fieldDef = desc.fields.find((f) => f.name === fieldName);
+		if (!fieldDef) continue;
+		const parsed = parseScript(fieldValue, fieldDef.type);
+		if (!parsed) return null;
+		fields[fieldName] = parsed;
+	}
+	return { kind: 'object', fields };
 }

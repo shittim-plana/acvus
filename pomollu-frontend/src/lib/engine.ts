@@ -6,6 +6,7 @@ import {
 	typecheck_with_tail as wasmTypecheckWithTail,
 	analyze as wasmAnalyze,
 	analyze_with_types as wasmAnalyzeWithTypes,
+	analyze_with_known as wasmAnalyzeWithKnown,
 	analyze_with_tail as wasmAnalyzeWithTail,
 	evaluate as wasmEvaluate,
 	typecheck_nodes as wasmTypecheckNodes,
@@ -14,7 +15,7 @@ import {
 
 export type CheckResult = { ok: true } | { ok: false; message: string };
 
-export type ContextKeyInfo = { name: string; type: TypeDesc };
+export type ContextKeyInfo = { name: string; type: TypeDesc; status: 'eager' | 'lazy' };
 
 export type AnalyzeResult = {
 	ok: true;
@@ -59,6 +60,15 @@ export function analyzeWithTypes(
 	contextTypes: Record<string, TypeDesc>
 ): AnalyzeResult {
 	return wasmAnalyzeWithTypes(source, mode, JSON.stringify(contextTypes)) as AnalyzeResult;
+}
+
+export function analyzeWithKnown(
+	source: string,
+	mode: 'script' | 'template',
+	contextTypes: Record<string, TypeDesc>,
+	knownScripts: Record<string, string>
+): AnalyzeResult {
+	return wasmAnalyzeWithKnown(source, mode, JSON.stringify(contextTypes), JSON.stringify(knownScripts)) as AnalyzeResult;
 }
 
 export function analyzeWithTail(

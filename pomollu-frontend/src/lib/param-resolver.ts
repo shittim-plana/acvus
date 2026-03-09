@@ -4,7 +4,7 @@ import { isUnknownType } from './type-parser.js';
 import type { Node, BlockNode, ContextBinding, DisplayEntry, DisplayRegion, ContextParam } from './types.js';
 import { isRawBlock, isScriptBlock, BUILTIN_CONTEXT_REFS } from './types.js';
 import { collectBlocks, collectNodes } from './block-tree.js';
-import { analyzeWithTypes, typecheckNodes } from './engine.js';
+import { analyzeWithTypes, analyzeWithKnown, typecheckNodes } from './engine.js';
 
 export type ScriptEntry = { source: string; mode: 'script' | 'template' };
 
@@ -77,32 +77,51 @@ export function collectNodeNames(children: BlockNode[]): Set<string> {
 	return new Set(collectNodes(children).map((n) => n.name).filter((n) => n));
 }
 
+export type CollectParamsResult =
+	| { ok: true; keys: ContextKeyInfo[] }
+	| { ok: false; errors: string[] };
+
 export function collectUnresolvedParams(opts: {
 	scripts: { source: string; mode: 'script' | 'template' }[];
 	nodeNames: Set<string>;
 	providedKeys: Set<string>;
 	contextTypes: Record<string, TypeDesc>;
-}): ContextKeyInfo[] {
-	const seen = new Map<string, TypeDesc>();
+	knownScripts?: Record<string, string>;
+}): CollectParamsResult {
+	const seen = new Map<string, { type: TypeDesc; status: 'eager' | 'lazy' }>();
 
+	const knownEntries = opts.knownScripts ? Object.entries(opts.knownScripts) : [];
 	for (const { source, mode } of opts.scripts) {
 		if (!source.trim()) continue;
-		const result = analyzeWithTypes(source, mode, opts.contextTypes);
-		if (!result.ok) continue;
-		for (const key of result.context_keys) {
-			if (BUILTIN_CONTEXT_REFS.has(key.name)) continue;
-			if (opts.nodeNames.has(key.name)) continue;
-			if (opts.providedKeys.has(key.name)) continue;
+		const useKnown = knownEntries.length > 0;
+		const result = useKnown
+			? analyzeWithKnown(source, mode, opts.contextTypes, opts.knownScripts!)
+			: analyzeWithTypes(source, mode, opts.contextTypes);
+		if (!result.ok) {
+			console.warn('[collectUnresolvedParams] FAILED script:', mode, source.slice(0, 80), result.errors);
+			return { ok: false, errors: result.errors };
+		}
+		const filteredKeys = result.context_keys.filter(
+			(k) => !BUILTIN_CONTEXT_REFS.has(k.name) && !opts.nodeNames.has(k.name) && !opts.providedKeys.has(k.name)
+		);
+		if (filteredKeys.length > 0) {
+			console.log('[collectUnresolvedParams] script:', mode, source.slice(0, 60), '→ keys:', filteredKeys.map((k) => `${k.name}(${k.status})`));
+		}
+		for (const key of filteredKeys) {
 			const existing = seen.get(key.name);
-			if (!existing || isUnknownType(existing)) {
-				seen.set(key.name, key.type);
+			if (!existing || isUnknownType(existing.type)) {
+				seen.set(key.name, { type: key.type, status: key.status });
+			} else if (existing.status === 'lazy' && key.status === 'eager') {
+				seen.set(key.name, { type: existing.type, status: 'eager' });
 			}
 		}
 	}
 
-	return Array.from(seen.entries())
-		.map(([name, type]) => ({ name, type }))
+	const keys = Array.from(seen.entries())
+		.map(([name, { type, status }]) => ({ name, type, status }))
 		.sort((a, b) => a.name.localeCompare(b.name));
+	console.log('[collectUnresolvedParams] RESULT:', keys.map((k) => `${k.name}(${k.status})`));
+	return { ok: true, keys };
 }
 
 /**
@@ -113,6 +132,10 @@ export function collectUnresolvedParams(opts: {
  * Each caller assembles the appropriate scripts/nodeNames/providedKeys
  * for its level, then calls this to get the final discoveredTypes.
  */
+export type AnalyzeLevelResult =
+	| { ok: true; discoveredTypes: Record<string, TypeDesc>; unresolvedKeys: ContextKeyInfo[] }
+	| { ok: false; errors: string[]; phase: 'analysis' | 'typecheck' };
+
 export function analyzeLevel(opts: {
 	scripts: ScriptEntry[];
 	nodeNames: Set<string>;
@@ -121,59 +144,106 @@ export function analyzeLevel(opts: {
 	baseTypes?: Record<string, TypeDesc>;
 	children: BlockNode[];
 	getApi: (providerId: string) => string;
-}): { discoveredTypes: Record<string, TypeDesc>; unresolvedKeys: ContextKeyInfo[] } {
+}): AnalyzeLevelResult {
 	const typesFromParams: Record<string, TypeDesc> = { ...(opts.baseTypes ?? {}) };
 	for (const p of opts.existingParams) {
 		if (p.userType) typesFromParams[p.name] = p.userType;
 	}
 
-	const keys = collectUnresolvedParams({
-		scripts: opts.scripts,
+	const knownScripts: Record<string, string> = {};
+	for (const p of opts.existingParams) {
+		if (p.resolution.kind === 'static' && p.resolution.value.trim()) {
+			knownScripts[p.name] = p.resolution.value;
+		}
+	}
+
+	const allScripts: ScriptEntry[] = [...opts.scripts];
+	for (const p of opts.existingParams) {
+		if (p.resolution.kind === 'static' && p.resolution.value.trim()) {
+			allScripts.push({ source: p.resolution.value, mode: 'script' });
+		}
+	}
+
+	// Phase 1: Discovery
+	const collectResult = collectUnresolvedParams({
+		scripts: allScripts,
 		nodeNames: opts.nodeNames,
 		providedKeys: opts.providedKeys,
 		contextTypes: typesFromParams,
+		knownScripts,
 	});
 
+	if (!collectResult.ok) {
+		console.warn('[analyzeLevel] Phase 1 FAILED:', collectResult.errors);
+		return { ok: false, errors: collectResult.errors, phase: 'analysis' };
+	}
+
+	console.log('[analyzeLevel] Phase 1 OK — discovered:', collectResult.keys.map((k) => `${k.name}(${k.status})`));
+	console.log('[analyzeLevel] typesFromParams:', Object.keys(typesFromParams));
+
+	// Phase 2: Typecheck
 	const injectedTypes: Record<string, TypeDesc> = { ...typesFromParams };
-	for (const k of keys) {
+	for (const k of collectResult.keys) {
 		if (!isUnknownType(k.type) && !injectedTypes[k.name]) {
 			injectedTypes[k.name] = k.type;
 		}
 	}
 
+	console.log('[analyzeLevel] Phase 2 injectedTypes:', Object.keys(injectedTypes));
 	const env = computeExternalContextEnv(opts.children, injectedTypes, opts.getApi);
-	return { discoveredTypes: env.contextTypes, unresolvedKeys: keys };
+	console.log('[analyzeLevel] Phase 2 OK — contextTypes:', Object.keys(env.contextTypes));
+	return { ok: true, discoveredTypes: env.contextTypes, unresolvedKeys: collectResult.keys };
 }
 
 /**
  * Merge discovered unresolved keys into existing contextParams,
  * preserving user-set resolution and userType overrides.
+ * Params no longer discovered are kept with `active: false`.
  */
 export function mergeDiscoveredParams(
 	existing: ContextParam[],
 	discovered: ContextKeyInfo[],
 ): ContextParam[] {
+	const discoveredNames = new Set(discovered.map((k) => k.name));
 	const map = new Map(existing.map((p) => [p.name, p]));
-	return discovered.map((k) => {
+
+	// Active params: currently discovered
+	const active: ContextParam[] = discovered.map((k) => {
 		const prev = map.get(k.name);
 		return {
 			name: k.name,
 			inferredType: k.type,
 			resolution: prev?.resolution ?? { kind: 'unresolved' as const },
 			userType: prev?.userType,
-		} satisfies ContextParam;
+			editorMode: prev?.editorMode,
+			active: true,
+		};
 	});
+
+	// Params no longer discovered: deactivate (hidden by dead branch).
+	// Configuration (resolution, userType, editorMode) is preserved —
+	// if the param is rediscovered later, it reappears with saved settings.
+	const inactive: ContextParam[] = existing
+		.filter((p) => !discoveredNames.has(p.name))
+		.map((p) => ({
+			...p,
+			active: false,
+		}));
+
+	return [...active, ...inactive];
 }
 
 /**
  * Build injected context types from contextParams.
- * Uses userType if set, otherwise inferredType (skipping '?').
+ * Only uses userType (explicitly set by the user).
+ * inferredType is intentionally excluded — it can be stale from a previous
+ * analysis and conflict with changed templates (e.g. Int vs Enum pattern).
+ * Fresh types are discovered each analysis cycle via collectUnresolvedParams.
  */
 export function buildInjectedTypes(contextParams: ContextParam[]): Record<string, TypeDesc> {
 	const types: Record<string, TypeDesc> = {};
 	for (const p of contextParams) {
-		const ty = p.userType || (isUnknownType(p.inferredType) ? undefined : p.inferredType);
-		if (ty) types[p.name] = ty;
+		if (p.userType) types[p.name] = p.userType;
 	}
 	return types;
 }

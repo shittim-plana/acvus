@@ -1,7 +1,8 @@
 use std::collections::VecDeque;
 
-use acvus_ast::{BinOp, Literal, RangeKind};
+use acvus_ast::{BinOp, Literal, RangeKind, UnaryOp};
 use acvus_mir::ir::{InstKind, Label, MirModule, ValueId};
+use acvus_mir::ty::Ty;
 use acvus_utils::Astr;
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -14,6 +15,10 @@ pub struct ContextKeyPartition {
     pub eager: FxHashSet<Astr>,
     /// Keys behind unknown branch conditions — resolve lazily via coroutine.
     pub lazy: FxHashSet<Astr>,
+    /// Known keys that appear on reachable (non-dead) paths.
+    /// These are excluded from eager/lazy (already resolved for orchestration)
+    /// but tracked separately for UI discovery.
+    pub reachable_known: FxHashSet<Astr>,
 }
 
 /// Determine which context keys are actually needed by a MIR module,
@@ -51,15 +56,23 @@ pub fn partition_context_keys(
 ) -> ContextKeyPartition {
     let mut partition = ContextKeyPartition::default();
 
-    partition_from_body(&module.main.insts, known, val_def, &mut partition);
+    partition_from_body(
+        &module.main.insts,
+        &module.main.val_types,
+        known,
+        val_def,
+        &mut partition,
+    );
 
     // Closures: conservatively treat all context loads as lazy
     for closure in module.closures.values() {
         for inst in &closure.body.insts {
-            if let InstKind::ContextLoad { name, .. } = &inst.kind
-                && !known.contains_key(name)
-            {
-                partition.lazy.insert(*name);
+            if let InstKind::ContextLoad { name, .. } = &inst.kind {
+                if known.contains_key(name) {
+                    partition.reachable_known.insert(*name);
+                } else {
+                    partition.lazy.insert(*name);
+                }
             }
         }
     }
@@ -165,6 +178,7 @@ enum Reach {
 
 fn partition_from_body(
     insts: &[acvus_mir::ir::Inst],
+    val_types: &FxHashMap<ValueId, Ty>,
     known: &FxHashMap<Astr, Literal>,
     val_def: &ValDefMap,
     partition: &mut ContextKeyPartition,
@@ -205,7 +219,7 @@ fn partition_from_body(
                 cond,
                 then_label,
                 else_label,
-            } => match try_eval_condition(*cond, insts, val_def, known) {
+            } => match try_eval_condition(*cond, insts, val_types, val_def, known) {
                 Some(true) => {
                     enqueue_reach(
                         *then_label,
@@ -254,16 +268,21 @@ fn partition_from_body(
 
     // Collect ContextLoads by reach level
     for (i, block) in blocks.iter().enumerate() {
-        let target = match reach[i] {
-            Reach::Definite => &mut partition.eager,
-            Reach::Conditional => &mut partition.lazy,
-            Reach::Unreachable => continue,
-        };
+        if reach[i] == Reach::Unreachable {
+            continue;
+        }
         for &inst_idx in &block.insts {
-            if let InstKind::ContextLoad { name, .. } = &insts[inst_idx].kind
-                && !known.contains_key(name)
-            {
-                target.insert(*name);
+            if let InstKind::ContextLoad { name, .. } = &insts[inst_idx].kind {
+                if known.contains_key(name) {
+                    // Known key on a reachable path — track for UI discovery.
+                    partition.reachable_known.insert(*name);
+                } else {
+                    match reach[i] {
+                        Reach::Definite => partition.eager.insert(*name),
+                        Reach::Conditional => partition.lazy.insert(*name),
+                        Reach::Unreachable => unreachable!(),
+                    };
+                }
             }
         }
     }
@@ -291,12 +310,19 @@ fn enqueue_reach(
 fn try_eval_condition(
     cond: ValueId,
     insts: &[acvus_mir::ir::Inst],
+    val_types: &FxHashMap<ValueId, Ty>,
     val_def: &ValDefMap,
     known: &FxHashMap<Astr, Literal>,
 ) -> Option<bool> {
     let &def_idx = val_def.0.get(&cond)?;
 
     match &insts[def_idx].kind {
+        // Constant bool → trivially evaluable.
+        InstKind::Const {
+            value: Literal::Bool(b),
+            ..
+        } => Some(*b),
+
         InstKind::TestLiteral { src, value, .. } => {
             let ctx_name = trace_to_context_load(*src, insts, val_def)?;
             let known_val = known.get(&ctx_name)?;
@@ -316,17 +342,47 @@ fn try_eval_condition(
             };
             Some(in_range(*v, *start, *end, *kind))
         }
+
+        // TestVariant: check if the source type is an enum that lacks this variant.
+        InstKind::TestVariant { src, tag, .. } => {
+            if let Some(ty) = val_types.get(src) {
+                match ty {
+                    Ty::Enum { variants, .. } => {
+                        if !variants.contains_key(tag) {
+                            // Variant doesn't exist in the type → always false.
+                            return Some(false);
+                        }
+                        if variants.len() == 1 {
+                            // Single-variant enum: the only variant is always matched.
+                            return Some(true);
+                        }
+                    }
+                    Ty::Option(_) => {
+                        // Option is handled via builtin variants (Some/None),
+                        // no pruning from type alone.
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+
         InstKind::BinOp {
             op: BinOp::And,
             left,
             right,
             ..
         } => {
-            let l = try_eval_condition(*left, insts, val_def, known)?;
-            if !l {
+            let l = try_eval_condition(*left, insts, val_types, val_def, known);
+            if l == Some(false) {
                 return Some(false);
             }
-            try_eval_condition(*right, insts, val_def, known)
+            let r = try_eval_condition(*right, insts, val_types, val_def, known);
+            match (l, r) {
+                (Some(true), Some(true)) => Some(true),
+                (Some(false), _) | (_, Some(false)) => Some(false),
+                _ => None,
+            }
         }
         InstKind::BinOp {
             op: BinOp::Or,
@@ -334,12 +390,28 @@ fn try_eval_condition(
             right,
             ..
         } => {
-            let l = try_eval_condition(*left, insts, val_def, known)?;
-            if l {
+            let l = try_eval_condition(*left, insts, val_types, val_def, known);
+            if l == Some(true) {
                 return Some(true);
             }
-            try_eval_condition(*right, insts, val_def, known)
+            let r = try_eval_condition(*right, insts, val_types, val_def, known);
+            match (l, r) {
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            }
         }
+
+        // Not: negate inner condition.
+        InstKind::UnaryOp {
+            op: UnaryOp::Not,
+            operand,
+            ..
+        } => {
+            let inner = try_eval_condition(*operand, insts, val_types, val_def, known)?;
+            Some(!inner)
+        }
+
         _ => None,
     }
 }
@@ -810,5 +882,505 @@ mod tests {
         assert!(!needed.contains(&i.intern("admin_data")));
         assert!(needed.contains(&i.intern("user_data")));
         assert!(!needed.contains(&i.intern("default_data")));
+    }
+
+    fn make_module_with_types(
+        insts: Vec<Inst>,
+        val_types: FxHashMap<ValueId, Ty>,
+    ) -> MirModule {
+        MirModule {
+            main: MirBody {
+                insts,
+                val_types,
+                debug: DebugInfo::new(),
+                val_count: 0,
+                label_count: 0,
+            },
+            closures: FxHashMap::default(),
+            extern_names: FxHashMap::default(),
+        }
+    }
+
+    /// Multi-arm enum match: TestVariant(A) → TestVariant(B) → fallback.
+    /// When type has {A, B, C}, variant D test → pruned (always false).
+    #[test]
+    fn enum_variant_nonexistent_pruned() {
+        let i = Interner::new();
+        let a = i.intern("A");
+        let b = i.intern("B");
+        let d = i.intern("D"); // not in enum
+
+        let mut val_types = FxHashMap::default();
+        val_types.insert(
+            ValueId(0),
+            Ty::Enum {
+                name: i.intern("MyEnum"),
+                variants: FxHashMap::from_iter([
+                    (a, None),
+                    (b, None),
+                    (i.intern("C"), None),
+                ]),
+            },
+        );
+
+        let module = make_module_with_types(
+            vec![
+                // %0 = ContextLoad "val"
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(0),
+                    name: i.intern("val"),
+                    bindings: Vec::new(),
+                }),
+                // %1 = TestVariant(%0, "D")  — D not in {A,B,C} → always false
+                inst(InstKind::TestVariant {
+                    dst: ValueId(1),
+                    src: ValueId(0),
+                    tag: d,
+                }),
+                inst(InstKind::JumpIf {
+                    cond: ValueId(1),
+                    then_label: Label(10),
+                    then_args: vec![],
+                    else_label: Label(20),
+                    else_args: vec![],
+                }),
+                // Label(10): D arm → dead
+                inst(InstKind::BlockLabel {
+                    label: Label(10),
+                    params: vec![],
+                }),
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(2),
+                    name: i.intern("dead_data"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::Jump {
+                    label: Label(99),
+                    args: vec![],
+                }),
+                // Label(20): else → live
+                inst(InstKind::BlockLabel {
+                    label: Label(20),
+                    params: vec![],
+                }),
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(3),
+                    name: i.intern("live_data"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::Jump {
+                    label: Label(99),
+                    args: vec![],
+                }),
+                inst(InstKind::BlockLabel {
+                    label: Label(99),
+                    params: vec![],
+                }),
+            ],
+            val_types,
+        );
+
+        let val_def = build_val_def(&module);
+        let needed = reachable_context_keys(&module, &FxHashMap::default(), &val_def);
+
+        assert!(needed.contains(&i.intern("val")));
+        assert!(needed.contains(&i.intern("live_data")));
+        assert!(!needed.contains(&i.intern("dead_data")));
+    }
+
+    /// Single-variant enum: TestVariant for that variant is always true.
+    #[test]
+    fn single_variant_enum_always_true() {
+        let i = Interner::new();
+        let only = i.intern("Only");
+
+        let mut val_types = FxHashMap::default();
+        val_types.insert(
+            ValueId(0),
+            Ty::Enum {
+                name: i.intern("Wrapper"),
+                variants: FxHashMap::from_iter([(only, None)]),
+            },
+        );
+
+        let module = make_module_with_types(
+            vec![
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(0),
+                    name: i.intern("w"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::TestVariant {
+                    dst: ValueId(1),
+                    src: ValueId(0),
+                    tag: only,
+                }),
+                inst(InstKind::JumpIf {
+                    cond: ValueId(1),
+                    then_label: Label(1),
+                    then_args: vec![],
+                    else_label: Label(2),
+                    else_args: vec![],
+                }),
+                inst(InstKind::BlockLabel {
+                    label: Label(1),
+                    params: vec![],
+                }),
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(2),
+                    name: i.intern("then_data"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::Return(ValueId(2))),
+                inst(InstKind::BlockLabel {
+                    label: Label(2),
+                    params: vec![],
+                }),
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(3),
+                    name: i.intern("else_data"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::Return(ValueId(3))),
+            ],
+            val_types,
+        );
+
+        let val_def = build_val_def(&module);
+        let p = partition_context_keys(&module, &FxHashMap::default(), &val_def);
+
+        // then_data is eager (single variant → always matches)
+        assert!(p.eager.contains(&i.intern("then_data")));
+        // else_data is unreachable
+        assert!(!p.eager.contains(&i.intern("else_data")));
+        assert!(!p.lazy.contains(&i.intern("else_data")));
+    }
+
+    /// Multi-arm enum variant match: A → B → fallback(C).
+    /// Source has variants {A, B, C}. No known values.
+    /// All branches should be lazy (conditional) since we can't evaluate.
+    #[test]
+    fn enum_multi_arm_unknown_all_conditional() {
+        let i = Interner::new();
+        let a = i.intern("A");
+        let b = i.intern("B");
+        let c = i.intern("C");
+
+        let mut val_types = FxHashMap::default();
+        val_types.insert(
+            ValueId(0),
+            Ty::Enum {
+                name: i.intern("ABC"),
+                variants: FxHashMap::from_iter([
+                    (a, None),
+                    (b, None),
+                    (c, None),
+                ]),
+            },
+        );
+
+        let module = make_module_with_types(
+            vec![
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(0),
+                    name: i.intern("src"),
+                    bindings: Vec::new(),
+                }),
+                // TestVariant A
+                inst(InstKind::TestVariant {
+                    dst: ValueId(1),
+                    src: ValueId(0),
+                    tag: a,
+                }),
+                inst(InstKind::JumpIf {
+                    cond: ValueId(1),
+                    then_label: Label(10),
+                    then_args: vec![],
+                    else_label: Label(20),
+                    else_args: vec![],
+                }),
+                // A arm
+                inst(InstKind::BlockLabel {
+                    label: Label(10),
+                    params: vec![],
+                }),
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(2),
+                    name: i.intern("data_a"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::Jump {
+                    label: Label(99),
+                    args: vec![],
+                }),
+                // else → test B
+                inst(InstKind::BlockLabel {
+                    label: Label(20),
+                    params: vec![],
+                }),
+                inst(InstKind::TestVariant {
+                    dst: ValueId(3),
+                    src: ValueId(0),
+                    tag: b,
+                }),
+                inst(InstKind::JumpIf {
+                    cond: ValueId(3),
+                    then_label: Label(30),
+                    then_args: vec![],
+                    else_label: Label(40),
+                    else_args: vec![],
+                }),
+                // B arm
+                inst(InstKind::BlockLabel {
+                    label: Label(30),
+                    params: vec![],
+                }),
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(4),
+                    name: i.intern("data_b"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::Jump {
+                    label: Label(99),
+                    args: vec![],
+                }),
+                // fallback (catch-all for C)
+                inst(InstKind::BlockLabel {
+                    label: Label(40),
+                    params: vec![],
+                }),
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(5),
+                    name: i.intern("data_c"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::Jump {
+                    label: Label(99),
+                    args: vec![],
+                }),
+                inst(InstKind::BlockLabel {
+                    label: Label(99),
+                    params: vec![],
+                }),
+            ],
+            val_types,
+        );
+
+        let val_def = build_val_def(&module);
+        let p = partition_context_keys(&module, &FxHashMap::default(), &val_def);
+
+        // src is eager (before any branch)
+        assert!(p.eager.contains(&i.intern("src")));
+        // All arms are conditional (variant test can't be resolved without known value)
+        assert!(p.lazy.contains(&i.intern("data_a")));
+        assert!(p.lazy.contains(&i.intern("data_b")));
+        assert!(p.lazy.contains(&i.intern("data_c")));
+    }
+
+    /// Multi-arm enum variant match with type pruning.
+    /// Source has {A, B} but match tests A → C → fallback.
+    /// TestVariant(C) is always false → C arm is dead, fallback is reached.
+    #[test]
+    fn enum_multi_arm_type_prune_middle() {
+        let i = Interner::new();
+        let a = i.intern("A");
+        let b = i.intern("B");
+        let c = i.intern("C"); // not in enum
+
+        let mut val_types = FxHashMap::default();
+        val_types.insert(
+            ValueId(0),
+            Ty::Enum {
+                name: i.intern("AB"),
+                variants: FxHashMap::from_iter([
+                    (a, None),
+                    (b, None),
+                ]),
+            },
+        );
+
+        let module = make_module_with_types(
+            vec![
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(0),
+                    name: i.intern("src"),
+                    bindings: Vec::new(),
+                }),
+                // Test A
+                inst(InstKind::TestVariant {
+                    dst: ValueId(1),
+                    src: ValueId(0),
+                    tag: a,
+                }),
+                inst(InstKind::JumpIf {
+                    cond: ValueId(1),
+                    then_label: Label(10),
+                    then_args: vec![],
+                    else_label: Label(20),
+                    else_args: vec![],
+                }),
+                // A arm
+                inst(InstKind::BlockLabel {
+                    label: Label(10),
+                    params: vec![],
+                }),
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(2),
+                    name: i.intern("data_a"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::Jump {
+                    label: Label(99),
+                    args: vec![],
+                }),
+                // else → Test C (not in type!)
+                inst(InstKind::BlockLabel {
+                    label: Label(20),
+                    params: vec![],
+                }),
+                inst(InstKind::TestVariant {
+                    dst: ValueId(3),
+                    src: ValueId(0),
+                    tag: c,
+                }),
+                inst(InstKind::JumpIf {
+                    cond: ValueId(3),
+                    then_label: Label(30),
+                    then_args: vec![],
+                    else_label: Label(40),
+                    else_args: vec![],
+                }),
+                // C arm → dead (C not in {A, B})
+                inst(InstKind::BlockLabel {
+                    label: Label(30),
+                    params: vec![],
+                }),
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(4),
+                    name: i.intern("data_c"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::Jump {
+                    label: Label(99),
+                    args: vec![],
+                }),
+                // fallback → this is where B goes
+                inst(InstKind::BlockLabel {
+                    label: Label(40),
+                    params: vec![],
+                }),
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(5),
+                    name: i.intern("data_fallback"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::Jump {
+                    label: Label(99),
+                    args: vec![],
+                }),
+                inst(InstKind::BlockLabel {
+                    label: Label(99),
+                    params: vec![],
+                }),
+            ],
+            val_types,
+        );
+
+        let val_def = build_val_def(&module);
+        let p = partition_context_keys(&module, &FxHashMap::default(), &val_def);
+
+        // src is eager
+        assert!(p.eager.contains(&i.intern("src")));
+        // A arm: conditional (we don't know if it's A or B)
+        assert!(p.lazy.contains(&i.intern("data_a")));
+        // C arm: dead (C not in enum type)
+        assert!(!p.eager.contains(&i.intern("data_c")));
+        assert!(!p.lazy.contains(&i.intern("data_c")));
+        // fallback: reached when A fails → conditional, AND when C fails → definite from Label(20)
+        // Label(20) itself is conditional (reached from else of A test).
+        // TestVariant(C) is Some(false), so only else_label(40) is enqueued with Label(20)'s reach.
+        // Label(20) is Conditional → Label(40) inherits Conditional.
+        assert!(p.lazy.contains(&i.intern("data_fallback")));
+    }
+
+    /// Partition: eager vs lazy with enum variant type pruning.
+    /// Match on enum {A, B}: test A → test D(dead) → fallback.
+    /// A arm is conditional, D arm is dead, fallback is definite-from-else.
+    #[test]
+    fn partition_enum_eager_lazy() {
+        let i = Interner::new();
+        let a = i.intern("A");
+        let b = i.intern("B");
+
+        let mut val_types = FxHashMap::default();
+        val_types.insert(
+            ValueId(0),
+            Ty::Enum {
+                name: i.intern("AB"),
+                variants: FxHashMap::from_iter([(a, None), (b, None)]),
+            },
+        );
+
+        // Unconditional context load, then branch on A
+        let module = make_module_with_types(
+            vec![
+                // Eager load before any branch
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(10),
+                    name: i.intern("pre"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(0),
+                    name: i.intern("src"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::TestVariant {
+                    dst: ValueId(1),
+                    src: ValueId(0),
+                    tag: a,
+                }),
+                inst(InstKind::JumpIf {
+                    cond: ValueId(1),
+                    then_label: Label(10),
+                    then_args: vec![],
+                    else_label: Label(20),
+                    else_args: vec![],
+                }),
+                inst(InstKind::BlockLabel {
+                    label: Label(10),
+                    params: vec![],
+                }),
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(2),
+                    name: i.intern("a_data"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::Return(ValueId(2))),
+                inst(InstKind::BlockLabel {
+                    label: Label(20),
+                    params: vec![],
+                }),
+                inst(InstKind::ContextLoad {
+                    dst: ValueId(3),
+                    name: i.intern("b_data"),
+                    bindings: Vec::new(),
+                }),
+                inst(InstKind::Return(ValueId(3))),
+            ],
+            val_types,
+        );
+
+        let val_def = build_val_def(&module);
+        let p = partition_context_keys(&module, &FxHashMap::default(), &val_def);
+
+        // pre and src are eager (before branch)
+        assert!(p.eager.contains(&i.intern("pre")));
+        assert!(p.eager.contains(&i.intern("src")));
+        // Both arms are conditional (can't resolve TestVariant without known value)
+        assert!(p.lazy.contains(&i.intern("a_data")));
+        assert!(p.lazy.contains(&i.intern("b_data")));
+        assert!(!p.eager.contains(&i.intern("a_data")));
+        assert!(!p.eager.contains(&i.intern("b_data")));
     }
 }

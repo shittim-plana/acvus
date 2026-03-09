@@ -5,11 +5,13 @@
 	let {
 		block,
 		onupdate,
-		contextTypes = {}
+		contextTypes = {},
+		analysisErrors = []
 	}: {
 		block: RawBlock;
 		onupdate: (updater: (b: RawBlock) => RawBlock) => void;
 		contextTypes?: Record<string, import('$lib/type-parser.js').TypeDesc>;
+		analysisErrors?: string[];
 	} = $props();
 </script>
 
@@ -21,6 +23,7 @@
 		placeholder="Enter text..."
 		unlimited
 		{contextTypes}
+		{analysisErrors}
 	/>
 </div>
 

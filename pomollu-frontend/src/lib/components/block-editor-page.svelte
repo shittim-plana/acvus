@@ -15,7 +15,7 @@
 	import RawBlockEditor from './raw-block-editor.svelte';
 	import ScriptBlockEditor from './script-block-editor.svelte';
 
-	let { blockId, owner, contextTypes = {} }: { blockId: string; owner: BlockOwner; contextTypes?: Record<string, import('$lib/type-parser.js').TypeDesc> } = $props();
+	let { blockId, owner, contextTypes = {}, analysisErrors = [] }: { blockId: string; owner: BlockOwner; contextTypes?: Record<string, import('$lib/type-parser.js').TypeDesc>; analysisErrors?: string[] } = $props();
 
 	let block = $derived.by(() => {
 		const children = getOwnerChildren(owner);
@@ -133,7 +133,7 @@
 		</div>
 		{#if isRawBlock(block)}
 			<div class="flex flex-1 min-h-0 px-6 py-4">
-				<RawBlockEditor block={block} onupdate={handleRawUpdate} {contextTypes} />
+				<RawBlockEditor block={block} onupdate={handleRawUpdate} {contextTypes} {analysisErrors} />
 			</div>
 		{:else}
 			<ScrollArea class="flex-1">
@@ -141,7 +141,7 @@
 					{#if isContextBlock(block)}
 						<BlockEditor block={block} onupdate={handleContextUpdate} />
 					{:else if isScriptBlock(block)}
-						<ScriptBlockEditor block={block} onupdate={handleScriptUpdate} {contextTypes} />
+						<ScriptBlockEditor block={block} onupdate={handleScriptUpdate} {contextTypes} {analysisErrors} />
 					{:else}
 						<div class="py-8 text-center text-sm text-muted-foreground">
 							Select a kind to configure this block.

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { ContextParam } from '$lib/types.js';
 	import type { TypeDesc, StructuredValue } from '$lib/type-parser.js';
-	import { parseTypeDesc, isStructured, createDefaultValue, generateScript, isUnknownType, typeDescToString } from '$lib/type-parser.js';
+	import { parseTypeDesc, parseScript, isStructured, createDefaultValue, generateScript, isUnknownType, typeDescToString } from '$lib/type-parser.js';
 	import { Input } from '$lib/components/ui/input';
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
@@ -14,25 +14,79 @@
 		onupdate,
 		onTypeChange,
 		contextTypes = {},
+		analysisErrors = [],
 	}: {
 		params: ContextParam[];
 		onupdate: (params: ContextParam[]) => void;
 		onTypeChange: (name: string, type: string) => void;
 		contextTypes?: Record<string, TypeDesc>;
+		analysisErrors?: string[];
 	} = $props();
 
-	// Per-param structured value state (component-local, not persisted)
-	let structuredValues = $state<Record<string, StructuredValue>>({});
-	// Per-param raw mode override
-	let rawModes = $state<Record<string, boolean>>({});
-	// Track previous inferred types to detect changes
-	let prevInferredTypes = $state<Record<string, string>>({});
+	// Component-local cache for in-flight structured edits.
+	// Only populated when the user actively edits via StructuredValueEditor.
+	// On remount, values are re-derived from stored script via parseScript (no cache needed).
+	let editCache = $state<Record<string, StructuredValue>>({});
+
+	function resolvedTypeDesc(param: ContextParam): TypeDesc | undefined {
+		return param.userType || (isUnknownType(param.inferredType) ? undefined : param.inferredType);
+	}
+
+	function getTypeDesc(param: ContextParam): TypeDesc | null {
+		return resolvedTypeDesc(param) ?? null;
+	}
+
+	function isRawMode(param: ContextParam): boolean {
+		return param.editorMode === 'raw';
+	}
+
+	function shouldUseStructured(param: ContextParam): boolean {
+		if (isRawMode(param)) return false;
+		const desc = getTypeDesc(param);
+		return desc !== null && isStructured(desc);
+	}
+
+	/** Get structured value: prefer edit cache, then parse from stored script. */
+	function getStructuredValue(param: ContextParam): StructuredValue {
+		const cached = editCache[param.name];
+		if (cached) return cached;
+
+		// Parse the stored script back into a StructuredValue (pure, no state mutation).
+		if (param.resolution.kind === 'static' && param.resolution.value.trim()) {
+			const desc = getTypeDesc(param);
+			if (desc) {
+				const parsed = parseScript(param.resolution.value, desc);
+				if (parsed) return parsed;
+			}
+		}
+		return { kind: 'raw', script: '' };
+	}
+
+	// --- Actions ---
 
 	function setResolution(index: number, kind: 'static' | 'dynamic' | 'unresolved') {
+		const param = params[index];
 		const updated = params.map((p, i) => {
 			if (i !== index) return p;
-			if (kind === 'static') return { ...p, resolution: { kind: 'static' as const, value: '' } };
-			if (kind === 'dynamic') return { ...p, resolution: { kind: 'dynamic' as const } };
+			if (kind === 'static') {
+				// Generate default value for structured types when switching to static.
+				const desc = getTypeDesc(p);
+				if (desc && isStructured(desc)) {
+					const defaultVal = createDefaultValue(desc);
+					editCache[p.name] = defaultVal;
+					return {
+						...p,
+						resolution: { kind: 'static' as const, value: generateScript(defaultVal, desc) },
+						editorMode: 'structured' as const,
+					};
+				}
+				return { ...p, resolution: { kind: 'static' as const, value: '' } };
+			}
+			if (kind === 'dynamic') {
+				delete editCache[p.name];
+				return { ...p, resolution: { kind: 'dynamic' as const } };
+			}
+			delete editCache[p.name];
 			return { ...p, resolution: { kind: 'unresolved' as const } };
 		});
 		onupdate(updated);
@@ -48,79 +102,21 @@
 
 	function setUserType(index: number, type: string) {
 		const parsed = type ? parseTypeDesc(type) : undefined;
+		const valid = parsed && parsed.kind !== 'unsupported' ? parsed : undefined;
+		const param = params[index];
+		if (param) delete editCache[param.name];
 		const updated = params.map((p, i) => {
 			if (i !== index) return p;
-			return { ...p, userType: parsed };
+			return { ...p, userType: valid };
 		});
 		onupdate(updated);
-		const param = params[index];
-		if (param && type) {
+		if (param && valid) {
 			onTypeChange(param.name, type);
 		}
-		// Reset structured value when type changes
-		if (param) {
-			delete structuredValues[param.name];
-		}
-	}
-
-	function resolvedTypeDesc(param: ContextParam): TypeDesc | undefined {
-		return param.userType || (isUnknownType(param.inferredType) ? undefined : param.inferredType);
-	}
-
-	function getTypeDesc(param: ContextParam): TypeDesc | null {
-		return resolvedTypeDesc(param) ?? null;
-	}
-
-	function shouldUseStructured(param: ContextParam): boolean {
-		if (rawModes[param.name]) return false;
-		const desc = getTypeDesc(param);
-		return desc !== null && isStructured(desc);
-	}
-
-	// Reset structured values when inferredType changes
-	$effect(() => {
-		for (const param of params) {
-			const typeKey = JSON.stringify(param.inferredType);
-			const prev = prevInferredTypes[param.name];
-			if (prev && prev !== typeKey) {
-				delete structuredValues[param.name];
-			}
-			prevInferredTypes[param.name] = typeKey;
-		}
-	});
-
-	// Initialize structured values lazily via $effect (not during render)
-	$effect(() => {
-		const pendingUpdates: { index: number; value: string }[] = [];
-		for (let idx = 0; idx < params.length; idx++) {
-			const param = params[idx];
-			if (param.resolution.kind !== 'static') continue;
-			if (rawModes[param.name]) continue;
-			if (structuredValues[param.name]) continue;
-			const desc = getTypeDesc(param);
-			if (desc && isStructured(desc)) {
-				const defaultVal = createDefaultValue(desc);
-				structuredValues[param.name] = defaultVal;
-				const script = generateScript(defaultVal, desc);
-				pendingUpdates.push({ index: idx, value: script });
-			}
-		}
-		if (pendingUpdates.length > 0) {
-			const updated = params.map((p, i) => {
-				const upd = pendingUpdates.find((u) => u.index === i);
-				if (upd) return { ...p, resolution: { kind: 'static' as const, value: upd.value } };
-				return p;
-			});
-			onupdate(updated);
-		}
-	});
-
-	function getStructuredValue(param: ContextParam): StructuredValue {
-		return structuredValues[param.name] ?? { kind: 'raw', script: '' };
 	}
 
 	function handleStructuredChange(index: number, param: ContextParam, value: StructuredValue) {
-		structuredValues[param.name] = value;
+		editCache[param.name] = value;
 		const desc = getTypeDesc(param);
 		if (desc) {
 			setStaticValue(index, generateScript(value, desc));
@@ -128,19 +124,28 @@
 	}
 
 	function toggleRawMode(param: ContextParam) {
-		rawModes[param.name] = !rawModes[param.name];
-		if (!rawModes[param.name]) {
-			delete structuredValues[param.name];
+		const newMode = isRawMode(param) ? 'structured' as const : 'raw' as const;
+		if (newMode === 'structured') {
+			// Switching to structured: clear cache so it re-parses from stored value.
+			delete editCache[param.name];
 		}
+		const updated = params.map((p) => {
+			if (p.name !== param.name) return p;
+			return { ...p, editorMode: newMode };
+		});
+		onupdate(updated);
 	}
+
+	let activeParams = $derived(params.filter((p) => p.active !== false));
 </script>
 
-{#if params.length === 0}
+{#if activeParams.length === 0}
 	<p class="text-xs text-muted-foreground italic">No unresolved parameters.</p>
 {:else}
 	<div class="space-y-2">
-		{#each params as param, i (param.name)}
-			<div class="rounded-md border p-3 space-y-2" transition:slide={{ duration: 150 }}>
+		{#each activeParams as param (param.name)}
+			{@const i = params.indexOf(param)}
+			<div class="rounded-md border p-3 space-y-2 {param.resolution.kind === 'unresolved' ? 'border-destructive' : ''}" transition:slide={{ duration: 150 }}>
 				<div class="flex items-center gap-2">
 					<code class="text-xs font-semibold text-foreground">@{param.name}</code>
 					{#if !isUnknownType(param.inferredType)}
@@ -158,7 +163,7 @@
 								size="sm"
 								class="h-6 text-[0.5625rem] px-1.5 text-muted-foreground"
 								onclick={() => toggleRawMode(param)}
-							>{rawModes[param.name] ? 'structured' : 'raw'}</Button>
+							>{isRawMode(param) ? 'structured' : 'raw'}</Button>
 						{/if}
 						<Button
 							variant={param.resolution.kind === 'static' ? 'default' : 'outline'}
@@ -175,7 +180,7 @@
 					</div>
 				</div>
 
-				{#if isUnknownType(param.inferredType) && !param.userType}
+				{#if isUnknownType(param.inferredType)}
 					<div class="space-y-1">
 						<span class="text-[0.625rem] text-muted-foreground">Type hint</span>
 						<Input
@@ -195,6 +200,7 @@
 							value={getStructuredValue(param)}
 							onchange={(v) => handleStructuredChange(i, param, v)}
 							{contextTypes}
+							{analysisErrors}
 						/>
 					{:else}
 						<AcvusEngineField
@@ -203,11 +209,14 @@
 							oninput={(v) => setStaticValue(i, v)}
 							placeholder="static value expression..."
 							{contextTypes}
+							{analysisErrors}
 							expectedTailType={resolvedTypeDesc(param)}
 						/>
 					{/if}
 					{#if !param.resolution.value.trim()}
 						<p class="text-[0.625rem] text-destructive">Static value is required.</p>
+					{:else if !resolvedTypeDesc(param)}
+						<p class="text-[0.625rem] text-destructive">Type is unknown. Specify a type hint.</p>
 					{/if}
 				{:else if param.resolution.kind === 'dynamic'}
 					<p class="text-[0.625rem] text-muted-foreground italic">Provided at each turn input.</p>

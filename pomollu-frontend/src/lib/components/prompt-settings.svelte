@@ -70,6 +70,8 @@
 	// --- Unresolved params analysis ---
 
 	let discoveredContextTypes = $state<Record<string, import('$lib/type-parser.js').TypeDesc>>({});
+	let analysisErrors = $state<string[]>([]);
+	let analysisErrorPhase = $state<'analysis' | 'typecheck' | null>(null);
 	let analyzeTimer: ReturnType<typeof setTimeout> | null = null;
 
 	function runAnalysis() {
@@ -77,7 +79,7 @@
 		const nodeNames = collectNodeNames(prompt.children);
 		nodeNames.add('context');
 		const baseTypes: Record<string, import('$lib/type-parser.js').TypeDesc> = { context: CONTEXT_TYPE };
-		const { discoveredTypes, unresolvedKeys } = analyzeLevel({
+		const result = analyzeLevel({
 			scripts: [
 				...collectScriptsFromBindings(prompt.contextBindings),
 				...collectScriptsFromTree(prompt.children),
@@ -89,9 +91,17 @@
 			children: prompt.children,
 			getApi: (id) => providerStore.get(id)?.api ?? 'openai',
 		});
-		discoveredContextTypes = discoveredTypes;
+		if (!result.ok) {
+			analysisErrors = result.errors;
+			analysisErrorPhase = result.phase;
+			discoveredContextTypes = {};
+			return;
+		}
+		analysisErrors = [];
+		analysisErrorPhase = null;
+		discoveredContextTypes = result.discoveredTypes;
 		promptStore.update(promptId, (p) => ({
-			...p, contextParams: mergeDiscoveredParams(p.contextParams, unresolvedKeys)
+			...p, contextParams: mergeDiscoveredParams(p.contextParams, result.unresolvedKeys)
 		}));
 	}
 
@@ -103,11 +113,14 @@
 		}, 200);
 	}
 
-	// Derive a stable key from binding scripts + children structure.
-	// Only re-analyze when actual script content changes, not contextParams.
+	// Derive a stable key from binding scripts + children + user-set param fields.
+	// Includes resolution values so that changing a static param value triggers
+	// re-analysis for branch-based liveness (known value pruning).
+	// Excludes inferredType and active (analysis outputs) to avoid circular dependency.
 	let analysisKey = $derived(JSON.stringify([
 		prompt?.contextBindings.map((b) => [b.name, b.script]),
 		prompt?.children,
+		prompt?.contextParams?.map((p) => [p.name, p.resolution, p.userType]),
 	]));
 
 	let isFirstRun = true;
@@ -203,6 +216,7 @@
 								oninput={(v) => updateBinding(i, { script: v })}
 								placeholder="e.g. @messages | map(...)"
 								contextTypes={discoveredContextTypes}
+								{analysisErrors}
 								expectedTailType={binding.name === HISTORY_BINDING_NAME ? HISTORY_ENTRY_TYPE : undefined}
 							/>
 							{#if binding.name === HISTORY_BINDING_NAME}
@@ -233,6 +247,7 @@
 							onupdate={handleParamsUpdate}
 							onTypeChange={handleTypeChange}
 							contextTypes={discoveredContextTypes}
+							{analysisErrors}
 						/>
 					</div>
 				{/if}

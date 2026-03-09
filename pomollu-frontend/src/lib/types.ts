@@ -175,6 +175,10 @@ export type ContextParam = {
 	inferredType: TypeDesc;
 	resolution: ParamResolution;
 	userType?: TypeDesc;
+	/** Whether this param is currently referenced in scripts. Default true. */
+	active?: boolean;
+	/** Persisted editor preference: 'structured' (default) or 'raw'. */
+	editorMode?: 'structured' | 'raw';
 };
 
 // --- Prompt (project) ---
