@@ -321,26 +321,15 @@ fn do_analyze(
                     };
                 }
             };
-            match acvus_mir::compile_analysis(interner, &ast, context_types, &registry)
-            {
-                Ok((module, _hints)) => {
-                    let keys = extract_context_keys_with_types(interner, &module, known);
-                    AnalyzeResult {
-                        ok: true,
-                        errors: vec![],
-                        context_keys: keys,
-                        tail_type: TypeDesc::Primitive { name: "String".into() },
-                    }
-                }
-                Err(errs) => AnalyzeResult {
-                    ok: false,
-                    errors: errs
-                        .into_iter()
-                        .map(|e| e.display(interner).to_string())
-                        .collect(),
-                    context_keys: vec![],
-                    tail_type: TypeDesc::Unsupported { raw: String::new() },
-                },
+            let (module, _hints, errs) =
+                acvus_mir::compile_analysis_partial(interner, &ast, context_types, &registry);
+            let keys = extract_context_keys_with_types(interner, &module, known);
+            let errors: Vec<String> = errs.iter().map(|e| e.display(interner).to_string()).collect();
+            AnalyzeResult {
+                ok: errors.is_empty(),
+                errors,
+                context_keys: keys,
+                tail_type: TypeDesc::Primitive { name: "String".into() },
             }
         }
         _ => {
@@ -355,31 +344,21 @@ fn do_analyze(
                     };
                 }
             };
-            match acvus_mir::compile_script_analysis_with_tail(
-                interner,
-                &script,
-                context_types,
-                &registry,
-                expected_tail,
-            ) {
-                Ok((module, _hints, tail_ty)) => {
-                    let keys = extract_context_keys_with_types(interner, &module, known);
-                    AnalyzeResult {
-                        ok: true,
-                        errors: vec![],
-                        context_keys: keys,
-                        tail_type: ty_to_desc(interner, &tail_ty),
-                    }
-                }
-                Err(errs) => AnalyzeResult {
-                    ok: false,
-                    errors: errs
-                        .into_iter()
-                        .map(|e| e.display(interner).to_string())
-                        .collect(),
-                    context_keys: vec![],
-                    tail_type: TypeDesc::Unsupported { raw: String::new() },
-                },
+            let (module, _hints, tail_ty, errs) =
+                acvus_mir::compile_script_analysis_with_tail_partial(
+                    interner,
+                    &script,
+                    context_types,
+                    &registry,
+                    expected_tail,
+                );
+            let keys = extract_context_keys_with_types(interner, &module, known);
+            let errors: Vec<String> = errs.iter().map(|e| e.display(interner).to_string()).collect();
+            AnalyzeResult {
+                ok: errors.is_empty(),
+                errors,
+                context_keys: keys,
+                tail_type: ty_to_desc(interner, &tail_ty),
             }
         }
     }
@@ -1259,5 +1238,32 @@ mod tests {
         assert!(ty_json.contains(r#""kind":"enum""#), "should be enum type, got: {ty_json}");
         assert!(ty_json.contains(r#""hasPayload":true"#), "Active should have payload, got: {ty_json}");
         assert!(ty_json.contains(r#""hasPayload":false"#), "Inactive should have no payload, got: {ty_json}");
+    }
+
+    #[test]
+    fn test_analyze_discovers_keys_despite_type_error() {
+        let interner = test_interner();
+        let ctx = FxHashMap::default();
+        // Template with a type error: `msg + 1` is String + Int mismatch.
+        // Context key @status should still be discovered.
+        let template = "{{ Status::Active(msg) = @status }}{{ msg + 1 }}{{ Status::Inactive = }}inactive{{/}}";
+        let result = do_analyze_test(&interner, template, "template", &ctx);
+        assert!(!result.ok, "should have type errors");
+        assert!(!result.errors.is_empty());
+        // Despite errors, context_keys should still be discovered
+        assert!(!result.context_keys.is_empty(), "should discover context keys despite type error");
+        assert_eq!(result.context_keys[0].name, "status");
+    }
+
+    #[test]
+    fn test_analyze_script_discovers_keys_despite_type_error() {
+        let interner = test_interner();
+        let ctx = FxHashMap::default();
+        // Script with type error: @x is inferred as Int, but "hello" + @x is String + Int mismatch.
+        let result = do_analyze_test(&interner, "@x + 1; \"hello\" + @x", "script", &ctx);
+        assert!(!result.ok, "should have type errors");
+        // Despite errors, context key @x should still be discovered
+        assert!(!result.context_keys.is_empty(), "should discover context keys despite type error");
+        assert_eq!(result.context_keys[0].name, "x");
     }
 }

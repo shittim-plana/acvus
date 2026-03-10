@@ -150,6 +150,70 @@ impl<'a> TypeChecker<'a> {
         Ok((resolved, resolved_tail))
     }
 
+    /// Like `check_template`, but always returns a (partial) TypeMap and collects errors separately.
+    /// Used by analysis-mode compilation so that context-key discovery works even when
+    /// the template contains type errors.
+    pub fn check_template_partial(
+        mut self,
+        template: &Template,
+    ) -> (TypeMap, Vec<MirError>) {
+        self.check_nodes(&template.body);
+        let resolved: TypeMap = self
+            .type_map
+            .iter()
+            .map(|(span, ty)| (*span, self.subst.resolve(ty)))
+            .collect();
+        (resolved, self.errors)
+    }
+
+    /// Like `check_script_with_hint`, but always returns a (partial) TypeMap and collects errors separately.
+    pub fn check_script_with_hint_partial(
+        mut self,
+        script: &acvus_ast::Script,
+        expected_tail: Option<&Ty>,
+    ) -> (TypeMap, Ty, Vec<MirError>) {
+        for stmt in &script.stmts {
+            match stmt {
+                acvus_ast::Stmt::Bind { name, expr, span } => {
+                    let ty = self.check_expr(expr);
+                    self.define_var(*name, ty.clone());
+                    self.record(*span, ty);
+                }
+                acvus_ast::Stmt::Expr(expr) => {
+                    self.check_expr(expr);
+                }
+            }
+        }
+        let tail_ty = match &script.tail {
+            Some(expr) => self.check_expr(expr),
+            None => Ty::Unit,
+        };
+        if let Some(expected) = expected_tail
+            && self.subst.unify(&tail_ty, expected).is_err()
+        {
+            // Record the error but don't fail — we still want the partial results.
+            let span = script
+                .tail
+                .as_ref()
+                .map(|e| e.span())
+                .unwrap_or(Span { start: 0, end: 0 });
+            self.error(
+                MirErrorKind::UnificationFailure {
+                    expected: self.subst.resolve(expected),
+                    got: self.subst.resolve(&tail_ty),
+                },
+                span,
+            );
+        }
+        let resolved: TypeMap = self
+            .type_map
+            .iter()
+            .map(|(span, ty)| (*span, self.subst.resolve(ty)))
+            .collect();
+        let resolved_tail = self.subst.resolve(&tail_ty);
+        (resolved, resolved_tail, self.errors)
+    }
+
     fn push_scope(&mut self) {
         self.scopes.push(FxHashMap::default());
     }

@@ -206,9 +206,9 @@ impl<'a> Lowerer<'a> {
 
     fn tuple_elem_type(&self, tuple_val: ValueId, index: usize) -> Ty {
         if let Some(Ty::Tuple(elems)) = self.body.val_types.get(&tuple_val) {
-            elems.get(index).cloned().unwrap_or(Ty::Unit)
+            elems.get(index).cloned().unwrap_or(Ty::Error)
         } else {
-            Ty::Unit
+            Ty::Error
         }
     }
 
@@ -216,15 +216,15 @@ impl<'a> Lowerer<'a> {
         if let Some(Ty::List(elem)) = self.body.val_types.get(&list_val) {
             elem.as_ref().clone()
         } else {
-            Ty::Unit
+            Ty::Error
         }
     }
 
     fn object_field_type(&self, object_val: ValueId, key: Astr) -> Ty {
         if let Some(Ty::Object(fields)) = self.body.val_types.get(&object_val) {
-            fields.get(&key).cloned().unwrap_or(Ty::Unit)
+            fields.get(&key).cloned().unwrap_or(Ty::Error)
         } else {
-            Ty::Unit
+            Ty::Error
         }
     }
 
@@ -232,7 +232,7 @@ impl<'a> Lowerer<'a> {
         if let Some(Ty::Option(inner)) = self.body.val_types.get(&variant_val) {
             inner.as_ref().clone()
         } else {
-            Ty::Unit
+            Ty::Error
         }
     }
 
@@ -240,7 +240,7 @@ impl<'a> Lowerer<'a> {
         match self.body.val_types.get(&src_val) {
             Some(Ty::List(elem)) => elem.as_ref().clone(),
             Some(Ty::Range) => Ty::Int,
-            _ => Ty::Unit,
+            _ => Ty::Error,
         }
     }
 
@@ -347,7 +347,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn type_of_span(&self, span: Span) -> Ty {
-        self.type_map.get(&span).cloned().unwrap_or(Ty::Unit)
+        self.type_map.get(&span).cloned().unwrap_or(Ty::Error)
     }
 
     // --- Node lowering ---

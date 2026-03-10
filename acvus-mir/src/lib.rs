@@ -83,6 +83,22 @@ pub fn compile_analysis(
     Ok((module, hints))
 }
 
+/// Like `compile_analysis`, but always returns a module even when type errors exist.
+/// Errors are returned alongside the module so callers can still extract context keys.
+pub fn compile_analysis_partial(
+    interner: &Interner,
+    template: &Template,
+    context_types: &FxHashMap<Astr, Ty>,
+    registry: &ExternRegistry,
+) -> (MirModule, HintTable, Vec<MirError>) {
+    let checker =
+        TypeChecker::new(interner, context_types, registry).with_analysis_mode();
+    let (type_map, errors) = checker.check_template_partial(template);
+    let lowerer = Lowerer::new(interner, type_map, registry);
+    let (module, hints) = lowerer.lower_template(template);
+    (module, hints, errors)
+}
+
 /// Compile a script in analysis mode.
 pub fn compile_script_analysis(
     interner: &Interner,
@@ -108,6 +124,23 @@ pub fn compile_script_analysis_with_tail(
     let lowerer = Lowerer::new(interner, type_map, registry);
     let (module, hints) = lowerer.lower_script(script);
     Ok((module, hints, tail_ty))
+}
+
+/// Like `compile_script_analysis_with_tail`, but always returns a module even when type errors exist.
+pub fn compile_script_analysis_with_tail_partial(
+    interner: &Interner,
+    script: &Script,
+    context_types: &FxHashMap<Astr, Ty>,
+    registry: &ExternRegistry,
+    expected_tail: Option<&Ty>,
+) -> (MirModule, HintTable, Ty, Vec<MirError>) {
+    let checker =
+        TypeChecker::new(interner, context_types, registry).with_analysis_mode();
+    let (type_map, tail_ty, errors) =
+        checker.check_script_with_hint_partial(script, expected_tail);
+    let lowerer = Lowerer::new(interner, type_map, registry);
+    let (module, hints) = lowerer.lower_script(script);
+    (module, hints, tail_ty, errors)
 }
 
 #[cfg(test)]
