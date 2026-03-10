@@ -16,6 +16,7 @@
 	import { Download } from 'lucide-svelte';
 	import { downloadJson } from '$lib/io.js';
 	import { onDestroy } from 'svelte';
+	import { confirmDelete } from '$lib/confirm-dialog.svelte.js';
 
 	let { promptId }: { promptId: string } = $props();
 
@@ -67,12 +68,8 @@
 	let analyzeTimer: ReturnType<typeof setTimeout> | null = null;
 
 	function runAnalysis() {
-		if (!prompt) throw new Error(`prompt '${promptId}' not found`);
-		const result = analyzePrompt(prompt, (id) => {
-			const p = providerStore.get(id);
-			if (!p) throw new Error(`provider '${id}' not found`);
-			return p.api;
-		});
+		if (!prompt) return;
+		const result = analyzePrompt(prompt, (id) => providerStore.get(id)?.api ?? '');
 		discoveredContextTypes = result.env.contextTypes;
 		promptStore.update(promptId, (p) => ({
 			...p, contextParams: result.params
@@ -138,7 +135,7 @@
 			<Button variant="ghost" size="icon-sm" class="text-muted-foreground" onclick={() => prompt && downloadJson(prompt, `${prompt.name}.prompt.json`)} title="Export">
 				<Download class="h-3.5 w-3.5" />
 			</Button>
-			<Button variant="ghost" size="icon-sm" class="text-muted-foreground hover:text-destructive" onclick={() => uiState.removePrompt(promptId)} title="Delete prompt">
+			<Button variant="ghost" size="icon-sm" class="text-muted-foreground hover:text-destructive" onclick={async () => { if (await confirmDelete('Delete this prompt?')) uiState.removePrompt(promptId); }} title="Delete prompt">
 				&times;
 			</Button>
 		</div>

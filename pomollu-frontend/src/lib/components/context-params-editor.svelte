@@ -4,7 +4,6 @@
 	import { parseTypeDesc, parseScript, isStructured, createDefaultValue, generateScript, isUnknownType, typeDescToString } from '$lib/type-parser.js';
 	import { Input } from '$lib/components/ui/input';
 	import { Button } from '$lib/components/ui/button';
-	import { Badge } from '$lib/components/ui/badge';
 	import { slide } from 'svelte/transition';
 	import AcvusEngineField from './acvus-engine-field.svelte';
 	import StructuredValueEditor from './structured-value-editor.svelte';
@@ -134,6 +133,12 @@
 		onupdate(updated);
 	}
 
+	/** Type string for placeholder display. Empty if unknown and no user hint. */
+	function typePlaceholder(param: ContextParam): string {
+		const desc = resolvedTypeDesc(param);
+		return desc ? typeDescToString(desc) : '';
+	}
+
 	let activeParams = $derived(params.filter((p) => p.active !== false));
 </script>
 
@@ -144,17 +149,10 @@
 		{#each activeParams as param (param.name)}
 			{@const i = params.indexOf(param)}
 			<div class="rounded-md border p-3 space-y-2 {param.resolution.kind === 'unresolved' ? 'border-destructive' : ''}" transition:slide={{ duration: 150 }}>
-				<div class="flex items-center gap-2">
-					<code class="text-xs font-semibold text-foreground">@{param.name}</code>
-					{#if !isUnknownType(param.inferredType)}
-						<Badge variant="secondary" class="text-[0.625rem]">{typeDescToString(param.inferredType)}</Badge>
-					{:else if param.userType}
-						<Badge variant="outline" class="text-[0.625rem]">{typeDescToString(param.userType)}</Badge>
-					{:else}
-						<Badge variant="destructive" class="text-[0.625rem]">?</Badge>
-					{/if}
+				<div class="flex flex-wrap items-center gap-2">
+					<code class="text-xs font-semibold text-foreground break-all">@{param.name}</code>
 					<div class="flex-1"></div>
-					<div class="flex gap-1">
+					<div class="flex gap-1 shrink-0">
 						{#if param.resolution.kind === 'static' && getTypeDesc(param) && isStructured(getTypeDesc(param)!)}
 							<Button
 								variant="ghost"
@@ -198,16 +196,14 @@
 							value={getStructuredValue(param)}
 							onchange={(v) => handleStructuredChange(i, param, v)}
 							{contextTypes}
-	
 						/>
 					{:else}
 						<AcvusEngineField
 							mode="script"
 							value={param.resolution.value}
 							oninput={(v) => setStaticValue(i, v)}
-							placeholder="static value expression..."
+							placeholder={typePlaceholder(param) || 'static value expression...'}
 							{contextTypes}
-	
 							expectedTailType={resolvedTypeDesc(param)}
 						/>
 					{/if}

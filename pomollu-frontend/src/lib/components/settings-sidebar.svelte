@@ -4,6 +4,7 @@
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import SidebarList from './sidebar-list.svelte';
 	import { pickJsonFile, withNewId, validatePrompt, validateProfile } from '$lib/io.js';
+	import { confirmDelete } from '$lib/confirm-dialog.svelte.js';
 
 	let collapsed: Record<string, boolean> = $state({});
 
@@ -63,12 +64,14 @@
 		uiState.removeProvider(id);
 	}
 
-	function deletePrompt(id: string) {
+	async function deletePrompt(id: string) {
+		if (!await confirmDelete('Delete this prompt?')) return;
 		promptStore.remove(id);
 		uiState.removePrompt(id);
 	}
 
-	function deleteProfile(id: string) {
+	async function deleteProfile(id: string) {
+		if (!await confirmDelete('Delete this profile?')) return;
 		profileStore.remove(id);
 		uiState.removeProfile(id);
 	}

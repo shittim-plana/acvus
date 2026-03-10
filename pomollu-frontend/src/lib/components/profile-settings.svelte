@@ -12,6 +12,7 @@
 	import { Download } from 'lucide-svelte';
 	import { downloadJson } from '$lib/io.js';
 	import { onDestroy } from 'svelte';
+	import { confirmDelete } from '$lib/confirm-dialog.svelte.js';
 
 	let { profileId }: { profileId: string } = $props();
 
@@ -23,12 +24,8 @@
 	let discoveredContextTypes = $state<Record<string, import('$lib/type-parser.js').TypeDesc>>({});
 
 	function runAnalysis() {
-		if (!profile) throw new Error(`profile '${profileId}' not found`);
-		const result = analyzeProfile(profile, (id) => {
-			const p = providerStore.get(id);
-			if (!p) throw new Error(`provider '${id}' not found`);
-			return p.api;
-		});
+		if (!profile) return;
+		const result = analyzeProfile(profile, (id) => providerStore.get(id)?.api ?? '');
 		discoveredContextTypes = result.env.contextTypes;
 		profileStore.update(profileId, (p) => ({
 			...p, contextParams: result.params
@@ -85,7 +82,7 @@
 			<Button variant="ghost" size="icon-sm" class="text-muted-foreground" onclick={() => profile && downloadJson(profile, `${profile.name}.profile.json`)} title="Export">
 				<Download class="h-3.5 w-3.5" />
 			</Button>
-			<Button variant="ghost" size="icon-sm" class="text-muted-foreground hover:text-destructive" onclick={() => uiState.removeProfile(profileId)} title="Delete profile">
+			<Button variant="ghost" size="icon-sm" class="text-muted-foreground hover:text-destructive" onclick={async () => { if (await confirmDelete('Delete this profile?')) uiState.removeProfile(profileId); }} title="Delete profile">
 				&times;
 			</Button>
 		</div>

@@ -17,6 +17,7 @@
 	import { analyzeBot } from '$lib/param-resolver.js';
 	import { analyzeWithTypes } from '$lib/engine.js';
 	import { onDestroy } from 'svelte';
+	import { confirmDelete } from '$lib/confirm-dialog.svelte.js';
 
 	let { botId }: { botId: string } = $props();
 
@@ -145,17 +146,15 @@
 	let discoveredContextTypes = $state<Record<string, import('$lib/type-parser.js').TypeDesc>>({});
 
 	function runAnalysis() {
-		if (!bot) throw new Error('bot not found');
+		if (!bot) return;
 		const prompt = promptStore.get(bot.promptId);
-		if (!prompt) throw new Error(`prompt '${bot.promptId}' not found`);
 		const profile = profileStore.get(bot.profileId);
-		if (!profile) throw new Error(`profile '${bot.profileId}' not found`);
+		if (!prompt || !profile) {
+			discoveredContextTypes = {};
+			return;
+		}
 
-		const result = analyzeBot(bot, prompt, profile, (id) => {
-			const p = providerStore.get(id);
-			if (!p) throw new Error(`provider '${id}' not found`);
-			return p.api;
-		});
+		const result = analyzeBot(bot, prompt, profile, (id) => providerStore.get(id)?.api ?? '');
 		discoveredContextTypes = result.env.contextTypes;
 		botStore.update(bot.id, (b) => ({
 			...b, contextParams: result.ownParams
@@ -252,7 +251,7 @@
 				<Button variant="ghost" size="icon-sm" class="text-muted-foreground" onclick={() => downloadJson(bot, `${bot.name}.bot.json`)} title="Export">
 					<Download class="h-3.5 w-3.5" />
 				</Button>
-				<Button variant="ghost" size="icon-sm" class="text-muted-foreground hover:text-destructive" onclick={() => uiState.removeBot(bot.id)} title="Delete bot">
+				<Button variant="ghost" size="icon-sm" class="text-muted-foreground hover:text-destructive" onclick={async () => { if (await confirmDelete('Delete this bot? This will also delete all its sessions.')) uiState.removeBot(bot.id); }} title="Delete bot">
 					&times;
 				</Button>
 			</div>

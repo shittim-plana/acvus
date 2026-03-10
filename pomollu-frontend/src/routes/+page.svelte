@@ -13,6 +13,7 @@
 	import BlockEditorPage from '$lib/components/block-editor-page.svelte';
 	import TabBar from '$lib/components/tab-bar.svelte';
 	import SyncIndicator from '$lib/components/sync-indicator.svelte';
+	import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
 	import { sessionStore, botStore, promptStore, profileStore, providerStore, uiState } from '$lib/stores.svelte.js';
 	import type { BlockOwner } from '$lib/stores.svelte.js';
 	import { initPersistence } from '$lib/persistence.svelte.js';
@@ -33,31 +34,26 @@
 	let envTimer: ReturnType<typeof setTimeout> | null = null;
 	let lastOwnerKey: string | null = null;
 
-	function computeFullEnv(owner: BlockOwner): TwoPassResult {
-		const getApi = (pid: string) => {
-			const p = providerStore.get(pid);
-			if (!p) throw new Error(`provider '${pid}' not found`);
-			return p.api;
-		};
+	function computeFullEnv(owner: BlockOwner): TwoPassResult | null {
+		const getApi = (pid: string) => providerStore.get(pid)?.api ?? '';
 
 		switch (owner.kind) {
 			case 'prompt': {
 				const prompt = promptStore.get(owner.promptId);
-				if (!prompt) throw new Error(`prompt '${owner.promptId}' not found`);
+				if (!prompt) return null;
 				return analyzePrompt(prompt, getApi);
 			}
 			case 'profile': {
 				const profile = profileStore.get(owner.profileId);
-				if (!profile) throw new Error(`profile '${owner.profileId}' not found`);
+				if (!profile) return null;
 				return analyzeProfile(profile, getApi);
 			}
 			case 'bot': {
 				const bot = botStore.get(owner.botId);
-				if (!bot) throw new Error(`bot '${owner.botId}' not found`);
+				if (!bot) return null;
 				const prompt = promptStore.get(bot.promptId);
-				if (!prompt) throw new Error(`prompt '${bot.promptId}' not found`);
 				const profile = profileStore.get(bot.profileId);
-				if (!profile) throw new Error(`profile '${bot.profileId}' not found`);
+				if (!prompt || !profile) return null;
 				return analyzeBot(bot, prompt, profile, getApi);
 			}
 		}
@@ -115,6 +111,10 @@
 	// First load (tab switch) = immediate. Content changes = debounced. Both compute from scratch.
 	function applyFullEnv(owner: BlockOwner) {
 		const result = computeFullEnv(owner);
+		if (!result) {
+			ownerEnv = EMPTY_ENV;
+			return;
+		}
 		ownerEnv = result.env;
 		syncOwnerParams(owner, result.params);
 	}
@@ -163,6 +163,7 @@
 </script>
 
 <SyncIndicator />
+<ConfirmDialog />
 
 <!-- Mobile toolbar -->
 <div class="mobile-toolbar md:hidden flex items-center justify-between border-b bg-background px-3 py-2">

@@ -81,7 +81,7 @@
 		// Re-initialize session (lazy — ensureChatSession is idempotent)
 		if (!isConfigured || destroyed) return;
 		ensureChatSession().catch((e) => {
-			console.warn('[session switch] ensureChatSession failed:', e);
+			errorMsg = e instanceof Error ? e.message : String(e);
 		});
 	});
 
@@ -151,7 +151,7 @@
 		ensureChatSession().then((cs) => {
 			if (!destroyed && !isLoading) renderRegions(cs);
 		}).catch((e) => {
-			console.warn('[regions effect] ensureChatSession failed:', e);
+			errorMsg = e instanceof Error ? e.message : String(e);
 		});
 	});
 

@@ -192,9 +192,9 @@ export type BuildResult =
 
 export function buildSessionConfig(bot: Bot): BuildResult | null {
 	const prompt = promptStore.get(bot.promptId);
-	if (!prompt) throw new Error(`prompt '${bot.promptId}' not found`);
+	if (!prompt) return { ok: false as const, errors: ['Prompt not found. Select a prompt in bot settings.'] };
 	const profile = profileStore.get(bot.profileId);
-	if (!profile) throw new Error(`profile '${bot.profileId}' not found`);
+	if (!profile) return { ok: false as const, errors: ['Profile not found. Select a profile in bot settings.'] };
 
 	// Collect all blocks (for RawBlock lookup + ScriptBlock → Expr nodes)
 	const allBlocks: Block[] = [];
@@ -271,11 +271,7 @@ export function buildSessionConfig(bot: Bot): BuildResult | null {
 
 	// analyzeBot typechecks all 3 levels and returns ALL params merged
 	// (prompt + profile + bot). This is the single source of truth.
-	const analysisResult = analyzeBot(bot, prompt, profile, (id) => {
-		const p = providerStore.get(id);
-		if (!p) throw new Error(`provider '${id}' not found`);
-		return p.api;
-	});
+	const analysisResult = analyzeBot(bot, prompt, profile, (id) => providerStore.get(id)?.api ?? '');
 	// Use ALL params for the session config, not just active ones.
 	// active flag is for UI display (hiding pruned params in editor) — not for compilation.
 	// Dead-branch params are harmless: WASM simply won't evaluate them at runtime.

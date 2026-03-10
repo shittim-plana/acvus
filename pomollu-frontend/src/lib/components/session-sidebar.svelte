@@ -3,6 +3,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import SidebarItem from './sidebar-item.svelte';
+	import { confirmDelete } from '$lib/confirm-dialog.svelte.js';
 
 	let activeBot = $derived(botStore.active);
 	let sessions = $derived(activeBot ? sessionStore.forBot(activeBot.id) : []);
@@ -24,7 +25,7 @@
 				<SidebarItem
 					active={session.id === sessionStore.activeSessionId}
 					onselect={() => { uiState.selectSession(session.id); uiState.closeMobileSidebars(); }}
-					ondelete={() => uiState.removeSession(session.id)}
+					ondelete={async () => { if (await confirmDelete('Delete this session?')) uiState.removeSession(session.id); }}
 				>
 					{session.name}
 				</SidebarItem>

@@ -151,12 +151,11 @@
 <div class="sf-wrap" class:sf-unlimited={unlimited}>
 	<div class="sf-editor" class:sf-unlimited={unlimited} style:--sf-rows={rows}>
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div class="sf-hl" bind:this={hlEl} aria-hidden="true">{@html hlHtml}</div>
+		<div class="sf-hl" bind:this={hlEl} aria-hidden="true">{#if !value && placeholder}<span class="sf-placeholder">{placeholder}</span>{:else}{@html hlHtml}{/if}</div>
 		<textarea
 			class="sf-textarea"
 			class:sf-error={hasError}
 			{rows}
-			{placeholder}
 			{value}
 			oninput={handleInput}
 			onblur={handleBlur}
@@ -183,7 +182,7 @@
 	}
 	.sf-editor {
 		position: relative;
-		min-height: calc(var(--sf-rows, 1) * 1.625em + 0.75rem);
+		min-height: calc(var(--sf-rows, 1) * 0.75rem * 1.625 + 0.75rem);
 	}
 	.sf-editor.sf-unlimited {
 		flex: 1;
@@ -258,8 +257,10 @@
 	.sf-textarea.sf-error:focus {
 		box-shadow: 0 0 0 1px var(--color-destructive);
 	}
-	.sf-textarea::placeholder {
+	.sf-placeholder {
 		color: var(--color-muted-foreground);
+		pointer-events: none;
+		user-select: none;
 	}
 	.sf-error-msg {
 		font-size: 0.6875rem;

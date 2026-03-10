@@ -24,7 +24,6 @@
 			placeholder="Script content..."
 			rows={12}
 			{contextTypes}
-	
 		/>
 	</div>
 </div>

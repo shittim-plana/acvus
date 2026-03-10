@@ -291,7 +291,6 @@
 									value={strategy.key}
 									oninput={(v) => updateNode((n) => ({ ...n, strategy: { mode: 'if-modified', key: v } }))}
 									contextTypes={mergedContextTypes}
-									
 									fieldError={fieldErrors['ifModifiedKey'] ?? ''}
 									discoverContext
 								/>
@@ -306,7 +305,6 @@
 									value={strategy.historyBind}
 									oninput={(v) => updateNode((n) => ({ ...n, strategy: { mode: 'history', historyBind: v } }))}
 									contextTypes={mergedContextTypes}
-									
 									fieldError={fieldErrors['historyBind'] ?? ''}
 									discoverContext
 								/>
@@ -323,7 +321,6 @@
 								oninput={(v) => updateNode((n) => ({ ...n, selfSpec: { ...n.selfSpec, initialValue: v } }))}
 								contextTypes={mergedContextTypes}
 								expectedTailType={locals?.self}
-								
 								fieldError={fieldErrors['initialValue'] ?? ''}
 								discoverContext
 							/>
@@ -350,7 +347,6 @@
 									oninput={(v) => updateNode((n) => ({ ...n, assert: v }))}
 									contextTypes={mergedContextTypes}
 									expectedTailType={{ kind: 'primitive', name: 'Bool' }}
-									
 									fieldError={fieldErrors['assert'] ?? ''}
 									discoverContext
 								/>
@@ -472,7 +468,6 @@
 															value={src.template}
 															oninput={(v) => setMessageSource(i, { type: 'inline', template: v })}
 															contextTypes={mergedContextTypes}
-															
 															fieldError={msgErrors[String(i)] ?? ''}
 															discoverContext
 														/>
@@ -505,7 +500,6 @@
 														value={msg.iterator}
 														oninput={(v) => updateMessage(i, { iterator: v })}
 														contextTypes={mergedContextTypes}
-														
 														fieldError={msgErrors[String(i)] ?? ''}
 														discoverContext
 													/>

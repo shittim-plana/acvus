@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { TypeDesc, StructuredValue } from '$lib/type-parser.js';
-	import { createDefaultValue, isStructured } from '$lib/type-parser.js';
+	import { createDefaultValue, isStructured, typeDescToString } from '$lib/type-parser.js';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import { Switch } from '$lib/components/ui/switch';
@@ -35,8 +35,8 @@
 		mode="script"
 		value={value.kind === 'raw' ? value.script : ''}
 		oninput={(v) => onchange({ kind: 'raw', script: v })}
+		placeholder={typeDescToString(typeDesc)}
 		{contextTypes}
-
 	/>
 {:else if typeDesc.kind === 'primitive'}
 	{#if typeDesc.name === 'Bool'}
@@ -67,6 +67,7 @@
 		<!-- String -->
 		<Input
 			class="text-xs h-7"
+			placeholder={typeDescToString(typeDesc)}
 			value={value.kind === 'primitive' ? value.value : ''}
 			oninput={(e) => onchange({ kind: 'primitive', value: e.currentTarget.value })}
 		/>
@@ -105,7 +106,6 @@
 						value={value.kind === 'option-some' ? value.inner : createDefaultValue(typeDesc.inner)}
 						onchange={(v: StructuredValue) => onchange({ kind: 'option-some', inner: v })}
 						{contextTypes}
-				
 						depth={depth + 1}
 					/>
 				</div>
@@ -116,7 +116,6 @@
 						value={value.kind === 'option-some' && value.inner.kind === 'raw' ? value.inner.script : ''}
 						oninput={(v) => onchange({ kind: 'option-some', inner: { kind: 'raw', script: v } })}
 						{contextTypes}
-				
 					/>
 				</div>
 			{/if}
@@ -139,11 +138,11 @@
 			}}
 		>
 			<Select.Trigger class="h-7 text-xs w-full" size="sm">
-				<span>{selected}</span>
+				<span>{selected.replaceAll('_', ' ')}</span>
 			</Select.Trigger>
 			<Select.Content>
 				{#each typeDesc.variants as variant (variant.tag)}
-					<Select.Item value={variant.tag}>{variant.tag}</Select.Item>
+					<Select.Item value={variant.tag}>{variant.tag.replaceAll('_', ' ')}</Select.Item>
 				{/each}
 			</Select.Content>
 		</Select.Root>
@@ -157,7 +156,6 @@
 						value={payloadValue}
 						onchange={(v: StructuredValue) => onchange({ kind: 'enum-variant', tag: selected, payload: v })}
 						{contextTypes}
-				
 						depth={depth + 1}
 					/>
 				</div>
@@ -168,7 +166,6 @@
 						value={payloadValue.kind === 'raw' ? payloadValue.script : ''}
 						oninput={(v) => onchange({ kind: 'enum-variant', tag: selected, payload: { kind: 'raw', script: v } })}
 						{contextTypes}
-				
 					/>
 				</div>
 			{/if}
@@ -179,7 +176,7 @@
 	<div class="space-y-2">
 		{#each typeDesc.fields as field (field.name)}
 			<div class="space-y-0.5">
-				<Label class="text-[0.625rem] text-muted-foreground font-medium">{field.name}</Label>
+				<Label class="text-[0.625rem] text-muted-foreground font-medium">{field.name}: {typeDescToString(field.type)}</Label>
 				{#if isStructured(field.type)}
 					<Self
 						typeDesc={field.type}
@@ -190,7 +187,6 @@
 							onchange({ kind: 'object', fields });
 						}}
 						{contextTypes}
-				
 						depth={depth + 1}
 					/>
 				{:else}
@@ -204,8 +200,8 @@
 							fields[field.name] = { kind: 'raw', script: v };
 							onchange({ kind: 'object', fields });
 						}}
+						placeholder={typeDescToString(field.type)}
 						{contextTypes}
-				
 					/>
 				{/if}
 			</div>

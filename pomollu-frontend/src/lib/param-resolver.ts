@@ -89,7 +89,13 @@ export function collectNodeNames(children: BlockNode[]): Set<string> {
 	return new Set(collectNodes(children).map((n) => n.name).filter((n) => n));
 }
 
-type CollectParamsResult = { keys: ContextKeyInfo[] };
+/**
+ * Result of collectUnresolvedParams.
+ *
+ * `hasSkippedScripts`: true if any script failed to analyze (syntax error, etc.)
+ * and was skipped. This is critical for Sanitization — see twoPassAnalysis.
+ */
+type CollectParamsResult = { keys: ContextKeyInfo[]; hasSkippedScripts: boolean };
 
 function collectUnresolvedParams(opts: {
 	scripts: { source: string; mode: 'script' | 'template' }[];
@@ -99,6 +105,7 @@ function collectUnresolvedParams(opts: {
 	knownScripts?: Record<string, string>;
 }): CollectParamsResult {
 	const seen = new Map<string, { type: TypeDesc; status: 'eager' | 'lazy' | 'pruned' }>();
+	let hasSkippedScripts = false;
 
 	const knownEntries = opts.knownScripts ? Object.entries(opts.knownScripts) : [];
 	for (const { source, mode } of opts.scripts) {
@@ -109,6 +116,7 @@ function collectUnresolvedParams(opts: {
 			: analyzeWithTypes(source, mode, opts.contextTypes);
 		if (!result.ok) {
 			console.warn('[collectUnresolvedParams] skipping failed script:', mode, source.slice(0, 80), result.errors);
+			hasSkippedScripts = true;
 			continue;
 		}
 		const filteredKeys = result.context_keys.filter(
@@ -130,7 +138,7 @@ function collectUnresolvedParams(opts: {
 	const keys = Array.from(seen.entries())
 		.map(([name, { type, status }]) => ({ name, type, status }))
 		.sort((a, b) => a.name.localeCompare(b.name));
-	return { keys };
+	return { keys, hasSkippedScripts };
 }
 
 /**
@@ -143,7 +151,8 @@ function collectUnresolvedParams(opts: {
  * ── Phase 1: Pure Type Discovery ──────────────────────────────────
  * Analyzes all scripts WITHOUT known values.
  * All branches are live → all @context refs are discovered with correct types.
- * Params not found here are garbage → deleted.
+ * If all scripts succeed, keys not found here are orphans → deleted.
+ * If any script fails, existing params are preserved (see Sanitization).
  *
  * ── Phase 2: Typecheck + Pruning ──────────────────────────────────
  * Typechecks with Phase 1's full type set (compiles including dead branches).
@@ -151,9 +160,23 @@ function collectUnresolvedParams(opts: {
  * Pruned keys → active: false (hidden in UI, settings preserved).
  *
  * ── Sanitization ──────────────────────────────────────────────────
- * Only keys found in Phase 1 survive — everything else is deleted.
- * Existing resolution/userType/editorMode from existingParams is preserved.
- * The resulting params can be stored directly.
+ * Merges Phase 1 discovered keys with existingParams.
+ * Behavior depends on whether Phase 1 had skipped (failed) scripts:
+ *
+ *   ALL scripts succeeded (hasSkippedScripts = false):
+ *     Phase 1 result is AUTHORITATIVE — keys not found are truly gone.
+ *     → Only Phase 1 keys survive. Orphan params are deleted.
+ *
+ *   Some scripts failed (hasSkippedScripts = true):
+ *     Phase 1 result is INCOMPLETE — failed scripts may have contributed keys
+ *     that we can't see right now.
+ *     → Existing params are PRESERVED to protect user settings (resolution,
+ *       userType, editorMode) from being destroyed by a transient syntax error.
+ *     → Phase 1 keys are merged in (new discoveries added, types updated).
+ *
+ * This distinction prevents the scenario where a temporary typo wipes out
+ * all param settings, which then don't come back even after fixing the typo
+ * (because the store was already overwritten with empty params).
  *
  * IMPORTANT: Phase 1 MUST run WITHOUT known values.
  * If known values are provided, the engine's partition logic
@@ -237,9 +260,11 @@ export function twoPassAnalysis(opts: {
 	}
 
 	// ── Sanitization ──
-	// Only Phase 1 keys survive. Everything else is deleted.
-	// Pruned status determines active flag.
+	// See docstring above for the full explanation of the two modes.
 	const existingMap = new Map(opts.existingParams.map((p) => [p.name, p]));
+	const phase1KeySet = new Set(phase1.keys.map((k) => k.name));
+
+	// Build params from Phase 1 discovered keys (always included).
 	const params: ContextParam[] = phase1.keys.map((k) => {
 		const prev = existingMap.get(k.name);
 		return {
@@ -251,6 +276,18 @@ export function twoPassAnalysis(opts: {
 			active: survivingNames.has(k.name),
 		};
 	});
+
+	// When scripts were skipped, preserve existing params that Phase 1 didn't see.
+	// These may belong to the failed scripts — deleting them would destroy user settings.
+	if (phase1.hasSkippedScripts) {
+		for (const prev of opts.existingParams) {
+			if (!phase1KeySet.has(prev.name)) {
+				params.push(prev);
+			}
+		}
+		// Re-sort to maintain stable ordering after merge.
+		params.sort((a, b) => a.name.localeCompare(b.name));
+	}
 
 	const activeParams = params.filter((p) => p.active);
 	return { env, params, activeParams, ownParams: params };

@@ -5,6 +5,7 @@
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import { longpress } from '$lib/actions/longpress.js';
 	import { pickJsonFile, withNewId, validateBot } from '$lib/io.js';
+	import { confirmDelete } from '$lib/confirm-dialog.svelte.js';
 
 	async function importBot() {
 		const data = await pickJsonFile();
@@ -47,7 +48,7 @@
 					</button>
 					<button
 						class="bot-delete"
-						onclick={(e) => { e.stopPropagation(); uiState.removeBot(bot.id); }}
+						onclick={async (e) => { e.stopPropagation(); if (await confirmDelete('Delete this bot? This will also delete all its sessions.')) uiState.removeBot(bot.id); }}
 						title="Delete bot"
 					>&times;</button>
 				</div>
