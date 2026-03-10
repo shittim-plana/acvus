@@ -4,12 +4,16 @@
 	import { Label } from '$lib/components/ui/label';
 	import { Button } from '$lib/components/ui/button';
 	import { providerStore, uiState } from '$lib/stores.svelte.js';
+	import type { EntityRef } from '$lib/entity-versions.svelte.js';
+	import BasePage from './base-page.svelte';
 
 	let { providerId }: { providerId: string } = $props();
 
 	let provider = $derived(providerStore.get(providerId));
+	let deps = $derived<EntityRef[]>([{ kind: 'provider', id: providerId }]);
 </script>
 
+<BasePage {deps} onConfigChange={() => {}}>
 <div class="flex h-full flex-col">
 	<div class="flex items-center justify-between shrink-0 border-b px-4 py-2">
 		<span class="text-sm font-medium">Provider Settings</span>
@@ -61,3 +65,4 @@
 		</div>
 	{/if}
 </div>
+</BasePage>

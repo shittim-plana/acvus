@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { ContextBinding, ContextParam } from '$lib/types.js';
+	import type { ContextBinding, ContextParam, ParamOverride } from '$lib/types.js';
 	import { HISTORY_BINDING_NAME, HISTORY_ENTRY_TYPE, CONTEXT_TYPE } from '$lib/types.js';
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import { Input } from '$lib/components/ui/input';
@@ -12,15 +12,17 @@
 	import * as Select from '$lib/components/ui/select';
 	import AcvusEngineField from './acvus-engine-field.svelte';
 	import ContextParamsEditor from './context-params-editor.svelte';
-	import { analyzePrompt } from '$lib/param-resolver.js';
+	import { analyzePrompt, mergeParams } from '$lib/param-resolver.js';
+	import { collectPromptDeps } from '$lib/dependencies.js';
 	import { Download } from 'lucide-svelte';
 	import { downloadJson } from '$lib/io.js';
-	import { onDestroy } from 'svelte';
 	import { confirmDelete } from '$lib/confirm-dialog.svelte.js';
+	import BasePage from './base-page.svelte';
 
 	let { promptId }: { promptId: string } = $props();
 
 	let prompt = $derived(promptStore.get(promptId));
+	let deps = $derived(prompt ? collectPromptDeps(prompt) : []);
 	let bindings = $derived(prompt?.contextBindings ?? []);
 
 	function isRequired(binding: ContextBinding): boolean {
@@ -65,70 +67,34 @@
 	// --- Unresolved params analysis ---
 
 	let discoveredContextTypes = $state<Record<string, import('$lib/type-parser.js').TypeDesc>>({});
-	let analyzeTimer: ReturnType<typeof setTimeout> | null = null;
+	let analysisResult = $state<ContextParam[]>([]);
+	let mergedParams = $derived(mergeParams(analysisResult, prompt?.paramOverrides ?? {}));
 
 	function runAnalysis() {
 		if (!prompt) return;
 		const result = analyzePrompt(prompt, (id) => providerStore.get(id)?.api ?? '');
 		discoveredContextTypes = result.env.contextTypes;
-		promptStore.update(promptId, (p) => ({
-			...p, contextParams: result.params
-		}));
+		analysisResult = result.params;
 	}
-
-	function scheduleAnalysis() {
-		if (analyzeTimer) clearTimeout(analyzeTimer);
-		analyzeTimer = setTimeout(() => {
-			analyzeTimer = null;
-			runAnalysis();
-		}, 200);
-	}
-
-	// Derive a stable key from binding scripts + children + user-set param fields.
-	// Includes resolution values so that changing a static param value triggers
-	// re-analysis for branch-based liveness (known value pruning).
-	// Excludes inferredType and active (analysis outputs) to avoid circular dependency.
-	let analysisKey = $derived(JSON.stringify([
-		prompt?.contextBindings.map((b) => [b.name, b.script]),
-		prompt?.children,
-		prompt?.contextParams?.map((p) => [p.name, p.resolution, p.userType]),
-	]));
-
-	let isFirstRun = true;
-
-	$effect(() => {
-		void analysisKey;
-		if (isFirstRun) {
-			isFirstRun = false;
-			runAnalysis();
-		} else {
-			scheduleAnalysis();
-		}
-	});
-
-	onDestroy(() => {
-		if (analyzeTimer) clearTimeout(analyzeTimer);
-	});
 
 	function handleParamsUpdate(params: ContextParam[]) {
-		promptStore.update(promptId, (p) => ({ ...p, contextParams: params }));
-	}
-
-	function handleTypeChange(_name: string, _type: string) {
-		scheduleAnalysis();
+		const overrides: Record<string, ParamOverride> = {};
+		for (const p of params) {
+			overrides[p.name] = {
+				resolution: p.resolution,
+				...(p.userType ? { userType: p.userType } : {}),
+				...(p.editorMode ? { editorMode: p.editorMode } : {}),
+			};
+		}
+		promptStore.update(promptId, (p) => ({ ...p, paramOverrides: overrides }));
 	}
 
 	let dynamicParams = $derived(
-		(prompt?.contextParams ?? []).filter((p) => p.resolution.kind === 'dynamic').map((p) => p.name)
+		mergedParams.filter((p) => p.resolution.kind === 'dynamic').map((p) => p.name)
 	);
-
-	let locked = $derived(uiState.isPromptBusy(promptId));
 </script>
 
-<div class="flex h-full flex-col" class:pointer-events-none={locked} class:opacity-60={locked}>
-	{#if locked}
-		<div class="shrink-0 border-b bg-amber-500/10 px-4 py-1.5 text-xs text-amber-700 dark:text-amber-400">Turn in progress — editing locked</div>
-	{/if}
+<BasePage {deps} onConfigChange={runAnalysis} debounceMs={200}>
 	<div class="flex items-center justify-between shrink-0 border-b px-4 py-2">
 		<span class="text-sm font-medium">Prompt Settings</span>
 		<div class="flex items-center gap-1">
@@ -204,7 +170,7 @@
 					</Button>
 				</div>
 
-				{#if prompt.contextParams.length > 0}
+				{#if mergedParams.length > 0}
 					<Separator />
 
 					<div class="space-y-3">
@@ -213,9 +179,8 @@
 							<p class="text-xs text-muted-foreground mt-1">Context refs detected in scripts that are not provided by bindings or nodes.</p>
 						</div>
 						<ContextParamsEditor
-							params={prompt.contextParams}
+							params={mergedParams}
 							onupdate={handleParamsUpdate}
-							onTypeChange={handleTypeChange}
 							contextTypes={discoveredContextTypes}
 						/>
 					</div>
@@ -259,4 +224,4 @@
 			No prompt selected.
 		</div>
 	{/if}
-</div>
+</BasePage>

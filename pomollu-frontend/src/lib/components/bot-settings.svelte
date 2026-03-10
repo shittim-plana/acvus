@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { DisplayEntry, DisplayRegion, GridLayout, BotDisplay, ContextParam } from '$lib/types.js';
+	import type { DisplayEntry, DisplayRegion, GridLayout, BotDisplay, ContextParam, ParamOverride } from '$lib/types.js';
 	import { GRID_HISTORY, HISTORY_ENTRY_TYPE, CONTEXT_TYPE, createDefaultLayout } from '$lib/types.js';
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import { Input } from '$lib/components/ui/input';
@@ -14,10 +14,11 @@
 	import AcvusEngineField from './acvus-engine-field.svelte';
 	import GridLayoutEditor from './grid-layout-editor.svelte';
 	import ContextParamsEditor from './context-params-editor.svelte';
-	import { analyzeBot } from '$lib/param-resolver.js';
+	import { analyzeBot, mergeParams } from '$lib/param-resolver.js';
 	import { analyzeWithTypes } from '$lib/engine.js';
-	import { onDestroy } from 'svelte';
+	import { collectBotDeps } from '$lib/dependencies.js';
 	import { confirmDelete } from '$lib/confirm-dialog.svelte.js';
+	import BasePage from './base-page.svelte';
 
 	let { botId }: { botId: string } = $props();
 
@@ -140,10 +141,21 @@
 		botStore.update(bot.id, (b) => ({ ...b, layout: newLayout }));
 	}
 
+	// --- Dependencies for BasePage lock ---
+
+	let deps = $derived.by(() => {
+		if (!bot) return [];
+		const prompt = promptStore.get(bot.promptId);
+		const profile = profileStore.get(bot.profileId);
+		if (!prompt || !profile) return [{ kind: 'bot' as const, id: bot.id }];
+		return collectBotDeps(bot, prompt, profile);
+	});
+
 	// --- Unresolved params analysis (full hierarchy) ---
 
-	let analyzeTimer: ReturnType<typeof setTimeout> | null = null;
 	let discoveredContextTypes = $state<Record<string, import('$lib/type-parser.js').TypeDesc>>({});
+	let analysisResult = $state<ContextParam[]>([]);
+	let mergedParams = $derived(mergeParams(analysisResult, bot?.paramOverrides ?? {}));
 
 	function runAnalysis() {
 		if (!bot) return;
@@ -156,67 +168,25 @@
 
 		const result = analyzeBot(bot, prompt, profile, (id) => providerStore.get(id)?.api ?? '');
 		discoveredContextTypes = result.env.contextTypes;
-		botStore.update(bot.id, (b) => ({
-			...b, contextParams: result.ownParams
-		}));
+		analysisResult = result.ownParams;
 	}
-
-	function scheduleAnalysis() {
-		if (analyzeTimer) clearTimeout(analyzeTimer);
-		analyzeTimer = setTimeout(() => {
-			analyzeTimer = null;
-			runAnalysis();
-		}, 200);
-	}
-
-	// Stable key: re-analyze when content or user-set param values change.
-	// Includes resolution/userType (not inferredType/active) to trigger liveness re-check
-	// when static param values change, without causing circular dependency.
-	const paramUserKey = (params?: ContextParam[]) =>
-		params?.map((p) => [p.name, p.resolution, p.userType]);
-
-	let analysisKey = $derived(JSON.stringify([
-		bot?.display,
-		bot?.regions,
-		bot?.children,
-		bot?.promptId,
-		bot?.profileId,
-		promptStore.get(bot?.promptId ?? '')?.contextBindings,
-		promptStore.get(bot?.promptId ?? '')?.children,
-		profileStore.get(bot?.profileId ?? '')?.children,
-		paramUserKey(bot?.contextParams),
-		paramUserKey(promptStore.get(bot?.promptId ?? '')?.contextParams),
-		paramUserKey(profileStore.get(bot?.profileId ?? '')?.contextParams),
-	]));
-
-	let isFirstRun = true;
-
-	$effect(() => {
-		void analysisKey;
-		if (isFirstRun) {
-			isFirstRun = false;
-			runAnalysis();
-		} else {
-			scheduleAnalysis();
-		}
-	});
-
-	onDestroy(() => {
-		if (analyzeTimer) clearTimeout(analyzeTimer);
-	});
 
 	function handleParamsUpdate(params: ContextParam[]) {
 		if (!bot) return;
-		botStore.update(bot.id, (b) => ({ ...b, contextParams: params }));
-	}
-
-	function handleTypeChange(_name: string, _type: string) {
-		scheduleAnalysis();
+		const overrides: Record<string, ParamOverride> = {};
+		for (const p of params) {
+			overrides[p.name] = {
+				resolution: p.resolution,
+				...(p.userType ? { userType: p.userType } : {}),
+				...(p.editorMode ? { editorMode: p.editorMode } : {}),
+			};
+		}
+		botStore.update(bot.id, (b) => ({ ...b, paramOverrides: overrides }));
 	}
 
 	let displayContextTypes = $derived.by(() => {
 		const result = { ...discoveredContextTypes };
-		for (const p of bot?.contextParams ?? []) {
+		for (const p of mergedParams) {
 			if (p.resolution.kind === 'dynamic') {
 				delete result[p.name];
 			}
@@ -236,14 +206,9 @@
 		if (result.tail_type.kind !== 'list') return baseTypes;
 		return { ...baseTypes, item: result.tail_type.elem, index: { kind: 'primitive', name: 'Int' } };
 	}
-
-	let locked = $derived(uiState.isBotBusy(botId));
 </script>
 
-<div class="flex h-full flex-col" class:pointer-events-none={locked} class:opacity-60={locked}>
-	{#if locked}
-		<div class="shrink-0 border-b bg-amber-500/10 px-4 py-1.5 text-xs text-amber-700 dark:text-amber-400">Turn in progress — editing locked</div>
-	{/if}
+<BasePage {deps} onConfigChange={runAnalysis} debounceMs={200}>
 	<div class="flex items-center justify-between shrink-0 border-b px-4 py-2">
 		<span class="text-sm font-medium">Bot Settings</span>
 		{#if bot}
@@ -504,7 +469,7 @@
 					</div>
 				</div>
 
-				{#if bot.contextParams.length > 0}
+				{#if mergedParams.length > 0}
 					<Separator />
 
 					<div class="space-y-3">
@@ -513,9 +478,8 @@
 							<p class="text-xs text-muted-foreground mt-1">Context refs across the full hierarchy (prompt + profile + bot) not provided by bindings or nodes.</p>
 						</div>
 						<ContextParamsEditor
-							params={bot.contextParams}
+							params={mergedParams}
 							onupdate={handleParamsUpdate}
-							onTypeChange={handleTypeChange}
 							contextTypes={discoveredContextTypes}
 						/>
 					</div>
@@ -527,4 +491,4 @@
 			No bot selected.
 		</div>
 	{/if}
-</div>
+</BasePage>

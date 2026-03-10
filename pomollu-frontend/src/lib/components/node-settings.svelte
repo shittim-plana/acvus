@@ -10,6 +10,8 @@
 	import { findNodeItem, collectBlocks } from '$lib/block-tree.js';
 	import { Plus, Trash2 } from 'lucide-svelte';
 	import AcvusEngineField from './acvus-engine-field.svelte';
+	import BasePage from './base-page.svelte';
+	import { collectOwnerDeps } from '$lib/dependencies.js';
 
 	let {
 		nodeId,
@@ -163,13 +165,10 @@
 		'history': 'Execute once per turn + append to history.',
 	};
 
-	let locked = $derived(uiState.isOwnerBusy(owner));
+	let deps = $derived(collectOwnerDeps(owner));
 </script>
 
-<div class="flex h-full flex-col" class:pointer-events-none={locked} class:opacity-60={locked}>
-	{#if locked}
-		<div class="shrink-0 border-b bg-amber-500/10 px-4 py-1.5 text-xs text-amber-700 dark:text-amber-400">Turn in progress — editing locked</div>
-	{/if}
+<BasePage {deps} onConfigChange={() => {}}>
 	<div class="flex items-center justify-between shrink-0 border-b px-4 py-2">
 		<span class="text-sm font-medium">Node Settings</span>
 		<Button variant="ghost" size="icon-sm" class="text-muted-foreground hover:text-destructive" onclick={handleRemove} title="Delete node">
@@ -584,7 +583,7 @@
 			No node selected.
 		</div>
 	{/if}
-</div>
+</BasePage>
 
 <style>
 	/* Sections */

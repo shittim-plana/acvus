@@ -28,6 +28,7 @@ export const syncState = new SyncState();
 let store: MerkleStore | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let hasLoadedOnce = false;
+let dirty = false;
 
 async function saveData() {
 	if (!store) return;
@@ -41,6 +42,7 @@ async function saveData() {
 		data.sessions.length === 0 &&
 		hasLoadedOnce
 	) return;
+	dirty = false;
 	syncState.status = 'syncing';
 	syncState.message = '';
 	try {
@@ -56,6 +58,7 @@ async function saveData() {
 }
 
 function scheduleSave() {
+	dirty = true;
 	clearTimeout(saveTimer);
 	saveTimer = setTimeout(saveData, SAVE_DEBOUNCE_MS);
 }
@@ -91,6 +94,20 @@ export async function initPersistence(backend: Backend): Promise<() => void> {
 	loadUI();
 	uiState.reconcile();
 
+	// Flush pending save when page becomes hidden or is about to unload.
+	function flushIfDirty() {
+		if (dirty) {
+			clearTimeout(saveTimer);
+			saveData(); // fire-and-forget — IDB transactions complete during unload
+		}
+		saveUI();
+	}
+	function onVisibilityChange() {
+		if (document.visibilityState === 'hidden') flushIfDirty();
+	}
+	window.addEventListener('beforeunload', flushIfDirty);
+	document.addEventListener('visibilitychange', onVisibilityChange);
+
 	// Auto-save effects
 	const cleanup = $effect.root(() => {
 		$effect(() => {
@@ -106,6 +123,8 @@ export async function initPersistence(backend: Backend): Promise<() => void> {
 
 	return () => {
 		clearTimeout(saveTimer);
+		window.removeEventListener('beforeunload', flushIfDirty);
+		document.removeEventListener('visibilitychange', onVisibilityChange);
 		cleanup();
 	};
 }

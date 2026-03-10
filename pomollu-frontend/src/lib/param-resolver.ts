@@ -1,7 +1,7 @@
 import type { ContextKeyInfo, WebNode } from './engine.js';
 import type { TypeDesc } from './type-parser.js';
 import { isUnknownType } from './type-parser.js';
-import type { Node, BlockNode, ContextBinding, DisplayEntry, DisplayRegion, ContextParam, Prompt, Profile, Bot } from './types.js';
+import type { Node, BlockNode, ContextBinding, DisplayEntry, DisplayRegion, ContextParam, ParamOverride, Prompt, Profile, Bot } from './types.js';
 import { isRawBlock, isScriptBlock, CONTEXT_TYPE } from './types.js';
 import { collectBlocks, collectNodes } from './block-tree.js';
 import { analyzeWithTypes, analyzeWithKnown, typecheckNodes } from './engine.js';
@@ -196,27 +196,28 @@ export function twoPassAnalysis(opts: {
 	scripts: ScriptEntry[];
 	nodeNames: Set<string>;
 	providedKeys: Set<string>;
-	existingParams: ContextParam[];
+	paramOverrides: Record<string, ParamOverride>;
 	baseTypes?: Record<string, TypeDesc>;
 	children: BlockNode[];
 	getApi: (providerId: string) => string;
 }): TwoPassResult {
+	const { paramOverrides } = opts;
 	const typesFromParams: Record<string, TypeDesc> = { ...(opts.baseTypes ?? {}) };
-	for (const p of opts.existingParams) {
-		if (p.userType) typesFromParams[p.name] = p.userType;
+	for (const [name, ov] of Object.entries(paramOverrides)) {
+		if (ov.userType) typesFromParams[name] = ov.userType;
 	}
 
 	const knownScripts: Record<string, string> = {};
-	for (const p of opts.existingParams) {
-		if (p.resolution.kind === 'static' && p.resolution.value.trim()) {
-			knownScripts[p.name] = p.resolution.value;
+	for (const [name, ov] of Object.entries(paramOverrides)) {
+		if (ov.resolution.kind === 'static' && ov.resolution.value.trim()) {
+			knownScripts[name] = ov.resolution.value;
 		}
 	}
 
 	const allScripts: ScriptEntry[] = [...opts.scripts];
-	for (const p of opts.existingParams) {
-		if (p.resolution.kind === 'static' && p.resolution.value.trim()) {
-			allScripts.push({ source: p.resolution.value, mode: 'script' });
+	for (const [, ov] of Object.entries(paramOverrides)) {
+		if (ov.resolution.kind === 'static' && ov.resolution.value.trim()) {
+			allScripts.push({ source: ov.resolution.value, mode: 'script' });
 		}
 	}
 
@@ -261,31 +262,35 @@ export function twoPassAnalysis(opts: {
 
 	// ── Sanitization ──
 	// See docstring above for the full explanation of the two modes.
-	const existingMap = new Map(opts.existingParams.map((p) => [p.name, p]));
 	const phase1KeySet = new Set(phase1.keys.map((k) => k.name));
 
-	// Build params from Phase 1 discovered keys (always included).
+	// Build params from Phase 1 discovered keys, merging with overrides.
 	const params: ContextParam[] = phase1.keys.map((k) => {
-		const prev = existingMap.get(k.name);
+		const ov = paramOverrides[k.name];
 		return {
 			name: k.name,
 			inferredType: k.type,
-			resolution: prev?.resolution ?? { kind: 'unresolved' as const },
-			userType: prev?.userType,
-			editorMode: prev?.editorMode,
+			resolution: ov?.resolution ?? { kind: 'unresolved' as const },
+			userType: ov?.userType,
+			editorMode: ov?.editorMode,
 			active: survivingNames.has(k.name),
 		};
 	});
 
-	// When scripts were skipped, preserve existing params that Phase 1 didn't see.
+	// When scripts were skipped, preserve overrides entries that Phase 1 didn't find.
 	// These may belong to the failed scripts — deleting them would destroy user settings.
 	if (phase1.hasSkippedScripts) {
-		for (const prev of opts.existingParams) {
-			if (!phase1KeySet.has(prev.name)) {
-				params.push(prev);
+		for (const [name, ov] of Object.entries(paramOverrides)) {
+			if (!phase1KeySet.has(name)) {
+				params.push({
+					name,
+					inferredType: { kind: 'unsupported', raw: '?' },
+					resolution: ov.resolution,
+					userType: ov.userType,
+					editorMode: ov.editorMode,
+				});
 			}
 		}
-		// Re-sort to maintain stable ordering after merge.
 		params.sort((a, b) => a.name.localeCompare(b.name));
 	}
 
@@ -305,7 +310,7 @@ export function analyzePrompt(prompt: Prompt, getApi: GetApi): TwoPassResult {
 		],
 		nodeNames,
 		providedKeys: new Set(prompt.contextBindings.map((b) => b.name).filter((n) => n)),
-		existingParams: prompt.contextParams,
+		paramOverrides: prompt.paramOverrides,
 		baseTypes: { context: CONTEXT_TYPE },
 		children: prompt.children,
 		getApi,
@@ -319,7 +324,7 @@ export function analyzeProfile(profile: Profile, getApi: GetApi): TwoPassResult 
 		scripts: collectScriptsFromTree(profile.children),
 		nodeNames,
 		providedKeys: new Set(),
-		existingParams: profile.contextParams,
+		paramOverrides: profile.paramOverrides,
 		baseTypes: { context: CONTEXT_TYPE },
 		children: profile.children,
 		getApi,
@@ -330,34 +335,42 @@ export function analyzeProfile(profile: Profile, getApi: GetApi): TwoPassResult 
  * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  * analyzeBot — Bot-level param analysis with full hierarchy context.
  *
- * Each level manages its OWN params (locality):
- * - twoPassAnalysis discovers only bot-level params
- * - Prompt/Profile params are already resolved at their levels → providedKeys
- * - Prompt/Profile types → baseTypes (so typecheckNodes can compile)
- *
- * Returns ALL params from all 3 levels merged:
- * - prompt.contextParams + profile.contextParams + bot's discovered params
- * - Callers (e.g. buildSessionConfig) get the full picture from this single call.
+ * Runs sub-analyses for prompt/profile internally, then discovers
+ * bot-level params using twoPassAnalysis. Returns ALL params merged.
  *
  * DO NOT change this structure.
  * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  */
 export function analyzeBot(bot: Bot, prompt: Prompt, profile: Profile, getApi: GetApi): TwoPassResult {
-	// providedKeys: bindings + prompt/profile params (already resolved at their levels).
+	// Sub-analyses to get inferred types for prompt/profile params
+	const promptResult = analyzePrompt(prompt, getApi);
+	const profileResult = analyzeProfile(profile, getApi);
+
+	// baseTypes: prompt/profile params' inferred/user types + CONTEXT_TYPE
+	const baseTypes: Record<string, TypeDesc> = { context: CONTEXT_TYPE };
+	for (const p of promptResult.params) {
+		if (p.userType) baseTypes[p.name] = p.userType;
+		else if (p.inferredType) baseTypes[p.name] = p.inferredType;
+	}
+	for (const p of profileResult.params) {
+		if (p.userType) baseTypes[p.name] = p.userType;
+		else if (p.inferredType) baseTypes[p.name] = p.inferredType;
+	}
+
+	// providedKeys: bindings + prompt params + profile params
 	const providedKeys = new Set<string>();
 	for (const b of prompt.contextBindings) if (b.name) providedKeys.add(b.name);
-	for (const p of prompt.contextParams) providedKeys.add(p.name);
-	for (const p of profile.contextParams) providedKeys.add(p.name);
+	for (const p of promptResult.params) providedKeys.add(p.name);
+	for (const p of profileResult.params) providedKeys.add(p.name);
 
-	// nodeNames: all nodes across 3 levels.
+	// nodeNames: all nodes across 3 levels
 	const nodeNames = new Set<string>();
 	for (const n of collectNodeNames(prompt.children)) nodeNames.add(n);
 	for (const n of collectNodeNames(profile.children)) nodeNames.add(n);
 	for (const n of collectNodeNames(bot.children)) nodeNames.add(n);
 	nodeNames.add('context');
 
-	// scripts: all 3 levels + bot display/region iterators only.
-	// Display entry condition/template use @item/@index loop vars — NOT param analysis targets.
+	// scripts: all 3 levels + bot display/region iterators only
 	const scripts = [
 		...collectScriptsFromBindings(prompt.contextBindings),
 		...collectScriptsFromTree(prompt.children),
@@ -375,40 +388,38 @@ export function analyzeBot(bot: Bot, prompt: Prompt, profile: Profile, getApi: G
 		}
 	}
 
-	// baseTypes: prompt/profile param types + CONTEXT_TYPE.
-	// typecheckNodes needs full hierarchy types to compile all nodes.
-	const baseTypes: Record<string, TypeDesc> = { context: CONTEXT_TYPE };
-	for (const p of prompt.contextParams) {
-		if (p.userType) baseTypes[p.name] = p.userType;
-		else if (p.inferredType) baseTypes[p.name] = p.inferredType;
-	}
-	for (const p of profile.contextParams) {
-		if (p.userType) baseTypes[p.name] = p.userType;
-		else if (p.inferredType) baseTypes[p.name] = p.inferredType;
-	}
-
-	// twoPassAnalysis discovers bot-level params only.
+	// twoPassAnalysis discovers bot-level params only
 	const result = twoPassAnalysis({
 		scripts,
 		nodeNames,
 		providedKeys,
-		existingParams: bot.contextParams,
+		paramOverrides: bot.paramOverrides,
 		baseTypes,
 		children: [...prompt.children, ...profile.children, ...bot.children],
 		getApi,
 	});
 
-	// Merge all 3 levels' params into the result.
-	// Bot analysis discovers bot-only params; prompt/profile params are already resolved.
+	// Merge all 3 levels' params into the result
 	const ownParams = result.params;
 	const allParams = [
-		...prompt.contextParams,
-		...profile.contextParams,
+		...promptResult.params,
+		...profileResult.params,
 		...ownParams,
 	];
 	const allActiveParams = allParams.filter((p) => p.active !== false);
 
 	return { env: result.env, params: allParams, activeParams: allActiveParams, ownParams };
+}
+
+export function mergeParams(
+	analysisParams: ContextParam[],
+	overrides: Record<string, ParamOverride>
+): ContextParam[] {
+	return analysisParams.map(p => {
+		const ov = overrides[p.name];
+		if (!ov) return p;
+		return { ...p, resolution: ov.resolution, userType: ov.userType, editorMode: ov.editorMode };
+	});
 }
 
 /**

@@ -169,10 +169,9 @@ impl SessionStorage {
     fn notify(&self, key: &str, value: &Value) {
         let Some(ref cb) = self.on_change else { return };
         let js_key = JsValue::from_str(key);
+        let cv = value.clone().into_pure().to_concrete(&self.interner);
         let json_str =
-            serde_json::to_string(&pure_to_json(&self.interner, &value.clone().into_pure()))
-                .expect("internal serialization should not fail");
-
+            serde_json::to_string(&cv).expect("internal serialization should not fail");
         let js_val =
             js_sys::JSON::parse(&json_str).expect("serde_json output is always valid JSON");
         let _ = cb.0.call2(&JsValue::NULL, &js_key, &js_val);

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { ContextParam } from '$lib/types.js';
+	import type { ContextParam, ParamOverride } from '$lib/types.js';
 
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import { Input } from '$lib/components/ui/input';
@@ -8,11 +8,12 @@
 	import { Separator } from '$lib/components/ui/separator';
 	import { profileStore, providerStore, uiState } from '$lib/stores.svelte.js';
 	import ContextParamsEditor from './context-params-editor.svelte';
-	import { analyzeProfile } from '$lib/param-resolver.js';
+	import { analyzeProfile, mergeParams } from '$lib/param-resolver.js';
+	import { collectProfileDeps } from '$lib/dependencies.js';
 	import { Download } from 'lucide-svelte';
 	import { downloadJson } from '$lib/io.js';
-	import { onDestroy } from 'svelte';
 	import { confirmDelete } from '$lib/confirm-dialog.svelte.js';
+	import BasePage from './base-page.svelte';
 
 	let { profileId }: { profileId: string } = $props();
 
@@ -20,62 +21,33 @@
 
 	// --- Unresolved params analysis ---
 
-	let analyzeTimer: ReturnType<typeof setTimeout> | null = null;
 	let discoveredContextTypes = $state<Record<string, import('$lib/type-parser.js').TypeDesc>>({});
+	let analysisResult = $state<ContextParam[]>([]);
+
+	let deps = $derived(profile ? collectProfileDeps(profile) : []);
+	let mergedParams = $derived(mergeParams(analysisResult, profile?.paramOverrides ?? {}));
 
 	function runAnalysis() {
 		if (!profile) return;
 		const result = analyzeProfile(profile, (id) => providerStore.get(id)?.api ?? '');
 		discoveredContextTypes = result.env.contextTypes;
-		profileStore.update(profileId, (p) => ({
-			...p, contextParams: result.params
-		}));
+		analysisResult = result.params;
 	}
-
-	function scheduleAnalysis() {
-		if (analyzeTimer) clearTimeout(analyzeTimer);
-		analyzeTimer = setTimeout(() => {
-			analyzeTimer = null;
-			runAnalysis();
-		}, 200);
-	}
-
-	let analysisKey = $derived(JSON.stringify([
-		profile?.children,
-		profile?.contextParams?.map((p) => [p.name, p.resolution, p.userType]),
-	]));
-
-	let isFirstRun = true;
-
-	$effect(() => {
-		void analysisKey;
-		if (isFirstRun) {
-			isFirstRun = false;
-			runAnalysis();
-		} else {
-			scheduleAnalysis();
-		}
-	});
-
-	onDestroy(() => {
-		if (analyzeTimer) clearTimeout(analyzeTimer);
-	});
 
 	function handleParamsUpdate(params: ContextParam[]) {
-		profileStore.update(profileId, (p) => ({ ...p, contextParams: params }));
+		const overrides: Record<string, ParamOverride> = {};
+		for (const p of params) {
+			overrides[p.name] = {
+				resolution: p.resolution,
+				...(p.userType ? { userType: p.userType } : {}),
+				...(p.editorMode ? { editorMode: p.editorMode } : {}),
+			};
+		}
+		profileStore.update(profileId, (p) => ({ ...p, paramOverrides: overrides }));
 	}
-
-	function handleTypeChange(_name: string, _type: string) {
-		scheduleAnalysis();
-	}
-
-	let locked = $derived(uiState.isProfileBusy(profileId));
 </script>
 
-<div class="flex h-full flex-col" class:pointer-events-none={locked} class:opacity-60={locked}>
-	{#if locked}
-		<div class="shrink-0 border-b bg-amber-500/10 px-4 py-1.5 text-xs text-amber-700 dark:text-amber-400">Turn in progress — editing locked</div>
-	{/if}
+<BasePage {deps} onConfigChange={runAnalysis} debounceMs={200}>
 	<div class="flex items-center justify-between shrink-0 border-b px-4 py-2">
 		<span class="text-sm font-medium">Profile Settings</span>
 		<div class="flex items-center gap-1">
@@ -99,7 +71,7 @@
 					/>
 				</div>
 
-				{#if profile.contextParams.length > 0}
+				{#if mergedParams.length > 0}
 					<Separator />
 
 					<div class="space-y-3">
@@ -108,9 +80,8 @@
 							<p class="text-xs text-muted-foreground mt-1">Context refs detected in profile scripts. Prompt bindings are not visible here.</p>
 						</div>
 						<ContextParamsEditor
-							params={profile.contextParams}
+							params={mergedParams}
 							onupdate={handleParamsUpdate}
-							onTypeChange={handleTypeChange}
 							contextTypes={discoveredContextTypes}
 						/>
 					</div>
@@ -122,4 +93,4 @@
 			No profile selected.
 		</div>
 	{/if}
-</div>
+</BasePage>

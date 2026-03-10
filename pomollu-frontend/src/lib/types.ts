@@ -181,6 +181,12 @@ export type ContextParam = {
 	editorMode?: 'structured' | 'raw';
 };
 
+export type ParamOverride = {
+	resolution: ParamResolution;
+	userType?: TypeDesc;
+	editorMode?: 'structured' | 'raw';
+};
+
 // --- Prompt (project) ---
 
 export type ContextBinding = {
@@ -242,7 +248,7 @@ export type Prompt = {
 	name: string;
 	children: BlockNode[];
 	contextBindings: ContextBinding[];
-	contextParams: ContextParam[];
+	paramOverrides: Record<string, ParamOverride>;
 	/** Which dynamic param receives the chat input each turn. */
 	inputParam?: string;
 };
@@ -253,7 +259,7 @@ export type Profile = {
 	id: string;
 	name: string;
 	children: BlockNode[];
-	contextParams: ContextParam[];
+	paramOverrides: Record<string, ParamOverride>;
 };
 
 // --- Bot ---
@@ -279,7 +285,7 @@ export type Bot = {
 	display: BotDisplay;
 	regions: DisplayRegion[];
 	layout: GridLayout;
-	contextParams: ContextParam[];
+	paramOverrides: Record<string, ParamOverride>;
 	embeddedStyle?: string;
 };
 

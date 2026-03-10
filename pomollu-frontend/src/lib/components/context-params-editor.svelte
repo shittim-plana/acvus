@@ -16,7 +16,7 @@
 	}: {
 		params: ContextParam[];
 		onupdate: (params: ContextParam[]) => void;
-		onTypeChange: (name: string, type: string) => void;
+		onTypeChange?: (name: string, type: string) => void;
 		contextTypes?: Record<string, TypeDesc>;
 	} = $props();
 
@@ -108,7 +108,7 @@
 		});
 		onupdate(updated);
 		if (param && valid) {
-			onTypeChange(param.name, type);
+			onTypeChange?.(param.name, type);
 		}
 	}
 

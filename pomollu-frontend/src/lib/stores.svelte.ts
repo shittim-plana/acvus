@@ -1,5 +1,8 @@
-import type { Block, ContextBlock, RawBlock, RawBlockMode, ScriptBlock, BlockNode, Node, Prompt, Profile, Provider, Bot, Session, NoneBlock } from './types.js';
+import type { Block, ContextBlock, RawBlock, RawBlockMode, ScriptBlock, BlockNode, Node, Prompt, Profile, Provider, Bot, Session, NoneBlock, ContextParam, ParamOverride } from './types.js';
 import { createDefaultLayout, HISTORY_BINDING_NAME } from './types.js';
+import { entityVersions } from '$lib/entity-versions.svelte.js';
+import type { EntityRef, EntityKind } from '$lib/entity-versions.svelte.js';
+import { disposeEphemeral } from '$lib/ephemeral.svelte.js';
 import { addNode, removeTreeNode, updateBlock as treeUpdateBlock, updateNodeItem as treeUpdateNodeItem, findTreeNode, findBlock, findNodeItem, collectAllIds, collectBlocks } from './block-tree.js';
 
 export function createId(): string {
@@ -137,33 +140,34 @@ class UIState {
 	tabs = $state<Tab[]>([]);
 	activeTabIndex = $state(0);
 
-	// Turn lock: the bot currently executing a turn (null = idle).
-	busyBotId = $state<string | null>(null);
+	// Entity lock: tracks which entities are locked during a turn.
+	private lockedEntities = $state<Set<string>>(new Set());
 
-	/** True if the given bot is mid-turn. */
-	isBotBusy(botId: string): boolean {
-		return this.busyBotId === botId;
+	lock(deps: EntityRef[]): void {
+		const next = new Set(this.lockedEntities);
+		for (const d of deps) next.add(`${d.kind}:${d.id}`);
+		this.lockedEntities = next;
 	}
 
-	/** True if any bot using this prompt is mid-turn. */
-	isPromptBusy(promptId: string): boolean {
-		if (!this.busyBotId) return false;
-		return botStore.get(this.busyBotId)?.promptId === promptId;
+	unlock(deps: EntityRef[]): void {
+		const next = new Set(this.lockedEntities);
+		for (const d of deps) next.delete(`${d.kind}:${d.id}`);
+		this.lockedEntities = next;
 	}
 
-	/** True if any bot using this profile is mid-turn. */
-	isProfileBusy(profileId: string): boolean {
-		if (!this.busyBotId) return false;
-		return botStore.get(this.busyBotId)?.profileId === profileId;
+	isLocked(kind: EntityKind, id: string): boolean {
+		return this.lockedEntities.has(`${kind}:${id}`);
 	}
 
-	/** True if the given owner's bot is mid-turn. */
-	isOwnerBusy(owner: BlockOwner): boolean {
-		if (!this.busyBotId) return false;
+	isAnyLocked(deps: EntityRef[]): boolean {
+		return deps.some(d => this.lockedEntities.has(`${d.kind}:${d.id}`));
+	}
+
+	isOwnerLocked(owner: BlockOwner): boolean {
 		switch (owner.kind) {
-			case 'bot': return this.busyBotId === owner.botId;
-			case 'prompt': return this.isPromptBusy(owner.promptId);
-			case 'profile': return this.isProfileBusy(owner.profileId);
+			case 'bot': return this.isLocked('bot', owner.botId);
+			case 'prompt': return this.isLocked('prompt', owner.promptId);
+			case 'profile': return this.isLocked('profile', owner.profileId);
 		}
 	}
 
@@ -434,6 +438,7 @@ class ProviderStore {
 			apiKey: ''
 		};
 		this.providers = [...this.providers, provider];
+		entityVersions.bump('provider', provider.id);
 		return provider;
 	}
 
@@ -443,10 +448,12 @@ class ProviderStore {
 
 	remove(id: string) {
 		this.providers = this.providers.filter((p) => p.id !== id);
+		entityVersions.bump('provider', id);
 	}
 
 	update(id: string, updater: (p: Provider) => Provider) {
 		this.providers = this.providers.map((p) => (p.id === id ? updater(p) : p));
+		entityVersions.bump('provider', id);
 	}
 }
 
@@ -461,9 +468,10 @@ class PromptStore {
 			name,
 			children: [],
 			contextBindings: [{ name: HISTORY_BINDING_NAME, script: '' }],
-			contextParams: []
+			paramOverrides: {}
 		};
 		this.prompts = [...this.prompts, prompt];
+		entityVersions.bump('prompt', prompt.id);
 		return prompt;
 	}
 
@@ -473,10 +481,12 @@ class PromptStore {
 
 	remove(id: string) {
 		this.prompts = this.prompts.filter((p) => p.id !== id);
+		entityVersions.bump('prompt', id);
 	}
 
 	update(id: string, updater: (p: Prompt) => Prompt) {
 		this.prompts = this.prompts.map((p) => (p.id === id ? updater(p) : p));
+		entityVersions.bump('prompt', id);
 	}
 
 	addChild(promptId: string, child: BlockNode) {
@@ -492,7 +502,9 @@ class PromptStore {
 	}
 
 	import(prompt: Prompt) {
-		this.prompts = [...this.prompts, prompt];
+		const migrated = { ...prompt, paramOverrides: (prompt as any).paramOverrides ?? migrateParamOverrides((prompt as any).contextParams) };
+		this.prompts = [...this.prompts, migrated];
+		entityVersions.bump('prompt', prompt.id);
 	}
 }
 
@@ -506,9 +518,10 @@ class ProfileStore {
 			id: createId(),
 			name,
 			children: [],
-			contextParams: []
+			paramOverrides: {}
 		};
 		this.profiles = [...this.profiles, profile];
+		entityVersions.bump('profile', profile.id);
 		return profile;
 	}
 
@@ -518,10 +531,12 @@ class ProfileStore {
 
 	remove(id: string) {
 		this.profiles = this.profiles.filter((p) => p.id !== id);
+		entityVersions.bump('profile', id);
 	}
 
 	update(id: string, updater: (p: Profile) => Profile) {
 		this.profiles = this.profiles.map((p) => (p.id === id ? updater(p) : p));
+		entityVersions.bump('profile', id);
 	}
 
 	addChild(id: string, child: BlockNode) {
@@ -537,7 +552,9 @@ class ProfileStore {
 	}
 
 	import(profile: Profile) {
-		this.profiles = [...this.profiles, profile];
+		const migrated = { ...profile, paramOverrides: (profile as any).paramOverrides ?? migrateParamOverrides((profile as any).contextParams) };
+		this.profiles = [...this.profiles, migrated];
+		entityVersions.bump('profile', profile.id);
 	}
 }
 
@@ -565,19 +582,22 @@ class BotStore {
 			display: { iterator: '', entries: [] },
 			regions: [],
 			layout: createDefaultLayout(),
-			contextParams: []
+			paramOverrides: {}
 		};
 		this.bots = [...this.bots, bot];
+		entityVersions.bump('bot', bot.id);
 		return bot;
 	}
 
 	remove(id: string) {
 		this.bots = this.bots.filter((b) => b.id !== id);
 		sessionStore.removeForBot(id);
+		entityVersions.bump('bot', id);
 	}
 
 	update(id: string, updater: (b: Bot) => Bot) {
 		this.bots = this.bots.map((b) => (b.id === id ? updater(b) : b));
+		entityVersions.bump('bot', id);
 	}
 
 	addChild(botId: string, child: BlockNode) {
@@ -593,7 +613,9 @@ class BotStore {
 	}
 
 	import(bot: Bot) {
-		this.bots = [...this.bots, bot];
+		const migrated = { ...bot, paramOverrides: (bot as any).paramOverrides ?? migrateParamOverrides((bot as any).contextParams) };
+		this.bots = [...this.bots, migrated];
+		entityVersions.bump('bot', bot.id);
 	}
 }
 
@@ -624,6 +646,7 @@ class SessionStore {
 	}
 
 	remove(id: string) {
+		disposeEphemeral(`chat:${id}`);
 		this.sessions = this.sessions.filter((s) => s.id !== id);
 		if (this.activeSessionId === id) {
 			this.activeSessionId = null;
@@ -631,6 +654,9 @@ class SessionStore {
 	}
 
 	removeForBot(botId: string) {
+		for (const s of this.sessions) {
+			if (s.botId === botId) disposeEphemeral(`chat:${s.id}`);
+		}
 		this.sessions = this.sessions.filter((s) => s.botId !== botId);
 		if (this.activeSessionId && !this.sessions.some((s) => s.id === this.activeSessionId)) {
 			this.activeSessionId = null;
@@ -771,11 +797,24 @@ function migrateChildren(children: BlockNode[]): BlockNode[] {
 	});
 }
 
+export function migrateParamOverrides(contextParams?: ContextParam[]): Record<string, ParamOverride> {
+	if (!contextParams) return {};
+	const overrides: Record<string, ParamOverride> = {};
+	for (const p of contextParams) {
+		overrides[p.name] = {
+			resolution: p.resolution,
+			...(p.userType ? { userType: p.userType } : {}),
+			...(p.editorMode ? { editorMode: p.editorMode } : {}),
+		};
+	}
+	return overrides;
+}
+
 export function importData(data: StoreData) {
 	providerStore.providers = data.providers;
-	promptStore.prompts = (data.prompts ?? []).map((p) => ({ ...p, contextParams: p.contextParams ?? [], children: migrateChildren(p.children ?? []) }));
-	profileStore.profiles = (data.profiles ?? []).map((p) => ({ ...p, contextParams: p.contextParams ?? [], children: migrateChildren(p.children ?? []) }));
-	botStore.bots = (data.bots ?? []).map((b) => ({ ...b, contextParams: b.contextParams ?? [], children: migrateChildren(b.children ?? []) }));
+	promptStore.prompts = (data.prompts ?? []).map((p) => ({ ...p, paramOverrides: (p as any).paramOverrides ?? migrateParamOverrides((p as any).contextParams), children: migrateChildren(p.children ?? []) }));
+	profileStore.profiles = (data.profiles ?? []).map((p) => ({ ...p, paramOverrides: (p as any).paramOverrides ?? migrateParamOverrides((p as any).contextParams), children: migrateChildren(p.children ?? []) }));
+	botStore.bots = (data.bots ?? []).map((b) => ({ ...b, paramOverrides: (b as any).paramOverrides ?? migrateParamOverrides((b as any).contextParams), children: migrateChildren(b.children ?? []) }));
 	sessionStore.sessions = data.sessions ?? [];
 	uiState.reconcile();
 }

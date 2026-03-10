@@ -212,10 +212,12 @@ export class ChatSession {
 	static async create(
 		config: SessionConfig,
 		storage: unknown | null = null,
+		onStorageChange: (key: string, value: unknown) => void,
 	): Promise<ChatSession> {
 		const inner = await WasmChatSession.create(
 			JSON.stringify(config),
 			storage,
+			onStorageChange,
 		);
 		return new ChatSession(inner);
 	}

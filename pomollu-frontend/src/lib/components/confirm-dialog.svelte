@@ -21,7 +21,7 @@
 			<p class="confirm-msg">{pending.message}</p>
 			<div class="confirm-actions">
 				<Button variant="outline" size="sm" onclick={() => respond(false)}>Cancel</Button>
-				<Button variant="destructive" size="sm" onclick={() => respond(true)}>Delete</Button>
+				<Button variant={pending.variant} size="sm" onclick={() => respond(true)}>{pending.confirmLabel}</Button>
 			</div>
 		</div>
 	</div>

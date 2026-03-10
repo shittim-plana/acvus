@@ -20,10 +20,18 @@
 	import { IndexedDBBackend } from '$lib/storage/indexeddb.js';
 	import { analyzePrompt, analyzeProfile, analyzeBot } from '$lib/param-resolver.js';
 	import type { ContextEnvResult, TwoPassResult } from '$lib/param-resolver.js';
-	import type { ContextParam } from '$lib/types.js';
+	import { entityVersions } from '$lib/entity-versions.svelte.js';
+	import { collectOwnerDeps } from '$lib/dependencies.js';
 	import { onMount } from 'svelte';
 
 	let activeTab = $derived(uiState.activeTab);
+
+	// Chat tabs with their original index — kept alive across tab switches.
+	let chatTabs = $derived(
+		uiState.tabs
+			.map((tab, i) => ({ tab, i }))
+			.filter((e): e is { tab: Extract<typeof e.tab, { kind: 'chat' }>, i: number } => e.tab.kind === 'chat')
+	);
 
 	// --- Owner env: inline discovery + orchestration typecheck ---
 
@@ -59,55 +67,6 @@
 		}
 	}
 
-	/** Sync params from twoPassAnalysis result into the owner's store. */
-	function syncOwnerParams(owner: BlockOwner, params: ContextParam[]) {
-		switch (owner.kind) {
-			case 'prompt':
-				promptStore.update(owner.promptId, (p) => ({ ...p, contextParams: params }));
-				break;
-			case 'profile':
-				profileStore.update(owner.profileId, (p) => ({ ...p, contextParams: params }));
-				break;
-			case 'bot':
-				botStore.update(owner.botId, (b) => ({ ...b, contextParams: params }));
-				break;
-		}
-	}
-
-	// Extract user-set fields only (resolution, userType) — NOT inferredType (which is an output).
-	// This prevents a circular dependency: syncOwnerParams updates inferredType,
-	// which must NOT re-trigger the env computation.
-	function paramUserKey(params?: ContextParam[]) {
-		return params?.map((p) => [p.name, p.resolution, p.userType]);
-	}
-
-	// Trigger key: captures all data that should cause a recomputation.
-	let envTriggerKey = $derived.by(() => {
-		if (!activeTab) return null;
-		if (activeTab.kind !== 'block' && activeTab.kind !== 'node') return null;
-		const owner = activeTab.owner;
-		switch (owner.kind) {
-			case 'prompt': {
-				const p = promptStore.get(owner.promptId);
-				return JSON.stringify(['prompt', owner.promptId, p?.contextBindings, p?.children, paramUserKey(p?.contextParams)]);
-			}
-			case 'profile': {
-				const p = profileStore.get(owner.profileId);
-				return JSON.stringify(['profile', owner.profileId, p?.children, paramUserKey(p?.contextParams)]);
-			}
-			case 'bot': {
-				const bot = botStore.get(owner.botId);
-				const p = promptStore.get(bot?.promptId ?? '');
-				const pr = profileStore.get(bot?.profileId ?? '');
-				return JSON.stringify(['bot', owner.botId,
-					bot?.children, bot?.display, bot?.regions, paramUserKey(bot?.contextParams),
-					p?.contextBindings, p?.children, paramUserKey(p?.contextParams),
-					pr?.children, paramUserKey(pr?.contextParams),
-				]);
-			}
-		}
-	});
-
 	// First load (tab switch) = immediate. Content changes = debounced. Both compute from scratch.
 	function applyFullEnv(owner: BlockOwner) {
 		const result = computeFullEnv(owner);
@@ -116,26 +75,36 @@
 			return;
 		}
 		ownerEnv = result.env;
-		syncOwnerParams(owner, result.params);
 	}
 
-	$effect(() => {
-		const key = envTriggerKey;
+	let ownerDeps = $derived.by(() => {
+		if (!activeTab) return [];
+		if (activeTab.kind !== 'block' && activeTab.kind !== 'node') return [];
+		return collectOwnerDeps(activeTab.owner);
+	});
 
-		if (key === null) {
+	let ownerDepsVersion = $derived(entityVersions.depsVersion(ownerDeps));
+	let lastOwnerDepsVersion = -1;
+
+	$effect(() => {
+		if (ownerDeps.length === 0) {
 			ownerEnv = EMPTY_ENV;
 			lastOwnerKey = null;
 			return;
 		}
 		if (!activeTab || (activeTab.kind !== 'block' && activeTab.kind !== 'node')) return;
+
+		const ver = ownerDepsVersion;
 		const owner = activeTab.owner;
 		const ownerKey = JSON.stringify(owner);
 
 		if (ownerKey !== lastOwnerKey) {
 			lastOwnerKey = ownerKey;
+			lastOwnerDepsVersion = ver;
 			if (envTimer) clearTimeout(envTimer);
 			applyFullEnv(owner);
-		} else {
+		} else if (ver !== lastOwnerDepsVersion) {
+			lastOwnerDepsVersion = ver;
 			if (envTimer) clearTimeout(envTimer);
 			envTimer = setTimeout(() => {
 				envTimer = null;
@@ -242,20 +211,24 @@
 							<NodeSettings nodeId={activeTab.nodeId} owner={activeTab.owner} contextTypes={ownerEnv.contextTypes} nodeLocals={ownerEnv.nodeLocals} nodeErrors={ownerEnv.nodeErrors} />
 						{:else if activeTab?.kind === 'bot-settings'}
 							<BotSettings botId={activeTab.botId} />
-						{:else if activeTab?.kind === 'chat'}
-							{@const chatSession = sessionStore.sessions.find((s) => s.id === activeTab.sessionId)}
-							{@const chatBot = chatSession ? botStore.get(chatSession.botId) : undefined}
-							{#if chatSession && chatBot}
-								<ChatPanel session={chatSession} bot={chatBot} />
-							{:else}
-								<div class="flex h-full items-center justify-center text-sm text-muted-foreground">Session or bot not found.</div>
-							{/if}
-						{:else}
+						{:else if activeTab?.kind !== 'chat'}
 							<div class="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
 								<h1 class="text-2xl font-semibold text-foreground">Welcome to Pomollu!</h1>
 								<a href="https://github.com/ArtBlnd/acvus" target="_blank" rel="noopener noreferrer" class="text-sm underline hover:text-foreground transition-colors">Source</a>
 							</div>
 						{/if}
+						<!-- Chat panels: kept alive across tab switches so running turns are not aborted. -->
+						{#each chatTabs as { tab, i } (tab.sessionId)}
+							{@const chatSession = sessionStore.sessions.find((s) => s.id === tab.sessionId)}
+							{@const chatBot = chatSession ? botStore.get(chatSession.botId) : undefined}
+							<div class="h-full" class:hidden={i !== uiState.activeTabIndex}>
+								{#if chatSession && chatBot}
+									<ChatPanel session={chatSession} bot={chatBot} />
+								{:else}
+									<div class="flex h-full items-center justify-center text-sm text-muted-foreground">Session or bot not found.</div>
+								{/if}
+							</div>
+						{/each}
 					</div>
 				</div>
 			</Resizable.Pane>

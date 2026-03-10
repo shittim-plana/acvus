@@ -11,6 +11,8 @@
 
 type PendingConfirm = {
 	message: string;
+	confirmLabel: string;
+	variant: 'destructive' | 'default';
 	resolve: (ok: boolean) => void;
 };
 
@@ -21,11 +23,19 @@ export function getPending(): PendingConfirm | null {
 }
 
 export function confirmDelete(message: string): Promise<boolean> {
+	return confirm(message, 'Delete', 'destructive');
+}
+
+export function confirmAction(message: string, confirmLabel: string = 'Confirm'): Promise<boolean> {
+	return confirm(message, confirmLabel, 'default');
+}
+
+function confirm(message: string, confirmLabel: string, variant: 'destructive' | 'default'): Promise<boolean> {
 	// If already showing, resolve previous as false
 	if (_pending) _pending.resolve(false);
 
 	return new Promise<boolean>((resolve) => {
-		_pending = { message, resolve };
+		_pending = { message, confirmLabel, variant, resolve };
 	});
 }
 
