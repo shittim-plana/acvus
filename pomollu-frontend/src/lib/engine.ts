@@ -213,7 +213,6 @@ export class ChatSession {
 		config: SessionConfig,
 		storage: unknown | null = null,
 	): Promise<ChatSession> {
-		console.log('[ChatSession.create] config:', JSON.stringify(config, null, 2));
 		const inner = await WasmChatSession.create(
 			JSON.stringify(config),
 			storage,

@@ -308,15 +308,12 @@ impl<'a> TypeChecker<'a> {
             self.push_scope();
             self.check_pattern(&arm.pattern, &pattern_source, arm.tag_span);
             self.check_nodes(&arm.body);
-            // Hoist body-less variable bindings to the outer scope.
-            self.hoist_bodyless_bindings();
             self.pop_scope();
         }
 
         if let Some(catch_all) = &mb.catch_all {
             self.push_scope();
             self.check_nodes(&catch_all.body);
-            self.hoist_bodyless_bindings();
             self.pop_scope();
         }
     }
@@ -341,13 +338,11 @@ impl<'a> TypeChecker<'a> {
         self.push_scope();
         self.check_pattern(&ib.pattern, &elem_ty, ib.span);
         self.check_nodes(&ib.body);
-        self.hoist_bodyless_bindings();
         self.pop_scope();
 
         if let Some(catch_all) = &ib.catch_all {
             self.push_scope();
             self.check_nodes(&catch_all.body);
-            self.hoist_bodyless_bindings();
             self.pop_scope();
         }
     }
@@ -359,18 +354,6 @@ impl<'a> TypeChecker<'a> {
             && matches!(&mb.arms[0].pattern, Pattern::Binding { .. })
     }
 
-    /// Copy variables defined in the current (top) scope to the parent scope.
-    /// This hoists body-less variable bindings out of match arm scopes.
-    fn hoist_bodyless_bindings(&mut self) {
-        let len = self.scopes.len();
-        if len < 2 {
-            return;
-        }
-        let (parent, top) = self.scopes.split_at_mut(len - 1);
-        for (name, ty) in &top[0] {
-            parent[len - 2].insert(*name, ty.clone());
-        }
-    }
 
     /// Determine what type a pattern matches against given the source type.
     /// List patterns match the source directly (destructuring).
