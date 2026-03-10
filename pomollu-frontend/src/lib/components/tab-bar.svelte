@@ -4,7 +4,20 @@
 	import { uiState, botStore, promptStore, profileStore, providerStore, sessionStore, getOwnerChildren, tabKey } from '$lib/stores.svelte.js';
 	import { findBlock, findNodeItem } from '$lib/block-tree.js';
 	import { longpress } from '$lib/actions/longpress.js';
-	import { X } from 'lucide-svelte';
+	import { X, MessageCircle, Bot, FileCode, ScrollText, User, Box, Plug } from 'lucide-svelte';
+	import type { Component } from 'svelte';
+
+	function tabIcon(tab: Tab): Component {
+		switch (tab.kind) {
+			case 'chat': return MessageCircle;
+			case 'bot-settings': return Bot;
+			case 'block': return FileCode;
+			case 'prompt': return ScrollText;
+			case 'profile': return User;
+			case 'node': return Box;
+			case 'provider': return Plug;
+		}
+	}
 	import { slide } from 'svelte/transition';
 
 	function tabLabel(tab: Tab): string {
@@ -63,6 +76,7 @@
 			transition:slide={{ duration: 200, axis: 'x' }}
 			use:longpress
 		>
+				<svelte:component this={tabIcon(tab)} class="h-3.5 w-3.5 shrink-0" />
 			<span class="min-w-0 flex-1 truncate">{tabLabel(tab)}</span>
 			<button
 				class="tab-close ml-2 shrink-0 rounded-sm p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground
