@@ -40,6 +40,9 @@ pub fn call_pure(id: BuiltinId, args: Vec<Value>) -> Result<Value, RuntimeError>
         BuiltinId::EndsWithStr => PureBuiltin::call(builtin_ends_with_str, args),
         BuiltinId::RepeatStr => PureBuiltin::call(builtin_repeat_str, args),
         BuiltinId::Unwrap => PureBuiltin::call(builtin_unwrap, args),
+        BuiltinId::First => PureBuiltin::call(builtin_first, args),
+        BuiltinId::Last => PureBuiltin::call(builtin_last, args),
+        BuiltinId::UnwrapOr => PureBuiltin::call(builtin_unwrap_or, args),
         other => Err(RuntimeError::other(format!(
             "not a pure builtin: {}",
             other.name()

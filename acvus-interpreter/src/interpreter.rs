@@ -603,7 +603,10 @@ impl Interpreter {
             | BuiltinId::StartsWithStr
             | BuiltinId::EndsWithStr
             | BuiltinId::RepeatStr
-            | BuiltinId::Unwrap => {
+            | BuiltinId::Unwrap
+            | BuiltinId::First
+            | BuiltinId::Last
+            | BuiltinId::UnwrapOr => {
                 let result = builtins::call_pure(id, args)?;
                 Ok((this, result))
             }

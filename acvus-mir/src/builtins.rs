@@ -41,6 +41,9 @@ pub enum BuiltinId {
     EndsWithStr,
     RepeatStr,
     Unwrap,
+    First,
+    Last,
+    UnwrapOr,
 }
 
 impl BuiltinId {
@@ -81,6 +84,9 @@ impl BuiltinId {
             Self::EndsWithStr => "ends_with_str",
             Self::RepeatStr => "repeat_str",
             Self::Unwrap => "unwrap",
+            Self::First => "first",
+            Self::Last => "last",
+            Self::UnwrapOr => "unwrap_or",
         }
     }
 
@@ -121,6 +127,9 @@ impl BuiltinId {
             "ends_with_str" => Some(Self::EndsWithStr),
             "repeat_str" => Some(Self::RepeatStr),
             "unwrap" => Some(Self::Unwrap),
+            "first" => Some(Self::First),
+            "last" => Some(Self::Last),
+            "unwrap_or" => Some(Self::UnwrapOr),
             _ => None,
         }
     }
@@ -725,6 +734,48 @@ impl BuiltinSig for Unwrap {
     }
 }
 
+pub struct First;
+impl BuiltinSig for First {
+    fn id(&self) -> BuiltinId {
+        BuiltinId::First
+    }
+    fn name(&self) -> &'static str {
+        "first"
+    }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        (vec![Ty::List(Box::new(t.clone()))], t)
+    }
+}
+
+pub struct Last;
+impl BuiltinSig for Last {
+    fn id(&self) -> BuiltinId {
+        BuiltinId::Last
+    }
+    fn name(&self) -> &'static str {
+        "last"
+    }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        (vec![Ty::List(Box::new(t.clone()))], t)
+    }
+}
+
+pub struct UnwrapOr;
+impl BuiltinSig for UnwrapOr {
+    fn id(&self) -> BuiltinId {
+        BuiltinId::UnwrapOr
+    }
+    fn name(&self) -> &'static str {
+        "unwrap_or"
+    }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        (vec![Ty::Option(Box::new(t.clone())), t.clone()], t)
+    }
+}
+
 pub fn builtins() -> Vec<(BuiltinId, &'static dyn BuiltinSig)> {
     vec![
         (BuiltinId::Filter, &Filter as &dyn BuiltinSig),
@@ -762,5 +813,8 @@ pub fn builtins() -> Vec<(BuiltinId, &'static dyn BuiltinSig)> {
         (BuiltinId::EndsWithStr, &EndsWithStr),
         (BuiltinId::RepeatStr, &RepeatStr),
         (BuiltinId::Unwrap, &Unwrap),
+        (BuiltinId::First, &First),
+        (BuiltinId::Last, &Last),
+        (BuiltinId::UnwrapOr, &UnwrapOr),
     ]
 }
