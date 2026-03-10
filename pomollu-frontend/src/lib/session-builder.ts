@@ -276,10 +276,6 @@ export function buildSessionConfig(bot: Bot): BuildResult | null {
 		if (!p) throw new Error(`provider '${id}' not found`);
 		return p.api;
 	});
-	if (!analysisResult.ok) {
-		return { ok: false, errors: analysisResult.errors };
-	}
-
 	// Use ALL params for the session config, not just active ones.
 	// active flag is for UI display (hiding pruned params in editor) — not for compilation.
 	// Dead-branch params are harmless: WASM simply won't evaluate them at runtime.

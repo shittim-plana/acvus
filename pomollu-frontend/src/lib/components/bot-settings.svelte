@@ -143,7 +143,6 @@
 
 	let analyzeTimer: ReturnType<typeof setTimeout> | null = null;
 	let discoveredContextTypes = $state<Record<string, import('$lib/type-parser.js').TypeDesc>>({});
-	let analysisErrors = $state<string[]>([]);
 
 	function runAnalysis() {
 		if (!bot) throw new Error('bot not found');
@@ -157,12 +156,6 @@
 			if (!p) throw new Error(`provider '${id}' not found`);
 			return p.api;
 		});
-		if (!result.ok) {
-			analysisErrors = result.errors;
-			discoveredContextTypes = {};
-			return;
-		}
-		analysisErrors = [];
 		discoveredContextTypes = result.env.contextTypes;
 		botStore.update(bot.id, (b) => ({
 			...b, contextParams: result.ownParams
@@ -354,7 +347,6 @@
 							value={bot.display.iterator}
 							oninput={(v) => updateDisplay('iterator', v)}
 							contextTypes={displayContextTypes}
-							{analysisErrors}
 						/>
 						<p class="text-xs text-muted-foreground">Expression that produces a list to iterate over.</p>
 					</div>
@@ -382,7 +374,6 @@
 										value={entry.condition}
 										oninput={(v) => updateEntry(entry.id, { condition: v })}
 										contextTypes={computeIterableEntryTypes(bot.display.iterator, displayContextTypes)}
-										{analysisErrors}
 									/>
 								</div>
 								<div class="space-y-1">
@@ -393,7 +384,6 @@
 										value={entry.template}
 										oninput={(v) => updateEntry(entry.id, { template: v })}
 										contextTypes={computeIterableEntryTypes(bot.display.iterator, displayContextTypes)}
-										{analysisErrors}
 									/>
 								</div>
 							</div>
@@ -446,7 +436,6 @@
 										value={region.template}
 										oninput={(v) => updateRegion(region.id, { template: v })}
 										contextTypes={displayContextTypes}
-										{analysisErrors}
 									/>
 								</div>
 							{:else}
@@ -458,7 +447,6 @@
 										value={region.iterator}
 										oninput={(v) => updateRegion(region.id, { iterator: v })}
 										contextTypes={displayContextTypes}
-										{analysisErrors}
 									/>
 								</div>
 
@@ -485,7 +473,6 @@
 													value={entry.condition}
 													oninput={(v) => updateRegionEntry(region.id, entry.id, { condition: v })}
 													contextTypes={computeIterableEntryTypes(region.iterator, displayContextTypes)}
-													{analysisErrors}
 												/>
 											</div>
 											<div class="space-y-1">
@@ -496,7 +483,6 @@
 													value={entry.template}
 													oninput={(v) => updateRegionEntry(region.id, entry.id, { template: v })}
 													contextTypes={computeIterableEntryTypes(region.iterator, displayContextTypes)}
-													{analysisErrors}
 												/>
 											</div>
 										</div>
@@ -532,7 +518,6 @@
 							onupdate={handleParamsUpdate}
 							onTypeChange={handleTypeChange}
 							contextTypes={discoveredContextTypes}
-							{analysisErrors}
 						/>
 					</div>
 				{/if}

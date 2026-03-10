@@ -19,8 +19,8 @@
 		// (strategy key/history bind, initial value, assert, messages, iterators).
 		// Do NOT enable for context bindings, display entries, or regions.
 		discoverContext = false,
-		// When non-empty, skip inline typecheck entirely (parent handles errors).
-		analysisErrors = [],
+		// Per-field error from hard typecheck (nodeErrors). Takes priority over inline typecheck.
+		fieldError = '',
 	}: {
 		value: string;
 		oninput: (value: string) => void;
@@ -31,7 +31,7 @@
 		contextTypes?: Record<string, TypeDesc>;
 		expectedTailType?: TypeDesc;
 		discoverContext?: boolean;
-		analysisErrors?: string[];
+		fieldError?: string;
 	} = $props();
 
 	let typecheckError = $state('');
@@ -42,10 +42,12 @@
 
 	const DEBOUNCE_MS = 400;
 
-	// analysisErrors first, then typecheck error.
-	let hasError = $derived(analysisErrors.length > 0 || !!typecheckError);
+	// Priority: fieldError (hard typecheck) > inline typecheckError.
+	let hasError = $derived(!!fieldError || !!typecheckError);
 	let displayErrors = $derived(
-		analysisErrors.length > 0 ? analysisErrors : typecheckError ? [typecheckError] : []
+		fieldError ? [fieldError]
+		: typecheckError ? [typecheckError]
+		: []
 	);
 
 	function updateHighlight(source: string) {
@@ -62,8 +64,8 @@
 	});
 
 	async function check(source: string) {
-		// Skip typecheck when parent has analysis errors.
-		if (analysisErrors.length > 0) {
+		// Skip inline typecheck when parent has analysis errors or hard typecheck already reported an error.
+		if (fieldError) {
 			typecheckError = '';
 			return;
 		}

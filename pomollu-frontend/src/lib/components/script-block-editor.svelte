@@ -7,12 +7,10 @@
 		block,
 		onupdate,
 		contextTypes = {},
-		analysisErrors = []
 	}: {
 		block: ScriptBlock;
 		onupdate: (updater: (b: ScriptBlock) => ScriptBlock) => void;
 		contextTypes?: Record<string, import('$lib/type-parser.js').TypeDesc>;
-		analysisErrors?: string[];
 	} = $props();
 </script>
 
@@ -26,7 +24,7 @@
 			placeholder="Script content..."
 			rows={12}
 			{contextTypes}
-			{analysisErrors}
+	
 		/>
 	</div>
 </div>

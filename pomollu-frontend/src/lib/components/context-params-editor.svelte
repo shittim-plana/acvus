@@ -14,13 +14,11 @@
 		onupdate,
 		onTypeChange,
 		contextTypes = {},
-		analysisErrors = [],
 	}: {
 		params: ContextParam[];
 		onupdate: (params: ContextParam[]) => void;
 		onTypeChange: (name: string, type: string) => void;
 		contextTypes?: Record<string, TypeDesc>;
-		analysisErrors?: string[];
 	} = $props();
 
 	// Component-local cache for in-flight structured edits.
@@ -200,7 +198,7 @@
 							value={getStructuredValue(param)}
 							onchange={(v) => handleStructuredChange(i, param, v)}
 							{contextTypes}
-							{analysisErrors}
+	
 						/>
 					{:else}
 						<AcvusEngineField
@@ -209,7 +207,7 @@
 							oninput={(v) => setStaticValue(i, v)}
 							placeholder="static value expression..."
 							{contextTypes}
-							{analysisErrors}
+	
 							expectedTailType={resolvedTypeDesc(param)}
 						/>
 					{/if}

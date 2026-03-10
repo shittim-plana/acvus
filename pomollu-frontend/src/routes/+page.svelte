@@ -30,7 +30,6 @@
 	const ENV_DEBOUNCE_MS = 300;
 
 	let ownerEnv = $state<ContextEnvResult>(EMPTY_ENV);
-	let ownerAnalysisErrors = $state<string[]>([]);
 	let envTimer: ReturnType<typeof setTimeout> | null = null;
 	let lastOwnerKey: string | null = null;
 
@@ -116,13 +115,7 @@
 	// First load (tab switch) = immediate. Content changes = debounced. Both compute from scratch.
 	function applyFullEnv(owner: BlockOwner) {
 		const result = computeFullEnv(owner);
-		if (!result.ok) {
-			ownerEnv = EMPTY_ENV;
-			ownerAnalysisErrors = result.errors;
-			return;
-		}
 		ownerEnv = result.env;
-		ownerAnalysisErrors = [];
 		syncOwnerParams(owner, result.params);
 	}
 
@@ -237,7 +230,7 @@
 					{/if}
 					<div class="flex-1 overflow-hidden">
 						{#if activeTab?.kind === 'block'}
-							<BlockEditorPage blockId={activeTab.blockId} owner={activeTab.owner} contextTypes={ownerEnv.contextTypes} analysisErrors={ownerAnalysisErrors} />
+							<BlockEditorPage blockId={activeTab.blockId} owner={activeTab.owner} contextTypes={ownerEnv.contextTypes} />
 						{:else if activeTab?.kind === 'prompt'}
 							<PromptSettings promptId={activeTab.promptId} />
 						{:else if activeTab?.kind === 'profile'}
@@ -245,7 +238,7 @@
 						{:else if activeTab?.kind === 'provider'}
 							<ProviderSettings providerId={activeTab.providerId} />
 						{:else if activeTab?.kind === 'node'}
-							<NodeSettings nodeId={activeTab.nodeId} owner={activeTab.owner} contextTypes={ownerEnv.contextTypes} nodeLocals={ownerEnv.nodeLocals} nodeErrors={ownerEnv.nodeErrors} analysisErrors={ownerAnalysisErrors} />
+							<NodeSettings nodeId={activeTab.nodeId} owner={activeTab.owner} contextTypes={ownerEnv.contextTypes} nodeLocals={ownerEnv.nodeLocals} nodeErrors={ownerEnv.nodeErrors} />
 						{:else if activeTab?.kind === 'bot-settings'}
 							<BotSettings botId={activeTab.botId} />
 						{:else if activeTab?.kind === 'chat'}

@@ -17,14 +17,12 @@
 		contextTypes = {},
 		nodeLocals = {},
 		nodeErrors = {},
-		analysisErrors = [],
 	}: {
 		nodeId: string;
 		owner: BlockOwner;
 		contextTypes?: Record<string, import('$lib/type-parser.js').TypeDesc>;
 		nodeLocals?: Record<string, { raw: import('$lib/type-parser.js').TypeDesc; self: import('$lib/type-parser.js').TypeDesc }>;
 		nodeErrors?: Record<string, Record<string, string>>;
-		analysisErrors?: string[];
 	} = $props();
 
 	let node = $derived.by(() => {
@@ -38,8 +36,14 @@
 		locals ? { ...contextTypes, raw: locals.raw, self: locals.self } : contextTypes
 	);
 
-	// Per-field errors from orchestration typecheck
+	// Per-field errors from hard typecheck (Phase 2)
 	let fieldErrors = $derived(node ? (nodeErrors[node.name] ?? {}) : {});
+	// Message errors: JSON string → Record<msgIndex, errorString>
+	let msgErrors = $derived.by<Record<string, string>>(() => {
+		const raw = fieldErrors['messages'];
+		if (!raw) return {};
+		try { return JSON.parse(raw); } catch { return {}; }
+	});
 	let providers = $derived(providerStore.providers);
 	let hasOrphanProvider = $derived(
 		node?.kind === 'llm' && node.providerId !== '' && !providerStore.get(node.providerId)
@@ -287,7 +291,8 @@
 									value={strategy.key}
 									oninput={(v) => updateNode((n) => ({ ...n, strategy: { mode: 'if-modified', key: v } }))}
 									contextTypes={mergedContextTypes}
-									analysisErrors={analysisErrors}
+									
+									fieldError={fieldErrors['ifModifiedKey'] ?? ''}
 									discoverContext
 								/>
 								<p class="hint">Script expression. Re-executes when this value changes.</p>
@@ -301,7 +306,8 @@
 									value={strategy.historyBind}
 									oninput={(v) => updateNode((n) => ({ ...n, strategy: { mode: 'history', historyBind: v } }))}
 									contextTypes={mergedContextTypes}
-									analysisErrors={analysisErrors}
+									
+									fieldError={fieldErrors['historyBind'] ?? ''}
 									discoverContext
 								/>
 								<p class="hint">Script that produces each history entry. Appended to @turn.history.&#123;name&#125;.</p>
@@ -317,12 +323,10 @@
 								oninput={(v) => updateNode((n) => ({ ...n, selfSpec: { ...n.selfSpec, initialValue: v } }))}
 								contextTypes={mergedContextTypes}
 								expectedTailType={locals?.self}
-								analysisErrors={analysisErrors}
+								
+								fieldError={fieldErrors['initialValue'] ?? ''}
 								discoverContext
 							/>
-							{#if fieldErrors['initialValue']}
-								<p class="text-[0.625rem] text-destructive">{fieldErrors['initialValue']}</p>
-							{/if}
 							<p class="hint">Initial @self value. When set, @self is available in the node body (previous stored value or this initial value on first run). Leave empty to disable @self.</p>
 						</div>
 
@@ -346,12 +350,10 @@
 									oninput={(v) => updateNode((n) => ({ ...n, assert: v }))}
 									contextTypes={mergedContextTypes}
 									expectedTailType={{ kind: 'primitive', name: 'Bool' }}
-									analysisErrors={analysisErrors}
+									
+									fieldError={fieldErrors['assert'] ?? ''}
 									discoverContext
 								/>
-								{#if fieldErrors['assert']}
-									<p class="text-[0.625rem] text-destructive">{fieldErrors['assert']}</p>
-								{/if}
 							</div>
 						</div>
 					</div>{/if}
@@ -377,9 +379,6 @@
 							</div>
 						</div>
 						{#if !collapsed['messages']}<div class="section-body">
-							{#if fieldErrors['messages']}
-								<p class="text-[0.625rem] text-destructive">{fieldErrors['messages']}</p>
-							{/if}
 							{#if messages.length === 0}
 								<div class="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
 									No messages. Add a block or iterator message.
@@ -473,7 +472,8 @@
 															value={src.template}
 															oninput={(v) => setMessageSource(i, { type: 'inline', template: v })}
 															contextTypes={mergedContextTypes}
-															analysisErrors={analysisErrors}
+															
+															fieldError={msgErrors[String(i)] ?? ''}
 															discoverContext
 														/>
 													{:else}
@@ -505,7 +505,8 @@
 														value={msg.iterator}
 														oninput={(v) => updateMessage(i, { iterator: v })}
 														contextTypes={mergedContextTypes}
-														analysisErrors={analysisErrors}
+														
+														fieldError={msgErrors[String(i)] ?? ''}
 														discoverContext
 													/>
 													<!-- Slice -->

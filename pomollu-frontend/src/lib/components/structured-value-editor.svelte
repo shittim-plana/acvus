@@ -15,14 +15,12 @@
 		value,
 		onchange,
 		contextTypes = {},
-		analysisErrors = [],
 		depth = 0,
 	}: {
 		typeDesc: TypeDesc;
 		value: StructuredValue;
 		onchange: (value: StructuredValue) => void;
 		contextTypes?: Record<string, TypeDesc>;
-		analysisErrors?: string[];
 		depth?: number;
 	} = $props();
 
@@ -38,7 +36,7 @@
 		value={value.kind === 'raw' ? value.script : ''}
 		oninput={(v) => onchange({ kind: 'raw', script: v })}
 		{contextTypes}
-		{analysisErrors}
+
 	/>
 {:else if typeDesc.kind === 'primitive'}
 	{#if typeDesc.name === 'Bool'}
@@ -107,7 +105,7 @@
 						value={value.kind === 'option-some' ? value.inner : createDefaultValue(typeDesc.inner)}
 						onchange={(v: StructuredValue) => onchange({ kind: 'option-some', inner: v })}
 						{contextTypes}
-						{analysisErrors}
+				
 						depth={depth + 1}
 					/>
 				</div>
@@ -118,7 +116,7 @@
 						value={value.kind === 'option-some' && value.inner.kind === 'raw' ? value.inner.script : ''}
 						oninput={(v) => onchange({ kind: 'option-some', inner: { kind: 'raw', script: v } })}
 						{contextTypes}
-						{analysisErrors}
+				
 					/>
 				</div>
 			{/if}
@@ -159,7 +157,7 @@
 						value={payloadValue}
 						onchange={(v: StructuredValue) => onchange({ kind: 'enum-variant', tag: selected, payload: v })}
 						{contextTypes}
-						{analysisErrors}
+				
 						depth={depth + 1}
 					/>
 				</div>
@@ -170,7 +168,7 @@
 						value={payloadValue.kind === 'raw' ? payloadValue.script : ''}
 						oninput={(v) => onchange({ kind: 'enum-variant', tag: selected, payload: { kind: 'raw', script: v } })}
 						{contextTypes}
-						{analysisErrors}
+				
 					/>
 				</div>
 			{/if}
@@ -192,7 +190,7 @@
 							onchange({ kind: 'object', fields });
 						}}
 						{contextTypes}
-						{analysisErrors}
+				
 						depth={depth + 1}
 					/>
 				{:else}
@@ -207,7 +205,7 @@
 							onchange({ kind: 'object', fields });
 						}}
 						{contextTypes}
-						{analysisErrors}
+				
 					/>
 				{/if}
 			</div>

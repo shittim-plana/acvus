@@ -89,9 +89,7 @@ export function collectNodeNames(children: BlockNode[]): Set<string> {
 	return new Set(collectNodes(children).map((n) => n.name).filter((n) => n));
 }
 
-type CollectParamsResult =
-	| { ok: true; keys: ContextKeyInfo[] }
-	| { ok: false; errors: string[] };
+type CollectParamsResult = { keys: ContextKeyInfo[] };
 
 function collectUnresolvedParams(opts: {
 	scripts: { source: string; mode: 'script' | 'template' }[];
@@ -110,8 +108,8 @@ function collectUnresolvedParams(opts: {
 			? analyzeWithKnown(source, mode, opts.contextTypes, opts.knownScripts!)
 			: analyzeWithTypes(source, mode, opts.contextTypes);
 		if (!result.ok) {
-			console.warn('[collectUnresolvedParams] FAILED script:', mode, source.slice(0, 80), result.errors);
-			return { ok: false, errors: result.errors };
+			console.warn('[collectUnresolvedParams] skipping failed script:', mode, source.slice(0, 80), result.errors);
+			continue;
 		}
 		const filteredKeys = result.context_keys.filter(
 			(k) => !BUILTIN_CONTEXT_REFS.has(k.name) && !opts.nodeNames.has(k.name) && !opts.providedKeys.has(k.name)
@@ -132,7 +130,7 @@ function collectUnresolvedParams(opts: {
 	const keys = Array.from(seen.entries())
 		.map(([name, { type, status }]) => ({ name, type, status }))
 		.sort((a, b) => a.name.localeCompare(b.name));
-	return { ok: true, keys };
+	return { keys };
 }
 
 /**
@@ -164,9 +162,12 @@ function collectUnresolvedParams(opts: {
  * Each level (Prompt/Profile/Bot) calls this with its OWN params only.
  * Other levels' params are passed as providedKeys (already resolved).
  */
-export type TwoPassResult =
-	| { ok: true; env: ContextEnvResult; params: ContextParam[]; activeParams: ContextParam[]; ownParams: ContextParam[] }
-	| { ok: false; errors: string[] };
+export type TwoPassResult = {
+	env: ContextEnvResult;
+	params: ContextParam[];
+	activeParams: ContextParam[];
+	ownParams: ContextParam[];
+};
 
 export function twoPassAnalysis(opts: {
 	scripts: ScriptEntry[];
@@ -204,10 +205,6 @@ export function twoPassAnalysis(opts: {
 		contextTypes: typesFromParams,
 	});
 
-	if (!phase1.ok) {
-		return { ok: false, errors: phase1.errors };
-	}
-
 	// Full type set from Phase 1.
 	const fullTypes: Record<string, TypeDesc> = { ...typesFromParams };
 	for (const k of phase1.keys) {
@@ -219,10 +216,8 @@ export function twoPassAnalysis(opts: {
 		.filter((n) => n.name)
 		.map((n) => toWebNode(n, opts.getApi(n.providerId)));
 	const typecheckResult = typecheckNodes(webNodes, fullTypes);
-	if ('error' in typecheckResult) {
-		return { ok: false, errors: [typecheckResult.error] };
-	}
-	const env: ContextEnvResult = typecheckResult;
+	const EMPTY_ENV: ContextEnvResult = { contextTypes: {}, nodeLocals: {}, nodeErrors: {} };
+	const env: ContextEnvResult = 'error' in typecheckResult ? EMPTY_ENV : typecheckResult;
 
 	// Pruning with known values.
 	const phase1Names = new Set(phase1.keys.map((k) => k.name));
@@ -236,10 +231,8 @@ export function twoPassAnalysis(opts: {
 			contextTypes: fullTypes,
 			knownScripts,
 		});
-		if (phase2.ok) {
-			for (const k of phase2.keys) {
-				if (k.status === 'pruned') survivingNames.delete(k.name);
-			}
+		for (const k of phase2.keys) {
+			if (k.status === 'pruned') survivingNames.delete(k.name);
 		}
 	}
 
@@ -260,7 +253,7 @@ export function twoPassAnalysis(opts: {
 	});
 
 	const activeParams = params.filter((p) => p.active);
-	return { ok: true, env, params, activeParams, ownParams: params };
+	return { env, params, activeParams, ownParams: params };
 }
 
 type GetApi = (providerId: string) => string;
@@ -368,8 +361,6 @@ export function analyzeBot(bot: Bot, prompt: Prompt, profile: Profile, getApi: G
 		getApi,
 	});
 
-	if (!result.ok) return result;
-
 	// Merge all 3 levels' params into the result.
 	// Bot analysis discovers bot-only params; prompt/profile params are already resolved.
 	const ownParams = result.params;
@@ -380,7 +371,7 @@ export function analyzeBot(bot: Bot, prompt: Prompt, profile: Profile, getApi: G
 	];
 	const allActiveParams = allParams.filter((p) => p.active !== false);
 
-	return { ok: true, env: result.env, params: allParams, activeParams: allActiveParams, ownParams };
+	return { env: result.env, params: allParams, activeParams: allActiveParams, ownParams };
 }
 
 /**

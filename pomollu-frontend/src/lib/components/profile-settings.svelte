@@ -21,7 +21,6 @@
 
 	let analyzeTimer: ReturnType<typeof setTimeout> | null = null;
 	let discoveredContextTypes = $state<Record<string, import('$lib/type-parser.js').TypeDesc>>({});
-	let analysisErrors = $state<string[]>([]);
 
 	function runAnalysis() {
 		if (!profile) throw new Error(`profile '${profileId}' not found`);
@@ -30,12 +29,6 @@
 			if (!p) throw new Error(`provider '${id}' not found`);
 			return p.api;
 		});
-		if (!result.ok) {
-			analysisErrors = result.errors;
-			discoveredContextTypes = {};
-			return;
-		}
-		analysisErrors = [];
 		discoveredContextTypes = result.env.contextTypes;
 		profileStore.update(profileId, (p) => ({
 			...p, contextParams: result.params
@@ -122,7 +115,6 @@
 							onupdate={handleParamsUpdate}
 							onTypeChange={handleTypeChange}
 							contextTypes={discoveredContextTypes}
-							{analysisErrors}
 						/>
 					</div>
 				{/if}

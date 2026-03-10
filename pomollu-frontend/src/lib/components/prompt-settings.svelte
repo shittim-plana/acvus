@@ -64,7 +64,6 @@
 	// --- Unresolved params analysis ---
 
 	let discoveredContextTypes = $state<Record<string, import('$lib/type-parser.js').TypeDesc>>({});
-	let analysisErrors = $state<string[]>([]);
 	let analyzeTimer: ReturnType<typeof setTimeout> | null = null;
 
 	function runAnalysis() {
@@ -74,12 +73,6 @@
 			if (!p) throw new Error(`provider '${id}' not found`);
 			return p.api;
 		});
-		if (!result.ok) {
-			analysisErrors = result.errors;
-			discoveredContextTypes = {};
-			return;
-		}
-		analysisErrors = [];
 		discoveredContextTypes = result.env.contextTypes;
 		promptStore.update(promptId, (p) => ({
 			...p, contextParams: result.params
@@ -197,7 +190,6 @@
 								oninput={(v) => updateBinding(i, { script: v })}
 								placeholder="e.g. @messages | map(...)"
 								contextTypes={discoveredContextTypes}
-								{analysisErrors}
 								expectedTailType={binding.name === HISTORY_BINDING_NAME ? HISTORY_ENTRY_TYPE : undefined}
 							/>
 							{#if binding.name === HISTORY_BINDING_NAME}
@@ -228,7 +220,6 @@
 							onupdate={handleParamsUpdate}
 							onTypeChange={handleTypeChange}
 							contextTypes={discoveredContextTypes}
-							{analysisErrors}
 						/>
 					</div>
 				{/if}
