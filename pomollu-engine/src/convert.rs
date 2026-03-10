@@ -90,8 +90,10 @@ pub struct WebToolParam {
 pub fn convert_node(interner: &Interner, web: &WebNode) -> Result<NodeSpec, String> {
     let kind = match web.kind.as_str() {
         "llm" => NodeKind::Llm(LlmSpec {
-            api: ApiKind::parse(&web.api)
-                .ok_or_else(|| format!("node '{}': unknown api '{}'", web.name, web.api))?,
+            // Fallback to OpenAI when api is empty/unknown — ApiKind is only used at
+            // runtime for LLM calls, not during typechecking. This allows nodes with
+            // an unset provider to still participate in type analysis.
+            api: ApiKind::parse(&web.api).unwrap_or(ApiKind::OpenAI),
             provider: String::new(),
             model: web.model.clone(),
             messages: web

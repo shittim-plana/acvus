@@ -48,8 +48,8 @@ pub(crate) fn pure_to_json(interner: &Interner, v: &PureValue) -> serde_json::Va
         PureValue::Variant { tag, payload } => {
             let tag_str = interner.resolve(*tag).to_string();
             match payload {
-                Some(p) => serde_json::json!({tag_str: pure_to_json(interner, p)}),
-                None => serde_json::Value::String(tag_str),
+                Some(p) => serde_json::json!({"__variant": tag_str, "__payload": pure_to_json(interner, p)}),
+                None => serde_json::json!({"__variant": tag_str}),
             }
         }
     }
@@ -74,6 +74,15 @@ fn json_to_pure(interner: &Interner, v: &serde_json::Value) -> Option<PureValue>
             Some(PureValue::List(items?))
         }
         serde_json::Value::Object(map) => {
+            // Variant: {"__variant": "Tag"} or {"__variant": "Tag", "__payload": ...}
+            if let Some(serde_json::Value::String(tag)) = map.get("__variant") {
+                let tag = interner.intern(tag);
+                let payload = map
+                    .get("__payload")
+                    .and_then(|p| json_to_pure(interner, p))
+                    .map(Box::new);
+                return Some(PureValue::Variant { tag, payload });
+            }
             let items: Option<FxHashMap<Astr, PureValue>> = map
                 .iter()
                 .map(|(k, v)| json_to_pure(interner, v).map(|pv| (interner.intern(k), pv)))
