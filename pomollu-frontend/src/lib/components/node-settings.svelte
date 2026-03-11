@@ -199,11 +199,11 @@
 						<div class="field">
 							<Label>Kind</Label>
 							<Select.Root type="single" value={node.kind} onValueChange={(v) => updateNode((n) => ({ ...n, kind: v as import('$lib/types.js').NodeKind }))}>
-								<Select.Trigger class="w-full">{node.kind === 'llm' ? 'LLM' : node.kind === 'expr' ? 'Expr' : 'Plain'}</Select.Trigger>
+								<Select.Trigger class="w-full">{node.kind === 'llm' ? 'LLM' : node.kind === 'expr' ? 'Expression' : 'Plain'}</Select.Trigger>
 								<Select.Content>
 									<Select.Item value="llm">LLM</Select.Item>
 									<Select.Item value="plain">Plain</Select.Item>
-									<Select.Item value="expr">Expr</Select.Item>
+									<Select.Item value="expr">Expression</Select.Item>
 								</Select.Content>
 							</Select.Root>
 						</div>
