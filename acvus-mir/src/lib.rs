@@ -388,4 +388,95 @@ mod tests {
             .any(|i| matches!(&i.kind, crate::ir::InstKind::Yield(_)));
         assert!(!has_yield);
     }
+
+    // ── Non-pure context load tests ──────────────────────────────────
+
+    fn extern_fn_context() -> (Interner, FxHashMap<Astr, Ty>) {
+        let i = Interner::new();
+        let ctx = FxHashMap::from_iter([
+            (
+                i.intern("mapper"),
+                Ty::Fn {
+                    params: vec![Ty::Int],
+                    ret: Box::new(Ty::String),
+                    is_extern: true,
+                },
+            ),
+            (i.intern("items"), Ty::List(Box::new(Ty::Int))),
+        ]);
+        (i, ctx)
+    }
+
+    /// Pipe with extern fn on the right: `@items | @mapper` should work.
+    /// The pipe desugars to @mapper(@items) — call position allows non-pure.
+    #[test]
+    fn pipe_extern_fn_ok() {
+        let (i, ctx) = extern_fn_context();
+        let result = compile_src(
+            &i,
+            r#"{{ x = @items | map(i -> @mapper(i)) }}{{ x | len | to_string }}{{_}}{{/}}"#,
+            &ctx,
+        );
+        assert!(result.is_ok(), "pipe with extern fn call should work: {result:?}");
+    }
+
+    /// Direct call: `@mapper(42)` should work.
+    #[test]
+    fn direct_extern_fn_call_ok() {
+        let (i, ctx) = extern_fn_context();
+        let result = compile_src(
+            &i,
+            "{{ @mapper(42) }}",
+            &ctx,
+        );
+        assert!(result.is_ok(), "direct extern fn call should work: {result:?}");
+    }
+
+    /// Bare load: `@mapper` without calling should fail (non-pure context load).
+    #[test]
+    fn bare_extern_fn_load_fails() {
+        let (i, ctx) = extern_fn_context();
+        let result = compile_src(
+            &i,
+            "{{ x = @mapper }}{{ x(1) }}{{_}}{{/}}",
+            &ctx,
+        );
+        assert!(result.is_err(), "bare extern fn load should fail");
+    }
+
+    /// Script: `@mapper(1)` should work.
+    #[test]
+    fn script_extern_fn_call_ok() {
+        let (i, ctx) = extern_fn_context();
+        let script = acvus_ast::parse_script(&i, "@mapper(1)").unwrap();
+        let result = compile_script(&i, &script, &ctx);
+        assert!(result.is_ok(), "script extern fn call should work: {result:?}");
+    }
+
+    /// Script: bare `@mapper` as tail should fail.
+    #[test]
+    fn script_bare_extern_fn_fails() {
+        let (i, ctx) = extern_fn_context();
+        let script = acvus_ast::parse_script(&i, "@mapper").unwrap();
+        let result = compile_script(&i, &script, &ctx);
+        assert!(result.is_err(), "script bare extern fn should fail");
+    }
+
+    /// Script pipe: `@items | @mapper` should work (pipe = call position).
+    #[test]
+    fn script_pipe_extern_fn_ok() {
+        let (i, mut ctx) = extern_fn_context();
+        // Change mapper to accept List<Int> for direct pipe
+        ctx.insert(
+            i.intern("mapper"),
+            Ty::Fn {
+                params: vec![Ty::List(Box::new(Ty::Int))],
+                ret: Box::new(Ty::String),
+                is_extern: true,
+            },
+        );
+        let script = acvus_ast::parse_script(&i, "@items | @mapper").unwrap();
+        let result = compile_script(&i, &script, &ctx);
+        assert!(result.is_ok(), "script pipe extern fn should work: {result:?}");
+    }
 }
