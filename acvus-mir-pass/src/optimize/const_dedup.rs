@@ -111,7 +111,8 @@ fn remap_uses(kind: &mut InstKind, remap: &FxHashMap<ValueId, ValueId>) {
         InstKind::Const { .. }
         | InstKind::VarLoad { .. }
         | InstKind::BlockLabel { .. }
-        | InstKind::Nop => {}
+        | InstKind::Nop
+        | InstKind::Poison { .. } => {}
 
         InstKind::ContextLoad { .. } => {}
 

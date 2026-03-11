@@ -133,7 +133,7 @@ impl<'a> TypeChecker<'a> {
                 .as_ref()
                 .map(|e| e.span())
                 .unwrap_or(acvus_ast::Span { start: 0, end: 0 });
-            self.error(MirErrorKind::AmbiguousEmptyList, span);
+            self.error(MirErrorKind::AmbiguousType, span);
             return Err(self.errors);
         }
         let resolved: TypeMap = self

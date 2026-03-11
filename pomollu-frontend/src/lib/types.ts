@@ -45,20 +45,13 @@ export type NodeToolBinding = {
 	params: ToolParam[];
 };
 
-export type ScriptBlock = {
-	kind: 'script';
-	id: string;
-	name: string;
-	text: string;
-};
-
 export type NoneBlock = {
 	kind: 'none';
 	id: string;
 	name: string;
 };
 
-export type Block = NoneBlock | ContextBlock | RawBlock | ScriptBlock;
+export type Block = NoneBlock | ContextBlock | RawBlock;
 
 export type BlockKind = Block['kind'];
 
@@ -74,13 +67,8 @@ export function isRawBlock(block: Block): block is RawBlock {
 	return block.kind === 'raw';
 }
 
-export function isScriptBlock(block: Block): block is ScriptBlock {
-	return block.kind === 'script';
-}
-
 export function blockLabel(block: Block): string {
 	if (isContextBlock(block)) return block.name || block.info.description || block.info.type || 'Untitled';
-	if (isScriptBlock(block)) return block.name || 'Untitled';
 	if (isRawBlock(block)) return block.name || 'Untitled';
 	return block.name || 'Untitled';
 }
@@ -116,7 +104,7 @@ export type Provider = {
 
 // --- Node (LLM call unit) ---
 
-export type NodeKind = 'llm' | 'plain';
+export type NodeKind = 'llm' | 'plain' | 'expr';
 
 export type MaxTokens = {
 	input: number;
@@ -167,6 +155,7 @@ export type Node = {
 	strategy: Strategy;
 	retry: number;
 	assert: string;
+	exprSource: string;
 	messages: MessageDef[];
 	tools: NodeToolBinding[];
 	isFunction: boolean;

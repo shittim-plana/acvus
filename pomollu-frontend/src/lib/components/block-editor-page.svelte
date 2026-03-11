@@ -1,6 +1,6 @@
 <script lang="ts">
-	import type { ContextBlock, RawBlock, ScriptBlock } from '$lib/types.js';
-	import { blockKind, isContextBlock, isRawBlock, isScriptBlock } from '$lib/types.js';
+	import type { ContextBlock, RawBlock } from '$lib/types.js';
+	import { blockKind, isContextBlock, isRawBlock } from '$lib/types.js';
 	import type { BlockOwner } from '$lib/stores.svelte.js';
 	import { createId, generateName, getOwnerChildren, updateOwnerBlock, collectScopeBlockNames, uiState } from '$lib/stores.svelte.js';
 	import { collectOwnerDeps } from '$lib/dependencies.js';
@@ -14,7 +14,7 @@
 	import { X } from 'lucide-svelte';
 	import BlockEditor from './block-editor.svelte';
 	import RawBlockEditor from './raw-block-editor.svelte';
-	import ScriptBlockEditor from './script-block-editor.svelte';
+
 	import BasePage from './base-page.svelte';
 
 	let { blockId, owner, contextTypes = {} }: { blockId: string; owner: BlockOwner; contextTypes?: Record<string, import('$lib/type-parser.js').TypeDesc> } = $props();
@@ -50,9 +50,6 @@
 		} else if (kind === 'raw') {
 			const raw: RawBlock = { kind: 'raw', id, name, text: '', mode: 'template' };
 			updateOwnerBlock(owner, blockId, () => raw);
-		} else if (kind === 'script') {
-			const script: ScriptBlock = { kind: 'script', id, name, text: '' };
-			updateOwnerBlock(owner, blockId, () => script);
 		} else {
 			const ctx: ContextBlock = {
 				kind: 'context', id, name,
@@ -71,15 +68,11 @@
 		updateOwnerBlock(owner, blockId, (b) => isRawBlock(b) ? updater(b) : b);
 	}
 
-	function handleScriptUpdate(updater: (b: ScriptBlock) => ScriptBlock) {
-		updateOwnerBlock(owner, blockId, (b) => isScriptBlock(b) ? updater(b) : b);
-	}
-
 	function handleRemove() {
 		uiState.removeOwnerTreeNode(owner, blockId);
 	}
 
-	const kindLabels = { none: 'Disabled', context: 'Context', raw: 'Raw', script: 'Script' } as const;
+	const kindLabels = { none: 'Disabled', context: 'Context', raw: 'Raw' } as const;
 
 	let deps = $derived(collectOwnerDeps(owner));
 </script>
@@ -108,7 +101,7 @@
 						<Select.Item value="none">Disabled</Select.Item>
 						<Select.Item value="context">Context</Select.Item>
 						<Select.Item value="raw">Raw</Select.Item>
-						<Select.Item value="script">Script</Select.Item>
+	
 					</Select.Content>
 				</Select.Root>
 			</div>
@@ -139,8 +132,6 @@
 				<div class="mx-auto max-w-2xl px-6 py-6">
 					{#if isContextBlock(block)}
 						<BlockEditor block={block} onupdate={handleContextUpdate} />
-					{:else if isScriptBlock(block)}
-						<ScriptBlockEditor block={block} onupdate={handleScriptUpdate} {contextTypes} />
 					{:else}
 						<div class="py-8 text-center text-sm text-muted-foreground">
 							Select a kind to configure this block.

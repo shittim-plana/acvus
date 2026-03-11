@@ -201,7 +201,8 @@ fn used_vals(kind: &InstKind) -> Vec<ValueId> {
         InstKind::Const { .. }
         | InstKind::VarLoad { .. }
         | InstKind::BlockLabel { .. }
-        | InstKind::Nop => vec![],
+        | InstKind::Nop
+        | InstKind::Poison { .. } => vec![],
         InstKind::ContextLoad { .. } => vec![],
         InstKind::MakeVariant { payload, .. } => payload.iter().copied().collect(),
         InstKind::TestVariant { src, .. } => vec![*src],
@@ -238,7 +239,8 @@ fn defined_val(kind: &InstKind) -> Option<ValueId> {
         | InstKind::IterInit { dst, .. }
         | InstKind::MakeVariant { dst, .. }
         | InstKind::TestVariant { dst, .. }
-        | InstKind::UnwrapVariant { dst, .. } => Some(*dst),
+        | InstKind::UnwrapVariant { dst, .. }
+        | InstKind::Poison { dst } => Some(*dst),
         InstKind::IterNext { dst_value, .. } => Some(*dst_value),
         _ => None,
     }

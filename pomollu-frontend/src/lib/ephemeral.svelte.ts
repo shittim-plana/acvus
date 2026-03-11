@@ -5,25 +5,37 @@
  * Entries survive component remounts but vanish on page reload.
  */
 
-const store = new Map<string, object>();
+interface EphemeralEntry<T> {
+	value: T;
+	onDispose?: (value: T) => void;
+}
+
+const store = new Map<string, EphemeralEntry<any>>();
 
 /**
  * Acquire or create an ephemeral state entry.
  * Same key always returns the same instance (stable across remounts).
+ *
+ * @param onDispose — called when `disposeEphemeral(key)` is invoked (e.g. session deletion).
+ *   Only registered on first creation; subsequent calls with the same key ignore this parameter.
  */
-export function ephemeral<T extends object>(key: string, create: () => T): T {
-	let s = store.get(key) as T | undefined;
-	if (!s) {
-		s = create();
-		store.set(key, s);
+export function ephemeral<T extends object>(key: string, create: () => T, onDispose?: (value: T) => void): T {
+	let entry = store.get(key) as EphemeralEntry<T> | undefined;
+	if (!entry) {
+		entry = { value: create(), onDispose };
+		store.set(key, entry);
 	}
-	return s;
+	return entry.value;
 }
 
 /**
  * Release an ephemeral state entry (e.g. when the owning session is deleted).
- * The caller may run cleanup (free WASM objects, etc.) before calling this.
+ * Invokes the `onDispose` callback if one was registered, then removes the entry.
  */
 export function disposeEphemeral(key: string): void {
-	store.delete(key);
+	const entry = store.get(key);
+	if (entry) {
+		entry.onDispose?.(entry.value);
+		store.delete(key);
+	}
 }

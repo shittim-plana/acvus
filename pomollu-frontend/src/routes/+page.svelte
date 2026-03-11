@@ -26,17 +26,10 @@
 
 	let activeTab = $derived(uiState.activeTab);
 
-	// Chat tabs with their original index — kept alive across tab switches.
-	let chatTabs = $derived(
-		uiState.tabs
-			.map((tab, i) => ({ tab, i }))
-			.filter((e): e is { tab: Extract<typeof e.tab, { kind: 'chat' }>, i: number } => e.tab.kind === 'chat')
-	);
-
 	// --- Owner env: inline discovery + orchestration typecheck ---
 
 	const EMPTY_ENV: ContextEnvResult = { contextTypes: {}, nodeLocals: {}, nodeErrors: {} };
-	const ENV_DEBOUNCE_MS = 300;
+	const ENV_DEBOUNCE_MS = 1000;
 
 	let ownerEnv = $state<ContextEnvResult>(EMPTY_ENV);
 	let envTimer: ReturnType<typeof setTimeout> | null = null;
@@ -208,27 +201,26 @@
 						{:else if activeTab?.kind === 'provider'}
 							<ProviderSettings providerId={activeTab.providerId} />
 						{:else if activeTab?.kind === 'node'}
-							<NodeSettings nodeId={activeTab.nodeId} owner={activeTab.owner} contextTypes={ownerEnv.contextTypes} nodeLocals={ownerEnv.nodeLocals} nodeErrors={ownerEnv.nodeErrors} />
+							<NodeSettings nodeId={activeTab.nodeId} owner={activeTab.owner} contextTypes={ownerEnv.contextTypes} nodeLocals={ownerEnv.nodeLocals} nodeErrors={ownerEnv.nodeErrors} nodeFnParams={ownerEnv.nodeFnParams} />
 						{:else if activeTab?.kind === 'bot-settings'}
 							<BotSettings botId={activeTab.botId} />
-						{:else if activeTab?.kind !== 'chat'}
-							<div class="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
-								<h1 class="text-2xl font-semibold text-foreground">Welcome to Pomollu!</h1>
-								<a href="https://github.com/ArtBlnd/acvus" target="_blank" rel="noopener noreferrer" class="text-sm underline hover:text-foreground transition-colors">Source</a>
-							</div>
+						{:else if activeTab?.kind === 'chat'}
+						<!-- Chat panel: only active chat is mounted; ephemeral state preserves running turns across tab switches. -->
+						{@const chatSession = sessionStore.sessions.find((s) => s.id === activeTab.sessionId)}
+						{@const chatBot = chatSession ? botStore.get(chatSession.botId) : undefined}
+						{#if chatSession && chatBot}
+							{#key activeTab.sessionId}
+								<ChatPanel session={chatSession} bot={chatBot} />
+							{/key}
+						{:else}
+							<div class="flex h-full items-center justify-center text-sm text-muted-foreground">Session or bot not found.</div>
 						{/if}
-						<!-- Chat panels: kept alive across tab switches so running turns are not aborted. -->
-						{#each chatTabs as { tab, i } (tab.sessionId)}
-							{@const chatSession = sessionStore.sessions.find((s) => s.id === tab.sessionId)}
-							{@const chatBot = chatSession ? botStore.get(chatSession.botId) : undefined}
-							<div class="h-full" class:hidden={i !== uiState.activeTabIndex}>
-								{#if chatSession && chatBot}
-									<ChatPanel session={chatSession} bot={chatBot} />
-								{:else}
-									<div class="flex h-full items-center justify-center text-sm text-muted-foreground">Session or bot not found.</div>
-								{/if}
-							</div>
-						{/each}
+					{:else}
+						<div class="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
+							<h1 class="text-2xl font-semibold text-foreground">Welcome to Pomollu!</h1>
+							<a href="https://github.com/ArtBlnd/acvus" target="_blank" rel="noopener noreferrer" class="text-sm underline hover:text-foreground transition-colors">Source</a>
+						</div>
+					{/if}
 					</div>
 				</div>
 			</Resizable.Pane>

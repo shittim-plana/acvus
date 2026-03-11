@@ -1,6 +1,6 @@
 use acvus_orchestration::{
-    ApiKind, GenerationParams, LlmSpec, MaxTokens, MessageSpec, NodeKind, NodeSpec, PlainSpec,
-    SelfSpec, Strategy, TokenBudget, ToolBinding,
+    ApiKind, ExprSpec, GenerationParams, LlmSpec, MaxTokens, MessageSpec, NodeKind, NodeSpec,
+    PlainSpec, SelfSpec, Strategy, TokenBudget, ToolBinding,
 };
 use acvus_utils::Interner;
 use rust_decimal::Decimal;
@@ -30,6 +30,8 @@ pub struct WebNode {
     pub is_function: bool,
     #[serde(default)]
     pub fn_params: Vec<WebFnParam>,
+    #[serde(default)]
+    pub expr_source: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -164,6 +166,10 @@ impl WebNode {
                 input: Some(web.max_tokens.input),
                 output: Some(web.max_tokens.output),
             },
+        }),
+        "expr" => NodeKind::Expr(ExprSpec {
+            source: web.expr_source.clone().unwrap_or_default(),
+            output_ty: acvus_mir::ty::Ty::Infer,
         }),
         _ => NodeKind::Plain(PlainSpec {
             source: web

@@ -135,6 +135,8 @@ pub struct NodeErrors {
     pub assert: Vec<error::EngineError>,
     #[serde(skip_serializing_if = "FxHashMap::is_empty")]
     pub messages: FxHashMap<String, Vec<error::EngineError>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub expr_source: Vec<error::EngineError>,
 }
 
 impl NodeErrors {
@@ -144,6 +146,7 @@ impl NodeErrors {
             && self.if_modified_key.is_empty()
             && self.assert.is_empty()
             && self.messages.is_empty()
+            && self.expr_source.is_empty()
     }
 }
 

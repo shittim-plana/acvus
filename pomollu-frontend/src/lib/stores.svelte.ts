@@ -1,4 +1,4 @@
-import type { Block, ContextBlock, RawBlock, RawBlockMode, ScriptBlock, BlockNode, Node, Prompt, Profile, Provider, Bot, Session, NoneBlock, ContextParam, ParamOverride } from './types.js';
+import type { Block, ContextBlock, RawBlock, RawBlockMode, BlockNode, Node, Prompt, Profile, Provider, Bot, Session, NoneBlock, ContextParam, ParamOverride } from './types.js';
 import { createDefaultLayout, HISTORY_BINDING_NAME } from './types.js';
 import { entityVersions } from '$lib/entity-versions.svelte.js';
 import type { EntityRef, EntityKind } from '$lib/entity-versions.svelte.js';
@@ -58,10 +58,6 @@ export function createRawBlock(name: string, mode: RawBlockMode = 'template'): R
 	return { kind: 'raw', id: createId(), name, text: '', mode };
 }
 
-export function createScriptBlock(name: string = ''): ScriptBlock {
-	return { kind: 'script', id: createId(), name, text: '' };
-}
-
 export function createBlockNode(): BlockNode {
 	return { kind: 'block', block: { kind: 'none', id: createId(), name: '' } };
 }
@@ -97,6 +93,7 @@ export function createNode(name: string): Node {
 		strategy: { mode: 'once-per-turn' },
 		retry: 0,
 		assert: 'true',
+		exprSource: '',
 		messages: [],
 		tools: [],
 		isFunction: false,
@@ -790,14 +787,19 @@ function migrateBlock(block: Record<string, unknown>): Block {
 	if ('kind' in block && typeof block.kind === 'string') return block as unknown as Block;
 	if ('info' in block) return { ...block, kind: 'context' } as unknown as ContextBlock;
 	if ('text' in block && 'mode' in block) return { ...block, kind: 'raw' } as unknown as RawBlock;
-	if ('text' in block) return { ...block, kind: 'script' } as unknown as ScriptBlock;
+	if ('text' in block) return { ...block, kind: 'none' } as unknown as NoneBlock;
 	return { ...block, kind: 'none' } as unknown as NoneBlock;
+}
+
+function migrateNode(node: Record<string, unknown>): Node {
+	return { ...node, exprSource: (node as any).exprSource ?? '' } as unknown as Node;
 }
 
 function migrateChildren(children: BlockNode[]): BlockNode[] {
 	return children.map((n) => {
 		if (n.kind === 'block') return { ...n, block: migrateBlock(n.block as Record<string, unknown>) };
 		if (n.kind === 'folder') return { ...n, folder: { ...n.folder, children: migrateChildren(n.folder.children) } };
+		if (n.kind === 'node') return { ...n, node: migrateNode(n.node as Record<string, unknown>) };
 		return n;
 	});
 }

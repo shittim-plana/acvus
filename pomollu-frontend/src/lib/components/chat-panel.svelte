@@ -6,11 +6,11 @@
 	import { Textarea } from '$lib/components/ui/textarea';
 	import { Label } from '$lib/components/ui/label';
 	import { Send, MessageSquarePlus, Loader2, Square } from 'lucide-svelte';
-	import { tick, onDestroy } from 'svelte';
+	import { tick } from 'svelte';
 	import DisplayCard from './display-card.svelte';
 	import { sessionStore, promptStore, profileStore, uiState } from '$lib/stores.svelte.js';
 	import { ChatSession, type StorageSnapshot } from '$lib/engine.js';
-	import { buildSessionConfig } from '$lib/session-builder.js';
+	import { buildSessionConfig, type BuildResult } from '$lib/session-builder.js';
 	import { confirmAction } from '$lib/confirm-dialog.svelte.js';
 	import { collectBotDeps } from '$lib/dependencies.js';
 	import type { EntityRef } from '$lib/entity-versions.svelte.js';
@@ -49,7 +49,21 @@
 		prevSessionKey = '';
 	}
 
-	const st = ephemeral(`chat:${session.id}`, () => new ChatPanelState());
+	const st = ephemeral(`chat:${session.id}`, () => new ChatPanelState(), (st) => {
+		// Called on session deletion (disposeEphemeral) — free WASM resources.
+		if (st.pendingResolve) {
+			st.pendingResolve.resolve('');
+			st.pendingResolve = null;
+		}
+		if (st.chatSession) {
+			st.chatSession.free();
+			st.chatSession = null;
+			st.chatSessionKey = null;
+		}
+		if (st.isLoading && st.turnDeps.length > 0) {
+			uiState.unlock(st.turnDeps);
+		}
+	});
 
 	// --- Derived from props (always recomputed, not ephemeral) ---
 
@@ -69,8 +83,8 @@
 	let isConfigured = $derived(hasHistoryBinding && !!inputParam);
 	let canSubmit = $derived(st.inputValue.trim().length > 0 && isConfigured);
 
-	// --- Error handling: config errors are derived, runtime errors are ephemeral ---
-	let configResult = $derived(buildSessionConfig(bot));
+	// --- Error handling: config built via debounced handleConfigChange, runtime errors are ephemeral ---
+	let configResult = $state<BuildResult | null>(buildSessionConfig(bot));
 	let configError = $derived(
 		!configResult ? 'No nodes configured.'
 		: !configResult.ok ? configResult.errors.join('\n')
@@ -84,7 +98,6 @@
 	);
 
 	// --- Component-local state (OK to lose on remount) ---
-	let destroyed = false;
 	let loadingMore = $state(false);
 	let sentinelEl = $state<HTMLElement>();
 	let scrollContainerEl = $state<HTMLElement>();
@@ -122,7 +135,9 @@
 
 	// Called by BasePage when any config store mutates (debounced).
 	function handleConfigChange() {
-		if (destroyed || st.isLoading) return;
+		if (st.isLoading) return;
+		// Rebuild config (expensive — only runs debounced via BasePage).
+		configResult = buildSessionConfig(bot);
 		// Invalidate old session — will be rebuilt with fresh config.
 		if (st.chatSession) {
 			st.chatSession.free();
@@ -134,7 +149,7 @@
 
 	// First init: when session key changes and config is valid.
 	$effect(() => {
-		if (st.chatSession || configError || !isConfigured || destroyed || st.isLoading) return;
+		if (st.chatSession || configError || !isConfigured || st.isLoading) return;
 		st.runtimeError = '';
 		ensureChatSession().catch((e) => {
 			st.runtimeError = e instanceof Error ? e.message : String(e);
@@ -196,28 +211,13 @@
 		}
 	}
 
-	onDestroy(() => {
-		destroyed = true;
-		// Abort pending resolver so the old turn() can reject and clean up
-		if (st.pendingResolve) {
-			st.pendingResolve.resolve('');
-			st.pendingResolve = null;
-		}
-		if (st.chatSession && !st.isLoading) {
-			st.chatSession.free();
-			st.chatSession = null;
-		}
-		// If a turn is running (isLoading), defer free until submit() finishes
-		// — see the `destroyed` check + deferredFree in the finally block.
-	});
-
 	// Re-render static regions when bot.regions changes
 	let regionsKey = $derived(JSON.stringify(bot.regions));
 	$effect(() => {
 		void regionsKey;
-		if (!isConfigured || destroyed || st.isLoading) return;
+		if (!isConfigured || st.isLoading) return;
 		ensureChatSession().then((cs) => {
-			if (!destroyed && !st.isLoading) renderRegions(cs);
+			if (!st.isLoading) renderRegions(cs);
 		}).catch((e) => {
 			st.runtimeError = e instanceof Error ? e.message : String(e);
 		});
@@ -416,8 +416,8 @@
 			uiState.lock(st.turnDeps);
 			const result = await cs.turn(resolver);
 
-			// Session was switched or component destroyed during turn — bail out.
-			if (destroyed || st.chatSessionKey !== snapshotKey) return;
+			// Session was switched during turn — bail out.
+			if (st.chatSessionKey !== snapshotKey) return;
 
 			// Turn was cancelled while WASM was running — discard result.
 			if (myTurnId !== st.activeTurnId) return;
@@ -463,11 +463,6 @@
 				st.pendingValue = '';
 			}
 			scrollToBottom();
-			// Deferred free: component was destroyed while turn was running.
-			if (destroyed && st.chatSession) {
-				st.chatSession.free();
-				st.chatSession = null;
-			}
 		}
 	}
 

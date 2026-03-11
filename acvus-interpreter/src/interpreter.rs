@@ -547,6 +547,9 @@ impl Interpreter {
                     return Ok((this, frame, Some(v)));
                 }
                 InstKind::Nop => {}
+                InstKind::Poison { .. } => {
+                    panic!("reached poison value: typechecker should have prevented this");
+                }
             }
             pc += 1;
         }

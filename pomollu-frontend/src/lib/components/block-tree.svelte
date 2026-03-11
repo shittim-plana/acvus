@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { BlockNode } from '$lib/types.js';
-	import { isContextBlock, isRawBlock, isScriptBlock } from '$lib/types.js';
+	import { isContextBlock, isRawBlock } from '$lib/types.js';
 	import type { BlockOwner } from '$lib/stores.svelte.js';
 	import { uiState, getOwnerChildren, updateOwnerChildren } from '$lib/stores.svelte.js';
 	import { nodeId, DROP_PREFIX, updateTreeNode } from '$lib/block-tree.js';
@@ -120,9 +120,6 @@
 						{:else if isRawBlock(node.block)}
 							<span class="badge badge-raw">raw</span>
 							<span class="item-name">{node.block.name || 'Untitled'}</span>
-						{:else if isScriptBlock(node.block)}
-							<span class="badge badge-script">script</span>
-							<span class="item-name">{node.block.name || 'Untitled'}</span>
 						{:else}
 							<span class="item-name item-disabled">{node.block.name || 'Untitled'}</span>
 						{/if}
@@ -237,10 +234,6 @@
 	}
 	.badge-tool {
 		background-color: hsl(30 80% 50%);
-		color: white;
-	}
-	.badge-script {
-		background-color: hsl(260 60% 55%);
 		color: white;
 	}
 	.item-name {

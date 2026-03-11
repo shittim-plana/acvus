@@ -29,7 +29,7 @@ pub enum MirErrorKind {
         expected: Ty,
         got: Ty,
     },
-    AmbiguousEmptyList,
+    AmbiguousType,
     UnificationFailure {
         expected: Ty,
         got: Ty,
@@ -116,8 +116,8 @@ impl<'a> fmt::Display for MirErrorDisplay<'a> {
                     got.display(interner)
                 )
             }
-            MirErrorKind::AmbiguousEmptyList => {
-                write!(f, "cannot infer type of empty list `[]` without context")
+            MirErrorKind::AmbiguousType => {
+                write!(f, "cannot infer type: not enough context to determine the type of this expression")
             }
             MirErrorKind::UnificationFailure { expected, got } => {
                 write!(

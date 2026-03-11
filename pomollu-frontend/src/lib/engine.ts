@@ -28,6 +28,7 @@ export type NodeErrors = {
 	ifModifiedKey: EngineError[];
 	assert: EngineError[];
 	messages: Record<string, EngineError[]>;
+	exprSource: EngineError[];
 };
 
 // ---------------------------------------------------------------------------
@@ -204,6 +205,7 @@ export type WebNode = {
 	tools: { name: string; description: string; node: string; params: { name: string; type: string }[] }[];
 	isFunction: boolean;
 	fnParams: { name: string; type: string }[];
+	exprSource?: string;
 };
 
 export type TypecheckNodesResult = {
@@ -220,6 +222,7 @@ function convertNodeErrors(raw: WasmNodeErrors): NodeErrors {
 		ifModifiedKey: raw.ifModifiedKey,
 		assert: raw.assert,
 		messages: mapToRecord(raw.messages),
+		exprSource: raw.exprSource ?? [],
 	};
 }
 

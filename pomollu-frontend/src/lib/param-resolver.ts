@@ -2,7 +2,7 @@ import type { ContextKeyInfo, WebNode, NodeErrors } from './engine.js';
 import type { TypeDesc } from './type-parser.js';
 import { isUnknownType } from './type-parser.js';
 import type { Node, BlockNode, ContextBinding, DisplayEntry, DisplayRegion, ContextParam, ParamOverride, Prompt, Profile, Bot } from './types.js';
-import { isRawBlock, isScriptBlock, CONTEXT_TYPE } from './types.js';
+import { isRawBlock, CONTEXT_TYPE } from './types.js';
 import { collectBlocks, collectNodes } from './block-tree.js';
 import { analyzeWithTypes, analyzeWithKnown, typecheckNodes } from './engine.js';
 
@@ -27,16 +27,15 @@ export function collectScriptsFromBindings(bindings: ContextBinding[]): ScriptEn
 		.map((b) => ({ source: b.script, mode: 'script' as const }));
 }
 
-export function collectScriptsFromTree(children: BlockNode[]): ScriptEntry[] {
+export function collectScriptsFromTree(children: BlockNode[], opts?: { skipFunctionNodes?: boolean }): ScriptEntry[] {
 	const scripts: ScriptEntry[] = [];
 	for (const block of collectBlocks(children)) {
 		if (isRawBlock(block)) {
 			scripts.push({ source: block.text, mode: block.mode });
-		} else if (isScriptBlock(block)) {
-			scripts.push({ source: block.text, mode: 'script' });
 		}
 	}
 	for (const node of collectNodes(children)) {
+		if (opts?.skipFunctionNodes && node.isFunction) continue;
 		collectScriptsFromNode(node, scripts);
 	}
 	return scripts;
@@ -61,6 +60,49 @@ function collectScriptsFromNode(node: Node, out: ScriptEntry[]) {
 		// Do NOT collect iterator templates here.
 		// They use @item/@index loop variables — handled by render_display.
 	}
+	if (node.kind === 'expr' && node.exprSource.trim()) {
+		out.push({ source: node.exprSource, mode: 'script' });
+	}
+}
+
+function discoverFnParams(
+	children: BlockNode[],
+	contextTypes: Record<string, TypeDesc>,
+	nodeNames: Set<string>,
+): Record<string, DiscoveredFnParam[]> {
+	const result: Record<string, DiscoveredFnParam[]> = {};
+	for (const node of collectNodes(children)) {
+		if (!node.isFunction || !node.name) continue;
+		const scripts: ScriptEntry[] = [];
+		collectScriptsFromNode(node, scripts);
+		if (scripts.length === 0) continue;
+
+		// Analyze each script and collect context keys regardless of ok status.
+		// Type errors (e.g. @a + @b where both are unknown) don't invalidate
+		// key discovery — the keys are still valid fn_param candidates.
+		const seen = new Map<string, TypeDesc>();
+		for (const { source, mode } of scripts) {
+			if (!source.trim()) continue;
+			const analysis = analyzeWithTypes(source, mode, contextTypes);
+			for (const k of analysis.contextKeys) {
+				if (BUILTIN_CONTEXT_REFS.has(k.name) || nodeNames.has(k.name)) continue;
+				if (!seen.has(k.name) || isUnknownType(seen.get(k.name)!)) {
+					seen.set(k.name, k.type);
+				}
+			}
+		}
+
+		result[node.name] = Array.from(seen.entries())
+			.map(([name, inferredType]) => ({ name, inferredType }))
+			.sort((a, b) => a.name.localeCompare(b.name));
+	}
+	return result;
+}
+
+/** Convert a TypeDesc to a simple type string for fn_params (WASM parse_type_string compatible). */
+function typeDescToFnParamString(desc: TypeDesc): string {
+	if (desc.kind === 'primitive') return desc.name;
+	return '';
 }
 
 export function collectScriptsFromDisplay(entries: DisplayEntry[]): ScriptEntry[] {
@@ -207,6 +249,11 @@ export function twoPassAnalysis(opts: {
 		if (ov.userType) typesFromParams[name] = ov.userType;
 	}
 
+	// Pre-pass: discover fn_params for function nodes.
+	// Function node scripts are excluded from outer Phase 1 analysis
+	// to prevent fn_params from being counted as context params.
+	const nodeFnParams = discoverFnParams(opts.children, typesFromParams, opts.nodeNames);
+
 	const knownScripts: Record<string, string> = {};
 	for (const [name, ov] of Object.entries(paramOverrides)) {
 		if (ov.resolution.kind === 'static' && ov.resolution.value.trim()) {
@@ -238,10 +285,12 @@ export function twoPassAnalysis(opts: {
 	// ── Phase 2: Typecheck + Pruning ──
 	const webNodes = collectNodes(opts.children)
 		.filter((n) => n.name)
-		.map((n) => toWebNode(n, opts.getApi(n.providerId)));
+		.map((n) => toWebNode(n, opts.getApi(n.providerId), nodeFnParams[n.name]));
 	const typecheckResult = typecheckNodes(webNodes, fullTypes);
-	const EMPTY_ENV: ContextEnvResult = { contextTypes: {}, nodeLocals: {}, nodeErrors: {} };
-	const env: ContextEnvResult = typecheckResult.envErrors.length > 0 ? EMPTY_ENV : typecheckResult;
+	const EMPTY_ENV: ContextEnvResult = { contextTypes: {}, nodeLocals: {}, nodeErrors: {}, nodeFnParams: {} };
+	const env: ContextEnvResult = typecheckResult.envErrors.length > 0
+		? EMPTY_ENV
+		: { ...typecheckResult, nodeFnParams };
 
 	// Pruning with known values.
 	const phase1Names = new Set(phase1.keys.map((k) => k.name));
@@ -306,7 +355,7 @@ export function analyzePrompt(prompt: Prompt, getApi: GetApi): TwoPassResult {
 	return twoPassAnalysis({
 		scripts: [
 			...collectScriptsFromBindings(prompt.contextBindings),
-			...collectScriptsFromTree(prompt.children),
+			...collectScriptsFromTree(prompt.children, { skipFunctionNodes: true }),
 		],
 		nodeNames,
 		providedKeys: new Set(prompt.contextBindings.map((b) => b.name).filter((n) => n)),
@@ -321,7 +370,7 @@ export function analyzeProfile(profile: Profile, getApi: GetApi): TwoPassResult 
 	const nodeNames = collectNodeNames(profile.children);
 	nodeNames.add('context');
 	return twoPassAnalysis({
-		scripts: collectScriptsFromTree(profile.children),
+		scripts: collectScriptsFromTree(profile.children, { skipFunctionNodes: true }),
 		nodeNames,
 		providedKeys: new Set(),
 		paramOverrides: profile.paramOverrides,
@@ -373,9 +422,9 @@ export function analyzeBot(bot: Bot, prompt: Prompt, profile: Profile, getApi: G
 	// scripts: all 3 levels + bot display/region iterators only
 	const scripts = [
 		...collectScriptsFromBindings(prompt.contextBindings),
-		...collectScriptsFromTree(prompt.children),
-		...collectScriptsFromTree(profile.children),
-		...collectScriptsFromTree(bot.children),
+		...collectScriptsFromTree(prompt.children, { skipFunctionNodes: true }),
+		...collectScriptsFromTree(profile.children, { skipFunctionNodes: true }),
+		...collectScriptsFromTree(bot.children, { skipFunctionNodes: true }),
 	];
 	if (bot.display.iterator.trim()) {
 		scripts.push({ source: bot.display.iterator, mode: 'script' as const });
@@ -426,7 +475,7 @@ export function mergeParams(
  * Convert a UI Node to the WebNode format expected by the WASM engine.
  * Message block references are resolved to inline templates.
  */
-export function toWebNode(node: Node, api: string): WebNode {
+export function toWebNode(node: Node, api: string, discoveredFnParams?: DiscoveredFnParam[]): WebNode {
 	return {
 		name: node.name,
 		kind: node.kind,
@@ -441,6 +490,7 @@ export function toWebNode(node: Node, api: string): WebNode {
 		strategy: node.strategy,
 		retry: node.retry ?? 0,
 		assert: node.assert ?? '',
+		exprSource: node.exprSource,
 		messages: node.messages.map((m) => {
 			if (m.kind === 'block') {
 				const template = m.source.type === 'inline' ? m.source.template : '';
@@ -461,13 +511,21 @@ export function toWebNode(node: Node, api: string): WebNode {
 			params: t.params,
 		})),
 		isFunction: node.isFunction ?? false,
-		fnParams: node.fnParams ?? [],
+		fnParams: discoveredFnParams
+			? discoveredFnParams.map((p) => {
+					const stored = (node.fnParams ?? []).find((fp) => fp.name === p.name);
+					return { name: p.name, type: stored?.type || typeDescToFnParamString(p.inferredType) };
+				})
+			: node.fnParams ?? [],
 	};
 }
+
+export type DiscoveredFnParam = { name: string; inferredType: TypeDesc };
 
 export type ContextEnvResult = {
 	contextTypes: Record<string, TypeDesc>;
 	nodeLocals: Record<string, { raw: TypeDesc; self: TypeDesc }>;
 	nodeErrors: Record<string, NodeErrors>;
+	nodeFnParams: Record<string, DiscoveredFnParam[]>;
 };
 

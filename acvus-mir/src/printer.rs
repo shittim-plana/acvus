@@ -505,6 +505,7 @@ fn write_body(
             }
             InstKind::Return(r) => writeln!(f, "return {}", fmt_use(*r, &consts, &texts))?,
             InstKind::Nop => writeln!(f, "nop")?,
+            InstKind::Poison { dst } => writeln!(f, "{} = poison", fmt_val(*dst))?,
         }
     }
 

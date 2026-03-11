@@ -816,7 +816,10 @@ impl<'a> Lowerer<'a> {
             return dst;
         }
 
-        panic!("unknown function: {}", self.interner.resolve(*name));
+        // Typechecker already reported UndefinedFunction; emit poison
+        // so the lowerer can continue (needed for analysis-mode compilation).
+        self.emit_inst(call_span, InstKind::Poison { dst });
+        dst
     }
 
     // --- Match block lowering ---

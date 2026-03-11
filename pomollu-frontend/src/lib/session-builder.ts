@@ -1,5 +1,5 @@
-import type { Bot, Prompt, Profile, Node, MessageDef, Block, RawBlock, ScriptBlock, ContextBlock, ContextBinding } from './types.js';
-import { isRawBlock, isScriptBlock, isContextBlock, CONTEXT_TYPE } from './types.js';
+import type { Bot, Prompt, Profile, Node, MessageDef, Block, RawBlock, ContextBlock, ContextBinding } from './types.js';
+import { isRawBlock, isContextBlock, CONTEXT_TYPE } from './types.js';
 import type { SessionConfig, NodeConfig, MessageConfig, ProviderConfig, StrategyConfig } from './engine.js';
 import type { TypeDesc } from './type-parser.js';
 import { isUnknownType } from './type-parser.js';
@@ -38,6 +38,20 @@ function convertNode(
 	allNodes: Node[],
 	errors: string[]
 ): NodeConfig {
+	if (node.kind === 'expr') {
+		return {
+			name: node.name,
+			kind: 'expr',
+			template: node.exprSource,
+			initial_value: node.selfSpec.initialValue?.trim() || undefined,
+			strategy: convertStrategy(node.strategy),
+			retry: node.retry,
+			assert_script: node.assert?.trim() || undefined,
+			is_function: node.isFunction || undefined,
+			fn_params: node.isFunction ? node.fnParams.map(p => ({ name: p.name, type: p.type })) : undefined
+		};
+	}
+
 	const provider = node.kind === 'llm' ? providerStore.get(node.providerId) : undefined;
 
 	if (node.kind === 'llm' && !provider) {
@@ -99,17 +113,6 @@ function bindingToExprNode(binding: ContextBinding): NodeConfig {
 		name: binding.name,
 		kind: 'expr',
 		template: binding.script,
-		strategy: { mode: 'once-per-turn' },
-		retry: 0
-	};
-}
-
-/** Convert a ScriptBlock to an Expr NodeConfig. */
-function scriptBlockToExprNode(block: ScriptBlock): NodeConfig {
-	return {
-		name: block.name,
-		kind: 'expr',
-		template: block.text,
 		strategy: { mode: 'once-per-turn' },
 		retry: 0
 	};
@@ -245,17 +248,6 @@ export function buildSessionConfig(bot: Bot): BuildResult | null {
 		}
 	}
 
-	// ScriptBlocks → Expr nodes
-	for (const b of allBlocks) {
-		if (isScriptBlock(b) && b.name && b.text.trim()) {
-			if (seenNodeNames.has(b.name)) {
-				errors.push(`script block '${b.name}' conflicts with a node or binding name`);
-			}
-			seenNodeNames.add(b.name);
-			nodeConfigs.push(scriptBlockToExprNode(b));
-		}
-	}
-
 	// ContextBlocks → @context object grouped by type
 	nodeConfigs.push(...buildContextNodes(allBlocks));
 
@@ -294,7 +286,7 @@ export function buildSessionConfig(bot: Bot): BuildResult | null {
 				name: param.name,
 				kind: 'expr',
 				template: script,
-				strategy: { mode: 'once-per-turn' },
+				strategy: { mode: 'always' },
 				retry: 0,
 				output_ty: ty
 			});

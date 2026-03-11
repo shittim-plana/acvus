@@ -497,6 +497,16 @@ pub fn typecheck_nodes(
             }
         }
 
+        // Expr source typecheck
+        if let acvus_orchestration::NodeKind::Expr(expr_spec) = &spec.kind {
+            errors.expr_source = check_script(
+                &interner,
+                &expr_spec.source,
+                &node_ctx,
+                None,
+            );
+        }
+
         if !errors.is_empty() {
             node_errors.insert(interner.resolve(spec.name).to_string(), errors);
         }

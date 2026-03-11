@@ -203,6 +203,13 @@ pub enum InstKind {
     },
     Return(ValueId),
     Nop,
+
+    /// Poison value: result of a compile-time error (e.g. undefined function).
+    /// The typechecker already reported the error; this exists so the lowerer
+    /// can continue without panicking. Must never be reached at runtime.
+    Poison {
+        dst: ValueId,
+    },
 }
 
 /// Debug info for a single Val: where it came from in source.

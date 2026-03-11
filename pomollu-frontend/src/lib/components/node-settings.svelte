@@ -2,6 +2,7 @@
 	import type { Node, MessageDef, Strategy, FnParam } from '$lib/types.js';
 	import { blockLabel } from '$lib/types.js';
 	import type { BlockOwner } from '$lib/stores.svelte.js';
+	import type { DiscoveredFnParam } from '$lib/param-resolver.js';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import { Button } from '$lib/components/ui/button';
@@ -14,6 +15,7 @@
 	import BasePage from './base-page.svelte';
 	import { collectOwnerDeps } from '$lib/dependencies.js';
 	import { formatErrors, type NodeErrors } from '$lib/engine.js';
+	import { isUnknownType, typeDescToString } from '$lib/type-parser.js';
 
 	let {
 		nodeId,
@@ -21,12 +23,14 @@
 		contextTypes = {},
 		nodeLocals = {},
 		nodeErrors = {},
+		nodeFnParams = {},
 	}: {
 		nodeId: string;
 		owner: BlockOwner;
 		contextTypes?: Record<string, import('$lib/type-parser.js').TypeDesc>;
 		nodeLocals?: Record<string, { raw: import('$lib/type-parser.js').TypeDesc; self: import('$lib/type-parser.js').TypeDesc }>;
 		nodeErrors?: Record<string, NodeErrors>;
+		nodeFnParams?: Record<string, DiscoveredFnParam[]>;
 	} = $props();
 
 	let node = $derived.by(() => {
@@ -41,7 +45,7 @@
 	);
 
 	// Per-field errors from hard typecheck (Phase 2)
-	const EMPTY_NODE_ERRORS: NodeErrors = { initialValue: [], historyBind: [], ifModifiedKey: [], assert: [], messages: {} };
+	const EMPTY_NODE_ERRORS: NodeErrors = { initialValue: [], historyBind: [], ifModifiedKey: [], assert: [], messages: {}, exprSource: [] };
 	let fieldErrors = $derived(node ? (nodeErrors[node.name] ?? EMPTY_NODE_ERRORS) : EMPTY_NODE_ERRORS);
 	let providers = $derived(providerStore.providers);
 	let hasOrphanProvider = $derived(
@@ -163,6 +167,8 @@
 	};
 
 	let deps = $derived(collectOwnerDeps(owner));
+
+	let discoveredFnParams = $derived(node?.isFunction ? (nodeFnParams[node.name] ?? []) : []);
 </script>
 
 <BasePage {deps} onConfigChange={() => {}}>
@@ -174,8 +180,8 @@
 	</div>
 
 	{#if node}
-		<div class="flex-1 overflow-y-auto">
-			<div class="sections">
+		<div class="flex-1 overflow-y-auto min-h-0 {node.kind === 'expr' ? 'flex flex-col' : ''}">
+			<div class="sections {node.kind === 'expr' ? 'flex-1 min-h-0' : ''}">
 				<!-- ========== BASIC ========== -->
 				<section class="section">
 					<button class="section-header" onclick={() => toggleSection('basic')}>
@@ -192,11 +198,12 @@
 						</div>
 						<div class="field">
 							<Label>Kind</Label>
-							<Select.Root type="single" value={node.kind} onValueChange={(v) => updateNode((n) => ({ ...n, kind: v as 'llm' | 'plain' }))}>
-								<Select.Trigger class="w-full">{node.kind === 'llm' ? 'LLM' : 'Plain'}</Select.Trigger>
+							<Select.Root type="single" value={node.kind} onValueChange={(v) => updateNode((n) => ({ ...n, kind: v as import('$lib/types.js').NodeKind }))}>
+								<Select.Trigger class="w-full">{node.kind === 'llm' ? 'LLM' : node.kind === 'expr' ? 'Expr' : 'Plain'}</Select.Trigger>
 								<Select.Content>
 									<Select.Item value="llm">LLM</Select.Item>
 									<Select.Item value="plain">Plain</Select.Item>
+									<Select.Item value="expr">Expr</Select.Item>
 								</Select.Content>
 							</Select.Root>
 						</div>
@@ -210,52 +217,39 @@
 						{#if node.isFunction}
 							<div class="field">
 								<Label>Parameters</Label>
-								<div class="space-y-1.5">
-									{#each node.fnParams as param, i (i)}
-										<div class="flex items-center gap-1.5">
-											<Input
-												class="flex-1"
-												placeholder="name"
-												value={param.name}
-												oninput={(e) => {
-													const params = [...node.fnParams];
-													params[i] = { ...params[i], name: e.currentTarget.value };
-													updateNode((n) => ({ ...n, fnParams: params }));
-												}}
-											/>
-											<Select.Root type="single" value={param.type} onValueChange={(v) => {
-												const params = [...node.fnParams];
-												params[i] = { ...params[i], type: v };
-												updateNode((n) => ({ ...n, fnParams: params }));
-											}}>
-												<Select.Trigger class="w-24">{param.type || '...'}</Select.Trigger>
-												<Select.Content>
-													<Select.Item value="String">String</Select.Item>
-													<Select.Item value="Int">Int</Select.Item>
-													<Select.Item value="Float">Float</Select.Item>
-													<Select.Item value="Bool">Bool</Select.Item>
-												</Select.Content>
-											</Select.Root>
-											<button
-												class="rounded p-0.5 text-muted-foreground hover:text-destructive"
-												onclick={() => {
-													const params = node.fnParams.filter((_, idx) => idx !== i);
-													updateNode((n) => ({ ...n, fnParams: params }));
-												}}
-												title="Remove parameter"
-											>
-												<Trash2 class="h-3.5 w-3.5" />
-											</button>
-										</div>
-									{/each}
-									<Button variant="outline" size="sm" class="h-6 text-xs" onclick={() => {
-										updateNode((n) => ({ ...n, fnParams: [...n.fnParams, { name: '', type: 'String' }] }));
-									}}>
-										<Plus class="mr-1 h-3 w-3" />
-										Add Parameter
-									</Button>
-								</div>
-								<p class="hint">Callable as {node.name}(args...) from other nodes.</p>
+								{#if discoveredFnParams.length === 0}
+									<p class="text-xs text-muted-foreground italic">No parameters discovered. Use @name in the node body to declare arguments.</p>
+								{:else}
+									<div class="fn-params-list">
+										{#each discoveredFnParams as dp (dp.name)}
+											{@const storedType = node.fnParams.find(fp => fp.name === dp.name)?.type}
+											{@const hasInferred = !isUnknownType(dp.inferredType)}
+											{@const displayType = storedType || (hasInferred ? typeDescToString(dp.inferredType) : '')}
+											<div class="fn-param-row">
+												<code class="fn-param-name">@{dp.name}</code>
+												{#if hasInferred && !storedType}
+													<span class="fn-param-inferred">{typeDescToString(dp.inferredType)}</span>
+												{:else}
+													<Input
+														class="fn-param-input"
+														placeholder="type..."
+														value={displayType}
+														oninput={(e) => {
+															const val = e.currentTarget.value.trim();
+															const params = discoveredFnParams.map(p => {
+																if (p.name === dp.name) return { name: p.name, type: val };
+																const existing = node.fnParams.find(fp => fp.name === p.name);
+																return { name: p.name, type: existing?.type || '' };
+															});
+															updateNode((n) => ({ ...n, fnParams: params }));
+														}}
+													/>
+												{/if}
+											</div>
+										{/each}
+									</div>
+								{/if}
+								<p class="hint">Callable as @{node.name}(args...) from other nodes.</p>
 							</div>
 						{/if}
 						{#if node.kind === 'llm'}
@@ -670,6 +664,25 @@
 						</div>{/if}
 					</section>
 				{/if}
+
+				<!-- ========== EXPR SCRIPT (Expr only) ========== -->
+				{#if node.kind === 'expr'}
+					<section class="section" style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
+						<div class="section-body" style="flex: 1; display: flex; flex-direction: column; min-height: 0;">
+							<Label>Script</Label>
+							<AcvusEngineField
+								mode="script"
+								placeholder="Acvus script expression..."
+								value={node.exprSource}
+								oninput={(v) => updateNode((n) => ({ ...n, exprSource: v }))}
+								contextTypes={mergedContextTypes}
+								fieldError={formatErrors(fieldErrors?.exprSource)}
+								discoverContext
+								unlimited
+							/>
+						</div>
+					</section>
+				{/if}
 			</div>
 		</div>
 	{:else}
@@ -872,6 +885,43 @@
 	.msg-slice-input:focus {
 		outline: none;
 		box-shadow: 0 0 0 1px var(--color-ring);
+	}
+
+	/* Fn params */
+	.fn-params-list {
+		display: flex;
+		flex-direction: column;
+		border-radius: 0.375rem;
+		border: 1px solid var(--color-border);
+		overflow: hidden;
+	}
+	.fn-param-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 0.375rem 0.625rem;
+		gap: 0.5rem;
+	}
+	.fn-param-row + .fn-param-row {
+		border-top: 1px solid var(--color-border);
+	}
+	.fn-param-name {
+		font-size: 0.75rem;
+		font-weight: 600;
+		color: var(--color-foreground);
+		white-space: nowrap;
+	}
+	.fn-param-inferred {
+		font-size: 0.6875rem;
+		color: var(--color-muted-foreground);
+		font-family: var(--font-mono, ui-monospace, monospace);
+	}
+	:global(.fn-param-input) {
+		width: 6rem !important;
+		height: 1.5rem !important;
+		font-size: 0.6875rem !important;
+		text-align: left !important;
+		font-family: var(--font-mono, ui-monospace, monospace) !important;
 	}
 
 </style>

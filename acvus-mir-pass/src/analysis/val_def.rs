@@ -58,7 +58,8 @@ fn dst_of(kind: &InstKind) -> Option<ValueId> {
         | InstKind::IterInit { dst, .. }
         | InstKind::MakeVariant { dst, .. }
         | InstKind::TestVariant { dst, .. }
-        | InstKind::UnwrapVariant { dst, .. } => Some(*dst),
+        | InstKind::UnwrapVariant { dst, .. }
+        | InstKind::Poison { dst } => Some(*dst),
 
         // IterNext defines dst_value as primary
         InstKind::IterNext { dst_value, .. } => Some(*dst_value),
