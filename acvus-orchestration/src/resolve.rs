@@ -8,6 +8,7 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use rustc_hash::{FxHashMap, FxHashSet};
 use tracing::{debug, info, warn};
 
+use crate::CompiledNodeKind;
 use crate::compile::{CompiledMessage, CompiledNode, CompiledScript, CompiledStrategy};
 use crate::node::Node;
 use crate::storage::Storage;
@@ -126,30 +127,32 @@ where
         let max_retries = self.nodes[idx].retry;
         let mut attempt = 0u32;
         loop {
-            match self.resolve_node_impl(idx, state, local.clone()).await {
+            let (node, error) = match self.resolve_node_impl(idx, state, local.clone()).await {
                 Ok(()) => return Ok(()),
                 Err(ResolveError::Runtime {
-                    ref node,
-                    ref error,
+                    node, error
                 }) => {
-                    if attempt < max_retries {
-                        attempt += 1;
-                        warn!(
-                            node = %node,
-                            attempt = attempt,
-                            max = max_retries,
-                            error = %error,
-                            "retrying node after runtime error",
-                        );
-                        continue;
-                    }
-                    return Err(ResolveError::Runtime {
-                        node: node.clone(),
-                        error: error.clone(),
-                    });
+                    (node, error)
                 }
                 Err(e) => return Err(e),
+            };
+
+            if attempt < max_retries {
+                attempt += 1;
+                warn!(
+                    node = %node,
+                    attempt = attempt,
+                    max = max_retries,
+                    error = %error,
+                    "retrying node after runtime error",
+                );
+                continue;
             }
+
+            return Err(ResolveError::Runtime {
+                node: node.clone(),
+                error: error.clone(),
+            });
         }
     }
 
@@ -690,12 +693,12 @@ where
 
         if node.kind.messages().is_empty() {
             match &node.kind {
-                crate::kind::CompiledNodeKind::Plain(plain) => {
+                CompiledNodeKind::Plain(plain) => {
                     let p =
                         partition_context_keys(&plain.block.module, &known, &plain.block.val_def);
                     eager.extend(p.eager);
                 }
-                crate::kind::CompiledNodeKind::Expr(expr) => {
+                CompiledNodeKind::Expr(expr) => {
                     let p =
                         partition_context_keys(&expr.script.module, &known, &expr.script.val_def);
                     eager.extend(p.eager);
@@ -704,7 +707,7 @@ where
             }
         }
 
-        if let Some(ref iv) = node.self_spec.initial_value
+        if let Some(iv) = &node.self_spec.initial_value
             && storage.get(self.interner.resolve(node.name)).is_none()
         {
             eager.extend(iv.context_keys.iter().copied());

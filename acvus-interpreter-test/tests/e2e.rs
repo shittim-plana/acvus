@@ -1,6 +1,6 @@
 use acvus_interpreter::{
     Interpreter,
-    RuntimeErrorKind, Stepped, Value,
+    RuntimeErrorKind, Value,
 };
 use acvus_interpreter_test::*;
 #[allow(unused_imports)]
@@ -2243,23 +2243,9 @@ async fn run_script_with_hint(
             .expect("compile failed");
 
     let interp = Interpreter::new(interner, module);
-    let mut coroutine = interp.execute();
-    let mut result = Value::Unit;
-    loop {
-        match coroutine.resume().await {
-            Stepped::Emit(value) => {
-                result = value;
-            }
-            Stepped::NeedContext(request) => {
-                let name = request.name();
-                panic!("unexpected context request: @{}", interner.resolve(name));
-            }
-            Stepped::NeedExternCall(_) => panic!("unexpected extern call"),
-            Stepped::Done => break,
-            Stepped::Error(e) => panic!("runtime error: {e}"),
-        }
-    }
-    result
+    let mut emits = interp.execute_with_context(FxHashMap::default()).await;
+    assert!(emits.len() <= 1, "script emitted {} values, expected at most 1", emits.len());
+    emits.pop().unwrap_or(Value::Unit)
 }
 
 #[tokio::test]

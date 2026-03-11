@@ -9,7 +9,7 @@
 	import { tick, onDestroy } from 'svelte';
 	import DisplayCard from './display-card.svelte';
 	import { sessionStore, promptStore, profileStore, uiState } from '$lib/stores.svelte.js';
-	import { ChatSession } from '$lib/engine.js';
+	import { ChatSession, type StorageSnapshot } from '$lib/engine.js';
 	import { buildSessionConfig } from '$lib/session-builder.js';
 	import { confirmAction } from '$lib/confirm-dialog.svelte.js';
 	import { collectBotDeps } from '$lib/dependencies.js';
@@ -164,7 +164,7 @@
 
 		if (!configResult?.ok) throw new Error(configError || 'invalid config');
 
-		const cs = await ChatSession.create(configResult.config, session.storage, onStorageChange);
+		const cs = await ChatSession.create(configResult.config, session.storage as StorageSnapshot | null, onStorageChange);
 
 		// Guard: another init may have completed while we were awaiting
 		if (st.chatSessionKey !== null) {

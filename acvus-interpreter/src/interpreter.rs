@@ -220,30 +220,32 @@ impl Interpreter {
         })
     }
 
-    pub async fn execute_to_string(self, context: FxHashMap<Astr, Value>) -> String {
+    /// Drive the coroutine to completion with a pre-built context map.
+    /// Returns all emitted values. Panics on missing context or extern calls.
+    pub async fn execute_with_context(self, context: FxHashMap<Astr, Value>) -> Vec<Value> {
+        let interner = self.interner.clone();
         let mut coroutine = self.execute();
-        let mut output = String::new();
+        let mut emits = Vec::new();
         loop {
             match coroutine.resume().await {
-                Stepped::Emit(value) => match value {
-                    Value::String(s) => output.push_str(&s),
-                    other => panic!("execute_to_string: expected String, got {other:?}"),
-                },
+                Stepped::Emit(value) => emits.push(value),
                 Stepped::NeedContext(request) => {
                     let name = request.name();
                     let v = context
                         .get(&name)
-                        .unwrap_or_else(|| panic!("ContextLoad: undefined context @{:?}", name));
+                        .unwrap_or_else(|| {
+                            panic!("undefined context @{}", interner.resolve(name))
+                        });
                     request.resolve(Arc::new(v.clone()));
                 }
                 Stepped::NeedExternCall(_) => {
-                    panic!("execute_to_string: unexpected extern call");
+                    panic!("unexpected extern call in execute_with_context");
                 }
                 Stepped::Done => break,
                 Stepped::Error(e) => panic!("runtime error: {e}"),
             }
         }
-        output
+        emits
     }
 
     // -- core exec loop -------------------------------------------------------

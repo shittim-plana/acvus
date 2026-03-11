@@ -749,7 +749,7 @@ mod tests {
             &context,
             &interner,
         );
-        assert!(out.contains("call_closure"));
+        assert!(out.contains("extern_call"), "expected extern_call, got:\n{out}");
     }
 
     #[test]

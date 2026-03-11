@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use acvus_interpreter::{ConcreteValue, PureValue, Value};
+use acvus_interpreter::{PureValue, Value};
 use acvus_mir::ty::Ty;
 use acvus_orchestration::{
     ApiKind, DisplayEntrySpec, ExprSpec, GenerationParams, HttpRequest, IterableDisplaySpec,
@@ -12,48 +12,13 @@ use acvus_utils::{Astr, Interner};
 use rust_decimal::Decimal;
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
+use tsify::{Ts, Tsify};
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsError;
 use wasm_bindgen_futures::JsFuture;
 
-use crate::inject_extern_types;
-
-// ---------------------------------------------------------------------------
-// PureValue -> serde_json::Value (plain JS-compatible representation)
-// ---------------------------------------------------------------------------
-
-pub(crate) fn pure_to_json(interner: &Interner, v: &PureValue) -> serde_json::Value {
-    match v {
-        PureValue::Unit => serde_json::Value::Null,
-        PureValue::Int(n) => serde_json::json!(*n),
-        PureValue::Float(f) => serde_json::json!(*f),
-        PureValue::String(s) => serde_json::Value::String(s.clone()),
-        PureValue::Bool(b) => serde_json::Value::Bool(*b),
-        PureValue::Byte(b) => serde_json::json!(*b),
-        PureValue::Range {
-            start,
-            end,
-            inclusive,
-        } => serde_json::json!({"start": start, "end": end, "inclusive": inclusive}),
-        PureValue::List(items) => {
-            serde_json::Value::Array(items.iter().map(|i| pure_to_json(interner, i)).collect())
-        }
-        PureValue::Object(map) => serde_json::Value::Object(
-            map.iter()
-                .map(|(k, v)| (interner.resolve(*k).to_string(), pure_to_json(interner, v)))
-                .collect(),
-        ),
-        PureValue::Tuple(items) => {
-            serde_json::Value::Array(items.iter().map(|i| pure_to_json(interner, i)).collect())
-        }
-        PureValue::Variant { tag, payload } => {
-            let tag_str = interner.resolve(*tag).to_string();
-            match payload {
-                Some(p) => serde_json::json!({"__variant": tag_str, "__payload": pure_to_json(interner, p)}),
-                None => serde_json::json!({"__variant": tag_str}),
-            }
-        }
-    }
-}
+use crate::build_registry;
+use crate::schema::*;
 
 
 // ---------------------------------------------------------------------------
@@ -170,10 +135,8 @@ impl SessionStorage {
         let Some(ref cb) = self.on_change else { return };
         let js_key = JsValue::from_str(key);
         let cv = value.clone().into_pure().to_concrete(&self.interner);
-        let json_str =
-            serde_json::to_string(&cv).expect("internal serialization should not fail");
-        let js_val =
-            js_sys::JSON::parse(&json_str).expect("serde_json output is always valid JSON");
+        let jcv: JsConcreteValue = cv.into();
+        let js_val = jcv.into_ts().unwrap().js_value();
         let _ = cb.0.call2(&JsValue::NULL, &js_key, &js_val);
     }
 
@@ -203,52 +166,36 @@ impl Storage for SessionStorage {
 }
 
 impl SessionStorage {
-    pub fn export(&self) -> JsValue {
-        let map: FxHashMap<&str, ConcreteValue> = self
-            .entries
-            .iter()
-            .map(|(k, v)| {
-                (
-                    k.as_str(),
-                    v.as_ref().clone().into_pure().to_concrete(&self.interner),
-                )
-            })
-            .collect();
-        let json_str = serde_json::to_string(&map).expect("internal serialization should not fail");
-        js_sys::JSON::parse(&json_str).expect("serde_json output is always valid JSON")
+    fn to_snapshot(&self) -> StorageSnapshot {
+        StorageSnapshot(
+            self.entries
+                .iter()
+                .map(|(k, v)| {
+                    let concrete = v.as_ref().clone().into_pure().to_concrete(&self.interner);
+                    (k.clone(), JsConcreteValue::from(concrete))
+                })
+                .collect(),
+        )
     }
 
-    /// Export as plain JSON (for display rendering — JS needs plain objects/arrays).
-    pub fn export_json(&self) -> JsValue {
-        let map: FxHashMap<&str, serde_json::Value> = self
-            .entries
-            .iter()
-            .map(|(k, v)| {
-                (
-                    k.as_str(),
-                    pure_to_json(&self.interner, &v.as_ref().clone().into_pure()),
-                )
-            })
-            .collect();
-        let json_str = serde_json::to_string(&map).expect("internal serialization should not fail");
-        js_sys::JSON::parse(&json_str).expect("serde_json output is always valid JSON")
+    pub fn export(&self) -> Ts<StorageSnapshot> {
+        self.to_snapshot().into_ts().unwrap()
     }
 
-    pub fn import(js: JsValue, on_change: Option<js_sys::Function>, interner: &Interner) -> Self {
-        let json_str = js_sys::JSON::stringify(&js)
-            .ok()
-            .and_then(|s| s.as_string())
-            .expect("storage JS value must be JSON-stringifiable");
+    pub fn import(
+        js: Ts<StorageSnapshot>,
+        on_change: Option<js_sys::Function>,
+        interner: &Interner,
+    ) -> Self {
+        let snapshot = js.to_rust().unwrap();
 
-        let map: FxHashMap<String, serde_json::Value> =
-            serde_json::from_str(&json_str).expect("storage JSON must be a valid object");
-
-        let entries: FxHashMap<String, Arc<Value>> = map
+        let entries: FxHashMap<String, Arc<Value>> = snapshot
+            .0
             .into_iter()
-            .filter_map(|(k, v)| {
-                let cv: ConcreteValue = serde_json::from_value(v).ok()?;
+            .map(|(k, jcv)| {
+                let cv: acvus_interpreter::ConcreteValue = jcv.into();
                 let pure = PureValue::from_concrete(&cv, interner);
-                Some((k, Arc::new(Value::from_pure(pure))))
+                (k, Arc::new(Value::from_pure(pure)))
             })
             .collect();
 
@@ -543,7 +490,7 @@ impl ChatSession {
     ///   called on every storage set (value = JSON) or remove (value = null).
     pub async fn create(
         config_json: &str,
-        storage_js: JsValue,
+        storage_js: Option<Ts<StorageSnapshot>>,
         on_storage_change: Option<js_sys::Function>,
     ) -> Result<ChatSession, JsValue> {
         let interner = Interner::new();
@@ -571,11 +518,18 @@ impl ChatSession {
             .map_err(|e| JsValue::from_str(&e))?;
 
         // Compile -- also compute full context_types (including node-derived @turn, @nodeName, etc.)
-        inject_extern_types(&interner, &mut context_types);
+        let registry = build_registry(&interner, context_types)
+            .map_err(|e| {
+                let key_name = interner.resolve(e.key);
+                JsValue::from_str(&format!(
+                    "context type conflict: @{key_name} exists in both {} and {} tier",
+                    e.tier_a, e.tier_b
+                ))
+            })?;
         let env = acvus_orchestration::compute_external_context_env(
             &interner,
             &specs,
-            &context_types,
+            registry,
         )
         .map_err(|errs| {
             let msg = errs
@@ -616,16 +570,15 @@ impl ChatSession {
             .collect();
 
         // Storage: restore from IndexedDB or fresh, with real-time JS callback
-        let storage = if storage_js.is_null() || storage_js.is_undefined() {
-            match on_storage_change {
+        let storage = match storage_js {
+            Some(snapshot) => SessionStorage::import(snapshot, on_storage_change, &interner),
+            None => match on_storage_change {
                 Some(cb) => SessionStorage::with_callback(cb, &interner),
                 None => SessionStorage {
                     interner: interner.clone(),
                     ..SessionStorage::default()
                 },
-            }
-        } else {
-            SessionStorage::import(storage_js, on_storage_change, &interner)
+            },
         };
 
         let engine = acvus_chat::ChatEngine::new(
@@ -650,7 +603,7 @@ impl ChatSession {
     /// Run one turn. `resolve_fn` is called when the engine needs an external
     /// context value (e.g. @input). It receives a key name string and must
     /// return a Promise<string>.
-    pub async fn turn(&mut self, resolve_fn: &js_sys::Function) -> Result<JsValue, JsValue> {
+    pub async fn turn(&mut self, resolve_fn: &js_sys::Function) -> Result<JsValue, JsError> {
         // SAFETY: WASM is single-threaded -- js_sys::Function is !Send+!Sync
         // but there is no concurrent access.
         struct SendSyncFn(js_sys::Function);
@@ -697,24 +650,16 @@ impl ChatSession {
             .engine
             .turn(&resolver, &extern_handler)
             .await
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+            .map_err(|e| JsError::new(&e.to_string()))?;
 
-        let json = pure_to_json(&self.interner, &result.into_pure());
-        let json_str =
-            serde_json::to_string(&json).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        js_sys::JSON::parse(&json_str).map_err(|e| JsValue::from_str(&format!("{e:?}")))
+        let concrete = result.into_pure().to_concrete(&self.interner);
+        let jcv: JsConcreteValue = concrete.into();
+        Ok(jcv.into_ts()?.js_value())
     }
 
-    /// Export storage as JSON (for IndexedDB persistence).
-    /// Returns a plain JS object with PureValue-compatible structure.
-    pub fn export_storage(&self) -> JsValue {
+    /// Export storage as a typed snapshot (for IndexedDB persistence / display rendering).
+    pub fn export_storage(&self) -> Ts<StorageSnapshot> {
         self.engine.state.storage.export()
-    }
-
-    /// Export storage as plain JSON (for display rendering).
-    /// Returns JSON where PureValue enums are flattened to native JS types.
-    pub fn export_storage_json(&self) -> JsValue {
-        self.engine.state.storage.export_json()
     }
 
     /// Current turn count.
@@ -723,7 +668,7 @@ impl ChatSession {
     }
 
     /// Evaluate an iterator script against storage and return the list length.
-    pub async fn display_list_len(&self, iterator_script: &str) -> Result<usize, JsValue> {
+    pub async fn display_list_len(&self, iterator_script: &str) -> Result<usize, JsError> {
         use acvus_interpreter::Interpreter;
         use acvus_utils::Stepped;
 
@@ -732,7 +677,7 @@ impl ChatSession {
             iterator_script,
             &self.storage_types,
         )
-        .map_err(|e| JsValue::from_str(&e.display(&self.interner).to_string()))?;
+        .map_err(|e| JsError::new(&e.display(&self.interner).to_string()))?;
 
         let interp = Interpreter::new(
             &self.interner,
@@ -759,7 +704,7 @@ impl ChatSession {
                     panic!("unexpected extern call in display_list_len");
                 }
                 Stepped::Done => return Ok(0),
-                Stepped::Error(e) => return Err(JsValue::from_str(&format!("display error: {e}"))),
+                Stepped::Error(e) => return Err(JsError::new(&format!("display error: {e}"))),
             }
         }
     }
@@ -774,9 +719,9 @@ impl ChatSession {
         iterator_script: &str,
         entries_json: &str,
         index: usize,
-    ) -> Result<JsValue, JsValue> {
+    ) -> Result<JsValue, JsError> {
         let entries: Vec<DisplayEntryJson> = serde_json::from_str(entries_json)
-            .map_err(|e| JsValue::from_str(&format!("invalid entries JSON: {e}")))?;
+            .map_err(|e| JsError::new(&format!("invalid entries JSON: {e}")))?;
         let spec = IterableDisplaySpec {
             iterator: iterator_script.to_string(),
             entries: entries
@@ -796,7 +741,7 @@ impl ChatSession {
                         .map(|e| e.display(&self.interner).to_string())
                         .collect::<Vec<_>>()
                         .join("\n");
-                    JsValue::from_str(&msg)
+                    JsError::new(&msg)
                 })?;
         let result = render_display_with_idx(
             &self.interner,
@@ -805,13 +750,11 @@ impl ChatSession {
             index,
         )
         .await;
-        let json_str =
-            serde_json::to_string(&result).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        js_sys::JSON::parse(&json_str).map_err(|e| JsValue::from_str(&format!("{e:?}")))
+        Ok(DisplayRenderResult(result.into_iter().map(Into::into).collect()).into_ts()?.js_value())
     }
 
     /// Render a static display template.
-    pub async fn render_static(&self, template: &str) -> Result<JsValue, JsValue> {
+    pub async fn render_static(&self, template: &str) -> Result<JsValue, JsError> {
         let spec = StaticDisplaySpec {
             template: template.to_string(),
         };
@@ -823,7 +766,7 @@ impl ChatSession {
                         .map(|e| e.display(&self.interner).to_string())
                         .collect::<Vec<_>>()
                         .join("\n");
-                    JsValue::from_str(&msg)
+                    JsError::new(&msg)
                 },
             )?;
         let result = render_display(
@@ -832,8 +775,6 @@ impl ChatSession {
             &self.engine.state.storage,
         )
         .await;
-        let json_str =
-            serde_json::to_string(&result).map_err(|e| JsValue::from_str(&e.to_string()))?;
-        js_sys::JSON::parse(&json_str).map_err(|e| JsValue::from_str(&format!("{e:?}")))
+        Ok(DisplayRenderResult(result.into_iter().map(Into::into).collect()).into_ts()?.js_value())
     }
 }

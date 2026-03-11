@@ -1,4 +1,4 @@
-import type { ContextKeyInfo, WebNode } from './engine.js';
+import type { ContextKeyInfo, WebNode, NodeErrors } from './engine.js';
 import type { TypeDesc } from './type-parser.js';
 import { isUnknownType } from './type-parser.js';
 import type { Node, BlockNode, ContextBinding, DisplayEntry, DisplayRegion, ContextParam, ParamOverride, Prompt, Profile, Bot } from './types.js';
@@ -119,7 +119,7 @@ function collectUnresolvedParams(opts: {
 			hasSkippedScripts = true;
 			continue;
 		}
-		const filteredKeys = result.context_keys.filter(
+		const filteredKeys = result.contextKeys.filter(
 			(k) => !BUILTIN_CONTEXT_REFS.has(k.name) && !opts.nodeNames.has(k.name) && !opts.providedKeys.has(k.name)
 		);
 		for (const key of filteredKeys) {
@@ -241,7 +241,7 @@ export function twoPassAnalysis(opts: {
 		.map((n) => toWebNode(n, opts.getApi(n.providerId)));
 	const typecheckResult = typecheckNodes(webNodes, fullTypes);
 	const EMPTY_ENV: ContextEnvResult = { contextTypes: {}, nodeLocals: {}, nodeErrors: {} };
-	const env: ContextEnvResult = 'error' in typecheckResult ? EMPTY_ENV : typecheckResult;
+	const env: ContextEnvResult = typecheckResult.envErrors.length > 0 ? EMPTY_ENV : typecheckResult;
 
 	// Pruning with known values.
 	const phase1Names = new Set(phase1.keys.map((k) => k.name));
@@ -433,14 +433,14 @@ export function toWebNode(node: Node, api: string): WebNode {
 		api,
 		model: node.model,
 		temperature: node.temperature,
-		topP: node.topP,
-		topK: node.topK,
-		grounding: node.grounding,
+		topP: node.topP ?? null,
+		topK: node.topK ?? null,
+		grounding: node.grounding ?? false,
 		maxTokens: node.maxTokens,
 		selfSpec: node.selfSpec,
 		strategy: node.strategy,
-		retry: node.retry,
-		assert: node.assert,
+		retry: node.retry ?? 0,
+		assert: node.assert ?? '',
 		messages: node.messages.map((m) => {
 			if (m.kind === 'block') {
 				const template = m.source.type === 'inline' ? m.source.template : '';
@@ -460,14 +460,14 @@ export function toWebNode(node: Node, api: string): WebNode {
 			node: t.nodeId,
 			params: t.params,
 		})),
-		isFunction: node.isFunction,
-		fnParams: node.fnParams,
+		isFunction: node.isFunction ?? false,
+		fnParams: node.fnParams ?? [],
 	};
 }
 
 export type ContextEnvResult = {
 	contextTypes: Record<string, TypeDesc>;
 	nodeLocals: Record<string, { raw: TypeDesc; self: TypeDesc }>;
-	nodeErrors: Record<string, Record<string, string>>;
+	nodeErrors: Record<string, NodeErrors>;
 };
 

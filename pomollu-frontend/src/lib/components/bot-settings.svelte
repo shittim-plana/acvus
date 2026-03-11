@@ -16,6 +16,7 @@
 	import ContextParamsEditor from './context-params-editor.svelte';
 	import { analyzeBot, mergeParams } from '$lib/param-resolver.js';
 	import { analyzeWithTypes } from '$lib/engine.js';
+	import type { TypeDesc } from '$lib/type-parser.js';
 	import { collectBotDeps } from '$lib/dependencies.js';
 	import { confirmDelete } from '$lib/confirm-dialog.svelte.js';
 	import BasePage from './base-page.svelte';
@@ -198,13 +199,13 @@
 
 	function computeIterableEntryTypes(
 		iterator: string,
-		baseTypes: Record<string, import('$lib/type-parser.js').TypeDesc>
-	): Record<string, import('$lib/type-parser.js').TypeDesc> {
+		baseTypes: Record<string, TypeDesc>
+	): Record<string, TypeDesc> {
 		if (!iterator.trim()) return baseTypes;
 		const result = analyzeWithTypes(iterator, 'script', baseTypes);
-		if (!result.ok || !result.tail_type) return baseTypes;
-		if (result.tail_type.kind !== 'list') return baseTypes;
-		return { ...baseTypes, item: result.tail_type.elem, index: { kind: 'primitive', name: 'Int' } };
+		if (!result.ok) return baseTypes;
+		if (result.tailType.kind !== 'list') return baseTypes;
+		return { ...baseTypes, item: result.tailType.elem, index: { kind: 'primitive', name: 'Int' } };
 	}
 </script>
 

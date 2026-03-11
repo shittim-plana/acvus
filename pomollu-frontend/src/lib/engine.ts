@@ -1,36 +1,105 @@
 import type { RenderedCard } from '$lib/types.js';
 import type { TypeDesc } from '$lib/type-parser.js';
+import type {
+	TypeDesc as WasmTypeDesc,
+	AnalyzeResult as WasmAnalyzeResult,
+	TypecheckNodesResult as WasmTypecheckNodesResult,
+	EngineError,
+	NodeErrors as WasmNodeErrors,
+	StorageSnapshot,
+} from '$lib/wasm/pomollu_engine.js';
 import {
-	typecheck as wasmTypecheck,
-	typecheck_with_types as wasmTypecheckWithTypes,
-	typecheck_with_tail as wasmTypecheckWithTail,
 	analyze as wasmAnalyze,
-	analyze_with_types as wasmAnalyzeWithTypes,
-	analyze_with_known as wasmAnalyzeWithKnown,
-	analyze_with_tail as wasmAnalyzeWithTail,
+	typecheck as wasmTypecheck,
 	evaluate as wasmEvaluate,
 	typecheck_nodes as wasmTypecheckNodes,
-	ChatSession as WasmChatSession
+	ChatSession as WasmChatSession,
 } from '$lib/wasm/pomollu_engine.js';
 
-export type CheckResult = { ok: true } | { ok: false; message: string };
+// ---------------------------------------------------------------------------
+// Re-exports — WASM types that consumers use directly
+// ---------------------------------------------------------------------------
 
-export type ContextKeyInfo = { name: string; type: TypeDesc; status: 'eager' | 'lazy' | 'pruned' };
+export type { EngineError, StorageSnapshot };
 
-export type AnalyzeResult = {
-	ok: true;
-	errors: [];
-	context_keys: ContextKeyInfo[];
-	tail_type: TypeDesc;
-} | {
-	ok: false;
-	errors: string[];
-	context_keys: [];
-	tail_type: null;
+export type NodeErrors = {
+	initialValue: EngineError[];
+	historyBind: EngineError[];
+	ifModifiedKey: EngineError[];
+	assert: EngineError[];
+	messages: Record<string, EngineError[]>;
 };
 
+// ---------------------------------------------------------------------------
+// Map → Record helper
+// ---------------------------------------------------------------------------
+// Tsify serializes FxHashMap as JS Map, not plain object.
+// We need to convert to Record for TS consumers.
+
+function mapToRecord<V>(mapOrObj: Map<string, V> | Record<string, V>): Record<string, V> {
+	if (mapOrObj instanceof Map) {
+		const rec: Record<string, V> = {};
+		for (const [k, v] of mapOrObj) rec[k] = v;
+		return rec;
+	}
+	return mapOrObj;
+}
+
+// ---------------------------------------------------------------------------
+// WASM TypeDesc → type-parser TypeDesc conversion
+// ---------------------------------------------------------------------------
+
+const VALID_PRIMITIVES = new Set(['String', 'Int', 'Float', 'Bool']);
+
+function convertTypeDesc(wasm: WasmTypeDesc): TypeDesc {
+	switch (wasm.kind) {
+		case 'primitive': {
+			if (!VALID_PRIMITIVES.has(wasm.name)) {
+				throw new Error(`unknown primitive type from WASM: "${wasm.name}"`);
+			}
+			return { kind: 'primitive', name: wasm.name as 'String' | 'Int' | 'Float' | 'Bool' };
+		}
+		case 'option':
+			return { kind: 'option', inner: convertTypeDesc(wasm.inner) };
+		case 'list':
+			return { kind: 'list', elem: convertTypeDesc(wasm.elem) };
+		case 'object':
+			return {
+				kind: 'object',
+				fields: wasm.fields.map((f) => ({ name: f.name, type: convertTypeDesc(f.type) })),
+			};
+		case 'enum':
+			return {
+				kind: 'enum',
+				name: wasm.name,
+				variants: wasm.variants.map((v) => ({
+					tag: v.tag,
+					hasPayload: v.hasPayload,
+					payloadType: v.payloadType ? convertTypeDesc(v.payloadType) : undefined,
+				})),
+			};
+		case 'unsupported':
+			return { kind: 'unsupported', raw: wasm.raw };
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EngineError[] formatting helper
+// ---------------------------------------------------------------------------
+
+export function formatErrors(errors: EngineError[] | undefined): string {
+	if (!errors || errors.length === 0) return '';
+	return errors.map((e) => e.message).join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// CheckResult — no TypeDesc, pass-through
+// ---------------------------------------------------------------------------
+
+export type CheckResult = { ok: boolean; errors: EngineError[] };
+
 export function typecheck(source: string, mode: 'script' | 'template'): CheckResult {
-	return wasmTypecheck(source, mode) as CheckResult;
+	return wasmTypecheck({ source, mode });
 }
 
 export function typecheckWithTypes(
@@ -38,20 +107,46 @@ export function typecheckWithTypes(
 	mode: 'script' | 'template',
 	contextTypes: Record<string, TypeDesc>
 ): CheckResult {
-	return wasmTypecheckWithTypes(source, mode, JSON.stringify(contextTypes)) as CheckResult;
+	return wasmTypecheck({ source, mode, contextTypes });
 }
 
 export function typecheckWithTail(
 	source: string,
 	mode: 'script' | 'template',
 	contextTypes: Record<string, TypeDesc>,
-	expectedTailType: TypeDesc
+	expectedTail: TypeDesc
 ): CheckResult {
-	return wasmTypecheckWithTail(source, mode, JSON.stringify(contextTypes), JSON.stringify(expectedTailType)) as CheckResult;
+	return wasmTypecheck({ source, mode, contextTypes, expectedTail });
+}
+
+// ---------------------------------------------------------------------------
+// AnalyzeResult — convert WASM TypeDesc → type-parser TypeDesc
+// ---------------------------------------------------------------------------
+
+export type ContextKeyInfo = { name: string; type: TypeDesc; status: 'eager' | 'lazy' | 'pruned' };
+
+export type AnalyzeResult = {
+	ok: boolean;
+	errors: EngineError[];
+	contextKeys: ContextKeyInfo[];
+	tailType: TypeDesc;
+};
+
+function convertAnalyzeResult(raw: WasmAnalyzeResult): AnalyzeResult {
+	return {
+		ok: raw.ok,
+		errors: raw.errors,
+		contextKeys: raw.contextKeys.map((k) => ({
+			name: k.name,
+			type: convertTypeDesc(k.type),
+			status: k.status,
+		})),
+		tailType: convertTypeDesc(raw.tailType),
+	};
 }
 
 export function analyze(source: string, mode: 'script' | 'template'): AnalyzeResult {
-	return wasmAnalyze(source, mode) as AnalyzeResult;
+	return convertAnalyzeResult(wasmAnalyze({ source, mode }));
 }
 
 export function analyzeWithTypes(
@@ -59,26 +154,30 @@ export function analyzeWithTypes(
 	mode: 'script' | 'template',
 	contextTypes: Record<string, TypeDesc>
 ): AnalyzeResult {
-	return wasmAnalyzeWithTypes(source, mode, JSON.stringify(contextTypes)) as AnalyzeResult;
+	return convertAnalyzeResult(wasmAnalyze({ source, mode, contextTypes }));
 }
 
 export function analyzeWithKnown(
 	source: string,
 	mode: 'script' | 'template',
 	contextTypes: Record<string, TypeDesc>,
-	knownScripts: Record<string, string>
+	knownValues: Record<string, string>
 ): AnalyzeResult {
-	return wasmAnalyzeWithKnown(source, mode, JSON.stringify(contextTypes), JSON.stringify(knownScripts)) as AnalyzeResult;
+	return convertAnalyzeResult(wasmAnalyze({ source, mode, contextTypes, knownValues }));
 }
 
 export function analyzeWithTail(
 	source: string,
 	mode: 'script' | 'template',
 	contextTypes: Record<string, TypeDesc>,
-	expectedTailType: TypeDesc
+	expectedTail: TypeDesc
 ): AnalyzeResult {
-	return wasmAnalyzeWithTail(source, mode, JSON.stringify(contextTypes), JSON.stringify(expectedTailType)) as AnalyzeResult;
+	return convertAnalyzeResult(wasmAnalyze({ source, mode, contextTypes, expectedTail }));
 }
+
+// ---------------------------------------------------------------------------
+// TypecheckNodes — convert WASM TypeDesc → type-parser TypeDesc
+// ---------------------------------------------------------------------------
 
 export type WebNode = {
 	name: string;
@@ -107,28 +206,65 @@ export type WebNode = {
 	fnParams: { name: string; type: string }[];
 };
 
-export type NodeFieldErrors = Record<string, string>;
-
 export type TypecheckNodesResult = {
+	envErrors: EngineError[];
 	contextTypes: Record<string, TypeDesc>;
 	nodeLocals: Record<string, { raw: TypeDesc; self: TypeDesc }>;
-	nodeErrors: Record<string, NodeFieldErrors>;
-} | { error: string };
+	nodeErrors: Record<string, NodeErrors>;
+};
+
+function convertNodeErrors(raw: WasmNodeErrors): NodeErrors {
+	return {
+		initialValue: raw.initialValue,
+		historyBind: raw.historyBind,
+		ifModifiedKey: raw.ifModifiedKey,
+		assert: raw.assert,
+		messages: mapToRecord(raw.messages),
+	};
+}
+
+function convertTypecheckNodesResult(raw: WasmTypecheckNodesResult): TypecheckNodesResult {
+	const rawContextTypes = mapToRecord(raw.contextTypes);
+	const contextTypes: Record<string, TypeDesc> = {};
+	for (const [k, v] of Object.entries(rawContextTypes)) {
+		contextTypes[k] = convertTypeDesc(v);
+	}
+	const rawNodeLocals = mapToRecord(raw.nodeLocals);
+	const nodeLocals: Record<string, { raw: TypeDesc; self: TypeDesc }> = {};
+	for (const [k, v] of Object.entries(rawNodeLocals)) {
+		nodeLocals[k] = { raw: convertTypeDesc(v.raw), self: convertTypeDesc(v.self) };
+	}
+	const rawNodeErrors = mapToRecord(raw.nodeErrors);
+	const nodeErrors: Record<string, NodeErrors> = {};
+	for (const [k, v] of Object.entries(rawNodeErrors)) {
+		nodeErrors[k] = convertNodeErrors(v);
+	}
+	return {
+		envErrors: raw.envErrors,
+		contextTypes,
+		nodeLocals,
+		nodeErrors,
+	};
+}
 
 export function typecheckNodes(
 	nodes: WebNode[],
 	injectedTypes: Record<string, TypeDesc>
 ): TypecheckNodesResult {
-	return wasmTypecheckNodes(JSON.stringify(nodes), JSON.stringify(injectedTypes)) as
-		TypecheckNodesResult;
+	return convertTypecheckNodesResult(wasmTypecheckNodes({ nodes, injectedTypes }));
 }
+
+// ---------------------------------------------------------------------------
+// Evaluate
+// ---------------------------------------------------------------------------
 
 export async function evaluate(
 	source: string,
 	mode: 'script' | 'template',
-	context: Record<string, unknown>
+	context?: Record<string, unknown>
 ): Promise<unknown> {
-	return wasmEvaluate(source, mode, JSON.stringify(context));
+	// context values are JsConcreteValue at the WASM boundary — opaque to TS callers
+	return wasmEvaluate({ source, mode, context: context as never });
 }
 
 // ---------------------------------------------------------------------------
@@ -223,7 +359,7 @@ export class ChatSession {
 
 	static async create(
 		config: SessionConfig,
-		storage: unknown | null = null,
+		storage: StorageSnapshot | null = null,
 		onStorageChange: (key: string, value: unknown) => void,
 	): Promise<ChatSession> {
 		const inner = await WasmChatSession.create(
@@ -275,14 +411,9 @@ export class ChatSession {
 		}
 	}
 
-	exportStorage(): unknown {
-		if (this._freed) return {};
+	exportStorage(): StorageSnapshot {
+		if (this._freed) return {} as StorageSnapshot;
 		return this.inner.export_storage();
-	}
-
-	exportStorageJson(): Record<string, unknown> {
-		if (this._freed) return {};
-		return this.inner.export_storage_json() as Record<string, unknown>;
 	}
 
 	turnCount(): number {

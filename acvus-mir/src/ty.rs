@@ -48,6 +48,24 @@ impl Ty {
         matches!(self, Ty::Error)
     }
 
+    /// Returns true if this type can be represented as a `PureValue` at runtime.
+    /// Non-pure types (Fn, Opaque) can only be used in restricted contexts (e.g. call-only).
+    pub fn is_pure(&self) -> bool {
+        match self {
+            Ty::Int | Ty::Float | Ty::String | Ty::Bool | Ty::Unit
+            | Ty::Range | Ty::Byte => true,
+            Ty::List(inner) => inner.is_pure(),
+            Ty::Option(inner) => inner.is_pure(),
+            Ty::Tuple(elems) => elems.iter().all(|e| e.is_pure()),
+            Ty::Object(fields) => fields.values().all(|v| v.is_pure()),
+            Ty::Enum { variants, .. } => variants.values().all(|p| {
+                p.as_ref().map_or(true, |ty| ty.is_pure())
+            }),
+            Ty::Fn { .. } | Ty::Opaque(_) => false,
+            Ty::Var(_) | Ty::Infer | Ty::Error => true,
+        }
+    }
+
     /// Convenience: `List<Byte>` (replaces the old `Ty::Bytes`).
     pub fn bytes() -> Ty {
         Ty::List(Box::new(Ty::Byte))

@@ -747,6 +747,27 @@ impl<'a> Lowerer<'a> {
         arg_regs.extend(args.iter().map(|a| self.lower_expr(a)));
         let dst = self.alloc_typed(call_span);
 
+        // Context reference to an extern function: emit ExternCall directly.
+        if let Expr::Ident {
+            name,
+            ref_kind: RefKind::Context,
+            span,
+        } = func
+        {
+            if let Some(Ty::Fn { is_extern: true, .. }) = self.type_map.get(span).or_else(|| self.type_map.get(&call_span)) {
+                self.set_origin(dst, ValOrigin::Call(*name));
+                self.emit_inst(
+                    call_span,
+                    InstKind::ExternCall {
+                        dst,
+                        name: *name,
+                        args: arg_regs,
+                    },
+                );
+                return dst;
+            }
+        }
+
         let Expr::Ident {
             name,
             ref_kind: RefKind::Value,

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
-	import { typecheckWithTypes, typecheckWithTail, analyzeWithTypes } from '$lib/engine.js';
+	import { typecheckWithTypes, typecheckWithTail, analyzeWithTypes, formatErrors } from '$lib/engine.js';
 	import type { TypeDesc } from '$lib/type-parser.js';
 	import { isUnknownType } from '$lib/type-parser.js';
 	import { highlightTemplate, highlightScript } from '$lib/highlight.js';
@@ -78,7 +78,7 @@
 			const analysis = analyzeWithTypes(source, mode, contextTypes);
 			if (analysis.ok) {
 				const merged = { ...contextTypes };
-				for (const key of analysis.context_keys) {
+				for (const key of analysis.contextKeys) {
 					if (!isUnknownType(key.type) && !(key.name in merged)) {
 						merged[key.name] = key.type;
 					}
@@ -89,7 +89,7 @@
 		const result = expectedTailType
 			? typecheckWithTail(source, mode, types, expectedTailType)
 			: typecheckWithTypes(source, mode, types);
-		typecheckError = result.ok ? '' : result.message;
+		typecheckError = result.ok ? '' : formatErrors(result.errors);
 	}
 
 	function scheduleCheck(source: string) {

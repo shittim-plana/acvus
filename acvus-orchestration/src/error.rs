@@ -2,7 +2,7 @@ use std::fmt;
 
 use acvus_mir::error::MirError;
 use acvus_mir::ty::Ty;
-use acvus_utils::Interner;
+use acvus_utils::{Astr, Interner};
 
 #[derive(Debug)]
 pub struct OrchError {
@@ -60,6 +60,13 @@ pub enum OrchErrorKind {
     FnParamConflict {
         node: String,
         param: String,
+    },
+
+    // Registry
+    RegistryConflict {
+        key: Astr,
+        tier_a: &'static str,
+        tier_b: &'static str,
     },
 
     // Runtime
@@ -159,6 +166,10 @@ impl<'a> fmt::Display for OrchErrorDisplay<'a> {
             }
             OrchErrorKind::FnParamConflict { node, param } => {
                 write!(f, "function node '{node}': param '{param}' conflicts with existing context key")
+            }
+            OrchErrorKind::RegistryConflict { key, tier_a, tier_b } => {
+                write!(f, "context type conflict: key '{}' appears in both '{}' and '{}'",
+                    interner.resolve(*key), tier_a, tier_b)
             }
             OrchErrorKind::FuelExhausted => write!(f, "fuel exhausted"),
             OrchErrorKind::ModelError(msg) => write!(f, "model error: {msg}"),

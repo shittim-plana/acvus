@@ -24,7 +24,19 @@ pub async fn run(
     .expect("compile failed");
 
     let interp = Interpreter::new(interner, module);
-    interp.execute_to_string(context_values).await
+    emits_to_string(interp.execute_with_context(context_values).await)
+}
+
+/// Concatenate emitted values into a string (for template execution).
+fn emits_to_string(emits: Vec<Value>) -> String {
+    let mut output = String::new();
+    for v in emits {
+        match v {
+            Value::String(s) => output.push_str(&s),
+            other => panic!("template emit: expected String, got {other:?}"),
+        }
+    }
+    output
 }
 
 /// Simple: no context, no extern fns.
@@ -83,7 +95,7 @@ pub async fn run_obfuscated(
     .transform(module, ());
 
     let interp = Interpreter::new(interner, module);
-    interp.execute_to_string(context_values).await
+    emits_to_string(interp.execute_with_context(context_values).await)
 }
 
 /// Simple obfuscated: no context, no extern fns.

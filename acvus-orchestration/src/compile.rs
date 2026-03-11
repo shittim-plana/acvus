@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 
+use acvus_mir::context_registry::PartialContextTypeRegistry;
 use acvus_mir::ir::{InstKind, MirModule};
 use acvus_mir::ty::Ty;
 use acvus_mir_pass::AnalysisPass;
@@ -462,7 +463,7 @@ pub struct NodeLocalTypes {
 }
 
 pub struct ExternalContextEnv {
-    pub context_types: FxHashMap<Astr, Ty>,
+    pub registry: PartialContextTypeRegistry,
     /// Types of values stored in storage (node self types + @turn).
     /// Does not include injected types (those come from the resolver, not storage).
     pub storage_types: FxHashMap<Astr, Ty>,
@@ -483,9 +484,15 @@ pub struct ExternalContextEnv {
 pub fn compute_external_context_env(
     interner: &Interner,
     specs: &[NodeSpec],
-    injected_types: &FxHashMap<Astr, Ty>,
+    mut registry: PartialContextTypeRegistry,
 ) -> Result<ExternalContextEnv, Vec<OrchError>> {
-    let mut context_types = injected_types.clone();
+    let map_conflict = |e: acvus_mir::context_registry::RegistryConflictError| {
+        vec![OrchError::new(OrchErrorKind::RegistryConflict {
+            key: e.key,
+            tier_a: e.tier_a,
+            tier_b: e.tier_b,
+        })]
+    };
 
     // 1. stored type = raw_output_ty for concrete nodes (LLM, Plain, LlmCache)
     //    Expr nodes start as Ty::Infer — resolved in step 3 after @turn is available.
@@ -494,22 +501,23 @@ pub fn compute_external_context_env(
         .map(|s| s.kind.raw_output_ty(interner))
         .collect();
 
-    // 2. Register concrete (non-Infer) stored types so other nodes can reference @name
+    // 2. Register concrete (non-Infer) stored types into the system tier
     //    Function nodes are registered as Ty::Fn { is_extern: true, ... }
     for (spec, ty) in specs.iter().zip(stored_types.iter()) {
         if *ty == Ty::Infer {
             continue;
         }
-        if spec.is_function {
+        let reg_ty = if spec.is_function {
             let param_types: Vec<Ty> = spec.fn_params.iter().map(|(_, ty)| ty.clone()).collect();
-            context_types.insert(spec.name, Ty::Fn {
+            Ty::Fn {
                 params: param_types,
                 ret: Box::new(ty.clone()),
                 is_extern: true,
-            });
+            }
         } else {
-            context_types.insert(spec.name, ty.clone());
-        }
+            ty.clone()
+        };
+        registry.insert_system(spec.name, reg_ty).map_err(map_conflict)?;
     }
 
     // 3. Compile history_bind → compute @turn type for History nodes
@@ -522,7 +530,7 @@ pub fn compute_external_context_env(
         })
         .collect();
     if !history_specs.is_empty() {
-        let store_ctx = context_types.clone();
+        let store_ctx = registry.merged().clone();
         let mut entry_fields = FxHashMap::default();
         for &(i, bind_src) in &history_specs {
             let mut hist_ctx = store_ctx.clone();
@@ -537,7 +545,9 @@ pub fn compute_external_context_env(
             (interner.intern("index"), Ty::Int),
             (interner.intern("history"), history_ty),
         ]);
-        context_types.insert(interner.intern("turn"), Ty::Object(turn_fields));
+        registry
+            .insert_system(interner.intern("turn"), Ty::Object(turn_fields))
+            .map_err(map_conflict)?;
     }
 
     // 4. Resolve Expr node types in dependency order (DAG topo sort).
@@ -561,7 +571,7 @@ pub fn compute_external_context_env(
         for &idx in &infer_indices {
             if let NodeKind::Expr(expr_spec) = &specs[idx].kind {
                 let keys =
-                    analysis_extract_script_keys(interner, &expr_spec.source, &context_types);
+                    analysis_extract_script_keys(interner, &expr_spec.source, registry.merged());
                 for key in keys {
                     if let Some(&dep_idx) = node_name_to_idx.get(&key) {
                         if infer_set.contains(&dep_idx) && dep_idx != idx {
@@ -618,27 +628,25 @@ pub fn compute_external_context_env(
                 stored_types[idx] = compile_script_with_hint(
                     interner,
                     &expr_spec.source,
-                    &context_types,
+                    registry.merged(),
                     hint,
                 )
                 .map(|(_, ty)| ty)
                 .unwrap_or(Ty::Error);
             }
             let spec = &specs[idx];
-            if spec.is_function {
+            let reg_ty = if spec.is_function {
                 let param_types: Vec<Ty> =
                     spec.fn_params.iter().map(|(_, ty)| ty.clone()).collect();
-                context_types.insert(
-                    spec.name,
-                    Ty::Fn {
-                        params: param_types,
-                        ret: Box::new(stored_types[idx].clone()),
-                        is_extern: true,
-                    },
-                );
+                Ty::Fn {
+                    params: param_types,
+                    ret: Box::new(stored_types[idx].clone()),
+                    is_extern: true,
+                }
             } else {
-                context_types.insert(spec.name, stored_types[idx].clone());
-            }
+                stored_types[idx].clone()
+            };
+            registry.insert_system(spec.name, reg_ty).map_err(map_conflict)?;
         }
     }
 
@@ -653,15 +661,12 @@ pub fn compute_external_context_env(
         );
     }
 
-    // storage_types = context_types minus injected_types
-    let storage_types: FxHashMap<Astr, Ty> = context_types
-        .iter()
-        .filter(|(k, _)| !injected_types.contains_key(k))
-        .map(|(k, v)| (*k, v.clone()))
-        .collect();
+    // storage_types = system tier (node values, @turn — things stored in storage)
+    // Excludes extern fn types (regex etc.) which are provided at runtime, not stored.
+    let storage_types = registry.system().clone();
 
     Ok(ExternalContextEnv {
-        context_types,
+        registry,
         storage_types,
         node_locals,
         stored_types,
@@ -675,9 +680,9 @@ pub fn compute_external_context_env(
 pub fn compile_nodes(
     interner: &Interner,
     specs: &[NodeSpec],
-    injected_types: &FxHashMap<Astr, Ty>,
+    registry: PartialContextTypeRegistry,
 ) -> Result<Vec<CompiledNode>, Vec<OrchError>> {
-    let env = compute_external_context_env(interner, specs, injected_types)?;
+    let env = compute_external_context_env(interner, specs, registry)?;
     compile_nodes_with_env(interner, specs, env)
 }
 
@@ -690,7 +695,7 @@ pub fn compile_nodes_with_env(
     specs: &[NodeSpec],
     env: ExternalContextEnv,
 ) -> Result<Vec<CompiledNode>, Vec<OrchError>> {
-    let context_types = env.context_types;
+    let context_types = env.registry.merged().clone();
     let stored_types = env.stored_types;
     let mut errors = Vec::new();
 

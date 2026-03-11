@@ -103,8 +103,10 @@ pub struct WebFnParam {
     pub ty: String,
 }
 
-pub fn convert_node(interner: &Interner, web: &WebNode) -> Result<NodeSpec, String> {
-    let kind = match web.kind.as_str() {
+impl WebNode {
+    pub fn into_node(&self, interner: &Interner) -> Result<NodeSpec, String> {
+        let web = self;
+        let kind = match web.kind.as_str() {
         "llm" => NodeKind::Llm(LlmSpec {
             // Fallback to OpenAI when api is empty/unknown — ApiKind is only used at
             // runtime for LLM calls, not during typechecking. This allows nodes with
@@ -211,4 +213,5 @@ pub fn convert_node(interner: &Interner, web: &WebNode) -> Result<NodeSpec, Stri
             (interner.intern(&p.name), ty)
         }).collect(),
     })
+    }
 }

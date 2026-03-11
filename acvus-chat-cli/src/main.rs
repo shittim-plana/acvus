@@ -7,6 +7,7 @@ use std::process;
 use acvus_chat::ChatEngine;
 use acvus_interpreter::Value;
 use acvus_mir::ty::Ty;
+use acvus_mir::context_registry::PartialContextTypeRegistry;
 use acvus_orchestration::{
     ApiKind, ExprSpec, Fetch, HashMapStorage, HttpRequest, NodeKind, NodeSpec, ProviderConfig,
     Resolved, SelfSpec, Strategy, compile_nodes, compile_script,
@@ -134,18 +135,25 @@ async fn main() {
     let interner = Interner::new();
 
     // Context types + defaults
-    let mut context_types: FxHashMap<Astr, Ty> = FxHashMap::default();
+    let mut user_types: FxHashMap<Astr, Ty> = FxHashMap::default();
     let mut context_defaults: FxHashMap<Astr, Value> = FxHashMap::default();
     for (k, v) in &spec.context {
         let entry = parse_context_entry(&interner, v);
-        context_types.insert(interner.intern(k), entry.ty);
+        user_types.insert(interner.intern(k), entry.ty);
         if let Some(default) = entry.default {
             context_defaults.insert(interner.intern(k), default);
         }
     }
 
+    // Build registry: extern fns separate, user-declared in user tier
+    let extern_fns = acvus_ext::regex_context_types(&interner);
+    let mut registry = PartialContextTypeRegistry::new(extern_fns, FxHashMap::default(), user_types)
+        .unwrap_or_else(|e| {
+            eprintln!("context type conflict: {e}");
+            process::exit(1);
+        });
+
     // Compile expr definitions → NodeSpec with NodeKind::Expr
-    context_types.extend(acvus_ext::regex_context_types(&interner));
     let mut expr_node_specs: Vec<NodeSpec> = Vec::new();
     for expr_def in &spec.expr {
         let source = if let Some(path) = &expr_def.source {
@@ -162,7 +170,7 @@ async fn main() {
             );
             process::exit(1);
         };
-        let (_script, tail_ty) = compile_script(&interner, &source, &context_types)
+        let (_script, tail_ty) = compile_script(&interner, &source, registry.merged())
             .unwrap_or_else(|e| {
                 eprintln!(
                     "expr '{}' compile error: {}",
@@ -172,7 +180,11 @@ async fn main() {
                 process::exit(1);
             });
         let expr_name = interner.intern(&expr_def.name);
-        context_types.insert(expr_name, tail_ty.clone());
+        registry.insert_system(expr_name, tail_ty.clone())
+            .unwrap_or_else(|e| {
+                eprintln!("expr '{}' type conflict: {e}", expr_def.name);
+                process::exit(1);
+            });
         expr_node_specs.push(NodeSpec {
             name: expr_name,
             kind: NodeKind::Expr(ExprSpec {
@@ -218,7 +230,7 @@ async fn main() {
     // Merge expr node specs into node specs
     node_specs.extend(expr_node_specs);
 
-    let compiled_nodes = match compile_nodes(&interner, &node_specs, &context_types) {
+    let compiled_nodes = match compile_nodes(&interner, &node_specs, registry) {
         Ok(nodes) => nodes,
         Err(errors) => {
             for e in &errors {

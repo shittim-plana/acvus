@@ -58,6 +58,12 @@ pub enum MirErrorKind {
     // Builtin constraint errors
     BuiltinConstraint(String),
 
+    // Value errors
+    NonPureContextLoad {
+        name: String,
+        ty: Ty,
+    },
+
     // Lowering errors
     ArityMismatch {
         func: String,
@@ -153,6 +159,13 @@ impl<'a> fmt::Display for MirErrorDisplay<'a> {
             }
             MirErrorKind::ContextWriteAttempt(name) => {
                 write!(f, "context `@{name}` is read-only and cannot be assigned")
+            }
+            MirErrorKind::NonPureContextLoad { name, ty } => {
+                write!(
+                    f,
+                    "`@{name}` has non-pure type {} and cannot be used as a value; it can only be called directly",
+                    ty.display(interner)
+                )
             }
             MirErrorKind::SourceNotIterable { actual } => {
                 write!(

@@ -309,6 +309,7 @@ mod tests {
     use std::sync::Mutex;
 
     use acvus_mir::ty::Ty;
+    use acvus_mir::context_registry::PartialContextTypeRegistry;
     use acvus_orchestration::{
         ApiKind, ExprSpec, GenerationParams, HashMapStorage, HttpRequest, LlmSpec, MaxTokens,
         MessageSpec, NodeKind, NodeSpec, PlainSpec, SelfSpec, Strategy, ToolBinding, compile_nodes,
@@ -395,7 +396,7 @@ mod tests {
         compile_nodes(
             interner,
             specs,
-            &FxHashMap::default(),
+            PartialContextTypeRegistry::default(),
         )
         .unwrap()
     }
@@ -770,7 +771,7 @@ mod tests {
                 is_function: false,
                 fn_params: vec![],
             }],
-            &ctx,
+            PartialContextTypeRegistry::user_only(ctx),
         )
         .unwrap();
         let (pname, pconfig) = default_provider();
@@ -981,7 +982,7 @@ mod tests {
                     fn_params: vec![],
                 },
             ],
-            &FxHashMap::default(),
+            PartialContextTypeRegistry::default(),
         );
         // Should fail: @double is not a context key (it's a function)
         assert!(result.is_err());
@@ -1021,7 +1022,7 @@ mod tests {
                     fn_params: vec![],
                 },
             ],
-            &FxHashMap::default(),
+            PartialContextTypeRegistry::default(),
         );
         assert!(result.is_ok(), "function call should typecheck: {result:?}");
     }
@@ -1030,8 +1031,7 @@ mod tests {
     #[test]
     fn function_node_with_global_context() {
         let interner = Interner::new();
-        let mut ctx = FxHashMap::default();
-        ctx.insert(interner.intern("offset"), Ty::Int);
+        let ctx = FxHashMap::from_iter([(interner.intern("offset"), Ty::Int)]);
         let result = compile_nodes(
             &interner,
             &[
@@ -1062,7 +1062,7 @@ mod tests {
                     fn_params: vec![],
                 },
             ],
-            &ctx,
+            PartialContextTypeRegistry::user_only(ctx),
         );
         assert!(result.is_ok(), "function with global context should compile: {result:?}");
     }
@@ -1126,8 +1126,6 @@ mod tests {
         // reference @double as context. Since compile rejects @double in templates,
         // we test at the resolver level by injecting @double as a known context type
         // but marking the compiled node as is_function.
-        let mut ctx = FxHashMap::default();
-        ctx.insert(interner.intern("double"), Ty::Int);
         let nodes = compile_nodes(
             &interner,
             &[
@@ -1159,7 +1157,7 @@ mod tests {
                     fn_params: vec![],
                 },
             ],
-            &FxHashMap::default(),
+            PartialContextTypeRegistry::default(),
         )
         .unwrap();
 
