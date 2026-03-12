@@ -226,9 +226,14 @@ where
 
         self.state.turn = turn_index as usize;
 
-        // Resolve side-effect nodes after history flush + turn increment
-        for &idx in &self.side_effect_idxs {
-            ctx.resolve_node(idx, &mut rs, FxHashMap::default())
+        // Resolve side-effect nodes concurrently after history flush + turn increment
+        if !self.side_effect_idxs.is_empty() {
+            let side_effects: Vec<_> = self
+                .side_effect_idxs
+                .iter()
+                .map(|&idx| (idx, FxHashMap::default()))
+                .collect();
+            ctx.resolve_nodes(side_effects, &mut rs)
                 .await
                 .map_err(|e| ChatError::Resolve(e.to_string()))?;
         }
