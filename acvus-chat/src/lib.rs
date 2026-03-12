@@ -21,6 +21,7 @@ pub struct ChatEngine<S> {
     nodes: Vec<CompiledNode>,
     node_table: Vec<Arc<dyn Node>>,
     name_to_idx: FxHashMap<Astr, usize>,
+    rdeps: Vec<FxHashSet<usize>>,
     pub state: State<S>,
     bind_cache: FxHashMap<Astr, Vec<(Value, Arc<Value>)>>,
     entrypoint_idx: usize,
@@ -62,8 +63,8 @@ where
             })
             .collect();
 
-        // Validate: no dependency cycles
-        build_dag(interner, &nodes).map_err(|errs| {
+        // Validate: no dependency cycles + extract rdeps
+        let dag = build_dag(interner, &nodes).map_err(|errs| {
             let msg = errs
                 .iter()
                 .map(|e| e.display(interner).to_string())
@@ -71,6 +72,7 @@ where
                 .join("; ");
             ChatError::CycleDetected(msg)
         })?;
+        let rdeps = dag.rdeps;
 
         // Validate: history nodes must be reachable from entrypoint via BFS
         let mut reachable = FxHashSet::default();
@@ -121,6 +123,7 @@ where
             nodes,
             node_table,
             name_to_idx,
+            rdeps,
             state: State::new(storage, 0),
             bind_cache: FxHashMap::default(),
             entrypoint_idx,
@@ -185,6 +188,7 @@ where
             extern_handler,
             resolver,
             interner,
+            rdeps: &self.rdeps,
         };
 
         ctx.resolve_node(self.entrypoint_idx, &mut rs, FxHashMap::default())
