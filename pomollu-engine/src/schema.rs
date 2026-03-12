@@ -354,6 +354,7 @@ pub fn ty_to_desc(interner: &Interner, ty: &Ty) -> TypeDesc {
         Ty::Fn { .. } => TypeDesc::Unsupported { raw: "Fn".into() },
         Ty::Opaque(_) => TypeDesc::Unsupported { raw: "Opaque".into() },
         Ty::Tuple(_) => TypeDesc::Unsupported { raw: "Tuple".into() },
+        Ty::Iterator(_) => TypeDesc::Unsupported { raw: "Iterator".into() },
     }
 }
 

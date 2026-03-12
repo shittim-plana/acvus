@@ -13,6 +13,7 @@ use rustc_hash::FxHashMap;
 
 use crate::builtins;
 use crate::error::RuntimeError;
+use crate::iter::{IterChain, IterOp, SharedIter};
 use crate::value::{FnValue, Value};
 use acvus_utils::{Coroutine, Stepped, YieldHandle};
 
@@ -559,9 +560,9 @@ impl Interpreter {
     // -- builtin dispatch -----------------------------------------------------
 
     async fn exec_builtin<'a>(
-        this: Self,
+        mut this: Self,
         id: BuiltinId,
-        args: Vec<Value>,
+        mut args: Vec<Value>,
         handle: &'a YieldHandle<Value>,
     ) -> Result<(Self, Value), RuntimeError> {
         match id {
@@ -598,58 +599,242 @@ impl Interpreter {
                 let result = builtins::call_pure(id, args)?;
                 Ok((this, result))
             }
-            BuiltinId::Filter => Ok(Self::exec_hof_filter(this, args, handle).await?),
-            BuiltinId::Map | BuiltinId::Pmap => Ok(Self::exec_hof_map(this, args, handle).await?),
-            BuiltinId::Find => Ok(Self::exec_hof_find(this, args, handle).await?),
-            BuiltinId::Reduce => Ok(Self::exec_hof_reduce(this, args, handle).await?),
-            BuiltinId::Fold => Ok(Self::exec_hof_fold(this, args, handle).await?),
-            BuiltinId::Any => Ok(Self::exec_hof_any(this, args, handle).await?),
-            BuiltinId::All => Ok(Self::exec_hof_all(this, args, handle).await?),
-        }
-    }
 
-    async fn exec_hof_filter<'a>(
-        mut this: Self,
-        args: Vec<Value>,
-        handle: &'a YieldHandle<Value>,
-    ) -> Result<(Self, Value), RuntimeError> {
-        let (items, fn_val) = extract_list_fn(args, "filter");
-        let mut result = Vec::new();
-        for item in items {
-            let arc_item = Arc::new(item);
-            let keep;
-            (this, keep) =
-                Self::call_closure(this, fn_val.clone(), vec![Arc::clone(&arc_item)], handle)
-                    .await?;
-            if matches!(keep, Value::Bool(true)) {
-                result.push(Arc::unwrap_or_clone(arc_item));
+            // -- Iterator constructors --
+            BuiltinId::Iter => {
+                let Value::List(items) = args.remove(0) else {
+                    panic!("iter: expected List")
+                };
+                Ok((this, Value::Iterator(SharedIter::from_list(items))))
+            }
+            BuiltinId::RevIter => {
+                let Value::List(items) = args.remove(0) else {
+                    panic!("rev_iter: expected List")
+                };
+                Ok((this, Value::Iterator(SharedIter::from_list_rev(items))))
+            }
+            BuiltinId::Collect => {
+                let Value::Iterator(shared) = args.remove(0) else {
+                    panic!("collect: expected Iterator")
+                };
+                Self::exec_collect(this, shared, handle).await
+            }
+            BuiltinId::Take => {
+                let Value::Iterator(shared) = args.remove(0) else {
+                    panic!("take: expected Iterator")
+                };
+                let Value::Int(n) = args.remove(0) else {
+                    panic!("take: expected Int")
+                };
+                Ok((this, Value::Iterator(shared.take(n as usize))))
+            }
+            BuiltinId::Skip => {
+                let Value::Iterator(shared) = args.remove(0) else {
+                    panic!("skip: expected Iterator")
+                };
+                let Value::Int(n) = args.remove(0) else {
+                    panic!("skip: expected Int")
+                };
+                Ok((this, Value::Iterator(shared.skip(n as usize))))
+            }
+            BuiltinId::Chain => {
+                let Value::Iterator(a) = args.remove(0) else {
+                    panic!("chain: expected Iterator")
+                };
+                let Value::Iterator(b) = args.remove(0) else {
+                    panic!("chain: expected Iterator")
+                };
+                Ok((this, Value::Iterator(a.chain(b))))
+            }
+
+            // -- Lazy HOFs (return Iterator) --
+            BuiltinId::Map | BuiltinId::Pmap => {
+                let Value::Iterator(shared) = args.remove(0) else {
+                    panic!("map: expected Iterator")
+                };
+                let Value::Fn(f) = args.remove(0) else {
+                    panic!("map: expected Fn")
+                };
+                Ok((this, Value::Iterator(shared.map(f))))
+            }
+            BuiltinId::Filter => {
+                let Value::Iterator(shared) = args.remove(0) else {
+                    panic!("filter: expected Iterator")
+                };
+                let Value::Fn(f) = args.remove(0) else {
+                    panic!("filter: expected Fn")
+                };
+                Ok((this, Value::Iterator(shared.filter(f))))
+            }
+
+            // -- Consuming HOFs (collect then apply) --
+            BuiltinId::Find => {
+                let Value::Iterator(shared) = args.remove(0) else {
+                    panic!("find: expected Iterator")
+                };
+                let fn_val = args.remove(0);
+                let items;
+                (this, items) = Self::exec_collect_vec(this, shared, handle).await?;
+                let Value::Fn(f) = fn_val else {
+                    panic!("find: expected Fn")
+                };
+                Self::exec_hof_find_inner(this, items, f, handle).await
+            }
+            BuiltinId::Reduce => {
+                let Value::Iterator(shared) = args.remove(0) else {
+                    panic!("reduce: expected Iterator")
+                };
+                let fn_val = args.remove(0);
+                let items;
+                (this, items) = Self::exec_collect_vec(this, shared, handle).await?;
+                let Value::Fn(f) = fn_val else {
+                    panic!("reduce: expected Fn")
+                };
+                Self::exec_hof_reduce_inner(this, items, f, handle).await
+            }
+            BuiltinId::Fold => {
+                let Value::Iterator(shared) = args.remove(0) else {
+                    panic!("fold: expected Iterator")
+                };
+                let init = args.remove(0);
+                let fn_val = args.remove(0);
+                let items;
+                (this, items) = Self::exec_collect_vec(this, shared, handle).await?;
+                let Value::Fn(f) = fn_val else {
+                    panic!("fold: expected Fn")
+                };
+                Self::exec_hof_fold_inner(this, items, init, f, handle).await
+            }
+            BuiltinId::Any => {
+                let Value::Iterator(shared) = args.remove(0) else {
+                    panic!("any: expected Iterator")
+                };
+                let fn_val = args.remove(0);
+                let items;
+                (this, items) = Self::exec_collect_vec(this, shared, handle).await?;
+                let Value::Fn(f) = fn_val else {
+                    panic!("any: expected Fn")
+                };
+                Self::exec_hof_any_inner(this, items, f, handle).await
+            }
+            BuiltinId::All => {
+                let Value::Iterator(shared) = args.remove(0) else {
+                    panic!("all: expected Iterator")
+                };
+                let fn_val = args.remove(0);
+                let items;
+                (this, items) = Self::exec_collect_vec(this, shared, handle).await?;
+                let Value::Fn(f) = fn_val else {
+                    panic!("all: expected Fn")
+                };
+                Self::exec_hof_all_inner(this, items, f, handle).await
             }
         }
-        Ok((this, Value::List(result)))
     }
 
-    async fn exec_hof_map<'a>(
-        mut this: Self,
-        args: Vec<Value>,
+    // -- drive_chain: eagerly execute the chain pipeline -----------------------
+
+    fn drive_chain<'a>(
+        this: Self,
+        chain: &'a IterChain,
         handle: &'a YieldHandle<Value>,
-    ) -> Result<(Self, Value), RuntimeError> {
-        let (items, fn_val) = extract_list_fn(args, "map");
-        let mut result = Vec::new();
-        for item in items {
-            let mapped;
-            (this, mapped) =
-                Self::call_closure(this, fn_val.clone(), vec![Arc::new(item)], handle).await?;
-            result.push(mapped);
+    ) -> BoxFuture<'a, Result<(Self, Vec<Value>), RuntimeError>> {
+        Box::pin(Self::drive_chain_inner(this, chain, handle))
+    }
+
+    async fn drive_chain_inner<'a>(
+        mut this: Self,
+        chain: &IterChain,
+        handle: &'a YieldHandle<Value>,
+    ) -> Result<(Self, Vec<Value>), RuntimeError> {
+        let mut items: Vec<Value> = chain.source.to_vec();
+
+        for op in &chain.ops {
+            match op {
+                IterOp::Map(f) => {
+                    let mut result = Vec::with_capacity(items.len());
+                    for item in items {
+                        let mapped;
+                        (this, mapped) = Self::call_closure(
+                            this,
+                            f.clone(),
+                            vec![Arc::new(item)],
+                            handle,
+                        )
+                        .await?;
+                        result.push(mapped);
+                    }
+                    items = result;
+                }
+                IterOp::Filter(f) => {
+                    let mut result = Vec::new();
+                    for item in items {
+                        let arc_item = Arc::new(item);
+                        let keep;
+                        (this, keep) = Self::call_closure(
+                            this,
+                            f.clone(),
+                            vec![Arc::clone(&arc_item)],
+                            handle,
+                        )
+                        .await?;
+                        if matches!(keep, Value::Bool(true)) {
+                            result.push(Arc::unwrap_or_clone(arc_item));
+                        }
+                    }
+                    items = result;
+                }
+                IterOp::Take(n) => {
+                    items.truncate(*n);
+                }
+                IterOp::Skip(n) => {
+                    items = items.into_iter().skip(*n).collect();
+                }
+                IterOp::Chain(other) => {
+                    let more;
+                    (this, more) = Self::drive_chain(this, other, handle).await?;
+                    items.extend(more);
+                }
+            }
         }
-        Ok((this, Value::List(result)))
+        Ok((this, items))
     }
 
-    async fn exec_hof_find<'a>(
-        mut this: Self,
-        args: Vec<Value>,
+    // -- collect helpers ------------------------------------------------------
+
+    async fn exec_collect<'a>(
+        this: Self,
+        shared: SharedIter,
         handle: &'a YieldHandle<Value>,
     ) -> Result<(Self, Value), RuntimeError> {
-        let (items, fn_val) = extract_list_fn(args, "find");
+        let (this, items) = Self::exec_collect_vec(this, shared, handle).await?;
+        Ok((this, Value::List(items)))
+    }
+
+    async fn exec_collect_vec<'a>(
+        this: Self,
+        shared: SharedIter,
+        handle: &'a YieldHandle<Value>,
+    ) -> Result<(Self, Vec<Value>), RuntimeError> {
+        // Check cache first
+        if let Some(cached) = shared.cached() {
+            return Ok((this, cached));
+        }
+
+        let chain = shared.snapshot_chain();
+        let (this, items) = Self::drive_chain(this, &chain, handle).await?;
+        shared.set_cache(items.clone());
+        Ok((this, items))
+    }
+
+    // -- consuming HOF inner implementations ----------------------------------
+
+    async fn exec_hof_find_inner<'a>(
+        mut this: Self,
+        items: Vec<Value>,
+        fn_val: FnValue,
+        handle: &'a YieldHandle<Value>,
+    ) -> Result<(Self, Value), RuntimeError> {
         for item in items {
             let arc_item = Arc::new(item);
             let matched;
@@ -663,12 +848,12 @@ impl Interpreter {
         Err(RuntimeError::empty_collection("find"))
     }
 
-    async fn exec_hof_reduce<'a>(
+    async fn exec_hof_reduce_inner<'a>(
         mut this: Self,
-        args: Vec<Value>,
+        items: Vec<Value>,
+        fn_val: FnValue,
         handle: &'a YieldHandle<Value>,
     ) -> Result<(Self, Value), RuntimeError> {
-        let (items, fn_val) = extract_list_fn(args, "reduce");
         let mut it = items.into_iter();
         let Some(mut acc) = it.next() else {
             return Err(RuntimeError::empty_collection("reduce"));
@@ -685,19 +870,13 @@ impl Interpreter {
         Ok((this, acc))
     }
 
-    async fn exec_hof_fold<'a>(
+    async fn exec_hof_fold_inner<'a>(
         mut this: Self,
-        args: Vec<Value>,
+        items: Vec<Value>,
+        init: Value,
+        fn_val: FnValue,
         handle: &'a YieldHandle<Value>,
     ) -> Result<(Self, Value), RuntimeError> {
-        let mut it = args.into_iter();
-        let list = it.next().unwrap();
-        let init = it.next().unwrap();
-        let closure = it.next().unwrap();
-        let (items, fn_val) = match (list, closure) {
-            (Value::List(items), Value::Fn(fn_val)) => (items, fn_val),
-            (l, c) => panic!("fold: expected (List, _, Fn), got ({l:?}, _, {c:?})"),
-        };
         let mut acc = init;
         for item in items {
             (this, acc) = Self::call_closure(
@@ -711,12 +890,12 @@ impl Interpreter {
         Ok((this, acc))
     }
 
-    async fn exec_hof_any<'a>(
+    async fn exec_hof_any_inner<'a>(
         mut this: Self,
-        args: Vec<Value>,
+        items: Vec<Value>,
+        fn_val: FnValue,
         handle: &'a YieldHandle<Value>,
     ) -> Result<(Self, Value), RuntimeError> {
-        let (items, fn_val) = extract_list_fn(args, "any");
         for item in items {
             let result;
             (this, result) =
@@ -728,12 +907,12 @@ impl Interpreter {
         Ok((this, Value::Bool(false)))
     }
 
-    async fn exec_hof_all<'a>(
+    async fn exec_hof_all_inner<'a>(
         mut this: Self,
-        args: Vec<Value>,
+        items: Vec<Value>,
+        fn_val: FnValue,
         handle: &'a YieldHandle<Value>,
     ) -> Result<(Self, Value), RuntimeError> {
-        let (items, fn_val) = extract_list_fn(args, "all");
         for item in items {
             let result;
             (this, result) =
@@ -805,16 +984,6 @@ fn expect_int(v: &Value, ctx: &str) -> i64 {
     match v {
         Value::Int(n) => *n,
         _ => panic!("{ctx}: expected Int, got {v:?}"),
-    }
-}
-
-fn extract_list_fn(args: Vec<Value>, ctx: &str) -> (Vec<Value>, FnValue) {
-    let mut it = args.into_iter();
-    let list = it.next().unwrap();
-    let closure = it.next().unwrap();
-    match (list, closure) {
-        (Value::List(items), Value::Fn(fn_val)) => (items, fn_val),
-        (l, c) => panic!("{ctx}: expected (List, Fn), got ({l:?}, {c:?})"),
     }
 }
 

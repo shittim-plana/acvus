@@ -108,6 +108,7 @@ const PURE_NAMES: &[&str] = &[
 /// Names of higher-order function builtins dispatched by `exec_builtin`.
 const HOF_NAMES: &[&str] = &[
     "filter", "map", "pmap", "find", "reduce", "fold", "any", "all",
+    "iter", "rev_iter", "collect", "take", "skip", "chain",
 ];
 
 #[test]

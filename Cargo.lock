@@ -162,6 +162,7 @@ dependencies = [
 name = "acvus-utils"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "parking_lot",
  "rustc-hash",
  "serde",

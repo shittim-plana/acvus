@@ -44,6 +44,12 @@ pub enum BuiltinId {
     First,
     Last,
     UnwrapOr,
+    Iter,
+    RevIter,
+    Collect,
+    Take,
+    Skip,
+    Chain,
 }
 
 impl BuiltinId {
@@ -87,6 +93,12 @@ impl BuiltinId {
             Self::First => "first",
             Self::Last => "last",
             Self::UnwrapOr => "unwrap_or",
+            Self::Iter => "iter",
+            Self::RevIter => "rev_iter",
+            Self::Collect => "collect",
+            Self::Take => "take",
+            Self::Skip => "skip",
+            Self::Chain => "chain",
         }
     }
 
@@ -130,6 +142,12 @@ impl BuiltinId {
             "first" => Some(Self::First),
             "last" => Some(Self::Last),
             "unwrap_or" => Some(Self::UnwrapOr),
+            "iter" => Some(Self::Iter),
+            "rev_iter" => Some(Self::RevIter),
+            "collect" => Some(Self::Collect),
+            "take" => Some(Self::Take),
+            "skip" => Some(Self::Skip),
+            "chain" => Some(Self::Chain),
             _ => None,
         }
     }
@@ -191,14 +209,14 @@ impl BuiltinSig for Filter {
         let t = subst.fresh_var();
         (
             vec![
-                Ty::List(Box::new(t.clone())),
+                Ty::Iterator(Box::new(t.clone())),
                 Ty::Fn {
                     params: vec![t.clone()],
                     ret: Box::new(Ty::Bool),
                     is_extern: false,
                 },
             ],
-            Ty::List(Box::new(t)),
+            Ty::Iterator(Box::new(t)),
         )
     }
 }
@@ -216,14 +234,14 @@ impl BuiltinSig for Map {
         let u = subst.fresh_var();
         (
             vec![
-                Ty::List(Box::new(t.clone())),
+                Ty::Iterator(Box::new(t.clone())),
                 Ty::Fn {
                     params: vec![t],
                     ret: Box::new(u.clone()),
                     is_extern: false,
                 },
             ],
-            Ty::List(Box::new(u)),
+            Ty::Iterator(Box::new(u)),
         )
     }
 }
@@ -241,14 +259,14 @@ impl BuiltinSig for Pmap {
         let u = subst.fresh_var();
         (
             vec![
-                Ty::List(Box::new(t.clone())),
+                Ty::Iterator(Box::new(t.clone())),
                 Ty::Fn {
                     params: vec![t],
                     ret: Box::new(u.clone()),
                     is_extern: false,
                 },
             ],
-            Ty::List(Box::new(u)),
+            Ty::Iterator(Box::new(u)),
         )
     }
 }
@@ -312,7 +330,7 @@ impl BuiltinSig for Find {
         let t = subst.fresh_var();
         (
             vec![
-                Ty::List(Box::new(t.clone())),
+                Ty::Iterator(Box::new(t.clone())),
                 Ty::Fn {
                     params: vec![t.clone()],
                     ret: Box::new(Ty::Bool),
@@ -336,7 +354,7 @@ impl BuiltinSig for Reduce {
         let t = subst.fresh_var();
         (
             vec![
-                Ty::List(Box::new(t.clone())),
+                Ty::Iterator(Box::new(t.clone())),
                 Ty::Fn {
                     params: vec![t.clone(), t.clone()],
                     ret: Box::new(t.clone()),
@@ -361,7 +379,7 @@ impl BuiltinSig for Fold {
         let u = subst.fresh_var();
         (
             vec![
-                Ty::List(Box::new(t.clone())),
+                Ty::Iterator(Box::new(t.clone())),
                 u.clone(),
                 Ty::Fn {
                     params: vec![u.clone(), t],
@@ -386,7 +404,7 @@ impl BuiltinSig for Any {
         let t = subst.fresh_var();
         (
             vec![
-                Ty::List(Box::new(t.clone())),
+                Ty::Iterator(Box::new(t.clone())),
                 Ty::Fn {
                     params: vec![t],
                     ret: Box::new(Ty::Bool),
@@ -410,7 +428,7 @@ impl BuiltinSig for All {
         let t = subst.fresh_var();
         (
             vec![
-                Ty::List(Box::new(t.clone())),
+                Ty::Iterator(Box::new(t.clone())),
                 Ty::Fn {
                     params: vec![t],
                     ret: Box::new(Ty::Bool),
@@ -784,6 +802,102 @@ impl BuiltinSig for UnwrapOr {
     }
 }
 
+pub struct Iter;
+impl BuiltinSig for Iter {
+    fn id(&self) -> BuiltinId {
+        BuiltinId::Iter
+    }
+    fn name(&self) -> &'static str {
+        "iter"
+    }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        (vec![Ty::List(Box::new(t.clone()))], Ty::Iterator(Box::new(t)))
+    }
+}
+
+pub struct RevIter;
+impl BuiltinSig for RevIter {
+    fn id(&self) -> BuiltinId {
+        BuiltinId::RevIter
+    }
+    fn name(&self) -> &'static str {
+        "rev_iter"
+    }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        (vec![Ty::List(Box::new(t.clone()))], Ty::Iterator(Box::new(t)))
+    }
+}
+
+pub struct Collect;
+impl BuiltinSig for Collect {
+    fn id(&self) -> BuiltinId {
+        BuiltinId::Collect
+    }
+    fn name(&self) -> &'static str {
+        "collect"
+    }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        (vec![Ty::Iterator(Box::new(t.clone()))], Ty::List(Box::new(t)))
+    }
+}
+
+pub struct Take;
+impl BuiltinSig for Take {
+    fn id(&self) -> BuiltinId {
+        BuiltinId::Take
+    }
+    fn name(&self) -> &'static str {
+        "take"
+    }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        (
+            vec![Ty::Iterator(Box::new(t.clone())), Ty::Int],
+            Ty::Iterator(Box::new(t)),
+        )
+    }
+}
+
+pub struct Skip;
+impl BuiltinSig for Skip {
+    fn id(&self) -> BuiltinId {
+        BuiltinId::Skip
+    }
+    fn name(&self) -> &'static str {
+        "skip"
+    }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        (
+            vec![Ty::Iterator(Box::new(t.clone())), Ty::Int],
+            Ty::Iterator(Box::new(t)),
+        )
+    }
+}
+
+pub struct Chain;
+impl BuiltinSig for Chain {
+    fn id(&self) -> BuiltinId {
+        BuiltinId::Chain
+    }
+    fn name(&self) -> &'static str {
+        "chain"
+    }
+    fn signature(&self, subst: &mut TySubst) -> (Vec<Ty>, Ty) {
+        let t = subst.fresh_var();
+        (
+            vec![
+                Ty::Iterator(Box::new(t.clone())),
+                Ty::Iterator(Box::new(t.clone())),
+            ],
+            Ty::Iterator(Box::new(t)),
+        )
+    }
+}
+
 pub fn builtins() -> Vec<(BuiltinId, &'static dyn BuiltinSig)> {
     vec![
         (BuiltinId::Filter, &Filter as &dyn BuiltinSig),
@@ -824,5 +938,11 @@ pub fn builtins() -> Vec<(BuiltinId, &'static dyn BuiltinSig)> {
         (BuiltinId::First, &First),
         (BuiltinId::Last, &Last),
         (BuiltinId::UnwrapOr, &UnwrapOr),
+        (BuiltinId::Iter, &Iter),
+        (BuiltinId::RevIter, &RevIter),
+        (BuiltinId::Collect, &Collect),
+        (BuiltinId::Take, &Take),
+        (BuiltinId::Skip, &Skip),
+        (BuiltinId::Chain, &Chain),
     ]
 }

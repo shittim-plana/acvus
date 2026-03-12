@@ -826,7 +826,7 @@ mod tests {
 
                 // history_bind accesses @self (= raw output = List) and extracts content
                 strategy: Strategy::History {
-                    history_bind: interner.intern(r#"@self | map(x -> x.content) | join("")"#),
+                    history_bind: interner.intern(r#"@self | iter | map(x -> x.content) | collect | join("")"#),
                 },
                 retry: 0,
                 assert: None,

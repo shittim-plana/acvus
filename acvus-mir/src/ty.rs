@@ -34,6 +34,8 @@ pub enum Ty {
         name: Astr,
         variants: FxHashMap<Astr, Option<Box<Ty>>>,
     },
+    /// Lazy iterator over elements of type T.
+    Iterator(Box<Ty>),
     /// Unification variable. Must not appear in final resolved types.
     Var(TyVar),
     /// Inferred type: signals the type checker to create a fresh Var internally.
@@ -61,7 +63,7 @@ impl Ty {
             Ty::Enum { variants, .. } => variants.values().all(|p| {
                 p.as_ref().map_or(true, |ty| ty.is_pure())
             }),
-            Ty::Fn { .. } | Ty::Opaque(_) => false,
+            Ty::Fn { .. } | Ty::Opaque(_) | Ty::Iterator(_) => false,
             Ty::Var(_) | Ty::Infer | Ty::Error => true,
         }
     }
@@ -130,6 +132,7 @@ impl<'a> fmt::Display for TyDisplay<'a> {
                 }
                 write!(f, ") -> {}", ret.display(self.interner))
             }
+            Ty::Iterator(inner) => write!(f, "Iterator<{}>", inner.display(self.interner)),
             Ty::Option(inner) => write!(f, "Option<{}>", inner.display(self.interner)),
             Ty::Opaque(name) => write!(f, "{name}"),
             Ty::Enum { name, .. } => write!(f, "{}", self.interner.resolve(*name)),
@@ -184,6 +187,7 @@ impl TySubst {
                 }
             }
             Ty::List(inner) => Ty::List(Box::new(self.resolve(inner))),
+            Ty::Iterator(inner) => Ty::Iterator(Box::new(self.resolve(inner))),
             Ty::Option(inner) => Ty::Option(Box::new(self.resolve(inner))),
             Ty::Object(fields) => {
                 let resolved: FxHashMap<_, _> =
@@ -341,6 +345,7 @@ impl TySubst {
             }
 
             (Ty::List(la), Ty::List(lb)) => self.unify(la, lb),
+            (Ty::Iterator(a), Ty::Iterator(b)) => self.unify(a, b),
             (Ty::Option(a), Ty::Option(b)) => self.unify(a, b),
 
             (Ty::Object(fa), Ty::Object(fb)) => {
@@ -428,6 +433,7 @@ impl TySubst {
                 }
             }
             Ty::List(inner) => self.occurs_in(var, inner),
+            Ty::Iterator(inner) => self.occurs_in(var, inner),
             Ty::Option(inner) => self.occurs_in(var, inner),
             Ty::Tuple(elems) => elems.iter().any(|e| self.occurs_in(var, e)),
             Ty::Object(fields) => fields.values().any(|v| self.occurs_in(var, v)),

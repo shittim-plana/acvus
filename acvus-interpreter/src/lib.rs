@@ -1,6 +1,7 @@
 mod builtins;
 mod error;
 mod interner_ctx;
+pub mod iter;
 mod interpreter;
 mod value;
 
@@ -11,6 +12,7 @@ pub type ValueStepped = Stepped<Value, RuntimeError>;
 pub use builtins::{FromValue, IntoValue};
 pub use error::{RuntimeError, RuntimeErrorKind};
 pub use interpreter::Interpreter;
+pub use iter::SharedIter;
 pub use value::{ConcreteValue, FnValue, OpaqueValue, PureValue, Value};
 
 /// Set the thread-local interner context for `IntoValue<Option>` / `FromValue<Option>`

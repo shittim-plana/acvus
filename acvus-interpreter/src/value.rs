@@ -7,6 +7,8 @@ use acvus_mir::ir::Label;
 use acvus_utils::Astr;
 use rustc_hash::FxHashMap;
 
+use crate::iter::SharedIter;
+
 /// Data-only value — no functions, no closures.
 /// Cloneable, used at context boundaries.
 ///
@@ -158,6 +160,8 @@ pub enum Value {
     /// Produced by ContextLoad for extern/function-node entries.
     ExternFn(Astr),
     Opaque(OpaqueValue),
+    /// Lazy iterator — deferred computation chain.
+    Iterator(SharedIter),
 }
 
 /// An opaque value: carries a type name and an arbitrary payload.
@@ -286,6 +290,7 @@ impl Value {
             Value::Fn(_) => panic!("cannot convert Fn to PureValue"),
             Value::ExternFn(_) => panic!("cannot convert ExternFn to PureValue"),
             Value::Opaque(o) => panic!("cannot convert Opaque<{}> to PureValue", o.type_name),
+            Value::Iterator(_) => panic!("cannot convert Iterator to PureValue"),
         }
     }
 }

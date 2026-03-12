@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+futures = "0.3.32"
 parking_lot = "0.12"
 rustc-hash = { workspace = true }
 serde = "1.0.228"
