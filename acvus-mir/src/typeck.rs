@@ -7,7 +7,7 @@ use rustc_hash::FxHashMap;
 
 use crate::builtins::{BuiltinId, registry};
 use crate::error::{MirError, MirErrorKind};
-use crate::ty::{Ty, TySubst};
+use crate::ty::{Polarity, Ty, TySubst};
 use crate::variant::VariantPayload;
 
 /// Maps each AST Span to its inferred type.
@@ -113,7 +113,7 @@ impl<'a> TypeChecker<'a> {
         };
         // Unify tail with expected type hint (if provided) to resolve ambiguous literals
         if let Some(expected) = expected_tail
-            && self.subst.unify(&tail_ty, expected).is_err()
+            && self.subst.unify(&tail_ty, expected, Polarity::Covariant).is_err()
         {
             let span = script
                 .tail
@@ -190,7 +190,7 @@ impl<'a> TypeChecker<'a> {
             None => Ty::Unit,
         };
         if let Some(expected) = expected_tail
-            && self.subst.unify(&tail_ty, expected).is_err()
+            && self.subst.unify(&tail_ty, expected, Polarity::Covariant).is_err()
         {
             // Record the error but don't fail — we still want the partial results.
             let span = script
@@ -298,7 +298,7 @@ impl<'a> TypeChecker<'a> {
             return false;
         }
         for (at, pt) in arg_types.iter().zip(param_tys.iter()) {
-            if self.subst.unify(at, pt).is_err() {
+            if self.subst.unify(at, pt, Polarity::Covariant).is_err() {
                 self.error(
                     MirErrorKind::UnificationFailure {
                         expected: self.subst.resolve(pt),
@@ -326,7 +326,7 @@ impl<'a> TypeChecker<'a> {
                 match &resolved {
                     Ty::String | Ty::Error => {}
                     Ty::Var(_) => {
-                        if self.subst.unify(&ty, &Ty::String).is_err() {
+                        if self.subst.unify(&ty, &Ty::String, Polarity::Covariant).is_err() {
                             self.error(MirErrorKind::EmitNotString { actual: resolved }, *span);
                         }
                     }
@@ -458,7 +458,7 @@ impl<'a> TypeChecker<'a> {
                             let first_ty = self.literal_ty(&elems[0]);
                             for elem in &elems[1..] {
                                 let elem_ty = self.literal_ty(elem);
-                                if self.subst.unify(&first_ty, &elem_ty).is_err() {
+                                if self.subst.unify(&elem_ty, &first_ty, Polarity::Covariant).is_err() {
                                     self.error(
                                         MirErrorKind::HeterogeneousList {
                                             expected: self.subst.resolve(&first_ty),
@@ -557,7 +557,7 @@ impl<'a> TypeChecker<'a> {
 
                 let ty = match op {
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                        if self.subst.unify(&lt, &rt).is_err() {
+                        if self.subst.unify(&lt, &rt, Polarity::Invariant).is_err() {
                             self.binop_error(
                                 op_str(*op),
                                 self.subst.resolve(&lt),
@@ -577,14 +577,14 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     BinOp::Eq | BinOp::Neq => {
-                        if self.subst.unify(&lt, &rt).is_err() {
+                        if self.subst.unify(&lt, &rt, Polarity::Invariant).is_err() {
                             self.binop_error(op_str(*op), lt, rt, *span);
                         }
                         Ty::Bool
                     }
                     BinOp::And | BinOp::Or => {
-                        let lok = self.subst.unify(&lt, &Ty::Bool).is_ok();
-                        let rok = self.subst.unify(&rt, &Ty::Bool).is_ok();
+                        let lok = self.subst.unify(&lt, &Ty::Bool, Polarity::Covariant).is_ok();
+                        let rok = self.subst.unify(&rt, &Ty::Bool, Polarity::Covariant).is_ok();
                         if !lok || !rok {
                             self.binop_error(
                                 op_str(*op),
@@ -596,8 +596,8 @@ impl<'a> TypeChecker<'a> {
                         Ty::Bool
                     }
                     BinOp::Xor | BinOp::BitAnd | BinOp::BitOr | BinOp::Shl | BinOp::Shr => {
-                        let lok = self.subst.unify(&lt, &Ty::Int).is_ok();
-                        let rok = self.subst.unify(&rt, &Ty::Int).is_ok();
+                        let lok = self.subst.unify(&lt, &Ty::Int, Polarity::Covariant).is_ok();
+                        let rok = self.subst.unify(&rt, &Ty::Int, Polarity::Covariant).is_ok();
                         if !lok || !rok {
                             self.binop_error(
                                 op_str(*op),
@@ -609,7 +609,7 @@ impl<'a> TypeChecker<'a> {
                         Ty::Int
                     }
                     BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => {
-                        let ok = self.subst.unify(&lt, &rt).is_ok()
+                        let ok = self.subst.unify(&lt, &rt, Polarity::Invariant).is_ok()
                             && matches!(self.subst.resolve(&lt), Ty::Int | Ty::Float | Ty::Var(_));
                         if !ok {
                             self.binop_error(
@@ -652,7 +652,7 @@ impl<'a> TypeChecker<'a> {
                         match &ot {
                             Ty::Bool => {}
                             Ty::Var(_) => {
-                                let _ = self.subst.unify(&ot, &Ty::Bool);
+                                let _ = self.subst.unify(&ot, &Ty::Bool, Polarity::Covariant);
                             }
                             _ => self.binop_error("!", ot, Ty::Error, *span),
                         }
@@ -697,7 +697,7 @@ impl<'a> TypeChecker<'a> {
                         let fresh = self.subst.fresh_var();
                         let partial_obj =
                             Ty::Object(FxHashMap::from_iter([(field_key, fresh.clone())]));
-                        if self.subst.unify(&ot_raw, &partial_obj).is_err() {
+                        if self.subst.unify(&ot_raw, &partial_obj, Polarity::Invariant).is_err() {
                             self.error(
                                 MirErrorKind::UndefinedField {
                                     object_ty: ot,
@@ -795,7 +795,7 @@ impl<'a> TypeChecker<'a> {
 
                 for elem in all_elems.iter().skip(1) {
                     let et = self.check_expr(false,elem);
-                    if self.subst.unify(&elem_ty, &et).is_err() {
+                    if self.subst.unify(&et, &elem_ty, Polarity::Covariant).is_err() {
                         self.error(
                             MirErrorKind::HeterogeneousList {
                                 expected: self.subst.resolve(&elem_ty),
@@ -888,7 +888,7 @@ impl<'a> TypeChecker<'a> {
                                 return Ty::Error;
                             };
                             let inner_ty = self.check_expr(false,inner_expr);
-                            if self.subst.unify(&type_params[*idx], &inner_ty).is_err() {
+                            if self.subst.unify(&type_params[*idx], &inner_ty, Polarity::Covariant).is_err() {
                                 self.error(
                                     MirErrorKind::UnificationFailure {
                                         expected: self.subst.resolve(&type_params[*idx]),
@@ -1022,7 +1022,7 @@ impl<'a> TypeChecker<'a> {
 
                 let mut ok = true;
                 for (arg, param) in arg_types.iter().zip(param_tys.iter()) {
-                    if self.subst.unify(arg, param).is_err() {
+                    if self.subst.unify(arg, param, Polarity::Covariant).is_err() {
                         ok = false;
                         break;
                     }
@@ -1115,7 +1115,7 @@ impl<'a> TypeChecker<'a> {
                     ret: Box::new(ret.clone()),
                     is_extern: false,
                 };
-                if self.subst.unify(func_ty, &fn_ty).is_err() {
+                if self.subst.unify(func_ty, &fn_ty, Polarity::Covariant).is_err() {
                     self.error(
                         MirErrorKind::UndefinedFunction("<expr>".to_string()),
                         call_span,
@@ -1147,7 +1147,7 @@ impl<'a> TypeChecker<'a> {
                         self.variable_types.insert(*name, source_resolved);
                         return;
                     };
-                    if self.subst.unify(&source_resolved, &existing_ty).is_err() {
+                    if self.subst.unify(&source_resolved, &existing_ty, Polarity::Invariant).is_err() {
                         self.error(
                             MirErrorKind::PatternTypeMismatch {
                                 pattern_ty: existing_ty,
@@ -1164,7 +1164,7 @@ impl<'a> TypeChecker<'a> {
 
             Pattern::Literal { value, .. } => {
                 let pat_ty = self.literal_ty(value);
-                if self.subst.unify(&source_resolved, &pat_ty).is_err() {
+                if self.subst.unify(&source_resolved, &pat_ty, Polarity::Covariant).is_err() {
                     self.error(
                         MirErrorKind::PatternTypeMismatch {
                             pattern_ty: pat_ty,
@@ -1185,7 +1185,7 @@ impl<'a> TypeChecker<'a> {
                         let var = self.subst.fresh_var();
                         let origin = self.subst.fresh_concrete_origin();
                         let list_ty = Ty::Deque(Box::new(var.clone()), origin);
-                        if self.subst.unify(source_ty, &list_ty).is_err() {
+                        if self.subst.unify(source_ty, &list_ty, Polarity::Covariant).is_err() {
                             self.error(
                                 MirErrorKind::PatternTypeMismatch {
                                     pattern_ty: list_ty,
@@ -1214,7 +1214,7 @@ impl<'a> TypeChecker<'a> {
                         .map(|f| (f.key, self.subst.fresh_var()))
                         .collect();
                     let obj_ty = Ty::Object(field_vars.clone());
-                    if self.subst.unify(source_ty, &obj_ty).is_err() {
+                    if self.subst.unify(source_ty, &obj_ty, Polarity::Covariant).is_err() {
                         self.error(
                             MirErrorKind::PatternTypeMismatch {
                                 pattern_ty: obj_ty,
@@ -1249,7 +1249,7 @@ impl<'a> TypeChecker<'a> {
                 ..
             } => {
                 // Range pattern matches Int source.
-                if self.subst.unify(&source_resolved, &Ty::Int).is_err() {
+                if self.subst.unify(&source_resolved, &Ty::Int, Polarity::Covariant).is_err() {
                     self.error(
                         MirErrorKind::PatternTypeMismatch {
                             pattern_ty: Ty::Int,
@@ -1277,7 +1277,7 @@ impl<'a> TypeChecker<'a> {
                         let vars: Vec<Ty> =
                             elements.iter().map(|_| self.subst.fresh_var()).collect();
                         let tuple_ty = Ty::Tuple(vars.clone());
-                        if self.subst.unify(source_ty, &tuple_ty).is_err() {
+                        if self.subst.unify(source_ty, &tuple_ty, Polarity::Covariant).is_err() {
                             self.error(
                                 MirErrorKind::PatternTypeMismatch {
                                     pattern_ty: tuple_ty,
@@ -1311,7 +1311,7 @@ impl<'a> TypeChecker<'a> {
                     let enum_ty = Ty::Option(Box::new(
                         self.subst.resolve(&type_params[0]),
                     ));
-                    if self.subst.unify(&source_resolved, &enum_ty).is_err() {
+                    if self.subst.unify(&source_resolved, &enum_ty, Polarity::Covariant).is_err() {
                         self.error(
                             MirErrorKind::PatternTypeMismatch {
                                 pattern_ty: enum_ty,
@@ -1357,7 +1357,7 @@ impl<'a> TypeChecker<'a> {
                 };
                 // Unify against the original (unresolved) source_ty so that
                 // find_leaf_var can trace the Var chain and rebind the merged type.
-                if self.subst.unify(source_ty, &enum_ty).is_err() {
+                if self.subst.unify(source_ty, &enum_ty, Polarity::Covariant).is_err() {
                     self.error(
                         MirErrorKind::PatternTypeMismatch {
                             pattern_ty: enum_ty,

@@ -249,7 +249,7 @@ pub(crate) fn expect_ty(context: &str, ty: &Ty, expected: &Ty) -> Result<(), Orc
         return Ok(());
     }
     let mut subst = acvus_mir::ty::TySubst::new();
-    match subst.unify(ty, expected) {
+    match subst.unify(ty, expected, acvus_mir::ty::Polarity::Covariant) {
         Ok(()) => Ok(()),
         Err(_) => Err(OrchError::new(OrchErrorKind::ScriptTypeMismatch {
             context: context.into(),
