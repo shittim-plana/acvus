@@ -23,7 +23,7 @@ use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsError;
 
-use acvus_mir::context_registry::{PartialContextTypeRegistry, RegistryConflictError};
+use acvus_mir::context_registry::{ContextTypeRegistry, PartialContextTypeRegistry, RegistryConflictError};
 use schema::*;
 
 /// Build a registry with extern fns, empty system, and user-provided types.
@@ -41,13 +41,13 @@ fn build_registry(
 fn try_extract_known(
     interner: &Interner,
     source: &str,
-    context_types: &FxHashMap<Astr, Ty>,
+    registry: &ContextTypeRegistry,
 ) -> Option<KnownValue> {
     if source.trim().is_empty() {
         return None;
     }
     let script = acvus_ast::parse_script(interner, source).ok()?;
-    let (module, _, _) = acvus_mir::compile_script_analysis(interner, &script, context_types).ok()?;
+    let (module, _, _) = acvus_mir::compile_script_analysis(interner, &script, registry).ok()?;
     // Look for a Const or MakeVariant instruction in the main body
     for inst in &module.main.insts {
         match &inst.kind {
@@ -159,10 +159,10 @@ fn do_analyze(
     interner: &Interner,
     source: &str,
     mode: &Mode,
-    context_types: &FxHashMap<Astr, Ty>,
+    registry: &ContextTypeRegistry,
     expected_tail: Option<&Ty>,
     known: &FxHashMap<Astr, KnownValue>,
-    registry: &PartialContextTypeRegistry,
+    partial: &PartialContextTypeRegistry,
 ) -> AnalyzeResult {
     use error::EngineError;
 
@@ -180,10 +180,10 @@ fn do_analyze(
                 }
             };
             let (module, _hints, errs) =
-                acvus_mir::compile_analysis_partial(interner, &ast, context_types);
+                acvus_mir::compile_analysis_partial(interner, &ast, registry);
             let keys = extract_context_keys_with_types(interner, &module, known)
                 .into_iter()
-                .filter(|k| registry.is_user_key(&interner.intern(&k.name)))
+                .filter(|k| partial.is_user_key(&interner.intern(&k.name)))
                 .collect();
             let errors = EngineError::from_mir_errors(&errs, interner);
             AnalyzeResult {
@@ -209,12 +209,12 @@ fn do_analyze(
                 acvus_mir::compile_script_analysis_with_tail_partial(
                     interner,
                     &script,
-                    context_types,
+                    registry,
                     expected_tail,
                 );
             let keys = extract_context_keys_with_types(interner, &module, known)
                 .into_iter()
-                .filter(|k| registry.is_user_key(&interner.intern(&k.name)))
+                .filter(|k| partial.is_user_key(&interner.intern(&k.name)))
                 .collect();
             let errors = EngineError::from_mir_errors(&errs, interner);
             AnalyzeResult {
@@ -247,24 +247,24 @@ pub fn analyze(options: Ts<AnalyzeOptions>) -> Result<Ts<AnalyzeResult>, JsError
             }.into_ts()?);
         }
     };
-    let context_types = registry.merged();
+    let full_reg = registry.to_full();
     let expected_tail = options.expected_tail.as_ref().map(|d| desc_to_ty(&interner, d));
 
     let mut known = FxHashMap::default();
     for (name, script) in &options.known_values {
-        if let Some(kv) = try_extract_known(&interner, script, context_types) {
+        if let Some(kv) = try_extract_known(&interner, script, &full_reg) {
             known.insert(interner.intern(name), kv);
         }
     }
 
-    Ok(do_analyze(&interner, &options.source, &options.mode, context_types, expected_tail.as_ref(), &known, &registry).into_ts()?)
+    Ok(do_analyze(&interner, &options.source, &options.mode, &full_reg, expected_tail.as_ref(), &known, &registry).into_ts()?)
 }
 
 fn do_typecheck(
     interner: &Interner,
     source: &str,
     mode: &Mode,
-    context_types: &FxHashMap<Astr, Ty>,
+    registry: &ContextTypeRegistry,
     expected_tail: Option<&Ty>,
 ) -> CheckResult {
     use error::EngineError;
@@ -280,7 +280,7 @@ fn do_typecheck(
                     };
                 }
             };
-            acvus_mir::compile(interner, &ast, context_types).map(|_| ())
+            acvus_mir::compile(interner, &ast, registry).map(|_| ())
         }
         Mode::Script => {
             let script = match acvus_ast::parse_script(interner, source) {
@@ -295,7 +295,7 @@ fn do_typecheck(
             acvus_mir::compile_script_with_hint(
                 interner,
                 &script,
-                context_types,
+                registry,
                 expected_tail,
             )
             .map(|_| ())
@@ -332,12 +332,13 @@ pub fn typecheck(options: Ts<TypecheckOptions>) -> Result<Ts<CheckResult>, JsErr
             }.into_ts()?);
         }
     };
+    let full_reg = registry.to_full();
     let expected_tail = options.expected_tail.as_ref().map(|d| desc_to_ty(&interner, d));
     Ok(do_typecheck(
         &interner,
         &options.source,
         &options.mode,
-        registry.merged(),
+        &full_reg,
         expected_tail.as_ref(),
     ).into_ts()?)
 }
@@ -414,6 +415,7 @@ pub fn typecheck_nodes(
         .collect();
 
     // 2. Per-node, per-field typecheck
+    let full_reg = env.registry.to_full();
     let mut node_errors: FxHashMap<String, NodeErrors> = FxHashMap::default();
     for spec in &specs {
         let Some(locals) = env.node_locals.get(&spec.name) else {
@@ -423,7 +425,17 @@ pub fn typecheck_nodes(
         let locals_ref = Some(locals);
 
         // Body context: fn_params + @self (if initial_value exists)
-        let node_ctx = spec.build_node_context(&interner, env.registry.merged(), acvus_orchestration::ContextScope::Body, locals_ref);
+        let node_reg = match spec.build_node_context(&interner, &full_reg, acvus_orchestration::ContextScope::Body, locals_ref) {
+            Ok(r) => r,
+            Err(e) => {
+                errors.env = vec![EngineError::general(
+                    ErrorCategory::Type,
+                    format!("context type conflict: @{} in {} and {}", interner.resolve(e.key), e.tier_a, e.tier_b),
+                )];
+                node_errors.insert(interner.resolve(spec.name).to_string(), errors);
+                continue;
+            }
+        };
 
         // initial_value: no @self, no @raw
         if let Some(init_src) = spec.strategy.initial_value {
@@ -431,11 +443,12 @@ pub fn typecheck_nodes(
                 Ty::Error => None,
                 ty => Some(ty),
             };
-            let init_ctx = spec.build_node_context(&interner, env.registry.merged(), acvus_orchestration::ContextScope::InitialValue, locals_ref);
+            let init_reg = spec.build_node_context(&interner, &full_reg, acvus_orchestration::ContextScope::InitialValue, locals_ref)
+                .expect("InitialValue scope should not conflict");
             errors.initial_value = check_script(
                 &interner,
                 interner.resolve(init_src),
-                &init_ctx,
+                &init_reg,
                 hint,
             );
         }
@@ -443,11 +456,12 @@ pub fn typecheck_nodes(
         // if_modified key: no @self context
         match &spec.strategy.execution {
             acvus_orchestration::Execution::IfModified { key } => {
-                let no_self_ctx = spec.build_node_context(&interner, env.registry.merged(), acvus_orchestration::ContextScope::InitialValue, locals_ref);
+                let no_self_reg = spec.build_node_context(&interner, &full_reg, acvus_orchestration::ContextScope::InitialValue, locals_ref)
+                    .expect("InitialValue scope should not conflict");
                 errors.if_modified_key = check_script(
                     &interner,
                     interner.resolve(*key),
-                    &no_self_ctx,
+                    &no_self_reg,
                     None,
                 );
             }
@@ -457,7 +471,8 @@ pub fn typecheck_nodes(
         // persistency: bind script (Deque/Diff) uses @self + @raw + all context
         match &spec.strategy.persistency {
             acvus_orchestration::Persistency::Deque { bind } | acvus_orchestration::Persistency::Diff { bind } => {
-                let bind_ctx = spec.build_node_context(&interner, env.registry.merged(), acvus_orchestration::ContextScope::Bind, locals_ref);
+                let bind_reg = spec.build_node_context(&interner, &full_reg, acvus_orchestration::ContextScope::Bind, locals_ref)
+                    .expect("Bind scope should not conflict with reserved @self/@raw");
                 let hint = if locals.self_ty != Ty::Error {
                     Some(&locals.self_ty)
                 } else {
@@ -466,7 +481,7 @@ pub fn typecheck_nodes(
                 errors.bind = check_script(
                     &interner,
                     interner.resolve(*bind),
-                    &bind_ctx,
+                    &bind_reg,
                     hint,
                 );
             }
@@ -475,11 +490,12 @@ pub fn typecheck_nodes(
 
         // assert: Bind scope (@self + @raw), expected tail = Bool
         if let Some(assert_src) = spec.strategy.assert {
-            let assert_ctx = spec.build_node_context(&interner, env.registry.merged(), acvus_orchestration::ContextScope::Bind, locals_ref);
+            let assert_reg = spec.build_node_context(&interner, &full_reg, acvus_orchestration::ContextScope::Bind, locals_ref)
+                .expect("Bind scope should not conflict with reserved @self/@raw");
             errors.assert = check_script(
                 &interner,
                 interner.resolve(assert_src),
-                &assert_ctx,
+                &assert_reg,
                 Some(&Ty::Bool),
             );
         }
@@ -493,13 +509,13 @@ pub fn typecheck_nodes(
         for (mi, msg) in messages.iter().enumerate() {
             let errs = match msg {
                 acvus_orchestration::MessageSpec::Block { source, .. } => {
-                    check_template(&interner, source, &node_ctx)
+                    check_template(&interner, source, &node_reg)
                 }
                 acvus_orchestration::MessageSpec::Iterator { key, .. } => {
                     check_script(
                         &interner,
                         interner.resolve(*key),
-                        &node_ctx,
+                        &node_reg,
                         None,
                     )
                 }
@@ -514,7 +530,7 @@ pub fn typecheck_nodes(
             errors.expr_source = check_script(
                 &interner,
                 &expr_spec.source,
-                &node_ctx,
+                &node_reg,
                 None,
             );
         }
@@ -536,7 +552,7 @@ pub fn typecheck_nodes(
 fn check_script(
     interner: &Interner,
     source: &str,
-    context_types: &FxHashMap<Astr, Ty>,
+    registry: &ContextTypeRegistry,
     expected_tail: Option<&Ty>,
 ) -> Vec<error::EngineError> {
     use error::EngineError;
@@ -548,7 +564,7 @@ fn check_script(
         Ok(s) => s,
         Err(e) => return vec![EngineError::from_parse(&e)],
     };
-    match acvus_mir::compile_script_with_hint(interner, &script, context_types, expected_tail) {
+    match acvus_mir::compile_script_with_hint(interner, &script, registry, expected_tail) {
         Ok(_) => vec![],
         Err(errs) => EngineError::from_mir_errors(&errs, interner),
     }
@@ -558,7 +574,7 @@ fn check_script(
 fn check_template(
     interner: &Interner,
     source: &str,
-    context_types: &FxHashMap<Astr, Ty>,
+    registry: &ContextTypeRegistry,
 ) -> Vec<error::EngineError> {
     use error::EngineError;
 
@@ -569,7 +585,7 @@ fn check_template(
         Ok(a) => a,
         Err(e) => return vec![EngineError::from_parse(&e)],
     };
-    match acvus_mir::compile(interner, &ast, context_types) {
+    match acvus_mir::compile(interner, &ast, registry) {
         Ok(_) => vec![],
         Err(errs) => EngineError::from_mir_errors(&errs, interner),
     }
@@ -603,7 +619,7 @@ pub async fn evaluate(options: Ts<EvaluateOptions>) -> Result<JsValue, JsError> 
             }.into_ts()?.js_value());
         }
     };
-    let context_types = registry.merged();
+    let full_reg = registry.to_full();
 
     let module = match &options.mode {
         Mode::Template => {
@@ -617,7 +633,7 @@ pub async fn evaluate(options: Ts<EvaluateOptions>) -> Result<JsValue, JsError> 
                     }.into_ts()?.js_value());
                 }
             };
-            match acvus_mir::compile_analysis(&interner, &ast, context_types) {
+            match acvus_mir::compile_analysis(&interner, &ast, &full_reg) {
                 Ok((module, _)) => module,
                 Err(errs) => {
                     return Ok(EvaluateResult {
@@ -639,7 +655,7 @@ pub async fn evaluate(options: Ts<EvaluateOptions>) -> Result<JsValue, JsError> 
                     }.into_ts()?.js_value());
                 }
             };
-            match acvus_mir::compile_script_analysis(&interner, &script, context_types) {
+            match acvus_mir::compile_script_analysis(&interner, &script, &full_reg) {
                 Ok((module, _, _)) => module,
                 Err(errs) => {
                     return Ok(EvaluateResult {
@@ -744,7 +760,8 @@ mod tests {
         ctx: &FxHashMap<Astr, Ty>,
     ) -> AnalyzeResult {
         let registry = PartialContextTypeRegistry::user_only(ctx.clone());
-        do_analyze(interner, source, mode, ctx, None, &FxHashMap::default(), &registry)
+        let full_reg = registry.to_full();
+        do_analyze(interner, source, mode, &full_reg, None, &FxHashMap::default(), &registry)
     }
 
     /// Helper: serialize a TypeDesc to a JSON string for comparison.
@@ -858,8 +875,9 @@ mod tests {
     fn test_tail_type_mismatch() {
         let interner = test_interner();
         let ctx = FxHashMap::default();
-        let registry = PartialContextTypeRegistry::system_only(ctx.clone());
-        let result = do_analyze(&interner, "\"hello\"", &Mode::Script, &ctx, Some(&Ty::Int), &FxHashMap::default(), &registry);
+        let registry = PartialContextTypeRegistry::system_only(ctx);
+        let full_reg = registry.to_full();
+        let result = do_analyze(&interner, "\"hello\"", &Mode::Script, &full_reg, Some(&Ty::Int), &FxHashMap::default(), &registry);
         assert!(!result.ok, "should fail: String vs Int");
     }
 
@@ -867,8 +885,9 @@ mod tests {
     fn test_tail_type_match() {
         let interner = test_interner();
         let ctx = FxHashMap::default();
-        let registry = PartialContextTypeRegistry::system_only(ctx.clone());
-        let result = do_analyze(&interner, "1 + 2", &Mode::Script, &ctx, Some(&Ty::Int), &FxHashMap::default(), &registry);
+        let registry = PartialContextTypeRegistry::system_only(ctx);
+        let full_reg = registry.to_full();
+        let result = do_analyze(&interner, "1 + 2", &Mode::Script, &full_reg, Some(&Ty::Int), &FxHashMap::default(), &registry);
         assert!(result.ok, "should succeed: Int vs Int");
     }
 

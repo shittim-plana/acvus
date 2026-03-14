@@ -1,15 +1,17 @@
 import type { Block, BlockNode, Node } from './types.js';
 import { blockLabel } from './types.js';
 
-export const DROP_PREFIX = 'folder-drop:';
+export const CONTAINER_DROP_PREFIX = 'container-drop:';
 
 function childrenOf(node: BlockNode): BlockNode[] | undefined {
 	if (node.kind === 'folder') return node.folder.children;
+	if (node.kind === 'node') return node.node.children;
 	return undefined;
 }
 
 function withUpdatedChildren(node: BlockNode, children: BlockNode[]): BlockNode {
 	if (node.kind === 'folder') return { kind: 'folder', folder: { ...node.folder, children } };
+	if (node.kind === 'node') return { kind: 'node', node: { ...node.node, children } };
 	return node;
 }
 
@@ -108,6 +110,20 @@ export function collectAllNames(nodes: BlockNode[], out: string[] = []): string[
 	return out;
 }
 
+export function findParentNodeId(nodes: BlockNode[], targetId: string): string | undefined {
+	for (const node of nodes) {
+		if (node.kind === 'node' && findTreeNode(node.node.children, targetId)) {
+			return node.node.id;
+		}
+		const sub = childrenOf(node);
+		if (sub) {
+			const found = findParentNodeId(sub, targetId);
+			if (found) return found;
+		}
+	}
+	return undefined;
+}
+
 export function addNode(nodes: BlockNode[], node: BlockNode): BlockNode[] {
 	return [...nodes, node];
 }
@@ -158,7 +174,7 @@ export function insertBefore(nodes: BlockNode[], targetId: string, node: BlockNo
 	return null;
 }
 
-export function appendToFolder(nodes: BlockNode[], folderId: string, node: BlockNode): BlockNode[] | null {
+export function appendToContainer(nodes: BlockNode[], folderId: string, node: BlockNode): BlockNode[] | null {
 	for (let i = 0; i < nodes.length; i++) {
 		const n = nodes[i];
 		const sub = childrenOf(n);
@@ -168,7 +184,7 @@ export function appendToFolder(nodes: BlockNode[], folderId: string, node: Block
 			return updated;
 		}
 		if (sub) {
-			const result = appendToFolder(sub, folderId, node);
+			const result = appendToContainer(sub, folderId, node);
 			if (result) {
 				const updated = [...nodes];
 				updated[i] = withUpdatedChildren(n, result);
@@ -192,17 +208,17 @@ export function moveNode(nodes: BlockNode[], sourceId: string, targetId: string)
 	if (sourceId === targetId) return nodes;
 
 	// Prevent circular: don't move a folder into its own descendant
-	const actualTargetId = targetId.startsWith(DROP_PREFIX)
-		? targetId.slice(DROP_PREFIX.length)
+	const actualTargetId = targetId.startsWith(CONTAINER_DROP_PREFIX)
+		? targetId.slice(CONTAINER_DROP_PREFIX.length)
 		: targetId;
 	if (isDescendant(nodes, sourceId, actualTargetId)) return nodes;
 
 	const { remaining, removed } = findAndRemove(nodes, sourceId);
 	if (!removed) return nodes;
 
-	if (targetId.startsWith(DROP_PREFIX)) {
-		const folderId = targetId.slice(DROP_PREFIX.length);
-		return appendToFolder(remaining, folderId, removed) ?? remaining;
+	if (targetId.startsWith(CONTAINER_DROP_PREFIX)) {
+		const folderId = targetId.slice(CONTAINER_DROP_PREFIX.length);
+		return appendToContainer(remaining, folderId, removed) ?? remaining;
 	}
 
 	return insertBefore(remaining, targetId, removed) ?? remaining;

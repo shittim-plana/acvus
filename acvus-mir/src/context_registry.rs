@@ -109,8 +109,9 @@ impl PartialContextTypeRegistry {
         }
     }
 
-    /// Merged view of all types (extern + system + user). For type checking.
-    pub fn merged(&self) -> &FxHashMap<Astr, Ty> {
+    /// Merged view of all types (extern + system + user).
+    /// Crate-internal: external callers must use a registry, not a raw map.
+    pub(crate) fn merged(&self) -> &FxHashMap<Astr, Ty> {
         &self.merged
     }
 
@@ -132,6 +133,18 @@ impl PartialContextTypeRegistry {
     /// Types visible to the frontend (system + user, excludes extern).
     pub fn visible(&self) -> FxHashMap<Astr, Ty> {
         build_merged([&self.system, &self.user])
+    }
+
+    /// Create a full [`ContextTypeRegistry`] from the current state (non-consuming).
+    /// Equivalent to `self.clone().without_scoped()`.
+    pub fn to_full(&self) -> ContextTypeRegistry {
+        ContextTypeRegistry {
+            extern_fns: self.extern_fns.clone(),
+            system: self.system.clone(),
+            scoped: FxHashMap::default(),
+            user: self.user.clone(),
+            merged: self.merged.clone(),
+        }
     }
 
     /// Insert a single key into the system tier.
@@ -232,8 +245,9 @@ impl ContextTypeRegistry {
         }
     }
 
-    /// Merged view of all types. For type checking.
-    pub fn merged(&self) -> &FxHashMap<Astr, Ty> {
+    /// Merged view of all types.
+    /// Crate-internal: external callers must use a registry, not a raw map.
+    pub(crate) fn merged(&self) -> &FxHashMap<Astr, Ty> {
         &self.merged
     }
 
@@ -274,6 +288,37 @@ impl ContextTypeRegistry {
     /// — needs external (user) resolution.
     pub fn is_user_key(&self, key: &Astr) -> bool {
         !self.is_provided(key)
+    }
+
+    /// Create a new registry with additional scoped types.
+    ///
+    /// Returns an error if any extra key conflicts with existing tiers.
+    pub fn with_extra_scoped(
+        &self,
+        extra: impl IntoIterator<Item = (Astr, Ty)>,
+    ) -> Result<Self, RegistryConflictError> {
+        let mut scoped = self.scoped.clone();
+        let mut merged = self.merged.clone();
+        for (k, v) in extra {
+            if self.extern_fns.contains_key(&k) {
+                return Err(RegistryConflictError { key: k, tier_a: "scoped", tier_b: "extern" });
+            }
+            if self.system.contains_key(&k) {
+                return Err(RegistryConflictError { key: k, tier_a: "scoped", tier_b: "system" });
+            }
+            if self.user.contains_key(&k) {
+                return Err(RegistryConflictError { key: k, tier_a: "scoped", tier_b: "user" });
+            }
+            merged.insert(k, v.clone());
+            scoped.insert(k, v);
+        }
+        Ok(Self {
+            extern_fns: self.extern_fns.clone(),
+            system: self.system.clone(),
+            scoped,
+            user: self.user.clone(),
+            merged,
+        })
     }
 }
 

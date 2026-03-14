@@ -7,8 +7,8 @@
 	import { Label } from '$lib/components/ui/label';
 	import { Button } from '$lib/components/ui/button';
 	import * as Select from '$lib/components/ui/select';
-	import { getOwnerChildren, updateOwnerNodeItem, uiState, providerStore } from '$lib/stores.svelte.js';
-	import { findNodeItem, collectBlocks } from '$lib/block-tree.js';
+	import { getOwnerChildren, updateOwnerNodeItem, uiState, providerStore, createRawBlock, generateName } from '$lib/stores.svelte.js';
+	import { findNodeItem, collectBlocks, collectAllNames } from '$lib/block-tree.js';
 	import { Plus, Trash2 } from 'lucide-svelte';
 	import { Switch } from '$lib/components/ui/switch';
 	import AcvusEngineField from './acvus-engine-field.svelte';
@@ -164,17 +164,25 @@
 		});
 	}
 
+	function addBlockToNode(): string {
+		const existing = node ? collectAllNames(node.children) : [];
+		const name = generateName('Block', existing);
+		const newBlock = createRawBlock(name);
+		updateNode((n) => ({
+			...n,
+			children: [...n.children, { kind: 'block' as const, block: newBlock }]
+		}));
+		return newBlock.id;
+	}
+
 	const messages = $derived(node?.messages ?? []);
 
 	let collapsed: Record<string, boolean> = $state({});
 
-	// All blocks available from the owner's tree (for block reference picker)
+	// All blocks in the owner's tree (including node children) for block reference picker
 	const availableBlocks = $derived.by(() => {
 		const ownerChildren = getOwnerChildren(owner);
-		if (!ownerChildren) return [];
-		// Collect from owner children + node's own children
-		const blocks = collectBlocks(ownerChildren);
-		return blocks;
+		return ownerChildren ? collectBlocks(ownerChildren) : [];
 	});
 
 	function toggleSection(name: string) {
@@ -219,7 +227,7 @@
 </script>
 
 <BasePage {deps} onConfigChange={() => {}}>
-	<div class="flex items-center justify-between shrink-0 border-b px-4 py-2">
+	<div class="flex items-center justify-between shrink-0 border-b px-3 py-2">
 		<span class="text-sm font-medium">Node Settings</span>
 		<Button variant="ghost" size="icon-sm" class="text-muted-foreground hover:text-destructive" onclick={handleRemove} title="Delete node">
 			&times;
@@ -623,24 +631,30 @@
 															discoverContext
 														/>
 													{:else}
-														<Select.Root type="single" value={src.blockId} onValueChange={(v) => setMessageSource(i, { type: 'block', blockId: v })}>
-															<Select.Trigger class="w-full" size="sm">
-																{#if src.blockId}
-																	{@const blk = availableBlocks.find(b => b.id === src.blockId)}
-																	{blk ? blockLabel(blk) : 'Unknown'}
-																{:else}
-																	Select block...
-																{/if}
-															</Select.Trigger>
-															<Select.Content>
-																{#each availableBlocks as b (b.id)}
-																	<Select.Item value={b.id}>{blockLabel(b)}</Select.Item>
-																{/each}
-																{#if availableBlocks.length === 0}
-																	<div class="px-2 py-1.5 text-xs text-muted-foreground">No blocks available</div>
-																{/if}
-															</Select.Content>
-														</Select.Root>
+														<div class="flex gap-1 items-center">
+															<Select.Root type="single" value={src.blockId} onValueChange={(v) => setMessageSource(i, { type: 'block', blockId: v })}>
+																<Select.Trigger class="w-full" size="sm">
+																	{#if src.blockId}
+																		{@const blk = availableBlocks.find(b => b.id === src.blockId)}
+																		{blk ? blockLabel(blk) : 'Unknown'}
+																	{:else}
+																		Select block...
+																	{/if}
+																</Select.Trigger>
+																<Select.Content>
+																	{#each availableBlocks as b (b.id)}
+																		<Select.Item value={b.id}>{blockLabel(b)}</Select.Item>
+																	{/each}
+																	{#if availableBlocks.length === 0}
+																		<div class="px-2 py-1.5 text-xs text-muted-foreground">No blocks available</div>
+																	{/if}
+																</Select.Content>
+															</Select.Root>
+															<Button variant="outline" size="sm" class="h-7 shrink-0 text-xs" onclick={() => {
+																const id = addBlockToNode();
+																setMessageSource(i, { type: 'block', blockId: id });
+															}}>New</Button>
+														</div>
 													{/if}
 												</div>
 											{:else}

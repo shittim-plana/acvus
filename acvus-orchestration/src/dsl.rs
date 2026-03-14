@@ -1,6 +1,7 @@
+use acvus_mir::context_registry::{ContextTypeRegistry, RegistryConflictError};
 use acvus_mir::ty::Ty;
 use acvus_utils::{Astr, Interner};
-use rustc_hash::FxHashMap;
+
 
 use crate::kind::NodeKind;
 
@@ -42,24 +43,24 @@ pub enum ContextScope {
 }
 
 impl NodeSpec {
-    /// Build the context type map visible inside this node's scripts.
+    /// Build the context type registry visible inside this node's scripts.
     ///
-    /// Starts from `base` (typically `registry.merged()` or `context_types`)
-    /// and injects fn_params, @self, @raw based on `scope`.
+    /// Starts from `base` and adds fn_params, @self, @raw as scoped types
+    /// based on `scope`.
     ///
     /// All node-internal context assembly MUST go through this method
     /// to prevent locals from being accidentally omitted or duplicated.
     pub fn build_node_context(
         &self,
         interner: &Interner,
-        base: &FxHashMap<Astr, Ty>,
+        base: &ContextTypeRegistry,
         scope: ContextScope,
         locals: Option<&NodeLocalTypes>,
-    ) -> FxHashMap<Astr, Ty> {
-        let mut ctx = base.clone();
+    ) -> Result<ContextTypeRegistry, RegistryConflictError> {
+        let mut extra: Vec<(Astr, Ty)> = Vec::new();
         if self.is_function {
             for (name, ty) in &self.fn_params {
-                ctx.insert(*name, ty.clone());
+                extra.push((*name, ty.clone()));
             }
         }
         if let Some(locals) = locals {
@@ -70,19 +71,19 @@ impl NodeSpec {
                 ContextScope::Body => {
                     // @self only if initial_value exists
                     if self.strategy.initial_value.is_some() {
-                        ctx.insert(interner.intern("self"), locals.self_ty.clone());
+                        extra.push((interner.intern("self"), locals.self_ty.clone()));
                     }
                 }
                 ContextScope::Bind => {
                     // @self if initial_value exists + @raw always
                     if self.strategy.initial_value.is_some() {
-                        ctx.insert(interner.intern("self"), locals.self_ty.clone());
+                        extra.push((interner.intern("self"), locals.self_ty.clone()));
                     }
-                    ctx.insert(interner.intern("raw"), locals.raw_ty.clone());
+                    extra.push((interner.intern("raw"), locals.raw_ty.clone()));
                 }
             }
         }
-        ctx
+        base.with_extra_scoped(extra)
     }
 }
 

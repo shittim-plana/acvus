@@ -1,6 +1,7 @@
 use std::io::Read;
 use std::{env, fs, process};
 
+use acvus_mir::context_registry::ContextTypeRegistry;
 use acvus_mir::printer::dump;
 use acvus_mir::ty::Ty;
 use acvus_utils::Interner;
@@ -138,10 +139,11 @@ fn main() {
     };
 
     // Compile.
+    let reg = ContextTypeRegistry::all_system(context_types);
     match acvus_mir::compile(
         &interner,
         &template,
-        &context_types,
+        &reg,
     ) {
         Ok((mut module, _hints)) => {
             if obfuscate {

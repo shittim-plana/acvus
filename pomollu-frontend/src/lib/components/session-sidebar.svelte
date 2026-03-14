@@ -15,7 +15,7 @@
 </script>
 
 <div class="flex h-full w-64 flex-col border-r">
-	<div class="flex items-center justify-between border-b px-3 py-2.5">
+	<div class="flex items-center justify-between border-b px-3 py-2">
 		<span class="text-sm font-medium">Sessions</span>
 		<Button variant="ghost" size="icon-sm" class="h-6 w-6" onclick={addSession} title="New chat">+</Button>
 	</div>

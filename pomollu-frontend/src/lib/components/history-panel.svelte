@@ -14,133 +14,139 @@
 		disabled?: boolean;
 	} = $props();
 
-	// Build parent→children map
 	let childrenMap = $derived.by(() => {
 		const map = new Map<string, string[]>();
 		for (const node of nodes) {
-			const parentKey = node.parent != null ? node.parent : '__root__';
-			const children = map.get(parentKey);
-			if (children) {
-				children.push(node.uuid);
-			} else {
-				map.set(parentKey, [node.uuid]);
-			}
+			const key = node.parent ?? '__root__';
+			const arr = map.get(key);
+			if (arr) arr.push(node.uuid);
+			else map.set(key, [node.uuid]);
 		}
 		return map;
 	});
 
-	// Build uuid→node lookup
 	let nodeMap = $derived.by(() => {
 		const map = new Map<string, TurnNode>();
-		for (const node of nodes) {
-			map.set(node.uuid, node);
-		}
+		for (const node of nodes) map.set(node.uuid, node);
 		return map;
 	});
 
-	// Ancestors of cursor (path from cursor back to root)
 	let ancestorSet = $derived.by(() => {
 		const set = new Set<string>();
-		let current: string | null = cursor;
-		while (current) {
-			set.add(current);
-			const node = nodeMap.get(current);
-			current = node?.parent ?? null;
+		let cur: string | null = cursor;
+		while (cur) {
+			set.add(cur);
+			cur = nodeMap.get(cur)?.parent ?? null;
 		}
 		return set;
 	});
 
-	type TreeRow = {
-		node: TurnNode;
-		column: number;
+	const BRANCH_COLORS = [
+		'oklch(0.637 0.237 25.331)',  // red
+		'oklch(0.606 0.220 292.717)', // purple
+		'oklch(0.655 0.196 248.514)', // blue
+		'oklch(0.648 0.18 163)',      // teal
+		'oklch(0.705 0.213 47.604)',  // orange
+		'oklch(0.723 0.219 149.579)', // green
+		'oklch(0.682 0.177 320)',     // magenta
+	];
+
+	type LayoutItem = {
+		uuid: string;
+		col: number;
+		depth: number;
+		colorIdx: number;
 		isAncestor: boolean;
 		isCursor: boolean;
-		isRoot: boolean;
-		parentColumn: number | null;
+		parentUuid: string | null;
 	};
 
-	let rows = $derived.by(() => {
-		const result: TreeRow[] = [];
-		const visited = new Set<string>();
-		const nodeColumnMap = new Map<string, number>();
+	let layout = $derived.by(() => {
+		const items: LayoutItem[] = [];
+		const colOf = new Map<string, number>();
+		const depthOf = new Map<string, number>();
+		let maxCol = -1;
+		let nextColor = 0;
 
-		function walk(uuid: string, col: number) {
-			if (visited.has(uuid)) return;
-			visited.add(uuid);
+		function walk(uuid: string, col: number, depth: number, colorIdx: number) {
+			if (colOf.has(uuid)) return;
+			colOf.set(uuid, col);
+			depthOf.set(uuid, depth);
+			if (col > maxCol) maxCol = col;
 
 			const node = nodeMap.get(uuid);
 			if (!node) return;
 
-			nodeColumnMap.set(uuid, col);
-			const parentCol = node.parent ? (nodeColumnMap.get(node.parent) ?? null) : null;
-
-			result.push({
-				node,
-				column: col,
+			items.push({
+				uuid,
+				col,
+				depth,
+				colorIdx,
 				isAncestor: ancestorSet.has(uuid),
 				isCursor: uuid === cursor,
-				isRoot: node.parent == null,
-				parentColumn: parentCol,
+				parentUuid: node.parent,
 			});
 
 			const children = childrenMap.get(uuid) ?? [];
-			// First child continues on the same column (ancestor preferred),
-			// additional children branch out to col + 1.
-			const firstChild = children.find((c) => ancestorSet.has(c)) ?? children[0];
-			const rest = children.filter((c) => c !== firstChild);
-
-			if (firstChild) {
-				walk(firstChild, col);
-			}
-			for (const branchId of rest) {
-				walk(branchId, col + 1);
+			if (children.length === 0) return;
+			const [first, ...rest] = children;
+			walk(first, col, depth + 1, colorIdx);
+			for (const id of rest) {
+				maxCol++;
+				walk(id, maxCol, depth + 1, nextColor++);
 			}
 		}
 
 		const roots = nodes.filter((n) => n.parent == null);
 		for (const root of roots) {
-			walk(root.uuid, 0);
+			if (maxCol >= 0) maxCol++;
+			walk(root.uuid, Math.max(0, maxCol), 0, -1);
 		}
 
-		return result;
+		let maxDepth = 0;
+		for (const d of depthOf.values()) {
+			if (d > maxDepth) maxDepth = d;
+		}
+
+		return { items, colOf, depthOf, maxCol: Math.max(0, maxCol), maxDepth };
 	});
 
-	// Compute active columns per row for vertical line drawing
-	let graphData = $derived.by(() => {
-		const maxCol = rows.reduce((m, r) => Math.max(m, r.column), 0);
-		// Find last row index for each column
-		const lastRowForCol = new Map<number, number>();
-		for (let i = 0; i < rows.length; i++) {
-			lastRowForCol.set(rows[i].column, i);
-		}
-		// Forward pass: track active columns
-		const active = new Set<number>();
-		const perRow: { activeColumns: Set<number> }[] = [];
-		for (let i = 0; i < rows.length; i++) {
-			const col = rows[i].column;
-			active.add(col);
-			perRow.push({ activeColumns: new Set(active) });
-			if (lastRowForCol.get(col) === i) {
-				active.delete(col);
-			}
-		}
-		return { maxCol, perRow };
-	});
+	const CELL_W = 44;
+	const ROW_H = 32;
+	const NODE_W = 38;
+	const NODE_H = 20;
+	const ROUND = 4;
 
-	const COL_W = 18;
-	const ROW_H = 28;
-	const DOT_R = 4;
+	function midX(col: number) { return col * CELL_W + CELL_W / 2; }
+	function topEdge(depth: number) { return depth * ROW_H + (ROW_H - NODE_H) / 2; }
+	function botEdge(depth: number) { return depth * ROW_H + (ROW_H + NODE_H) / 2; }
+
+	function branchColor(idx: number): string {
+		return idx < 0 ? 'var(--color-primary)' : BRANCH_COLORS[idx % BRANCH_COLORS.length];
+	}
+
+	function nodeStyle(item: LayoutItem): string {
+		const c = branchColor(item.colorIdx);
+		const x = item.col * CELL_W + (CELL_W - NODE_W) / 2;
+		const y = item.depth * ROW_H + (ROW_H - NODE_H) / 2;
+		let s = `left:${x}px;top:${y}px;width:${NODE_W}px;height:${NODE_H}px;border-radius:${ROUND}px;`;
+		if (item.isCursor) {
+			s += `background:${c};color:white;font-weight:600;`;
+		} else if (item.isAncestor) {
+			s += `background:color-mix(in oklch,${c} 15%,var(--color-background));border:1.5px solid ${c};color:${c};`;
+		} else {
+			s += `background:color-mix(in oklch,${c} 8%,var(--color-background));border:1px solid color-mix(in oklch,${c} 25%,var(--color-background));color:color-mix(in oklch,${c} 50%,var(--color-muted-foreground));`;
+		}
+		return s;
+	}
 
 	let scrollEl: HTMLDivElement;
 
-	// Scroll to bottom when nodes change
 	$effect(() => {
 		void nodes.length;
 		void cursor;
 		tick().then(() => {
-			if (scrollEl) {
-				scrollEl.scrollTop = scrollEl.scrollHeight;
-			}
+			if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
 		});
 	});
 </script>
@@ -151,108 +157,66 @@
 		<span class="text-[10px] text-muted-foreground">{nodes.length} nodes</span>
 	</div>
 
-	<div class="flex-1 overflow-y-auto" bind:this={scrollEl}>
-		<div class="py-1 px-2">
-			{#each rows as row, i (row.node.uuid)}
-				{@const gd = graphData.perRow[i]}
-				{@const graphW = (graphData.maxCol + 1) * COL_W}
-				{@const cx = row.column * COL_W + COL_W / 2}
-				<div class="flex items-center" style="height: {ROW_H}px;">
-					<!-- Graph area -->
-					<svg
-						width={graphW}
-						height={ROW_H}
-						class="shrink-0"
-						style="min-width: {graphW}px;"
-					>
-						<!-- Vertical lines for active columns -->
-						{#each [...gd.activeColumns] as col}
-							{@const lx = col * COL_W + COL_W / 2}
-							{#if col !== row.column}
-								<!-- Full vertical line (pass-through) -->
-								<line
-									x1={lx} y1={0} x2={lx} y2={ROW_H}
-									stroke="var(--color-muted-foreground)"
-									stroke-opacity="0.25"
-									stroke-width="1.5"
-								/>
-							{:else}
-								<!-- Vertical line above dot -->
-								{#if !row.isRoot}
-									<line
-										x1={lx} y1={0} x2={lx} y2={ROW_H / 2 - DOT_R}
-										stroke="var(--color-muted-foreground)"
-										stroke-opacity={row.isAncestor ? "0.5" : "0.25"}
+	<div class="flex-1 overflow-auto" bind:this={scrollEl}>
+		{#if nodes.length === 0}
+			<div class="px-2 py-4 text-center text-xs text-muted-foreground">No history yet.</div>
+		{:else}
+			{@const totalW = (layout.maxCol + 1) * CELL_W}
+			{@const totalH = (layout.maxDepth + 1) * ROW_H}
+			<div class="flex justify-center">
+			<div class="relative" style="width:{totalW + 16}px;min-height:{totalH + 16}px;padding:8px;">
+				<!-- Connection lines -->
+				<svg
+					class="absolute pointer-events-none z-0"
+					style="left:8px;top:8px;"
+					width={totalW}
+					height={totalH}
+				>
+					{#each layout.items as item}
+						{#if item.parentUuid != null}
+							{@const pCol = layout.colOf.get(item.parentUuid)}
+							{@const pDepth = layout.depthOf.get(item.parentUuid)}
+							{#if pCol != null && pDepth != null}
+								{@const x1 = midX(pCol)}
+								{@const y1 = botEdge(pDepth)}
+								{@const x2 = midX(item.col)}
+								{@const y2 = topEdge(item.depth)}
+								{@const c = branchColor(item.colorIdx)}
+								{@const op = item.isAncestor ? 0.6 : 0.2}
+								{#if x1 === x2}
+									<line {x1} {y1} {x2} {y2} stroke={c} stroke-opacity={op} stroke-width="1.5" />
+								{:else}
+									{@const my = (y1 + y2) / 2}
+									<path
+										d="M {x1} {y1} C {x1} {my},{x2} {my},{x2} {y2}"
+										fill="none"
+										stroke={c}
+										stroke-opacity={op}
 										stroke-width="1.5"
 									/>
 								{/if}
-								<!-- Vertical line below dot (if not the last on this column) -->
-								{#if i < rows.length - 1 || (childrenMap.get(row.node.uuid)?.length ?? 0) > 0}
-									{@const isLastOnCol = !rows.slice(i + 1).some((r) => r.column === col)}
-									{#if !isLastOnCol}
-										<line
-											x1={lx} y1={ROW_H / 2 + DOT_R} x2={lx} y2={ROW_H}
-											stroke="var(--color-muted-foreground)"
-											stroke-opacity={row.isAncestor ? "0.5" : "0.25"}
-											stroke-width="1.5"
-										/>
-									{/if}
-								{/if}
 							{/if}
-						{/each}
-
-						<!-- Horizontal connector from parent column to this column -->
-						{#if row.parentColumn != null && row.parentColumn !== row.column}
-							{@const px = row.parentColumn * COL_W + COL_W / 2}
-							<path
-								d="M {px} {0} L {px} {ROW_H / 2} L {cx - DOT_R} {ROW_H / 2}"
-								fill="none"
-								stroke="var(--color-muted-foreground)"
-								stroke-opacity="0.35"
-								stroke-width="1.5"
-							/>
 						{/if}
+					{/each}
+				</svg>
 
-						<!-- Node dot -->
-						{#if row.isCursor}
-							<circle cx={cx} cy={ROW_H / 2} r={DOT_R} fill="var(--color-primary)" />
-						{:else if row.isAncestor}
-							<circle cx={cx} cy={ROW_H / 2} r={DOT_R - 0.5} fill="var(--color-foreground)" opacity="0.7" />
-						{:else if row.isRoot}
-							<circle cx={cx} cy={ROW_H / 2} r={DOT_R - 0.5} fill="none" stroke="var(--color-muted-foreground)" stroke-width="1.5" opacity="0.5" />
-						{:else}
-							<circle cx={cx} cy={ROW_H / 2} r={DOT_R - 1} fill="none" stroke="var(--color-muted-foreground)" stroke-width="1" opacity="0.4" />
-						{/if}
-					</svg>
-
-					<!-- Label -->
+				<!-- Nodes -->
+				{#each layout.items as item (item.uuid)}
 					<button
-						class="group flex items-center gap-1.5 flex-1 min-w-0 text-left rounded px-1.5 h-full transition-colors
-							{row.isCursor ? 'bg-primary/10' : disabled ? '' : 'hover:bg-accent/50'}
-							{disabled ? 'opacity-50 cursor-not-allowed' : ''}"
-						onclick={() => onGoto(row.node.uuid)}
+						class="absolute z-10 flex items-center justify-center transition-all
+							{disabled ? 'opacity-50 cursor-not-allowed' : 'hover:brightness-110 hover:scale-105 active:scale-95'}"
+						style={nodeStyle(item)}
+						onclick={() => onGoto(item.uuid)}
 						{disabled}
-						title={row.node.uuid}
+						title={item.uuid}
 					>
-						<span class="text-[11px] truncate {row.isCursor ? 'text-primary font-medium' : row.isAncestor ? 'text-foreground' : 'text-muted-foreground'}">
-							{#if row.isRoot}
-								Root
-							{:else}
-								Turn {row.node.depth}
-							{/if}
+						<span class="text-[9px] font-mono leading-none">
+							{item.uuid.slice(0, 5)}
 						</span>
-						<code class="text-[9px] text-muted-foreground/60 font-mono ml-auto shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-							{row.node.uuid.slice(0, 7)}
-						</code>
 					</button>
-				</div>
-			{/each}
-
-			{#if nodes.length === 0}
-				<div class="px-2 py-4 text-center text-xs text-muted-foreground">
-					No history yet.
-				</div>
-			{/if}
-		</div>
+				{/each}
+			</div>
+			</div>
+		{/if}
 	</div>
 </div>

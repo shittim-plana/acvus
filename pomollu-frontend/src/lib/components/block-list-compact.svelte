@@ -1,10 +1,11 @@
 <script lang="ts">
 	import type { BlockNode } from '$lib/types.js';
 	import type { BlockOwner } from '$lib/stores.svelte.js';
+	import { uiState } from '$lib/stores.svelte.js';
 	import { DragDropProvider } from '@dnd-kit-svelte/svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { Button } from '$lib/components/ui/button';
-	import { moveNode } from '$lib/block-tree.js';
+	import { moveNode, findParentNodeId } from '$lib/block-tree.js';
 	import BlockTree from './block-tree.svelte';
 
 	let {
@@ -26,6 +27,18 @@
 	let dragSourceId: string | null = $state(null);
 	let dropTargetId: string | null = $state(null);
 	let collapsedIds = new SvelteSet<string>();
+
+	let autoExpandedNodeIds = $derived.by(() => {
+		const tab = uiState.activeTab;
+		const ids = new Set<string>();
+		if (!tab) return ids;
+		if (tab.kind === 'node') ids.add(tab.nodeId);
+		else if (tab.kind === 'block') {
+			const parentId = findParentNodeId(children, tab.blockId);
+			if (parentId) ids.add(parentId);
+		}
+		return ids;
+	});
 
 	function toggleFolder(id: string) {
 		if (collapsedIds.has(id)) collapsedIds.delete(id);
@@ -57,7 +70,7 @@
 
 <div class="space-y-1">
 	<DragDropProvider onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
-		<BlockTree {children} {owner} {dragSourceId} {dropTargetId} {collapsedIds} ontogglefolder={toggleFolder} />
+		<BlockTree {children} {owner} {dragSourceId} {dropTargetId} {collapsedIds} {autoExpandedNodeIds} ontogglefolder={toggleFolder} />
 	</DragDropProvider>
 	<div class="flex items-center justify-center gap-1">
 		<Button variant="ghost" size="icon-sm" onclick={onadd} title="Add block">+</Button>

@@ -14,8 +14,9 @@
 	import TabBar from '$lib/components/tab-bar.svelte';
 	import SyncIndicator from '$lib/components/sync-indicator.svelte';
 	import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
-	import { sessionStore, botStore, promptStore, profileStore, providerStore, uiState } from '$lib/stores.svelte.js';
+	import { sessionStore, botStore, promptStore, profileStore, providerStore, uiState, getOwnerChildren } from '$lib/stores.svelte.js';
 	import type { BlockOwner } from '$lib/stores.svelte.js';
+	import { findParentNodeId, findNodeItem } from '$lib/block-tree.js';
 	import { initPersistence } from '$lib/persistence.svelte.js';
 	import { IndexedDBBackend } from '$lib/storage/indexeddb.js';
 	import { analyzePrompt, analyzeProfile, analyzeBot } from '$lib/param-resolver.js';
@@ -193,7 +194,11 @@
 					{/if}
 					<div class="flex-1 overflow-hidden">
 						{#if activeTab?.kind === 'block'}
-							<BlockEditorPage blockId={activeTab.blockId} owner={activeTab.owner} contextTypes={ownerEnv.contextTypes} />
+							{@const ownerChildren = getOwnerChildren(activeTab.owner) ?? []}
+							{@const parentNodeId = findParentNodeId(ownerChildren, activeTab.blockId)}
+							{@const parentNode = parentNodeId ? findNodeItem(ownerChildren, parentNodeId) : undefined}
+							{@const parentLocals = parentNode ? ownerEnv.nodeLocals[parentNode.name] : undefined}
+							<BlockEditorPage blockId={activeTab.blockId} owner={activeTab.owner} contextTypes={ownerEnv.contextTypes} {parentLocals} />
 						{:else if activeTab?.kind === 'prompt'}
 							<PromptSettings promptId={activeTab.promptId} />
 						{:else if activeTab?.kind === 'profile'}

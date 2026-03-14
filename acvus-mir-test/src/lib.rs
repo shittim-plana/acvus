@@ -1,3 +1,4 @@
+use acvus_mir::context_registry::ContextTypeRegistry;
 use acvus_mir::printer::dump_with;
 use acvus_mir::ty::Ty;
 use acvus_utils::{Astr, Interner};
@@ -9,8 +10,9 @@ pub fn compile_to_ir(
     source: &str,
     context: &FxHashMap<Astr, Ty>,
 ) -> Result<String, String> {
+    let reg = ContextTypeRegistry::all_system(context.clone());
     let template = acvus_ast::parse(interner, source).map_err(|e| format!("parse error: {e}"))?;
-    let (module, _hints) = acvus_mir::compile(interner, &template, context)
+    let (module, _hints) = acvus_mir::compile(interner, &template, &reg)
     .map_err(|errors| {
         errors
             .iter()

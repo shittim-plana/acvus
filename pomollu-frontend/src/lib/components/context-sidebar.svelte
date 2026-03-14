@@ -55,7 +55,7 @@
 			disabled={chatState.isLoading}
 		/>
 	{:else if context?.kind === 'owner'}
-		<div class="shrink-0 border-b px-3 py-2.5">
+		<div class="shrink-0 border-b px-3 py-2">
 			<div class="text-xs font-medium text-muted-foreground">{context.label}</div>
 		</div>
 		<div class="flex-1 overflow-x-hidden overflow-y-auto p-2">

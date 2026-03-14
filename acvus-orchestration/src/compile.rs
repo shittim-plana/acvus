@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use acvus_mir::context_registry::PartialContextTypeRegistry;
+use acvus_mir::context_registry::{ContextTypeRegistry, PartialContextTypeRegistry, RegistryConflictError};
 use acvus_mir::ir::{InstKind, MirModule};
 use acvus_mir::ty::Ty;
 use acvus_mir_pass::AnalysisPass;
@@ -179,16 +179,16 @@ impl CompiledNode {
 pub fn compile_script(
     interner: &Interner,
     source: &str,
-    context_types: &FxHashMap<Astr, Ty>,
+    registry: &ContextTypeRegistry,
 ) -> Result<(CompiledScript, Ty), OrchError> {
-    compile_script_with_hint(interner, source, context_types, None)
+    compile_script_with_hint(interner, source, registry, None)
 }
 
 /// Compile a script with an optional expected tail type hint for unification.
 pub fn compile_script_with_hint(
     interner: &Interner,
     source: &str,
-    context_types: &FxHashMap<Astr, Ty>,
+    registry: &ContextTypeRegistry,
     expected_tail: Option<&Ty>,
 ) -> Result<(CompiledScript, Ty), OrchError> {
     let script = acvus_ast::parse_script(interner, source).map_err(|e| {
@@ -199,7 +199,7 @@ pub fn compile_script_with_hint(
     let (module, _hints, tail_ty) = acvus_mir::compile_script_with_hint(
         interner,
         &script,
-        context_types,
+        registry,
         expected_tail,
     )
     .map_err(|errs| {
@@ -264,7 +264,7 @@ pub(crate) fn compile_template(
     interner: &Interner,
     source: &str,
     block_idx: usize,
-    context_types: &FxHashMap<Astr, Ty>,
+    registry: &ContextTypeRegistry,
 ) -> Result<CompiledBlock, OrchError> {
     let ast = acvus_ast::parse(interner, source).map_err(|e| {
         OrchError::new(OrchErrorKind::TemplateParse {
@@ -276,7 +276,7 @@ pub(crate) fn compile_template(
     let (module, _hints) = acvus_mir::compile(
         interner,
         &ast,
-        context_types,
+        registry,
     )
     .map_err(|errs| {
         OrchError::new(OrchErrorKind::TemplateCompile {
@@ -300,7 +300,7 @@ pub(crate) fn compile_template(
 pub(crate) fn compile_messages(
     interner: &Interner,
     messages: &[MessageSpec],
-    context_types: &FxHashMap<Astr, Ty>,
+    registry: &ContextTypeRegistry,
     iterator_elem_ty: &Ty,
 ) -> Result<(Vec<CompiledMessage>, FxHashSet<Astr>), Vec<OrchError>> {
     let mut compiled_messages = Vec::new();
@@ -310,7 +310,7 @@ pub(crate) fn compile_messages(
     for (i, msg) in messages.iter().enumerate() {
         match msg {
             MessageSpec::Block { role, source } => {
-                let block = match compile_template(interner, source, i, context_types) {
+                let block = match compile_template(interner, source, i, registry) {
                     Ok(b) => b,
                     Err(e) => {
                         errors.push(e);
@@ -331,7 +331,7 @@ pub(crate) fn compile_messages(
             } => {
                 let ctx = format!("iterator (block {i})");
                 let (expr, tail_ty) =
-                    match compile_script(interner, interner.resolve(*key), context_types) {
+                    match compile_script(interner, interner.resolve(*key), registry) {
                         Ok(v) => v,
                         Err(e) => {
                             errors.push(e);
@@ -369,13 +369,13 @@ pub(crate) fn compile_messages(
 
 /// Compile a node spec into a `CompiledNode`.
 ///
-/// `context_types` must already include @self (if applicable) via `build_node_context`.
+/// `registry` must already include @self (if applicable) via `build_node_context`.
 /// `initial_value` is the compiled initial_value script.
 /// Each message's `source` field is compiled directly — no file I/O.
 pub fn compile_node(
     interner: &Interner,
     spec: &NodeSpec,
-    context_types: &FxHashMap<Astr, Ty>,
+    registry: &ContextTypeRegistry,
     initial_value: Option<CompiledScript>,
     compiled_execution: CompiledExecution,
     compiled_persistency: CompiledPersistency,
@@ -383,20 +383,20 @@ pub fn compile_node(
 ) -> Result<CompiledNode, Vec<OrchError>> {
     let (kind, mut all_context_keys): (_, FxHashSet<_>) = match &spec.kind {
         NodeKind::Plain(plain_spec) => {
-            let (compiled, keys) = compile_plain(interner, plain_spec, context_types)?;
+            let (compiled, keys) = compile_plain(interner, plain_spec, registry)?;
             (CompiledNodeKind::Plain(compiled), keys)
         }
         NodeKind::Llm(llm_spec) => {
-            let (compiled, keys) = compile_llm(interner, llm_spec, context_types)?;
+            let (compiled, keys) = compile_llm(interner, llm_spec, registry)?;
             (CompiledNodeKind::Llm(compiled), keys)
         }
         NodeKind::LlmCache(cache_spec) => {
             let (compiled, keys) =
-                compile_llm_cache(interner, cache_spec, context_types)?;
+                compile_llm_cache(interner, cache_spec, registry)?;
             (CompiledNodeKind::LlmCache(compiled), keys)
         }
         NodeKind::Expr(expr_spec) => {
-            let (compiled, keys) = compile_expr(interner, expr_spec, context_types)?;
+            let (compiled, keys) = compile_expr(interner, expr_spec, registry)?;
             (CompiledNodeKind::Expr(compiled), keys)
         }
     };
@@ -475,19 +475,27 @@ pub struct ExternalContextEnv {
 fn resolve_node_locals(
     interner: &Interner,
     spec: &NodeSpec,
-    context: &FxHashMap<Astr, Ty>,
+    base_registry: &ContextTypeRegistry,
     raw_ty: Ty,
-) -> NodeLocalTypes {
+) -> Result<NodeLocalTypes, Vec<OrchError>> {
+    let map_conflict = |e: RegistryConflictError| {
+        vec![OrchError::new(OrchErrorKind::RegistryConflict {
+            key: e.key,
+            tier_a: e.tier_a,
+            tier_b: e.tier_b,
+        })]
+    };
 
     let self_ty = match &spec.strategy.persistency {
         Persistency::Deque { bind } | Persistency::Diff { bind } => {
             // Two-pass: compile bind with @self = Infer → typechecker infers self_ty from usage
             let temp_locals = NodeLocalTypes { raw_ty: raw_ty.clone(), self_ty: Ty::Infer };
-            let bind_ctx = spec.build_node_context(interner, context, ContextScope::Bind, Some(&temp_locals));
+            let bind_reg = spec.build_node_context(interner, base_registry, ContextScope::Bind, Some(&temp_locals))
+                .map_err(map_conflict)?;
             let resolved_self = compile_script_with_hint(
                 interner,
                 interner.resolve(*bind),
-                &bind_ctx,
+                &bind_reg,
                 None,
             )
             .map(|(_, ty)| ty)
@@ -495,9 +503,10 @@ fn resolve_node_locals(
 
             // Validate initial_value against resolved self_ty
             if let Some(ref init_src) = spec.strategy.initial_value {
-                let init_ctx = spec.build_node_context(interner, context, ContextScope::InitialValue, None);
+                let init_reg = spec.build_node_context(interner, base_registry, ContextScope::InitialValue, None)
+                    .map_err(map_conflict)?;
                 let hint = if resolved_self != Ty::Error { Some(&resolved_self) } else { None };
-                let _ = compile_script_with_hint(interner, interner.resolve(*init_src), &init_ctx, hint);
+                let _ = compile_script_with_hint(interner, interner.resolve(*init_src), &init_reg, hint);
             }
 
             resolved_self
@@ -505,8 +514,9 @@ fn resolve_node_locals(
         _ => {
             // Ephemeral/Snapshot: self_ty from initial_value if present, else raw_ty
             if let Some(ref init_src) = spec.strategy.initial_value {
-                let init_ctx = spec.build_node_context(interner, context, ContextScope::InitialValue, None);
-                compile_script_with_hint(interner, interner.resolve(*init_src), &init_ctx, None)
+                let init_reg = spec.build_node_context(interner, base_registry, ContextScope::InitialValue, None)
+                    .map_err(map_conflict)?;
+                compile_script_with_hint(interner, interner.resolve(*init_src), &init_reg, None)
                     .map(|(_, ty)| ty)
                     .unwrap_or(Ty::Error)
             } else {
@@ -515,7 +525,7 @@ fn resolve_node_locals(
         }
     };
 
-    NodeLocalTypes { raw_ty, self_ty }
+    Ok(NodeLocalTypes { raw_ty, self_ty })
 }
 
 /// Wrap a type as `Ty::Fn` if the node is a function node.
@@ -555,31 +565,33 @@ pub fn compute_external_context_env(
         })]
     };
 
-    // ── Phase 1: Build working_ctx with raw types ────────────────────────
+    // ── Phase 1: Register system types into registry ───────────────────
     //
-    // working_ctx = registry.merged() + @turn_index + concrete node raw types.
-    // This is a TEMPORARY map used only for intermediate compilation.
-    // The actual registry is not touched until Phase 4.
+    // Add @turn_index and concrete node raw types directly to the registry.
+    // For intermediate compilation (Phase 2-3), create temporary full registries
+    // via `registry.to_full()`.
 
     let raw_types: Vec<Ty> = specs
         .iter()
         .map(|s| s.kind.raw_output_ty(interner))
         .collect();
 
-    let mut working_ctx: FxHashMap<Astr, Ty> = registry.merged().clone();
-    working_ctx.insert(interner.intern("turn_index"), Ty::Int);
+    registry
+        .insert_system(interner.intern("turn_index"), Ty::Int)
+        .map_err(map_conflict)?;
 
     for (spec, ty) in specs.iter().zip(raw_types.iter()) {
         if *ty == Ty::Infer {
             continue;
         }
-        working_ctx.insert(spec.name, wrap_fn_ty(spec, ty.clone()));
+        registry.insert_system(spec.name, wrap_fn_ty(spec, ty.clone()))
+            .map_err(map_conflict)?;
     }
 
     // ── Phase 2: Resolve Expr node types via topo sort ───────────────────
     //
     // Expr nodes start with raw_type = Infer. Topo sort compiles them in
-    // dependency order, progressively adding resolved types to working_ctx.
+    // dependency order, progressively adding resolved types to the registry.
     // expr_resolved[idx] holds the resolved raw type for each Expr node.
 
     let infer_indices: Vec<usize> = (0..specs.len())
@@ -597,10 +609,12 @@ pub fn compute_external_context_env(
         let mut deps: Vec<FxHashSet<usize>> = vec![FxHashSet::default(); n];
         let mut rdeps: Vec<FxHashSet<usize>> = vec![FxHashSet::default(); n];
 
+        // Use a temporary full registry for analysis extraction
+        let temp_reg = registry.to_full();
         for &idx in &infer_indices {
             if let NodeKind::Expr(expr_spec) = &specs[idx].kind {
                 let keys =
-                    analysis_extract_script_keys(interner, &expr_spec.source, &working_ctx);
+                    analysis_extract_script_keys(interner, &expr_spec.source, &temp_reg);
                 for key in keys {
                     if let Some(&dep_idx) = node_name_to_idx.get(&key) {
                         if infer_set.contains(&dep_idx) && dep_idx != idx {
@@ -653,19 +667,22 @@ pub fn compute_external_context_env(
                     Ty::Infer => None,
                     ty => Some(ty),
                 };
+                let full_reg = registry.to_full();
                 let temp_raw_ty = specs[idx].kind.raw_output_ty(interner);
-                let temp_locals = resolve_node_locals(interner, &specs[idx], &working_ctx, temp_raw_ty);
-                let expr_ctx = specs[idx].build_node_context(interner, &working_ctx, ContextScope::Body, Some(&temp_locals));
+                let temp_locals = resolve_node_locals(interner, &specs[idx], &full_reg, temp_raw_ty)?;
+                let expr_reg = specs[idx].build_node_context(interner, &full_reg, ContextScope::Body, Some(&temp_locals))
+                    .map_err(map_conflict)?;
                 let resolved = compile_script_with_hint(
                     interner,
                     &expr_spec.source,
-                    &expr_ctx,
+                    &expr_reg,
                     hint,
                 )
                 .map(|(_, ty)| ty)
                 .unwrap_or(Ty::Error);
 
-                working_ctx.insert(specs[idx].name, wrap_fn_ty(&specs[idx], resolved.clone()));
+                registry.insert_system(specs[idx].name, wrap_fn_ty(&specs[idx], resolved.clone()))
+                    .map_err(map_conflict)?;
                 expr_resolved.insert(idx, resolved);
             }
         }
@@ -675,13 +692,15 @@ pub fn compute_external_context_env(
     //
     // For each node, resolve @self and @raw via resolve_node_locals,
     // then determine the final @name type.
+    // Use the now-complete registry for compilation.
 
+    let full_reg = registry.to_full();
     let mut node_locals = FxHashMap::default();
     let mut stored_types: Vec<Ty> = Vec::with_capacity(specs.len());
 
     for (i, spec) in specs.iter().enumerate() {
         let raw_ty = expr_resolved.get(&i).cloned().unwrap_or_else(|| raw_types[i].clone());
-        let locals = resolve_node_locals(interner, spec, &working_ctx, raw_ty);
+        let locals = resolve_node_locals(interner, spec, &full_reg, raw_ty)?;
         let name_ty = if spec.strategy.initial_value.is_some() {
             locals.self_ty.clone()
         } else {
@@ -689,17 +708,6 @@ pub fn compute_external_context_env(
         };
         stored_types.push(name_ty);
         node_locals.insert(spec.name, locals);
-    }
-
-    // ── Phase 4: Register into registry — once per key ───────────────────
-
-    registry
-        .insert_system(interner.intern("turn_index"), Ty::Int)
-        .map_err(map_conflict)?;
-
-    for (i, spec) in specs.iter().enumerate() {
-        let final_ty = wrap_fn_ty(spec, stored_types[i].clone());
-        registry.insert_system(spec.name, final_ty).map_err(map_conflict)?;
     }
 
     let storage_types = registry.system().clone();
@@ -734,9 +742,17 @@ pub fn compile_nodes_with_env(
     specs: &[NodeSpec],
     env: ExternalContextEnv,
 ) -> Result<Vec<CompiledNode>, Vec<OrchError>> {
-    let context_types = env.registry.merged().clone();
+    let base_registry = env.registry.to_full();
     let stored_types = env.stored_types;
     let mut errors = Vec::new();
+
+    let map_conflict = |e: RegistryConflictError| {
+        OrchError::new(OrchErrorKind::RegistryConflict {
+            key: e.key,
+            tier_a: e.tier_a,
+            tier_b: e.tier_b,
+        })
+    };
 
     // Compile initial_value scripts — all node kinds.
     let mut initial_value_scripts: Vec<Option<CompiledScript>> = Vec::new();
@@ -749,11 +765,18 @@ pub fn compile_nodes_with_env(
             Ty::Error => None,
             ty => Some(ty),
         };
-        let init_ctx = spec.build_node_context(interner, &context_types, ContextScope::InitialValue, env.node_locals.get(&spec.name));
+        let init_reg = match spec.build_node_context(interner, &base_registry, ContextScope::InitialValue, env.node_locals.get(&spec.name)) {
+            Ok(r) => r,
+            Err(e) => {
+                errors.push(map_conflict(e));
+                initial_value_scripts.push(None);
+                continue;
+            }
+        };
         let (script, init_ty) = match compile_script_with_hint(
             interner,
             interner.resolve(*init_src),
-            &init_ctx,
+            &init_reg,
             hint,
         ) {
             Ok(v) => v,
@@ -783,7 +806,7 @@ pub fn compile_nodes_with_env(
                 let (script, _ty) = match compile_script(
                     interner,
                     interner.resolve(*key),
-                    &context_types,
+                    &base_registry,
                 ) {
                     Ok(v) => v,
                     Err(e) => {
@@ -806,11 +829,18 @@ pub fn compile_nodes_with_env(
             Persistency::Snapshot => CompiledPersistency::Snapshot,
             Persistency::Deque { bind } | Persistency::Diff { bind } => {
                 // bind context: @self + @raw + all context (via ContextScope::Bind)
-                let bind_ctx = spec.build_node_context(interner, &context_types, ContextScope::Bind, env.node_locals.get(&spec.name));
+                let bind_reg = match spec.build_node_context(interner, &base_registry, ContextScope::Bind, env.node_locals.get(&spec.name)) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        errors.push(map_conflict(e));
+                        compiled_persistencies.push(CompiledPersistency::Ephemeral);
+                        continue;
+                    }
+                };
                 let (script, _ty) = match compile_script(
                     interner,
                     interner.resolve(*bind),
-                    &bind_ctx,
+                    &bind_reg,
                 ) {
                     Ok(v) => v,
                     Err(e) => {
@@ -833,11 +863,18 @@ pub fn compile_nodes_with_env(
     let mut compiled_asserts: Vec<Option<CompiledScript>> = Vec::new();
     for spec in specs.iter() {
         let compiled_assert = if let Some(ref assert_src) = spec.strategy.assert {
-            let assert_ctx = spec.build_node_context(interner, &context_types, ContextScope::Bind, env.node_locals.get(&spec.name));
+            let assert_reg = match spec.build_node_context(interner, &base_registry, ContextScope::Bind, env.node_locals.get(&spec.name)) {
+                Ok(r) => r,
+                Err(e) => {
+                    errors.push(map_conflict(e));
+                    compiled_asserts.push(None);
+                    continue;
+                }
+            };
             let (script, _ty) = match compile_script_with_hint(
                 interner,
                 interner.resolve(*assert_src),
-                &assert_ctx,
+                &assert_reg,
                 Some(&Ty::Bool),
             ) {
                 Ok(v) => v,
@@ -861,13 +898,13 @@ pub fn compile_nodes_with_env(
     // Tool param types must be injected from the caller (LlmSpec) side because
     // the target node alone cannot know what types its params will have — the
     // param types are declared in ToolBinding, not in the target node itself.
-    let mut tool_param_types: FxHashMap<Astr, FxHashMap<Astr, Ty>> = FxHashMap::default();
+    let mut tool_param_types: FxHashMap<Astr, Vec<(Astr, Ty)>> = FxHashMap::default();
     for spec in specs {
         let NodeKind::Llm(llm_spec) = &spec.kind else {
             continue;
         };
         for tool in &llm_spec.tools {
-            let params: FxHashMap<Astr, Ty> = tool
+            let params: Vec<(Astr, Ty)> = tool
                 .params
                 .iter()
                 .filter_map(|(k, v)| Some((interner.intern(k), parse_type_name(v)?)))
@@ -881,21 +918,25 @@ pub fn compile_nodes_with_env(
 
     let mut nodes = Vec::new();
     for (i, spec) in specs.iter().enumerate() {
-        // Validate fn_param names don't conflict with context keys
-        if spec.is_function {
-            for (param_name, _) in &spec.fn_params {
-                if context_types.contains_key(param_name) {
-                    errors.push(OrchError::new(OrchErrorKind::FnParamConflict {
-                        node: interner.resolve(spec.name).to_string(),
-                        param: interner.resolve(*param_name).to_string(),
-                    }));
-                }
+        let mut node_reg = match spec.build_node_context(interner, &base_registry, ContextScope::Body, env.node_locals.get(&spec.name)) {
+            Ok(r) => r,
+            Err(e) => {
+                errors.push(map_conflict(e));
+                continue;
             }
-        }
-        let mut node_ctx = spec.build_node_context(interner, &context_types, ContextScope::Body, env.node_locals.get(&spec.name));
+        };
         if let Some(params) = tool_param_types.get(&spec.name) {
-            node_ctx.extend(params.iter().map(|(k, v)| (*k, v.clone())));
+            node_reg = match node_reg.with_extra_scoped(params.iter().map(|(k, v)| (*k, v.clone()))) {
+                Ok(r) => r,
+                Err(e) => {
+                    errors.push(map_conflict(e));
+                    continue;
+                }
+            };
         }
+        // Validate fn_param names don't conflict with context keys
+        // (fn_params are already in the registry via build_node_context, so
+        // conflicts would have been caught by with_extra_scoped above)
         let initial_value = initial_value_scripts[i].clone();
         let compiled_execution = compiled_executions[i].clone();
         let compiled_persistency = compiled_persistencies[i].clone();
@@ -903,7 +944,7 @@ pub fn compile_nodes_with_env(
         match compile_node(
             interner,
             spec,
-            &node_ctx,
+            &node_reg,
             initial_value,
             compiled_execution,
             compiled_persistency,
@@ -952,7 +993,7 @@ pub fn compile_nodes_with_env(
 fn analysis_extract_script_keys(
     interner: &Interner,
     source: &str,
-    context_types: &FxHashMap<Astr, Ty>,
+    registry: &ContextTypeRegistry,
 ) -> FxHashSet<Astr> {
     let Ok(script) = acvus_ast::parse_script(interner, source) else {
         return FxHashSet::default();
@@ -960,7 +1001,7 @@ fn analysis_extract_script_keys(
     let (module, _, _, _) = acvus_mir::compile_script_analysis_with_tail_partial(
         interner,
         &script,
-        context_types,
+        registry,
         None,
     );
     extract_context_keys(&module)
@@ -1051,7 +1092,7 @@ mod tests {
         );
 
         // Simulate pomollu-engine bind typecheck: re-check bind with hint = self_ty
-        let spec = &env.registry.merged().iter().map(|(k,v)| (*k, v.clone())).collect::<FxHashMap<_,_>>();
+        let full_reg = env.registry.to_full();
         let chat_spec = NodeSpec {
             name: chat_name,
             kind: NodeKind::Llm(LlmSpec {
@@ -1076,15 +1117,15 @@ mod tests {
             is_function: false,
             fn_params: vec![],
         };
-        let bind_ctx = chat_spec.build_node_context(&interner, spec, ContextScope::Bind, Some(locals));
-        eprintln!("bind_ctx @self = {:?}", bind_ctx.get(&interner.intern("self")).map(|t| format!("{}", t.display(&interner))));
-        eprintln!("bind_ctx @raw = {:?}", bind_ctx.get(&interner.intern("raw")).map(|t| format!("{}", t.display(&interner))));
+        let bind_reg = chat_spec.build_node_context(&interner, &full_reg, ContextScope::Bind, Some(locals)).unwrap();
+        eprintln!("bind_ctx @self = {:?}", bind_reg.scoped().get(&interner.intern("self")).map(|t| format!("{}", t.display(&interner))));
+        eprintln!("bind_ctx @raw = {:?}", bind_reg.scoped().get(&interner.intern("raw")).map(|t| format!("{}", t.display(&interner))));
 
         let hint = Some(&locals.self_ty);
         let result = compile_script_with_hint(
             &interner,
             "@self | extend(@raw)",
-            &bind_ctx,
+            &bind_reg,
             hint.as_ref().map(|t| *t),
         );
         match &result {
@@ -1094,11 +1135,11 @@ mod tests {
         assert!(result.is_ok(), "bind re-typecheck should succeed");
 
         // Also check initial_value
-        let init_ctx = chat_spec.build_node_context(&interner, spec, ContextScope::InitialValue, Some(locals));
+        let init_reg = chat_spec.build_node_context(&interner, &full_reg, ContextScope::InitialValue, Some(locals)).unwrap();
         let init_result = compile_script_with_hint(
             &interner,
             "[]",
-            &init_ctx,
+            &init_reg,
             hint.as_ref().map(|t| *t),
         );
         match &init_result {

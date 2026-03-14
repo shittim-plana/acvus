@@ -90,7 +90,7 @@
 </script>
 
 <div class="flex h-full w-64 flex-col border-r">
-	<div class="flex items-center border-b px-3 py-2.5">
+	<div class="flex items-center border-b px-3 py-2">
 		<span class="text-sm font-medium">Settings</span>
 	</div>
 	<ScrollArea class="flex-1">

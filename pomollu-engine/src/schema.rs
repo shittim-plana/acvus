@@ -126,6 +126,8 @@ pub struct NodeLocalTypes {
 #[serde(rename_all = "camelCase")]
 pub struct NodeErrors {
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<error::EngineError>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub initial_value: Vec<error::EngineError>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub bind: Vec<error::EngineError>,
@@ -141,7 +143,8 @@ pub struct NodeErrors {
 
 impl NodeErrors {
     pub fn is_empty(&self) -> bool {
-        self.initial_value.is_empty()
+        self.env.is_empty()
+            && self.initial_value.is_empty()
             && self.bind.is_empty()
             && self.if_modified_key.is_empty()
             && self.assert.is_empty()

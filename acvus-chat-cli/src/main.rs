@@ -148,10 +148,10 @@ async fn main() {
         });
 
     // Compile expr definitions → NodeSpec with NodeKind::Expr
-    // Use a local context map for progressive compilation (each expr can reference
+    // Use a growing partial registry for progressive compilation (each expr can reference
     // previous ones). Don't insert into registry — compute_external_context_env handles that.
     let mut expr_node_specs: Vec<NodeSpec> = Vec::new();
-    let mut expr_context = registry.merged().clone();
+    let mut expr_registry = registry.clone();
     for expr_def in &spec.expr {
         let source = if let Some(path) = &expr_def.source {
             std::fs::read_to_string(project_dir.join(path)).unwrap_or_else(|e| {
@@ -167,7 +167,8 @@ async fn main() {
             );
             process::exit(1);
         };
-        let (_script, tail_ty) = compile_script(&interner, &source, &expr_context)
+        let full_reg = expr_registry.to_full();
+        let (_script, tail_ty) = compile_script(&interner, &source, &full_reg)
             .unwrap_or_else(|e| {
                 eprintln!(
                     "expr '{}' compile error: {}",
@@ -177,7 +178,14 @@ async fn main() {
                 process::exit(1);
             });
         let expr_name = interner.intern(&expr_def.name);
-        expr_context.insert(expr_name, tail_ty.clone());
+        expr_registry.insert_system(expr_name, tail_ty.clone())
+            .unwrap_or_else(|e| {
+                eprintln!(
+                    "expr '{}' conflict: @{} exists in both {} and {} tier",
+                    expr_def.name, interner.resolve(e.key), e.tier_a, e.tier_b
+                );
+                process::exit(1);
+            });
         expr_node_specs.push(NodeSpec {
             name: expr_name,
             kind: NodeKind::Expr(ExprSpec {

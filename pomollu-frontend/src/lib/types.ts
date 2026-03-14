@@ -168,6 +168,7 @@ export type Node = {
 	tools: NodeToolBinding[];
 	isFunction: boolean;
 	fnParams: FnParam[];
+	children: BlockNode[];
 };
 
 // --- Context parameter resolution ---

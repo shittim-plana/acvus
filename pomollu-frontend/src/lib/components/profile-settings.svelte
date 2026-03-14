@@ -50,7 +50,7 @@
 </script>
 
 <BasePage {deps} onConfigChange={runAnalysis} debounceMs={200}>
-	<div class="flex items-center justify-between shrink-0 border-b px-4 py-2">
+	<div class="flex items-center justify-between shrink-0 border-b px-3 py-2">
 		<span class="text-sm font-medium">Profile Settings</span>
 		<div class="flex items-center gap-1">
 			<Button variant="ghost" size="icon-sm" class="text-muted-foreground" onclick={() => profile && downloadJson(profile, `${profile.name}.profile.json`)} title="Export">

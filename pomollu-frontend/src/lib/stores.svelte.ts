@@ -100,7 +100,8 @@ export function createNode(name: string): Node {
 		messages: [],
 		tools: [],
 		isFunction: false,
-		fnParams: []
+		fnParams: [],
+		children: []
 	};
 }
 
@@ -870,6 +871,12 @@ function migrateNode(node: Record<string, unknown>): Node {
 		delete n.initialValue;
 		delete n.retry;
 		delete n.assert;
+	}
+	// Migrate children (new: node-owned blocks)
+	if (!Array.isArray(n.children)) {
+		n.children = [];
+	} else {
+		n.children = migrateChildren(n.children as BlockNode[]);
 	}
 	return n as unknown as Node;
 }

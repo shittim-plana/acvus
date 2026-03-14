@@ -17,7 +17,22 @@
 
 	import BasePage from './base-page.svelte';
 
-	let { blockId, owner, contextTypes = {} }: { blockId: string; owner: BlockOwner; contextTypes?: Record<string, import('$lib/type-parser.js').TypeDesc> } = $props();
+	let {
+		blockId,
+		owner,
+		contextTypes = {},
+		parentLocals
+	}: {
+		blockId: string;
+		owner: BlockOwner;
+		contextTypes?: Record<string, import('$lib/type-parser.js').TypeDesc>;
+		parentLocals?: { raw: import('$lib/type-parser.js').TypeDesc; self: import('$lib/type-parser.js').TypeDesc };
+	} = $props();
+
+	let mergedContextTypes = $derived.by((): Record<string, import('$lib/type-parser.js').TypeDesc> => {
+		if (!parentLocals) return contextTypes;
+		return { ...contextTypes, raw: parentLocals.raw, self: parentLocals.self };
+	});
 
 	let block = $derived.by(() => {
 		const children = getOwnerChildren(owner);
@@ -125,7 +140,7 @@
 		</div>
 		{#if isRawBlock(block)}
 			<div class="flex flex-1 min-h-0 px-6 py-4">
-				<RawBlockEditor block={block} onupdate={handleRawUpdate} {contextTypes} />
+				<RawBlockEditor block={block} onupdate={handleRawUpdate} contextTypes={mergedContextTypes} />
 			</div>
 		{:else}
 			<ScrollArea class="flex-1">

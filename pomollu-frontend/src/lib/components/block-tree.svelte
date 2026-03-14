@@ -3,7 +3,7 @@
 	import { isContextBlock, isRawBlock } from '$lib/types.js';
 	import type { BlockOwner } from '$lib/stores.svelte.js';
 	import { uiState, getOwnerChildren, updateOwnerChildren } from '$lib/stores.svelte.js';
-	import { nodeId, DROP_PREFIX, updateTreeNode } from '$lib/block-tree.js';
+	import { nodeId, CONTAINER_DROP_PREFIX, updateTreeNode } from '$lib/block-tree.js';
 	import { longpress } from '$lib/actions/longpress.js';
 	import DragItem from './dnd/drag-item.svelte';
 	import DropZone from './dnd/drop-zone.svelte';
@@ -15,6 +15,7 @@
 		dragSourceId = null,
 		dropTargetId = null,
 		collapsedIds,
+		autoExpandedNodeIds,
 		ontogglefolder,
 		depth = 0
 	}: {
@@ -23,11 +24,12 @@
 		dragSourceId?: string | null;
 		dropTargetId?: string | null;
 		collapsedIds: Set<string>;
+		autoExpandedNodeIds: Set<string>;
 		ontogglefolder: (id: string) => void;
 		depth?: number;
 	} = $props();
 
-	function dropId(id: string) { return DROP_PREFIX + id; }
+	function dropId(id: string) { return CONTAINER_DROP_PREFIX + id; }
 
 	function deleteItem(e: MouseEvent, id: string) {
 		e.stopPropagation();
@@ -84,6 +86,7 @@
 					{dragSourceId}
 					{dropTargetId}
 					{collapsedIds}
+					{autoExpandedNodeIds}
 					{ontogglefolder}
 					depth={depth + 1}
 				/>
@@ -128,22 +131,31 @@
 				<button class="item-delete" onclick={(e) => deleteItem(e, node.block.id)} title="Delete">&times;</button>
 			</div>
 		{:else if node.kind === 'node'}
-			<!-- svelte-ignore a11y_click_events_have_key_events -->
-			<!-- svelte-ignore a11y_no_static_element_interactions -->
-			<div class="tree-item" use:longpress>
-				<div onclick={() => uiState.openNode(node.node.id, owner)}>
-					<DragItem
-						id={node.node.id}
-						isDragSource={dragSourceId === node.node.id}
-						isDropTarget={dropTargetId === node.node.id}
-						style="background: var(--color-card); border: 1px solid var(--color-border);
-							{uiState.isNodeOpen(node.node.id) ? 'border-color: var(--color-primary);' : ''}"
-					>
-						<span class="badge badge-sm">{node.node.kind}</span>
-						<span class="item-name">{node.node.name}</span>
-					</DragItem>
+			{@const expanded = autoExpandedNodeIds.has(node.node.id)}
+			<div class="container-wrapper">
+				<!-- svelte-ignore a11y_click_events_have_key_events -->
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<div class="tree-item" use:longpress>
+					<div onclick={() => uiState.openNode(node.node.id, owner)}>
+						<DragItem
+							id={node.node.id}
+							isDragSource={dragSourceId === node.node.id}
+							isDropTarget={dropTargetId === node.node.id}
+							style="background: var(--color-card); border: 1px solid var(--color-border);
+								{uiState.isNodeOpen(node.node.id) ? 'border-color: var(--color-primary);' : ''}"
+						>
+							<span class="badge badge-sm">{node.node.kind}</span>
+							<span class="item-name">{node.node.name}</span>
+							{#if !expanded && node.node.children.length > 0}
+								<span class="child-count">{node.node.children.length}</span>
+							{/if}
+						</DragItem>
+					</div>
+					<button class="item-delete" onclick={(e) => deleteItem(e, node.node.id)} title="Delete">&times;</button>
 				</div>
-				<button class="item-delete" onclick={(e) => deleteItem(e, node.node.id)} title="Delete">&times;</button>
+				{#if expanded}
+					{@render containerBody(node.node.id, node.node.children)}
+				{/if}
 			</div>
 		{:else}
 			<div class="container-wrapper">

@@ -1,4 +1,5 @@
 use acvus_interpreter::Value;
+use acvus_mir::context_registry::ContextTypeRegistry;
 use acvus_mir::ty::Ty;
 use acvus_orchestration::{
     BlobStore, BlobStoreJournal, DisplayEntrySpec, EntryRef, IterableDisplaySpec, Journal,
@@ -52,7 +53,8 @@ struct DisplayEntryJson {
 #[wasm_bindgen]
 pub struct ChatSession {
     engine: acvus_chat::ChatEngine<BlobStoreJournal<IdbBlobStore>>,
-    storage_types: FxHashMap<Astr, Ty>,
+    /// Context type registry for compilation (extern fns + system/storage + user).
+    compile_registry: ContextTypeRegistry,
     interner: Interner,
 }
 
@@ -108,7 +110,7 @@ impl ChatSession {
                         .join("\n");
                     JsValue::from_str(&msg)
                 })?;
-        let storage_types = env.storage_types.clone();
+        let compile_registry = env.registry.to_full();
 
         let compiled =
             acvus_orchestration::compile_nodes_with_env(&interner, &specs, env).map_err(
@@ -169,7 +171,7 @@ impl ChatSession {
 
         Ok(ChatSession {
             engine,
-            storage_types,
+            compile_registry,
             interner,
         })
     }
@@ -278,7 +280,7 @@ impl ChatSession {
         let (compiled, _) = acvus_orchestration::compile_script(
             &self.interner,
             iterator_script,
-            &self.storage_types,
+            &self.compile_registry,
         )
         .map_err(|e| JsError::new(&e.display(&self.interner).to_string()))?;
 
@@ -303,8 +305,13 @@ impl ChatSession {
                     };
                     request.resolve(value);
                 }
-                Stepped::NeedExternCall(_) => {
-                    panic!("unexpected extern call in display_list_len");
+                Stepped::NeedExternCall(request) => {
+                    let name = request.name();
+                    let args = request.args().to_vec();
+                    match acvus_ext::regex_call(&self.interner, name, args).await {
+                        Ok(value) => request.resolve(std::sync::Arc::new(value)),
+                        Err(e) => return Err(JsError::new(&format!("display extern error: {e}"))),
+                    }
                 }
                 Stepped::Done => return Ok(0),
                 Stepped::Error(e) => return Err(JsError::new(&format!("display error: {e}"))),
@@ -332,7 +339,7 @@ impl ChatSession {
                 })
                 .collect(),
         };
-        let compiled = compile_iterable_display(&self.interner, &spec, &self.storage_types)
+        let compiled = compile_iterable_display(&self.interner, &spec, &self.compile_registry)
             .map_err(|errs| {
                 let msg = errs
                     .iter()
@@ -343,7 +350,14 @@ impl ChatSession {
             })?;
         let cursor = self.engine.cursor;
         let entry = self.engine.journal.entry(cursor).await;
-        let result = render_display_with_idx(&self.interner, &compiled, &entry, index).await;
+        let extern_handler = {
+            let interner = self.interner.clone();
+            move |name: Astr, args: Vec<acvus_interpreter::Value>| {
+                let interner = interner.clone();
+                UnsafeSend(async move { acvus_ext::regex_call(&interner, name, args).await })
+            }
+        };
+        let result = render_display_with_idx(&self.interner, &compiled, &entry, index, &extern_handler).await;
         Ok(
             DisplayRenderResult(result.into_iter().map(Into::into).collect())
                 .into_ts()?
@@ -357,7 +371,7 @@ impl ChatSession {
             template: template.to_string(),
         };
         let compiled =
-            compile_static_display(&self.interner, &spec, &self.storage_types).map_err(|errs| {
+            compile_static_display(&self.interner, &spec, &self.compile_registry).map_err(|errs| {
                 let msg = errs
                     .iter()
                     .map(|e| e.display(&self.interner).to_string())
@@ -367,7 +381,14 @@ impl ChatSession {
             })?;
         let cursor = self.engine.cursor;
         let entry = self.engine.journal.entry(cursor).await;
-        let result = render_display(&self.interner, &compiled, &entry).await;
+        let extern_handler = {
+            let interner = self.interner.clone();
+            move |name: Astr, args: Vec<acvus_interpreter::Value>| {
+                let interner = interner.clone();
+                UnsafeSend(async move { acvus_ext::regex_call(&interner, name, args).await })
+            }
+        };
+        let result = render_display(&self.interner, &compiled, &entry, &extern_handler).await;
         Ok(
             DisplayRenderResult(result.into_iter().map(Into::into).collect())
                 .into_ts()?

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use acvus_interpreter::{Interpreter, Value};
+use acvus_interpreter::{Interpreter, RuntimeError, Value};
+use acvus_mir::context_registry::ContextTypeRegistry;
 use acvus_mir::ty::Ty;
 use acvus_utils::{Astr, Interner};
 use rustc_hash::FxHashMap;
@@ -69,9 +70,9 @@ pub struct CompiledIterableDisplay {
 fn compile_template_as_script(
     interner: &Interner,
     source: &str,
-    context_types: &FxHashMap<Astr, Ty>,
+    registry: &ContextTypeRegistry,
 ) -> Result<CompiledScript, OrchError> {
-    let block = compile_template(interner, source, 0, context_types)?;
+    let block = compile_template(interner, source, 0, registry)?;
     Ok(CompiledScript {
         module: block.module,
         context_keys: block.context_keys,
@@ -82,7 +83,7 @@ fn compile_template_as_script(
 fn compile_entries(
     interner: &Interner,
     entries: &[DisplayEntrySpec],
-    context_types: &FxHashMap<Astr, Ty>,
+    registry: &ContextTypeRegistry,
 ) -> Result<Vec<CompiledDisplayEntry>, Vec<OrchError>> {
     let mut compiled = Vec::new();
     let mut errors = Vec::new();
@@ -94,7 +95,7 @@ fn compile_entries(
             match compile_script_with_hint(
                 interner,
                 &spec.condition,
-                context_types,
+                registry,
                 Some(&Ty::Bool),
             ) {
                 Ok((script, _)) => Some(script),
@@ -105,7 +106,7 @@ fn compile_entries(
             }
         };
         let template =
-            match compile_template_as_script(interner, &spec.template, context_types) {
+            match compile_template_as_script(interner, &spec.template, registry) {
                 Ok(t) => t,
                 Err(e) => {
                     errors.push(e);
@@ -129,9 +130,9 @@ fn compile_entries(
 pub fn compile_static_display(
     interner: &Interner,
     spec: &StaticDisplaySpec,
-    context_types: &FxHashMap<Astr, Ty>,
+    registry: &ContextTypeRegistry,
 ) -> Result<CompiledStaticDisplay, Vec<OrchError>> {
-    let template = compile_template_as_script(interner, &spec.template, context_types)
+    let template = compile_template_as_script(interner, &spec.template, registry)
         .map_err(|e| vec![e])?;
     Ok(CompiledStaticDisplay { template })
 }
@@ -139,17 +140,24 @@ pub fn compile_static_display(
 pub fn compile_iterable_display(
     interner: &Interner,
     spec: &IterableDisplaySpec,
-    context_types: &FxHashMap<Astr, Ty>,
+    registry: &ContextTypeRegistry,
 ) -> Result<CompiledIterableDisplay, Vec<OrchError>> {
     let (iterator, iter_ty) =
-        compile_script(interner, &spec.iterator, context_types).map_err(|e| vec![e])?;
+        compile_script(interner, &spec.iterator, registry).map_err(|e| vec![e])?;
     let item_ty = expect_list("display iterator", iter_ty).map_err(|e| vec![e])?;
 
-    let mut entry_ctx = context_types.clone();
-    entry_ctx.insert(interner.intern("item"), item_ty.clone());
-    entry_ctx.insert(interner.intern("index"), Ty::Int);
+    let entry_reg = registry.with_extra_scoped([
+        (interner.intern("item"), item_ty.clone()),
+        (interner.intern("index"), Ty::Int),
+    ]).map_err(|e| {
+        vec![OrchError::new(crate::error::OrchErrorKind::RegistryConflict {
+            key: e.key,
+            tier_a: e.tier_a,
+            tier_b: e.tier_b,
+        })]
+    })?;
 
-    let entries = compile_entries(interner, &spec.entries, &entry_ctx)?;
+    let entries = compile_entries(interner, &spec.entries, &entry_reg)?;
 
     Ok(CompiledIterableDisplay {
         iterator,
@@ -162,12 +170,16 @@ pub fn compile_iterable_display(
 // Rendering — storage read-only, no resolve chain
 // ---------------------------------------------------------------------------
 
-async fn drive_from_entry(
+async fn drive_from_entry<EH>(
     interner: &Interner,
     script: &CompiledScript,
     entry: &(impl EntryRef<'_> + Sync),
     local: &FxHashMap<String, Arc<Value>>,
-) -> Value {
+    extern_handler: &EH,
+) -> Value
+where
+    EH: AsyncFn(Astr, Vec<Value>) -> Result<Value, RuntimeError> + Sync,
+{
     let interp = Interpreter::new(interner, script.module.clone());
     let mut coroutine = interp.execute();
     loop {
@@ -183,8 +195,13 @@ async fn drive_from_entry(
                 };
                 request.resolve(value);
             }
-            acvus_interpreter::Stepped::NeedExternCall(_) => {
-                panic!("display: unexpected extern call")
+            acvus_interpreter::Stepped::NeedExternCall(request) => {
+                let name = request.name();
+                let args = request.args().to_vec();
+                match extern_handler(name, args).await {
+                    Ok(value) => request.resolve(Arc::new(value)),
+                    Err(e) => panic!("display extern call error: {e}"),
+                }
             }
             acvus_interpreter::Stepped::Done => return Value::Unit,
             acvus_interpreter::Stepped::Error(e) => panic!("display runtime error: {e}"),
@@ -192,12 +209,16 @@ async fn drive_from_entry(
     }
 }
 
-async fn drive_template_from_entry(
+async fn drive_template_from_entry<EH>(
     interner: &Interner,
     script: &CompiledScript,
     entry: &(impl EntryRef<'_> + Sync),
     local: &FxHashMap<String, Arc<Value>>,
-) -> String {
+    extern_handler: &EH,
+) -> String
+where
+    EH: AsyncFn(Astr, Vec<Value>) -> Result<Value, RuntimeError> + Sync,
+{
     let interp = Interpreter::new(interner, script.module.clone());
     let mut coroutine = interp.execute();
     let mut output = String::new();
@@ -215,8 +236,13 @@ async fn drive_template_from_entry(
                 };
                 request.resolve(value);
             }
-            acvus_interpreter::Stepped::NeedExternCall(_) => {
-                panic!("display: unexpected extern call")
+            acvus_interpreter::Stepped::NeedExternCall(request) => {
+                let name = request.name();
+                let args = request.args().to_vec();
+                match extern_handler(name, args).await {
+                    Ok(value) => request.resolve(Arc::new(value)),
+                    Err(e) => panic!("display extern call error: {e}"),
+                }
             }
             acvus_interpreter::Stepped::Done => break,
             acvus_interpreter::Stepped::Error(e) => panic!("display runtime error: {e}"),
@@ -225,22 +251,26 @@ async fn drive_template_from_entry(
     output
 }
 
-async fn eval_entries(
+async fn eval_entries<EH>(
     interner: &Interner,
     entries: &[CompiledDisplayEntry],
     entry: &(impl EntryRef<'_> + Sync),
     local: &FxHashMap<String, Arc<Value>>,
-) -> Vec<RenderedDisplayEntry> {
+    extern_handler: &EH,
+) -> Vec<RenderedDisplayEntry>
+where
+    EH: AsyncFn(Astr, Vec<Value>) -> Result<Value, RuntimeError> + Sync,
+{
     let mut result = Vec::new();
     for e in entries {
         if let Some(ref cond) = e.condition {
-            let val = drive_from_entry(interner, cond, entry, local).await;
+            let val = drive_from_entry(interner, cond, entry, local, extern_handler).await;
             let Value::Bool(true) = val else {
                 continue;
             };
         }
         let content =
-            drive_template_from_entry(interner, &e.template, entry, local).await;
+            drive_template_from_entry(interner, &e.template, entry, local, extern_handler).await;
         result.push(RenderedDisplayEntry {
             name: e.name.clone(),
             content,
@@ -250,14 +280,18 @@ async fn eval_entries(
 }
 
 /// Render a static display region.
-pub async fn render_display(
+pub async fn render_display<EH>(
     interner: &Interner,
     display: &CompiledStaticDisplay,
     entry: &(impl EntryRef<'_> + Sync),
-) -> Vec<RenderedDisplayEntry> {
+    extern_handler: &EH,
+) -> Vec<RenderedDisplayEntry>
+where
+    EH: AsyncFn(Astr, Vec<Value>) -> Result<Value, RuntimeError> + Sync,
+{
     let local = FxHashMap::default();
     let content =
-        drive_template_from_entry(interner, &display.template, entry, &local).await;
+        drive_template_from_entry(interner, &display.template, entry, &local, extern_handler).await;
     vec![RenderedDisplayEntry {
         name: String::new(),
         content,
@@ -269,18 +303,23 @@ pub async fn render_display(
 /// Evaluates the iterator to get the list, indexes into it,
 /// then evaluates each entry's condition/template with `@item` and `@index` injected.
 /// Returns rendered HTML strings (entries whose condition is false are skipped).
-pub async fn render_display_with_idx(
+pub async fn render_display_with_idx<EH>(
     interner: &Interner,
     display: &CompiledIterableDisplay,
     entry: &(impl EntryRef<'_> + Sync),
     index: usize,
-) -> Vec<RenderedDisplayEntry> {
+    extern_handler: &EH,
+) -> Vec<RenderedDisplayEntry>
+where
+    EH: AsyncFn(Astr, Vec<Value>) -> Result<Value, RuntimeError> + Sync,
+{
     let empty_local = FxHashMap::default();
     let list = drive_from_entry(
         interner,
         &display.iterator,
         entry,
         &empty_local,
+        extern_handler,
     )
     .await;
 
@@ -297,14 +336,19 @@ pub async fn render_display_with_idx(
     local.insert("item".into(), Arc::new(item));
     local.insert("index".into(), Arc::new(Value::Int(index as i64)));
 
-    eval_entries(interner, &display.entries, entry, &local).await
+    eval_entries(interner, &display.entries, entry, &local, extern_handler).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acvus_mir::context_registry::ContextTypeRegistry;
     use crate::storage::{EntryMut, Journal, TreeJournal};
     use acvus_utils::Interner;
+
+    async fn noop_extern(_: Astr, _: Vec<Value>) -> Result<Value, RuntimeError> {
+        Ok(Value::Unit)
+    }
 
     async fn journal_with(entries: Vec<(&str, Value)>) -> (TreeJournal, uuid::Uuid) {
         let (mut j, root) = TreeJournal::new();
@@ -322,10 +366,11 @@ mod tests {
         let interner = Interner::new();
         let mut ctx = FxHashMap::default();
         ctx.insert(interner.intern("name"), Ty::String);
+        let reg = ContextTypeRegistry::all_system(ctx);
         let spec = StaticDisplaySpec {
             template: "hello {{ @name }}".into(),
         };
-        let result = compile_static_display(&interner, &spec, &ctx);
+        let result = compile_static_display(&interner, &spec, &reg);
         assert!(result.is_ok());
     }
 
@@ -334,6 +379,7 @@ mod tests {
         let interner = Interner::new();
         let mut ctx = FxHashMap::default();
         ctx.insert(interner.intern("items"), Ty::List(Box::new(Ty::String)));
+        let reg = ContextTypeRegistry::all_system(ctx);
         let spec = IterableDisplaySpec {
             iterator: "@items".into(),
             entries: vec![DisplayEntrySpec {
@@ -342,7 +388,7 @@ mod tests {
                 template: "{{ @item }}".into(),
             }],
         };
-        let result = compile_iterable_display(&interner, &spec, &ctx);
+        let result = compile_iterable_display(&interner, &spec, &reg);
         assert!(result.is_ok());
     }
 
@@ -351,11 +397,12 @@ mod tests {
         let interner = Interner::new();
         let mut ctx = FxHashMap::default();
         ctx.insert(interner.intern("items"), Ty::String);
+        let reg = ContextTypeRegistry::all_system(ctx);
         let spec = IterableDisplaySpec {
             iterator: "@items".into(),
             entries: vec![],
         };
-        let result = compile_iterable_display(&interner, &spec, &ctx);
+        let result = compile_iterable_display(&interner, &spec, &reg);
         assert!(result.is_err(), "iterator must be List<_>");
     }
 
@@ -364,12 +411,13 @@ mod tests {
         let interner = Interner::new();
         let mut ctx = FxHashMap::default();
         ctx.insert(interner.intern("greeting"), Ty::String);
+        let reg = ContextTypeRegistry::all_system(ctx);
         let spec = StaticDisplaySpec {
             template: "hello {{ @greeting }}".into(),
         };
-        let compiled = compile_static_display(&interner, &spec, &ctx).unwrap();
+        let compiled = compile_static_display(&interner, &spec, &reg).unwrap();
         let (journal, uuid) = journal_with(vec![("greeting", Value::String("world".into()))]).await;
-        let result = render_display(&interner, &compiled, &journal.entry(uuid).await).await;
+        let result = render_display(&interner, &compiled, &journal.entry(uuid).await, &noop_extern).await;
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].content, "hello world");
         assert_eq!(result[0].name, "");
@@ -380,6 +428,7 @@ mod tests {
         let interner = Interner::new();
         let mut ctx = FxHashMap::default();
         ctx.insert(interner.intern("messages"), Ty::List(Box::new(Ty::String)));
+        let reg = ContextTypeRegistry::all_system(ctx);
         let spec = IterableDisplaySpec {
             iterator: "@messages".into(),
             entries: vec![DisplayEntrySpec {
@@ -388,7 +437,7 @@ mod tests {
                 template: "msg: {{ @item }}".into(),
             }],
         };
-        let compiled = compile_iterable_display(&interner, &spec, &ctx).unwrap();
+        let compiled = compile_iterable_display(&interner, &spec, &reg).unwrap();
         let (journal, uuid) = journal_with(vec![(
             "messages",
             Value::List(vec![
@@ -399,12 +448,12 @@ mod tests {
         )])
         .await;
         let r0 =
-            render_display_with_idx(&interner, &compiled, &journal.entry(uuid).await, 0).await;
+            render_display_with_idx(&interner, &compiled, &journal.entry(uuid).await, 0, &noop_extern).await;
         assert_eq!(r0.len(), 1);
         assert_eq!(r0[0].name, "msg");
         assert_eq!(r0[0].content, "msg: a");
         let r2 =
-            render_display_with_idx(&interner, &compiled, &journal.entry(uuid).await, 2).await;
+            render_display_with_idx(&interner, &compiled, &journal.entry(uuid).await, 2, &noop_extern).await;
         assert_eq!(r2.len(), 1);
         assert_eq!(r2[0].content, "msg: c");
     }
@@ -414,6 +463,7 @@ mod tests {
         let interner = Interner::new();
         let mut ctx = FxHashMap::default();
         ctx.insert(interner.intern("nums"), Ty::List(Box::new(Ty::Int)));
+        let reg = ContextTypeRegistry::all_system(ctx);
         let spec = IterableDisplaySpec {
             iterator: "@nums".into(),
             entries: vec![
@@ -429,7 +479,7 @@ mod tests {
                 },
             ],
         };
-        let compiled = compile_iterable_display(&interner, &spec, &ctx).unwrap();
+        let compiled = compile_iterable_display(&interner, &spec, &reg).unwrap();
         let (journal, uuid) = journal_with(vec![(
             "nums",
             Value::List(vec![Value::Int(3), Value::Int(10)]),
@@ -437,12 +487,12 @@ mod tests {
         .await;
 
         let r0 =
-            render_display_with_idx(&interner, &compiled, &journal.entry(uuid).await, 0).await;
+            render_display_with_idx(&interner, &compiled, &journal.entry(uuid).await, 0, &noop_extern).await;
         assert_eq!(r0.len(), 1, "3 <= 5, first entry skipped");
         assert_eq!(r0[0].content, "all: 3");
 
         let r1 =
-            render_display_with_idx(&interner, &compiled, &journal.entry(uuid).await, 1).await;
+            render_display_with_idx(&interner, &compiled, &journal.entry(uuid).await, 1, &noop_extern).await;
         assert_eq!(r1.len(), 2, "10 > 5, both entries pass");
         assert_eq!(r1[0].content, "big: 10");
         assert_eq!(r1[1].content, "all: 10");
@@ -453,6 +503,7 @@ mod tests {
         let interner = Interner::new();
         let mut ctx = FxHashMap::default();
         ctx.insert(interner.intern("items"), Ty::List(Box::new(Ty::String)));
+        let reg = ContextTypeRegistry::all_system(ctx);
         let spec = IterableDisplaySpec {
             iterator: "@items".into(),
             entries: vec![DisplayEntrySpec {
@@ -461,14 +512,14 @@ mod tests {
                 template: "{{ @item }}".into(),
             }],
         };
-        let compiled = compile_iterable_display(&interner, &spec, &ctx).unwrap();
+        let compiled = compile_iterable_display(&interner, &spec, &reg).unwrap();
         let (journal, uuid) = journal_with(vec![(
             "items",
             Value::List(vec![Value::String("only".into())]),
         )])
         .await;
         let result =
-            render_display_with_idx(&interner, &compiled, &journal.entry(uuid).await, 99).await;
+            render_display_with_idx(&interner, &compiled, &journal.entry(uuid).await, 99, &noop_extern).await;
         assert!(result.is_empty(), "out of bounds returns empty");
     }
 }

@@ -665,7 +665,8 @@ mod tests {
         interner: &Interner,
     ) -> String {
         let template = acvus_ast::parse(interner, source).expect("parse failed");
-        let (module, _) = crate::compile(interner, &template, context)
+        let registry = crate::context_registry::ContextTypeRegistry::all_system(context.clone());
+        let (module, _) = crate::compile(interner, &template, &registry)
             .expect("compile failed");
         dump(interner, &module)
     }

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use acvus_interpreter::{RuntimeError, Value};
 use acvus_orchestration::{
     CompiledNode, EntryMut, EntryRef, Fetch, Journal, Node, ProviderConfig, ResolveState, Resolved,
-    Resolver, StorageDiff, build_dag, build_node_table,
+    Resolver, build_dag, build_node_table,
 };
 use acvus_utils::{Astr, Interner};
 use uuid::Uuid;
@@ -103,7 +103,7 @@ where
         tracing::info!(entrypoint = %interner.resolve(*entrypoint_name), "turn start");
 
         // Block scope: entry borrows journal mutably, released at block end.
-        let (new_cursor, bind_cache) = {
+        let (new_cursor, bind_cache, entrypoint_value) = {
             let entry = self.journal.entry_mut(self.cursor).await.next().await;
             let new_cursor = entry.uuid();
 
@@ -141,9 +141,19 @@ where
                 }
             }
 
+            // Extract entrypoint value before dropping ResolveState.
+            // For Ephemeral persistence the value lives only in turn_context,
+            // while Snapshot/Deque/Diff persist to the journal entry.
+            let name = self.nodes[self.entrypoint_idx].name;
+            let name_str = interner.resolve(name);
+            let entrypoint_value = rs.turn_context.get(&name)
+                .cloned()
+                .or_else(|| rs.entry.get(name_str))
+                .ok_or_else(|| ChatError::UnresolvedContext(name_str.to_string()))?;
+
             let bind_cache = std::mem::take(&mut rs.bind_cache);
             // rs (including entry) dropped here at block end
-            (new_cursor, bind_cache)
+            (new_cursor, bind_cache, entrypoint_value)
         };
 
         self.bind_cache = bind_cache;
@@ -151,12 +161,7 @@ where
 
         tracing::info!(depth = self.journal.entry(self.cursor).await.depth(), "turn complete");
 
-        // Read result from journal (entry is dropped, journal is free)
-        let name = self.nodes[self.entrypoint_idx].name;
-        let result = self.journal.entry(self.cursor).await
-            .get(interner.resolve(name))
-            .ok_or_else(|| ChatError::UnresolvedContext(interner.resolve(name).to_string()))?;
-        Ok((Value::clone(&result), new_cursor))
+        Ok((Value::clone(&entrypoint_value), new_cursor))
     }
 
     pub async fn history_len(&self) -> usize {
@@ -554,7 +559,7 @@ mod tests {
                 }),
                 strategy: Strategy {
                     execution: Execution::OncePerTurn,
-                    persistency: Persistency::default(),
+                    persistency: Persistency::Snapshot,
                     initial_value: Some(interner.intern(r#""A""#)),
                     retry: 0,
                     assert: None,
@@ -785,7 +790,7 @@ mod tests {
                 }),
                 strategy: Strategy {
                     execution: Execution::OncePerTurn,
-                    persistency: Persistency::default(),
+                    persistency: Persistency::Snapshot,
                     initial_value: Some(interner.intern(r#""A""#)),
                     retry: 0,
                     assert: None,

@@ -1,3 +1,4 @@
+use acvus_mir::context_registry::ContextTypeRegistry;
 use acvus_mir::ty::Ty;
 use acvus_mir_test::*;
 use acvus_utils::{Astr, Interner};
@@ -1576,7 +1577,7 @@ fn structural_enum_variant_merge() {
     let (module, _) = acvus_mir::compile_analysis(
         &i,
         &template,
-        &FxHashMap::default(),
+        &ContextTypeRegistry::all_system(FxHashMap::default()),
     )
     .unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
@@ -1591,7 +1592,7 @@ fn structural_enum_single_variant() {
     let i = Interner::new();
     let template = acvus_ast::parse(&i, "{{ A::B = @a }}yes{{_}}no{{/}}").unwrap();
     let (module, _) = acvus_mir::compile_analysis(
-        &i, &template, &FxHashMap::default(),
+        &i, &template, &ContextTypeRegistry::all_system(FxHashMap::default()),
     ).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     assert!(ir.contains("B"), "variant B missing from IR:\n{ir}");
@@ -1603,7 +1604,7 @@ fn structural_enum_three_variants_merge() {
     let src = "{{ S::X = @v }}x{{/}}{{ S::Y = @v }}y{{/}}{{ S::Z = @v }}z{{/}}";
     let template = acvus_ast::parse(&i, src).unwrap();
     let (module, _) = acvus_mir::compile_analysis(
-        &i, &template, &FxHashMap::default(),
+        &i, &template, &ContextTypeRegistry::all_system(FxHashMap::default()),
     ).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     assert!(ir.contains("X"), "variant X missing:\n{ir}");
@@ -1617,7 +1618,7 @@ fn structural_enum_with_payload() {
     let src = r#"{{ R::Ok(v) = @r }}{{ v | to_string }}{{_}}err{{/}}"#;
     let template = acvus_ast::parse(&i, src).unwrap();
     let (module, _) = acvus_mir::compile_analysis(
-        &i, &template, &FxHashMap::default(),
+        &i, &template, &ContextTypeRegistry::all_system(FxHashMap::default()),
     ).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     assert!(ir.contains("Ok"), "variant Ok missing:\n{ir}");
@@ -1629,7 +1630,7 @@ fn structural_enum_mixed_payload_and_unit() {
     let src = r#"{{ R::Ok(v) = @r }}{{ v | to_string }}{{ R::Err = }}fail{{_}}??{{/}}"#;
     let template = acvus_ast::parse(&i, src).unwrap();
     let (module, _) = acvus_mir::compile_analysis(
-        &i, &template, &FxHashMap::default(),
+        &i, &template, &ContextTypeRegistry::all_system(FxHashMap::default()),
     ).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     assert!(ir.contains("Ok"), "variant Ok missing:\n{ir}");
@@ -1643,7 +1644,7 @@ fn structural_enum_same_var_different_blocks_merge() {
     let src = "{{ A::B = @a }}b{{/}}{{ A::C = @a }}c{{/}}";
     let template = acvus_ast::parse(&i, src).unwrap();
     let (module, _) = acvus_mir::compile_analysis(
-        &i, &template, &FxHashMap::default(),
+        &i, &template, &ContextTypeRegistry::all_system(FxHashMap::default()),
     ).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     assert!(ir.contains("B"), "variant B missing:\n{ir}");
@@ -1656,7 +1657,7 @@ fn structural_enum_different_enums_different_vars() {
     let src = "{{ X::A = @x }}xa{{/}}{{ Y::B = @y }}yb{{/}}";
     let template = acvus_ast::parse(&i, src).unwrap();
     let (module, _) = acvus_mir::compile_analysis(
-        &i, &template, &FxHashMap::default(),
+        &i, &template, &ContextTypeRegistry::all_system(FxHashMap::default()),
     ).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     assert!(ir.contains("A"), "variant A missing:\n{ir}");
@@ -1670,7 +1671,7 @@ fn structural_enum_name_mismatch_is_error() {
     let src = "{{ X::A = @v }}a{{/}}{{ Y::B = @v }}b{{/}}";
     let template = acvus_ast::parse(&i, src).unwrap();
     let result = acvus_mir::compile_analysis(
-        &i, &template, &FxHashMap::default(),
+        &i, &template, &ContextTypeRegistry::all_system(FxHashMap::default()),
     );
     assert!(result.is_err(), "should fail: different enum names on same var");
 }
@@ -1682,7 +1683,7 @@ fn structural_enum_payload_unifies_with_inner_match() {
     let src = r#"{{ A::X(x) = @a }}{{ 0 = x }}zero{{_}}other{{/}}{{_}}none{{/}}"#;
     let template = acvus_ast::parse(&i, src).unwrap();
     let (module, _) = acvus_mir::compile_analysis(
-        &i, &template, &FxHashMap::default(),
+        &i, &template, &ContextTypeRegistry::all_system(FxHashMap::default()),
     ).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     assert!(ir.contains("X"), "variant X missing:\n{ir}");
@@ -1695,7 +1696,7 @@ fn structural_enum_payload_unifies_with_emit() {
     let src = r#"{{ A::Val(v) = @a }}{{ v + 1 | to_string }}{{_}}n/a{{/}}"#;
     let template = acvus_ast::parse(&i, src).unwrap();
     let (module, _) = acvus_mir::compile_analysis(
-        &i, &template, &FxHashMap::default(),
+        &i, &template, &ContextTypeRegistry::all_system(FxHashMap::default()),
     ).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     assert!(ir.contains("Val"), "variant Val missing:\n{ir}");
@@ -1712,7 +1713,7 @@ fn structural_enum_payload_type_propagates_through_context() {
     let src = r#"{{ R::Ok(v) = @r }}{{ v + 1 | to_string }}{{ R::Err = }}err{{_}}??{{/}}"#;
     let template = acvus_ast::parse(&i, src).unwrap();
     let (module, _) = acvus_mir::compile_analysis(
-        &i, &template, &ctx_types,
+        &i, &template, &ContextTypeRegistry::all_system(ctx_types),
     ).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     assert!(ir.contains("Ok"), "variant Ok missing:\n{ir}");
@@ -1731,7 +1732,7 @@ fn variant_merge_inside_tuple_pattern() {
     let src = r#"{{ (S::A, x) = @t }}{{ x }}{{ (S::B, y) = }}{{ y }}{{_}}??{{/}}"#;
     let template = acvus_ast::parse(&i, src).unwrap();
     let (module, _) = acvus_mir::compile_analysis(
-        &i, &template, &FxHashMap::default(),
+        &i, &template, &ContextTypeRegistry::all_system(FxHashMap::default()),
     ).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     eprintln!("=== TUPLE VARIANT IR ===\n{ir}\n=== END ===");
@@ -1745,7 +1746,7 @@ fn variant_merge_inside_tuple_three_arms() {
     let src = r#"{{ (S::X, _) = @t }}x{{ (S::Y, _) = }}y{{ (S::Z, _) = }}z{{_}}??{{/}}"#;
     let template = acvus_ast::parse(&i, src).unwrap();
     let (module, _) = acvus_mir::compile_analysis(
-        &i, &template, &FxHashMap::default(),
+        &i, &template, &ContextTypeRegistry::all_system(FxHashMap::default()),
     ).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     assert!(ir.contains("X"), "variant X missing:\n{ir}");
@@ -1760,7 +1761,7 @@ fn variant_merge_inside_list_pattern() {
     let src = r#"{{ [S::A, ..] = @lst }}a{{ [S::B, ..] = }}b{{_}}??{{/}}"#;
     let template = acvus_ast::parse(&i, src).unwrap();
     let (module, _) = acvus_mir::compile_analysis(
-        &i, &template, &FxHashMap::default(),
+        &i, &template, &ContextTypeRegistry::all_system(FxHashMap::default()),
     ).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     assert!(ir.contains("A"), "variant A missing:\n{ir}");
@@ -1778,7 +1779,7 @@ fn infer_unifies_with_concrete_type() {
     let template = acvus_ast::parse(&i, src).unwrap();
     // Should compile without error — Infer payload unifies with Int from `x + 1`.
     acvus_mir::compile_analysis(
-        &i, &template, &ctx_types,
+        &i, &template, &ContextTypeRegistry::all_system(ctx_types),
     ).unwrap();
 }
 
@@ -1795,7 +1796,7 @@ fn pruned_context_keys_in_dead_catch_all() {
     let src = r#"{-{ Impersonation::NoPersona = @Impersonation }}{-{_}}{-{ Pov::User = @Pov }}user{-{ Pov::Char = }}char{-{_}}other{-{ / }}{-{ / }}"#;
     let template = acvus_ast::parse(&i, src).unwrap();
     let (module, _) = acvus_mir::compile_analysis(
-        &i, &template, &FxHashMap::default(),
+        &i, &template, &ContextTypeRegistry::all_system(FxHashMap::default()),
     ).unwrap();
 
     let ir = acvus_mir::printer::dump_with(&i, &module);

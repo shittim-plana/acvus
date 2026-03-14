@@ -2239,7 +2239,7 @@ async fn run_script_with_hint(
 ) -> Value {
     let script = acvus_ast::parse_script(interner, source).expect("parse failed");
     let (module, _hints, _tail_ty) =
-        acvus_mir::compile_script_with_hint(interner, &script, context_types, hint)
+        acvus_mir::compile_script_with_hint(interner, &script, &acvus_mir::context_registry::ContextTypeRegistry::all_system(context_types.clone()), hint)
             .expect("compile failed");
 
     let interp = Interpreter::new(interner, module);
@@ -2511,7 +2511,8 @@ async fn script_hint_flatten_with_context() {
 
     // Compile with no hint — should work (this is the CLI path)
     let ast = acvus_ast::parse_script(&i, script).expect("parse failed");
-    let result = acvus_mir::compile_script_with_hint(&i, &ast, &context_types, None);
+    let reg = acvus_mir::context_registry::ContextTypeRegistry::all_system(context_types);
+    let result = acvus_mir::compile_script_with_hint(&i, &ast, &reg, None);
     assert!(result.is_ok(), "compile without hint failed: {:?}", result.err());
 }
 

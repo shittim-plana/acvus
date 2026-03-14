@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use acvus_interpreter::{Interpreter, PureValue, Stepped, Value};
+use acvus_mir::context_registry::ContextTypeRegistry;
 use acvus_mir::ty::Ty;
 use acvus_utils::{Astr, Interner};
 use rustc_hash::FxHashMap;
@@ -16,10 +17,11 @@ pub async fn run(
     context_values: FxHashMap<Astr, Value>,
 ) -> String {
     let template = acvus_ast::parse(interner, source).expect("parse failed");
+    let reg = ContextTypeRegistry::all_system(context_types);
     let (module, _hints) = acvus_mir::compile(
         interner,
         &template,
-        &context_types,
+        &reg,
     )
     .expect("compile failed");
 
@@ -78,10 +80,11 @@ pub async fn run_obfuscated(
     use acvus_mir_pass::obfuscate::{ObfConfig, ObfuscatePass};
 
     let template = acvus_ast::parse(interner, source).expect("parse failed");
+    let reg = ContextTypeRegistry::all_system(context_types);
     let (module, _hints) = acvus_mir::compile(
         interner,
         &template,
-        &context_types,
+        &reg,
     )
     .expect("compile failed");
 
@@ -141,10 +144,11 @@ pub async fn run_capturing_context_calls(
     values: FxHashMap<Astr, Value>,
 ) -> ContextCallResult {
     let template = acvus_ast::parse(interner, source).expect("parse failed");
+    let reg = ContextTypeRegistry::all_system(types);
     let (module, _hints) = acvus_mir::compile(
         interner,
         &template,
-        &types,
+        &reg,
     )
     .expect("compile failed");
     let interp = Interpreter::new(interner, module);
@@ -181,10 +185,11 @@ pub async fn run_expect_error(
     context_values: FxHashMap<Astr, Value>,
 ) -> acvus_interpreter::RuntimeError {
     let template = acvus_ast::parse(interner, source).expect("parse failed");
+    let reg = ContextTypeRegistry::all_system(context_types);
     let (module, _hints) = acvus_mir::compile(
         interner,
         &template,
-        &context_types,
+        &reg,
     )
     .expect("compile failed");
 
