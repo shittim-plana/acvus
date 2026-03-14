@@ -1655,15 +1655,18 @@ mod tests {
 
     #[test]
     fn two_vars_sharing_deque_demotion_affects_both() {
-        // Var1 → Deque(o1), Var2 → Var1. Demote via Var2.
+        // Chain v2 → v1 while both unbound, THEN bind v1 → Deque(o1).
+        // Demote via v2 → find_leaf_var follows v2 → v1 → rebinds v1 to List.
         // Both Var1 and Var2 should resolve to List.
         let mut s = TySubst::new();
         let o1 = s.fresh_concrete_origin();
         let o2 = s.fresh_concrete_origin();
         let v1 = s.fresh_var();
         let v2 = s.fresh_var();
-        assert!(s.unify(&v1, &Ty::Deque(Box::new(Ty::Int), o1), Invariant).is_ok());
+        // Must chain BEFORE binding to concrete — otherwise shallow_resolve
+        // flattens the chain and v2 binds directly to Deque, not to v1.
         assert!(s.unify(&v2, &v1, Invariant).is_ok());
+        assert!(s.unify(&v1, &Ty::Deque(Box::new(Ty::Int), o1), Invariant).is_ok());
         assert!(s.unify(&Ty::Deque(Box::new(Ty::Int), o2), &v2, Covariant).is_ok());
         assert_eq!(s.resolve(&v1), Ty::List(Box::new(Ty::Int)));
         assert_eq!(s.resolve(&v2), Ty::List(Box::new(Ty::Int)));
