@@ -5,7 +5,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Textarea } from '$lib/components/ui/textarea';
 	import { Label } from '$lib/components/ui/label';
-	import { Send, MessageSquarePlus, Loader2, Square } from 'lucide-svelte';
+	import { Send, MessageSquarePlus, Loader2, Square, RotateCcw } from 'lucide-svelte';
 	import { tick } from 'svelte';
 	import DisplayCard from './display-card.svelte';
 	import { sessionStore, promptStore, profileStore, uiState } from '$lib/stores.svelte.js';
@@ -47,6 +47,7 @@
 	);
 	let isConfigured = $derived(hasHistoryBinding && !!inputParam);
 	let canSubmit = $derived(inputValue.trim().length > 0 && isConfigured);
+	let canReroll = $derived(!st.isLoading && st.turnCount > 0 && isConfigured && st.lastInput !== null);
 
 	// --- Error handling: config built via debounced handleConfigChange, runtime errors are ephemeral ---
 	let configResult = $state<BuildResult | null>(buildSessionConfig(bot));
@@ -365,6 +366,7 @@
 				});
 			};
 
+			st.lastInput = { param: currentInputParam!, value: currentInput };
 			st.turnDeps = deps;
 			uiState.lock(st.turnDeps);
 			const { value, turn: turnNode } = await cs.turn(resolver);
@@ -431,6 +433,16 @@
 		if (!st.chatSession || st.isLoading) return;
 		await st.chatSession.undo();
 		await refreshAfterNavigation(st.chatSession);
+	}
+
+	async function handleReroll() {
+		if (!canReroll || !st.lastInput) return;
+		const ok = await confirmAction('Undo the last turn and retry with the same input?', 'Reroll');
+		if (!ok) return;
+
+		await handleHistoryUndo();
+		inputValue = st.lastInput.value;
+		await submit();
 	}
 
 	async function handleHistoryGoto(id: string) {
@@ -598,7 +610,7 @@
 					/>
 				{/if}
 			</div>
-			<div class="flex flex-col justify-end gap-1 pb-1 pr-1">
+			<div class="flex flex-row items-end gap-2 pb-1 pr-1">
 				{#if st.pendingResolve}
 					<Button size="icon" class="h-10 w-10 shrink-0 rounded-lg transition-transform hover:scale-105 active:scale-95" disabled={!st.pendingValue.trim()} onclick={submitPending}>
 						<Send class="h-4 w-4" />
@@ -608,6 +620,11 @@
 						<Square class="h-4 w-4" />
 					</Button>
 				{:else}
+					{#if canReroll}
+						<Button size="icon" variant="ghost" class="h-10 w-10 shrink-0 rounded-lg transition-transform hover:scale-105 active:scale-95 text-muted-foreground hover:text-foreground" onclick={handleReroll}>
+							<RotateCcw class="h-4 w-4" />
+						</Button>
+					{/if}
 					<Button size="icon" class="h-10 w-10 shrink-0 rounded-lg transition-transform hover:scale-105 active:scale-95" disabled={!canSubmit} onclick={submit}>
 						<Send class="h-4 w-4" />
 					</Button>

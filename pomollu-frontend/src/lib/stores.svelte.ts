@@ -642,6 +642,8 @@ export class ChatState {
 	pendingValue = $state('');
 	gotoHandler: ((id: string) => void) | null = null;
 
+	lastInput: { param: string; value: string } | null = null;
+
 	// Non-reactive
 	chatSession: ChatSession | null = null;
 	chatSessionKey: string | null = null;
