@@ -9,11 +9,12 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Separator } from '$lib/components/ui/separator';
 	import { Plus, X, Download } from 'lucide-svelte';
-	import { downloadJson } from '$lib/io.js';
+	import { exportEntityZip } from '$lib/io.js';
 	import { botStore, promptStore, profileStore, providerStore, uiState, createId } from '$lib/stores.svelte.js';
 	import AcvusEngineField from './acvus-engine-field.svelte';
 	import GridLayoutEditor from './grid-layout-editor.svelte';
 	import ContextParamsEditor from './context-params-editor.svelte';
+
 	import { analyzeBot, mergeParams, pruneOverrides } from '$lib/param-resolver.js';
 	import { analyzeWithTypes } from '$lib/engine.js';
 	import type { TypeDesc } from '$lib/type-parser.js';
@@ -216,7 +217,7 @@
 		<span class="text-sm font-medium">Bot Settings</span>
 		{#if bot}
 			<div class="flex items-center gap-1">
-				<Button variant="ghost" size="icon-sm" class="text-muted-foreground" onclick={() => downloadJson(bot, `${bot.name}.bot.json`)} title="Export">
+				<Button variant="ghost" size="icon-sm" class="text-muted-foreground" onclick={() => exportEntityZip(bot, `asset_${bot.id}`)} title="Export">
 					<Download class="h-3.5 w-3.5" />
 				</Button>
 				<Button variant="ghost" size="icon-sm" class="text-muted-foreground hover:text-destructive" onclick={async () => { if (await confirmDelete('Delete this bot? This will also delete all its sessions.')) uiState.removeBot(bot.id); }} title="Delete bot">
@@ -470,6 +471,18 @@
 							<Plus class="h-3 w-3 mr-1" /> Static Region
 						</Button>
 					</div>
+				</div>
+
+				<Separator />
+
+				<div class="space-y-3">
+					<div>
+						<span class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Assets</span>
+						<p class="text-xs text-muted-foreground mt-1">Binary assets accessible from scripts via <code class="text-[0.7rem]">from_blob("folder/name")</code>.</p>
+					</div>
+					<Button variant="outline" size="sm" onclick={() => uiState.openTab({ kind: 'assets', dbName: `asset_${bot.id}`, entityName: bot.name })}>
+						Open Asset Editor
+					</Button>
 				</div>
 
 				{#if mergedParams.length > 0}

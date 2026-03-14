@@ -22,6 +22,8 @@ pub(crate) struct SessionConfig {
     pub context: FxHashMap<String, ContextDecl>,
     #[serde(default)]
     pub side_effects: Vec<String>,
+    #[serde(default)]
+    pub asset_store_name: Option<String>,
 }
 
 #[derive(Deserialize)]

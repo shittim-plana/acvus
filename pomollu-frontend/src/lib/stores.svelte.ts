@@ -122,7 +122,8 @@ export type Tab =
 	| { kind: 'node'; nodeId: string; owner: BlockOwner }
 	| { kind: 'prompt'; promptId: string }
 	| { kind: 'profile'; profileId: string }
-	| { kind: 'provider'; providerId: string };
+	| { kind: 'provider'; providerId: string }
+	| { kind: 'assets'; dbName: string; entityName: string };
 
 export type BlockOwner =
 	| { kind: 'bot'; botId: string }
@@ -138,6 +139,7 @@ export function tabKey(tab: Tab): string {
 		case 'prompt': return `prompt:${tab.promptId}`;
 		case 'profile': return `profile:${tab.profileId}`;
 		case 'provider': return `provider:${tab.providerId}`;
+		case 'assets': return `assets:${tab.dbName}`;
 	}
 }
 
@@ -408,6 +410,8 @@ class UIState {
 				return profileStore.get(tab.profileId) !== undefined;
 			case 'provider':
 				return providerStore.get(tab.providerId) !== undefined;
+			case 'assets':
+				return true;
 		}
 	}
 
@@ -488,6 +492,7 @@ class PromptStore {
 	remove(id: string) {
 		this.prompts = this.prompts.filter((p) => p.id !== id);
 		entityVersions.bump('prompt', id);
+		indexedDB.deleteDatabase(`asset_${id}`);
 	}
 
 	update(id: string, updater: (p: Prompt) => Prompt) {
@@ -538,6 +543,7 @@ class ProfileStore {
 	remove(id: string) {
 		this.profiles = this.profiles.filter((p) => p.id !== id);
 		entityVersions.bump('profile', id);
+		indexedDB.deleteDatabase(`asset_${id}`);
 	}
 
 	update(id: string, updater: (p: Profile) => Profile) {
@@ -599,6 +605,7 @@ class BotStore {
 		this.bots = this.bots.filter((b) => b.id !== id);
 		sessionStore.removeForBot(id);
 		entityVersions.bump('bot', id);
+		indexedDB.deleteDatabase(`asset_${id}`);
 	}
 
 	update(id: string, updater: (b: Bot) => Bot) {

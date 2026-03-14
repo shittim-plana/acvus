@@ -1,4 +1,4 @@
-use acvus_interpreter::Value;
+use acvus_interpreter::{IntoValue, Value};
 use acvus_mir::context_registry::ContextTypeRegistry;
 use acvus_mir::ty::Ty;
 use acvus_orchestration::{
@@ -18,6 +18,7 @@ use wasm_bindgen_futures::JsFuture;
 use crate::build_registry;
 use crate::config::{self, SessionConfig};
 use crate::fetch::{UnsafeSend, WebFetch};
+use crate::idb::IdbAssetStore;
 use crate::idb::IdbBlobStore;
 use crate::schema::*;
 
@@ -50,12 +51,98 @@ struct DisplayEntryJson {
     template: String,
 }
 
+async fn dispatch_extern(
+    interner: &Interner,
+    asset_store: &Option<std::sync::Arc<IdbAssetStore>>,
+    name: Astr,
+    args: Vec<Value>,
+) -> Result<Value, acvus_interpreter::RuntimeError> {
+    let name_str = interner.resolve(name);
+    match name_str {
+        "from_blob" => {
+            let Value::String(ref key) = args[0] else {
+                return Err(acvus_interpreter::RuntimeError::type_mismatch(
+                    "from_blob", "String", &format!("{:?}", args[0]),
+                ));
+            };
+            acvus_interpreter::set_interner_ctx(interner);
+            let Some(store) = asset_store else {
+                let result: Option<Value> = None;
+                return Ok(result.into_value());
+            };
+            match store.get(key).await {
+                Some((kind, data)) => {
+                    let bytes: Vec<Value> = data.into_iter().map(Value::Byte).collect();
+                    let tag = match kind.as_str() {
+                        "image" => interner.intern("Image"),
+                        _ => interner.intern("Other"),
+                    };
+                    let asset = Value::Variant {
+                        tag,
+                        payload: Some(Box::new(Value::List(bytes))),
+                    };
+                    let result: Option<Value> = Some(asset);
+                    Ok(result.into_value())
+                }
+                None => {
+                    let result: Option<Value> = None;
+                    Ok(result.into_value())
+                }
+            }
+        }
+        "list_blobs" => {
+            let Value::String(ref prefix) = args[0] else {
+                return Err(acvus_interpreter::RuntimeError::type_mismatch(
+                    "list_blobs", "String", &format!("{:?}", args[0]),
+                ));
+            };
+            let Some(store) = asset_store else {
+                return Ok(Value::List(vec![]));
+            };
+            let names = store.list(prefix).await;
+            let values: Vec<Value> = names.into_iter().map(Value::String).collect();
+            Ok(Value::List(values))
+        }
+        "version_blob" => {
+            let Some(store) = asset_store else {
+                return Ok(Value::Int(0));
+            };
+            let version = store.version().await;
+            Ok(Value::Int(version))
+        }
+        "asset_url" => {
+            let Value::String(ref path) = args[0] else {
+                return Err(acvus_interpreter::RuntimeError::type_mismatch(
+                    "asset_url", "String", &format!("{:?}", args[0]),
+                ));
+            };
+            acvus_interpreter::set_interner_ctx(interner);
+            let Some(store) = asset_store else {
+                let result: Option<String> = None;
+                return Ok(result.into_value());
+            };
+            // Check if the asset actually exists
+            let exists = store.get(path).await.is_some();
+            if !exists {
+                let result: Option<String> = None;
+                return Ok(result.into_value());
+            }
+            let version = store.version().await;
+            let db_name = store.db_name();
+            let result: Option<String> = Some(format!("/asset/{db_name}/{path}?v={version}"));
+            Ok(result.into_value())
+        }
+        _ => acvus_ext::regex_call(interner, name, args).await,
+    }
+}
+
 #[wasm_bindgen]
 pub struct ChatSession {
     engine: acvus_chat::ChatEngine<BlobStoreJournal<IdbBlobStore>>,
     /// Context type registry for compilation (extern fns + system/storage + user).
     compile_registry: ContextTypeRegistry,
     interner: Interner,
+    asset_store: Option<std::sync::Arc<IdbAssetStore>>,
 }
 
 #[wasm_bindgen]
@@ -156,6 +243,12 @@ impl ChatSession {
             }
         };
 
+        // Open asset store if configured
+        let asset_store = match &cfg.asset_store_name {
+            Some(name) => Some(std::sync::Arc::new(IdbAssetStore::open(name).await)),
+            None => None,
+        };
+
         let engine = acvus_chat::ChatEngine::new(
             compiled,
             providers,
@@ -173,6 +266,7 @@ impl ChatSession {
             engine,
             compile_registry,
             interner,
+            asset_store,
         })
     }
 
@@ -232,9 +326,11 @@ impl ChatSession {
 
         let extern_handler = {
             let interner = self.interner.clone();
+            let asset_store = self.asset_store.clone();
             move |name: Astr, args: Vec<acvus_interpreter::Value>| {
                 let interner = interner.clone();
-                UnsafeSend(async move { acvus_ext::regex_call(&interner, name, args).await })
+                let asset_store = asset_store.clone();
+                UnsafeSend(async move { dispatch_extern(&interner, &asset_store, name, args).await })
             }
         };
 
@@ -308,7 +404,7 @@ impl ChatSession {
                 Stepped::NeedExternCall(request) => {
                     let name = request.name();
                     let args = request.args().to_vec();
-                    match acvus_ext::regex_call(&self.interner, name, args).await {
+                    match dispatch_extern(&self.interner, &self.asset_store, name, args).await {
                         Ok(value) => request.resolve(std::sync::Arc::new(value)),
                         Err(e) => return Err(JsError::new(&format!("display extern error: {e}"))),
                     }
@@ -352,9 +448,11 @@ impl ChatSession {
         let entry = self.engine.journal.entry(cursor).await;
         let extern_handler = {
             let interner = self.interner.clone();
+            let asset_store = self.asset_store.clone();
             move |name: Astr, args: Vec<acvus_interpreter::Value>| {
                 let interner = interner.clone();
-                UnsafeSend(async move { acvus_ext::regex_call(&interner, name, args).await })
+                let asset_store = asset_store.clone();
+                UnsafeSend(async move { dispatch_extern(&interner, &asset_store, name, args).await })
             }
         };
         let result = render_display_with_idx(&self.interner, &compiled, &entry, index, &extern_handler).await;
@@ -383,9 +481,11 @@ impl ChatSession {
         let entry = self.engine.journal.entry(cursor).await;
         let extern_handler = {
             let interner = self.interner.clone();
+            let asset_store = self.asset_store.clone();
             move |name: Astr, args: Vec<acvus_interpreter::Value>| {
                 let interner = interner.clone();
-                UnsafeSend(async move { acvus_ext::regex_call(&interner, name, args).await })
+                let asset_store = asset_store.clone();
+                UnsafeSend(async move { dispatch_extern(&interner, &asset_store, name, args).await })
             }
         };
         let result = render_display(&self.interner, &compiled, &entry, &extern_handler).await;

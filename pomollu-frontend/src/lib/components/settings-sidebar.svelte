@@ -3,7 +3,7 @@
 	import { providerStore, promptStore, profileStore, uiState, generateName } from '$lib/stores.svelte.js';
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import SidebarList from './sidebar-list.svelte';
-	import { pickJsonFile, withNewId, validatePrompt, validateProfile } from '$lib/io.js';
+	import { importEntityZip, validatePrompt, validateProfile } from '$lib/io.js';
 	import { confirmDelete } from '$lib/confirm-dialog.svelte.js';
 
 	let collapsed: Record<string, boolean> = $state({});
@@ -37,11 +37,14 @@
 	}
 
 	async function importPrompt() {
-		const data = await pickJsonFile();
-		if (!validatePrompt(data)) { alert('Invalid prompt file'); return; }
-		const p = withNewId(data);
-		promptStore.import(p);
-		uiState.openPrompt(p.id);
+		try {
+			const { entity } = await importEntityZip();
+			if (!validatePrompt(entity)) { alert('Invalid prompt file'); return; }
+			promptStore.import(entity);
+			uiState.openPrompt(entity.id);
+		} catch (e) {
+			if ((e as Error).message !== 'no file selected') alert(`Import failed: ${e}`);
+		}
 	}
 
 	function addProfile() {
@@ -51,11 +54,14 @@
 	}
 
 	async function importProfile() {
-		const data = await pickJsonFile();
-		if (!validateProfile(data)) { alert('Invalid profile file'); return; }
-		const p = withNewId(data);
-		profileStore.import(p);
-		uiState.openProfile(p.id);
+		try {
+			const { entity } = await importEntityZip();
+			if (!validateProfile(entity)) { alert('Invalid profile file'); return; }
+			profileStore.import(entity);
+			uiState.openProfile(entity.id);
+		} catch (e) {
+			if ((e as Error).message !== 'no file selected') alert(`Import failed: ${e}`);
+		}
 	}
 
 	// --- Delete: remove from tree + store ---

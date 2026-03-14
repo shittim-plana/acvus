@@ -6,6 +6,7 @@
 	import type { BlockOwner } from '$lib/stores.svelte.js';
 	import BlockListCompact from './block-list-compact.svelte';
 	import HistoryPanel from './history-panel.svelte';
+	import AssetFolderSidebar from './asset-folder-sidebar.svelte';
 
 	type OwnerContext = { kind: 'owner'; owner: BlockOwner; children: BlockNode[]; label: string };
 
@@ -35,6 +36,7 @@
 
 	let context = $derived.by(() => {
 		const tab = uiState.activeTab;
+		if (tab?.kind === 'assets') return { kind: 'assets' as const };
 		if (tab?.kind === 'chat') return { kind: 'session' as const };
 		const owner = tabOwner();
 		if (owner) return ownerContext(owner);
@@ -47,7 +49,9 @@
 </script>
 
 <div class="flex h-full flex-col">
-	{#if context?.kind === 'session' && chatState}
+	{#if context?.kind === 'assets'}
+		<AssetFolderSidebar />
+	{:else if context?.kind === 'session' && chatState}
 		<HistoryPanel
 			nodes={chatState.treeNodes}
 			cursor={chatState.treeCursor}

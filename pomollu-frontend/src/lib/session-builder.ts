@@ -382,7 +382,8 @@ export function buildSessionConfig(bot: Bot): BuildResult | null {
 			providers,
 			entrypoint,
 			context,
-			side_effects: sideEffects
+			side_effects: sideEffects,
+			asset_store_name: `asset_${bot.id}`,
 		}
 	};
 }

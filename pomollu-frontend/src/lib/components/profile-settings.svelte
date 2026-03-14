@@ -8,10 +8,11 @@
 	import { Separator } from '$lib/components/ui/separator';
 	import { profileStore, providerStore, uiState } from '$lib/stores.svelte.js';
 	import ContextParamsEditor from './context-params-editor.svelte';
+
 	import { analyzeProfile, mergeParams, pruneOverrides } from '$lib/param-resolver.js';
 	import { collectProfileDeps } from '$lib/dependencies.js';
 	import { Download } from 'lucide-svelte';
-	import { downloadJson } from '$lib/io.js';
+	import { exportEntityZip } from '$lib/io.js';
 	import { confirmDelete } from '$lib/confirm-dialog.svelte.js';
 	import BasePage from './base-page.svelte';
 
@@ -53,7 +54,7 @@
 	<div class="flex items-center justify-between shrink-0 border-b px-3 py-2">
 		<span class="text-sm font-medium">Profile Settings</span>
 		<div class="flex items-center gap-1">
-			<Button variant="ghost" size="icon-sm" class="text-muted-foreground" onclick={() => profile && downloadJson(profile, `${profile.name}.profile.json`)} title="Export">
+			<Button variant="ghost" size="icon-sm" class="text-muted-foreground" onclick={() => profile && exportEntityZip(profile, `asset_${profile.id}`)} title="Export">
 				<Download class="h-3.5 w-3.5" />
 			</Button>
 			<Button variant="ghost" size="icon-sm" class="text-muted-foreground hover:text-destructive" onclick={async () => { if (await confirmDelete('Delete this profile?')) uiState.removeProfile(profileId); }} title="Delete profile">
@@ -71,6 +72,18 @@
 						value={profile.name}
 						oninput={(e) => profileStore.update(profile.id, (p) => ({ ...p, name: e.currentTarget.value }))}
 					/>
+				</div>
+
+				<Separator />
+
+				<div class="space-y-3">
+					<div>
+						<span class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Assets</span>
+						<p class="text-xs text-muted-foreground mt-1">Binary assets for this profile. Accessible via <code class="text-[0.7rem]">from_blob("folder/name")</code>.</p>
+					</div>
+					<Button variant="outline" size="sm" onclick={() => uiState.openTab({ kind: 'assets', dbName: `asset_${profile.id}`, entityName: profile.name })}>
+						Open Asset Editor
+					</Button>
 				</div>
 
 				{#if mergedParams.length > 0}

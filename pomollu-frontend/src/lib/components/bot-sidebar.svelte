@@ -4,15 +4,18 @@
 	import { Button } from '$lib/components/ui/button';
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import { longpress } from '$lib/actions/longpress.js';
-	import { pickJsonFile, withNewId, validateBot } from '$lib/io.js';
+	import { importEntityZip, validateBot } from '$lib/io.js';
 	import { confirmDelete } from '$lib/confirm-dialog.svelte.js';
 
 	async function importBot() {
-		const data = await pickJsonFile();
-		if (!validateBot(data)) { alert('Invalid bot file'); return; }
-		const b = withNewId(data);
-		botStore.import(b);
-		uiState.selectBot(b.id);
+		try {
+			const { entity } = await importEntityZip();
+			if (!validateBot(entity)) { alert('Invalid bot file'); return; }
+			botStore.import(entity);
+			uiState.selectBot(entity.id);
+		} catch (e) {
+			if ((e as Error).message !== 'no file selected') alert(`Import failed: ${e}`);
+		}
 	}
 
 	function addBot() {

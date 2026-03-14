@@ -4,7 +4,7 @@
 	import { uiState, botStore, promptStore, profileStore, providerStore, sessionStore, getOwnerChildren, tabKey } from '$lib/stores.svelte.js';
 	import { findBlock, findNodeItem } from '$lib/block-tree.js';
 	import { longpress } from '$lib/actions/longpress.js';
-	import { X, MessageCircle, Bot, FileCode, ScrollText, User, Box, Plug } from 'lucide-svelte';
+	import { X, MessageCircle, Bot, FileCode, ScrollText, User, Box, Plug, FolderOpen } from 'lucide-svelte';
 
 	type IconComponent = typeof MessageCircle;
 
@@ -17,6 +17,7 @@
 			case 'profile': return User;
 			case 'node': return Box;
 			case 'provider': return Plug;
+			case 'assets': return FolderOpen;
 		}
 	}
 	import { slide } from 'svelte/transition';
@@ -49,6 +50,8 @@
 			}
 			case 'provider':
 				return providerStore.get(tab.providerId)?.name || 'Provider';
+			case 'assets':
+				return `${tab.entityName} Assets`;
 		}
 	}
 

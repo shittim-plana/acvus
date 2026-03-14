@@ -11,6 +11,7 @@
 	import ProviderSettings from '$lib/components/provider-settings.svelte';
 	import NodeSettings from '$lib/components/node-settings.svelte';
 	import BlockEditorPage from '$lib/components/block-editor-page.svelte';
+	import AssetEditor from '$lib/components/asset-editor.svelte';
 	import TabBar from '$lib/components/tab-bar.svelte';
 	import SyncIndicator from '$lib/components/sync-indicator.svelte';
 	import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
@@ -207,6 +208,8 @@
 							<ProviderSettings providerId={activeTab.providerId} />
 						{:else if activeTab?.kind === 'node'}
 							<NodeSettings nodeId={activeTab.nodeId} owner={activeTab.owner} contextTypes={ownerEnv.contextTypes} nodeLocals={ownerEnv.nodeLocals} nodeErrors={ownerEnv.nodeErrors} nodeFnParams={ownerEnv.nodeFnParams} />
+						{:else if activeTab?.kind === 'assets'}
+							<AssetEditor dbName={activeTab.dbName} entityName={activeTab.entityName} />
 						{:else if activeTab?.kind === 'bot-settings'}
 							<BotSettings botId={activeTab.botId} />
 						{:else if activeTab?.kind === 'chat'}

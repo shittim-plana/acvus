@@ -365,3 +365,175 @@ impl BlobStore for IdbBlobStore {
         .await;
     }
 }
+
+// ── IdbAssetStore ─────────────────────────────────────────────────
+
+const ASSETS_STORE: &str = "assets";
+const META_STORE: &str = "meta";
+
+pub struct IdbAssetStore {
+    db: IdbDatabase,
+    db_name: String,
+}
+
+// SAFETY: WASM is single-threaded. IdbDatabase is !Send+!Sync but
+// there is no concurrent access.
+unsafe impl Send for IdbAssetStore {}
+unsafe impl Sync for IdbAssetStore {}
+
+impl IdbAssetStore {
+    /// Open (or create) an asset IndexedDB database.
+    ///
+    /// DB name is passed in from the caller (e.g. `asset_{bot_id}`).
+    pub async fn open(db_name: &str) -> Self {
+        let db_name = db_name.to_string();
+        let db_name_clone = db_name.clone();
+        let db = UnsafeSend(async {
+            let window = web_sys::window().expect("no window");
+            let factory = window
+                .indexed_db()
+                .expect("indexed_db() failed")
+                .expect("IndexedDB not available");
+
+            let open_req = factory
+                .open_with_u32(&db_name, 1)
+                .expect("open_with_u32 failed");
+
+            let open_req_ref = open_req.clone();
+            let on_upgrade = Closure::once(move |_: JsValue| {
+                let db: IdbDatabase = open_req_ref
+                    .result()
+                    .expect("result() in onupgradeneeded")
+                    .unchecked_into();
+                let store_names = db.object_store_names();
+                if !store_names.contains(ASSETS_STORE) {
+                    db.create_object_store(ASSETS_STORE)
+                        .expect("create assets store");
+                }
+                if !store_names.contains(META_STORE) {
+                    db.create_object_store(META_STORE)
+                        .expect("create meta store");
+                }
+            });
+            open_req.set_onupgradeneeded(Some(on_upgrade.as_ref().unchecked_ref()));
+            on_upgrade.forget();
+
+            let db_val = idb_request(&open_req)
+                .await
+                .expect("failed to open asset IDB");
+            let db: IdbDatabase = db_val.unchecked_into();
+            db
+        })
+        .await;
+
+        Self { db, db_name: db_name_clone }
+    }
+
+    pub fn db_name(&self) -> &str {
+        &self.db_name
+    }
+
+    fn assets_store(&self, mode: IdbTransactionMode) -> (IdbTransaction, IdbObjectStore) {
+        let tx = self
+            .db
+            .transaction_with_str_and_mode(ASSETS_STORE, mode)
+            .expect("transaction on assets");
+        let store = tx.object_store(ASSETS_STORE).expect("open assets store");
+        (tx, store)
+    }
+
+    fn meta_store(&self, mode: IdbTransactionMode) -> (IdbTransaction, IdbObjectStore) {
+        let tx = self
+            .db
+            .transaction_with_str_and_mode(META_STORE, mode)
+            .expect("transaction on meta");
+        let store = tx.object_store(META_STORE).expect("open meta store");
+        (tx, store)
+    }
+
+    /// Get an asset by path (e.g. "portraits/alice.png").
+    /// Returns `(kind, data)` where kind comes from the folder's type.
+    pub async fn get(&self, path: &str) -> Option<(String, Vec<u8>)> {
+        let path = path.to_string();
+        UnsafeSend(async {
+            // Read both assets and meta in a single transaction
+            let store_names = js_sys::Array::new();
+            store_names.push(&JsValue::from_str(ASSETS_STORE));
+            store_names.push(&JsValue::from_str(META_STORE));
+            let tx = self.db
+                .transaction_with_str_sequence_and_mode(&store_names, IdbTransactionMode::Readonly)
+                .expect("transaction on assets+meta");
+            let assets = tx.object_store(ASSETS_STORE).expect("open assets store");
+            let meta = tx.object_store(META_STORE).expect("open meta store");
+
+            // Get the asset data
+            let key = JsValue::from_str(&path);
+            let data_req = assets.get(&key).expect("asset get request");
+            let data_result = idb_request(&data_req).await.expect("asset get failed");
+
+            if data_result.is_undefined() || data_result.is_null() {
+                return None;
+            }
+
+            let arr: Uint8Array = data_result.unchecked_into();
+            let data = arr.to_vec();
+
+            // Path must be folder/filename format
+            if !path.contains('/') {
+                return None;
+            }
+
+            // Get folders map to determine kind
+            let folders_key = JsValue::from_str("folders");
+            let folders_req = meta.get(&folders_key).expect("folders get request");
+            let folders_result = idb_request(&folders_req).await.expect("folders get failed");
+
+            let folder_prefix = path.split('/').next().unwrap_or("");
+            let kind = if !folders_result.is_undefined() && !folders_result.is_null() {
+                js_sys::Reflect::get(&folders_result, &JsValue::from_str(folder_prefix))
+                    .ok()
+                    .and_then(|v| v.as_string())
+                    .unwrap_or_else(|| "other".to_string())
+            } else {
+                "other".to_string()
+            };
+
+            Some((kind, data))
+        })
+        .await
+    }
+
+    /// List asset paths matching a prefix. Empty prefix returns all.
+    pub async fn list(&self, prefix: &str) -> Vec<String> {
+        let prefix = prefix.to_string();
+        UnsafeSend(async {
+            let (_tx, store) = self.assets_store(IdbTransactionMode::Readonly);
+            let req = store.get_all_keys().expect("getAllKeys request");
+            let result = idb_request(&req).await.expect("getAllKeys failed");
+
+            let arr = js_sys::Array::from(&result);
+            arr.iter()
+                .filter_map(|v| v.as_string())
+                .filter(|name| prefix.is_empty() || name.starts_with(&prefix))
+                .collect()
+        })
+        .await
+    }
+
+    /// Read the version counter. Returns 0 if not set.
+    pub async fn version(&self) -> i64 {
+        UnsafeSend(async {
+            let (_tx, store) = self.meta_store(IdbTransactionMode::Readonly);
+            let key = JsValue::from_str("version");
+            let req = store.get(&key).expect("version get request");
+            let result = idb_request(&req).await.expect("version get failed");
+
+            if result.is_undefined() || result.is_null() {
+                0
+            } else {
+                result.as_f64().unwrap_or(0.0) as i64
+            }
+        })
+        .await
+    }
+}

@@ -330,6 +330,7 @@ export type SessionConfig = {
 	entrypoint: string;
 	context?: Record<string, { type?: TypeDesc }>;
 	side_effects?: string[];
+	asset_store_name?: string;
 };
 
 export type ExecutionConfig =
