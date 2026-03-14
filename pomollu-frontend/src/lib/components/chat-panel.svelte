@@ -66,8 +66,8 @@
 	// --- Component-local state (OK to lose on remount) ---
 	let loadingMore = $state(false);
 	let sentinelEl = $state<HTMLElement>();
-	let scrollContainerEl = $state<HTMLElement>();
-	let bottomEl = $state<HTMLElement>();
+	let viewportEl = $state<HTMLElement | null>(null);
+
 
 	// --- Session lifecycle: auto-init when conditions are met ---
 	$effect(() => {
@@ -83,6 +83,7 @@
 			}
 
 			// Clear stale display state
+			didInitialScroll = false;
 			st.displayCards = [];
 			st.totalListLen = 0;
 			st.loadedFrom = 0;
@@ -166,12 +167,13 @@
 		if (cs.freed) return;
 		const len = await cs.displayListLen(bot.display.iterator);
 		st.totalListLen = len;
-		st.loadedFrom = Math.max(0, len - 10);
+		st.loadedFrom = Math.max(0, len - 5);
 		if (len > 0) {
 			st.displayCards = await renderDisplayRange(cs, st.loadedFrom, len);
 		} else {
 			st.displayCards = [];
 		}
+		scrollToBottom();
 	}
 
 	// Re-render static regions when bot.regions changes
@@ -193,12 +195,20 @@
 	let hasAspect = $derived((layout.aspect ?? 0) > 0);
 	let computedGridStyle = $derived(gridStyle(layout));
 
-	async function scrollToBottom() {
-		await tick();
-		if (bottomEl) {
-			bottomEl.scrollIntoView({ behavior: 'smooth' });
+	function scrollToBottom() {
+		if (viewportEl) {
+			viewportEl.scrollTop = viewportEl.scrollHeight;
 		}
 	}
+
+	// When viewport mounts and cards exist, scroll to bottom once.
+	let didInitialScroll = false;
+	$effect(() => {
+		if (viewportEl && st.displayCards.length > 0 && !didInitialScroll) {
+			didInitialScroll = true;
+			viewportEl.scrollTop = viewportEl.scrollHeight;
+		}
+	});
 
 	function formatResult(value: unknown): string {
 		if (typeof value === 'string') return value;
@@ -294,12 +304,11 @@
 		if (!st.chatSession || st.chatSession.freed || st.chatSession.busy || loadingMore || st.loadedFrom <= 0 || st.isLoading) return;
 		loadingMore = true;
 
-		const newStart = Math.max(0, st.loadedFrom - 10);
+		const newStart = Math.max(0, st.loadedFrom - 5);
 		const newEnd = st.loadedFrom;
 
 		try {
-			const scrollEl = scrollContainerEl;
-			const prevHeight = scrollEl?.scrollHeight ?? 0;
+			const prevHeight = viewportEl?.scrollHeight ?? 0;
 
 			const olderCards = await renderDisplayRange(st.chatSession, newStart, newEnd);
 			st.displayCards = [...olderCards, ...st.displayCards];
@@ -307,9 +316,9 @@
 
 			// Preserve scroll position
 			await tick();
-			if (scrollEl) {
-				const newHeight = scrollEl.scrollHeight;
-				scrollEl.scrollTop += newHeight - prevHeight;
+			if (viewportEl) {
+				const newHeight = viewportEl.scrollHeight;
+				viewportEl.scrollTop += newHeight - prevHeight;
 			}
 		} finally {
 			loadingMore = false;
@@ -481,9 +490,8 @@
 </script>
 
 {#snippet historyPanel()}
-	<ScrollArea class="h-full">
+	<ScrollArea class="h-full" bind:viewportRef={viewportEl}>
 		<div
-			bind:this={scrollContainerEl}
 			class="flex flex-col gap-3 p-4 md:p-6 lg:px-8 max-w-4xl mx-auto w-full"
 		>
 			{#if useDisplayEngine && st.loadedFrom > 0}
@@ -512,7 +520,7 @@
 					<DisplayCard {card} />
 				{/each}
 			{/if}
-			<div bind:this={bottomEl}></div>
+			<div></div>
 		</div>
 	</ScrollArea>
 {/snippet}

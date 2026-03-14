@@ -88,6 +88,7 @@ export function createNode(name: string): Node {
 		topP: null,
 		topK: null,
 		grounding: false,
+		thinking: null,
 		maxTokens: { input: 16000, output: 4000 },
 		strategy: {
 			execution: { mode: 'once-per-turn' },

@@ -47,6 +47,8 @@ function idb(request) {
 	});
 }
 
+const BLOB_DB_NAME = 'asset_blobs';
+
 function openDB(dbName) {
 	return new Promise((resolve, reject) => {
 		const r = indexedDB.open(dbName, 1);
@@ -60,15 +62,40 @@ function openDB(dbName) {
 	});
 }
 
+function openBlobDB() {
+	return new Promise((resolve, reject) => {
+		const r = indexedDB.open(BLOB_DB_NAME, 1);
+		r.onupgradeneeded = () => {
+			const db = r.result;
+			if (!db.objectStoreNames.contains('blobs')) db.createObjectStore('blobs');
+		};
+		r.onsuccess = () => resolve(r.result);
+		r.onerror = () => reject(r.error);
+	});
+}
+
 async function readAsset(dbName, assetPath) {
-	const db = await openDB(dbName);
+	// Step 1: read hash from per-entity DB
+	const entityDb = await openDB(dbName);
+	let hash;
 	try {
-		const data = await idb(
-			db.transaction('assets', 'readonly').objectStore('assets').get(assetPath),
+		hash = await idb(
+			entityDb.transaction('assets', 'readonly').objectStore('assets').get(assetPath),
 		);
-		return data ?? null;
 	} finally {
-		db.close();
+		entityDb.close();
+	}
+	if (!hash) return null;
+
+	// Step 2: read blob from shared blob DB
+	const blobDb = await openBlobDB();
+	try {
+		const entry = await idb(
+			blobDb.transaction('blobs', 'readonly').objectStore('blobs').get(hash),
+		);
+		return entry?.data ?? null;
+	} finally {
+		blobDb.close();
 	}
 }
 

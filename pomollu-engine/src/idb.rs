@@ -451,71 +451,15 @@ impl IdbAssetStore {
         (tx, store)
     }
 
-    /// Get an asset by path (e.g. "portraits/alice.png").
-    /// Returns `(kind, data)` where kind comes from the folder's type.
-    pub async fn get(&self, path: &str) -> Option<(String, Vec<u8>)> {
+    /// Check if an asset path exists (has a hash entry in the assets store).
+    pub async fn exists(&self, path: &str) -> bool {
         let path = path.to_string();
         UnsafeSend(async {
-            // Read both assets and meta in a single transaction
-            let store_names = js_sys::Array::new();
-            store_names.push(&JsValue::from_str(ASSETS_STORE));
-            store_names.push(&JsValue::from_str(META_STORE));
-            let tx = self.db
-                .transaction_with_str_sequence_and_mode(&store_names, IdbTransactionMode::Readonly)
-                .expect("transaction on assets+meta");
-            let assets = tx.object_store(ASSETS_STORE).expect("open assets store");
-            let meta = tx.object_store(META_STORE).expect("open meta store");
-
-            // Get the asset data
-            let key = JsValue::from_str(&path);
-            let data_req = assets.get(&key).expect("asset get request");
-            let data_result = idb_request(&data_req).await.expect("asset get failed");
-
-            if data_result.is_undefined() || data_result.is_null() {
-                return None;
-            }
-
-            let arr: Uint8Array = data_result.unchecked_into();
-            let data = arr.to_vec();
-
-            // Path must be folder/filename format
-            if !path.contains('/') {
-                return None;
-            }
-
-            // Get folders map to determine kind
-            let folders_key = JsValue::from_str("folders");
-            let folders_req = meta.get(&folders_key).expect("folders get request");
-            let folders_result = idb_request(&folders_req).await.expect("folders get failed");
-
-            let folder_prefix = path.split('/').next().unwrap_or("");
-            let kind = if !folders_result.is_undefined() && !folders_result.is_null() {
-                js_sys::Reflect::get(&folders_result, &JsValue::from_str(folder_prefix))
-                    .ok()
-                    .and_then(|v| v.as_string())
-                    .unwrap_or_else(|| "other".to_string())
-            } else {
-                "other".to_string()
-            };
-
-            Some((kind, data))
-        })
-        .await
-    }
-
-    /// List asset paths matching a prefix. Empty prefix returns all.
-    pub async fn list(&self, prefix: &str) -> Vec<String> {
-        let prefix = prefix.to_string();
-        UnsafeSend(async {
             let (_tx, store) = self.assets_store(IdbTransactionMode::Readonly);
-            let req = store.get_all_keys().expect("getAllKeys request");
-            let result = idb_request(&req).await.expect("getAllKeys failed");
-
-            let arr = js_sys::Array::from(&result);
-            arr.iter()
-                .filter_map(|v| v.as_string())
-                .filter(|name| prefix.is_empty() || name.starts_with(&prefix))
-                .collect()
+            let key = JsValue::from_str(&path);
+            let req = store.get(&key).expect("asset exists request");
+            let result = idb_request(&req).await.expect("asset exists failed");
+            !result.is_undefined() && !result.is_null()
         })
         .await
     }

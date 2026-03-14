@@ -59,57 +59,6 @@ async fn dispatch_extern(
 ) -> Result<Value, acvus_interpreter::RuntimeError> {
     let name_str = interner.resolve(name);
     match name_str {
-        "from_blob" => {
-            let Value::String(ref key) = args[0] else {
-                return Err(acvus_interpreter::RuntimeError::type_mismatch(
-                    "from_blob", "String", &format!("{:?}", args[0]),
-                ));
-            };
-            acvus_interpreter::set_interner_ctx(interner);
-            let Some(store) = asset_store else {
-                let result: Option<Value> = None;
-                return Ok(result.into_value());
-            };
-            match store.get(key).await {
-                Some((kind, data)) => {
-                    let bytes: Vec<Value> = data.into_iter().map(Value::Byte).collect();
-                    let tag = match kind.as_str() {
-                        "image" => interner.intern("Image"),
-                        _ => interner.intern("Other"),
-                    };
-                    let asset = Value::Variant {
-                        tag,
-                        payload: Some(Box::new(Value::List(bytes))),
-                    };
-                    let result: Option<Value> = Some(asset);
-                    Ok(result.into_value())
-                }
-                None => {
-                    let result: Option<Value> = None;
-                    Ok(result.into_value())
-                }
-            }
-        }
-        "list_blobs" => {
-            let Value::String(ref prefix) = args[0] else {
-                return Err(acvus_interpreter::RuntimeError::type_mismatch(
-                    "list_blobs", "String", &format!("{:?}", args[0]),
-                ));
-            };
-            let Some(store) = asset_store else {
-                return Ok(Value::List(vec![]));
-            };
-            let names = store.list(prefix).await;
-            let values: Vec<Value> = names.into_iter().map(Value::String).collect();
-            Ok(Value::List(values))
-        }
-        "version_blob" => {
-            let Some(store) = asset_store else {
-                return Ok(Value::Int(0));
-            };
-            let version = store.version().await;
-            Ok(Value::Int(version))
-        }
         "asset_url" => {
             let Value::String(ref path) = args[0] else {
                 return Err(acvus_interpreter::RuntimeError::type_mismatch(
@@ -122,7 +71,7 @@ async fn dispatch_extern(
                 return Ok(result.into_value());
             };
             // Check if the asset actually exists
-            let exists = store.get(path).await.is_some();
+            let exists = store.exists(path).await;
             if !exists {
                 let result: Option<String> = None;
                 return Ok(result.into_value());

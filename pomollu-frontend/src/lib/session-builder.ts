@@ -380,7 +380,7 @@ export function buildSessionConfig(bot: Bot): BuildResult | null {
 		config: {
 			nodes: nodeConfigs,
 			providers,
-			entrypoint,
+			entrypoint: entrypoint!,
 			context,
 			side_effects: sideEffects,
 			asset_store_name: `asset_${bot.id}`,

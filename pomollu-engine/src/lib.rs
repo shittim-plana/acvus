@@ -26,33 +26,9 @@ use wasm_bindgen::JsError;
 use acvus_mir::context_registry::{ContextTypeRegistry, PartialContextTypeRegistry, RegistryConflictError};
 use schema::*;
 
-/// Asset type: `Asset = Image(List<Byte>) | Other(List<Byte>)`
-fn asset_ty(interner: &Interner) -> Ty {
-    let byte_list = Ty::List(Box::new(Ty::Byte));
-    let mut variants = FxHashMap::default();
-    variants.insert(interner.intern("Image"), Some(Box::new(byte_list.clone())));
-    variants.insert(interner.intern("Other"), Some(Box::new(byte_list)));
-    Ty::Enum { name: interner.intern("Asset"), variants }
-}
-
 /// Compile-time context types for asset extern functions.
 fn asset_context_types(interner: &Interner) -> FxHashMap<Astr, Ty> {
     let mut types = FxHashMap::default();
-    types.insert(interner.intern("from_blob"), Ty::Fn {
-        params: vec![Ty::String],
-        ret: Box::new(Ty::Option(Box::new(asset_ty(interner)))),
-        is_extern: true,
-    });
-    types.insert(interner.intern("list_blobs"), Ty::Fn {
-        params: vec![Ty::String],
-        ret: Box::new(Ty::List(Box::new(Ty::String))),
-        is_extern: true,
-    });
-    types.insert(interner.intern("version_blob"), Ty::Fn {
-        params: vec![],
-        ret: Box::new(Ty::Int),
-        is_extern: true,
-    });
     types.insert(interner.intern("asset_url"), Ty::Fn {
         params: vec![Ty::String],
         ret: Box::new(Ty::Option(Box::new(Ty::String))),

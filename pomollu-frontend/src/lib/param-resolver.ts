@@ -543,12 +543,13 @@ export function toWebNode(node: Node, api: ApiKind | undefined, discoveredFnPara
 			return {
 				...shared,
 				kind: 'llm',
-				api: api || null,
+				api,
 				model: node.model,
 				temperature: node.temperature,
 				topP: node.topP ?? null,
 				topK: node.topK ?? null,
 				grounding: node.grounding ?? false,
+				thinking: node.thinking,
 				maxTokens: node.maxTokens,
 				messages: node.messages.map((m) => {
 					if (m.kind === 'block') {

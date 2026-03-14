@@ -478,7 +478,7 @@
 				<div class="space-y-3">
 					<div>
 						<span class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Assets</span>
-						<p class="text-xs text-muted-foreground mt-1">Binary assets accessible from scripts via <code class="text-[0.7rem]">from_blob("folder/name")</code>.</p>
+						<p class="text-xs text-muted-foreground mt-1">Binary assets accessible from scripts via <code class="text-[0.7rem]">asset_url("folder/name")</code>.</p>
 					</div>
 					<Button variant="outline" size="sm" onclick={() => uiState.openTab({ kind: 'assets', dbName: `asset_${bot.id}`, entityName: bot.name })}>
 						Open Asset Editor
