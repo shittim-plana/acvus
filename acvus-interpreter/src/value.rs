@@ -4,10 +4,11 @@ use std::fmt;
 use std::sync::Arc;
 
 use acvus_mir::ir::ClosureBody;
+use acvus_mir::ty::{Effect, FnKind, Ty};
 use acvus_utils::{Astr, TrackedDeque};
 use rustc_hash::FxHashMap;
 
-use crate::iter::SharedIter;
+use crate::iter::{SequenceChain, SharedIter};
 
 /// Scalar-only data value — no containers, no functions, no closures.
 /// Cloneable, used at context boundaries.
@@ -101,7 +102,7 @@ pub enum LazyValue {
     Fn(FnValue),
     ExternFn(Astr),
     Iterator(SharedIter),
-    Sequence(SharedIter),
+    Sequence(SequenceChain),
 }
 
 /// Values that cannot cross context boundaries.
@@ -209,7 +210,7 @@ impl Value {
     pub fn closure(fv: FnValue) -> Self { Value::Lazy(LazyValue::Fn(fv)) }
     pub fn extern_fn(name: Astr) -> Self { Value::Lazy(LazyValue::ExternFn(name)) }
     pub fn iterator(si: SharedIter) -> Self { Value::Lazy(LazyValue::Iterator(si)) }
-    pub fn sequence(si: SharedIter) -> Self { Value::Lazy(LazyValue::Sequence(si)) }
+    pub fn sequence(sc: SequenceChain) -> Self { Value::Lazy(LazyValue::Sequence(sc)) }
 
     // --- Unpure constructors ---
     pub fn opaque(ov: OpaqueValue) -> Self { Value::Unpure(UnpureValue::Opaque(ov)) }
@@ -224,10 +225,10 @@ impl Value {
     pub fn into_shared_iter(self) -> SharedIter {
         match self {
             Value::Lazy(LazyValue::Iterator(s)) => s,
-            Value::Lazy(LazyValue::Sequence(s)) => s,
+            Value::Lazy(LazyValue::Sequence(sc)) => sc.into_shared_iter(),
             Value::Lazy(LazyValue::List(items)) => SharedIter::from_list(items),
             Value::Lazy(LazyValue::Deque(deque)) => SharedIter::from_list(deque.into_vec()),
-            other => panic!("into_shared_iter: expected Iterator, List, or Deque, got {other:?}"),
+            other => panic!("into_shared_iter: expected Iterator, List, Sequence, or Deque, got {other:?}"),
         }
     }
 
@@ -307,5 +308,113 @@ impl Value {
                 payload.as_ref().map(|p| Box::new(Value::from_concrete(p, interner))),
             ),
         }
+    }
+}
+
+// =========================================================================
+// TypedValue — Value + Ty pair for use at storage/orchestration boundaries
+// =========================================================================
+
+/// A runtime value paired with its compile-time type.
+///
+/// Used at **boundaries** between the interpreter and external systems
+/// (storage, orchestration, node-to-node passing). The interpreter's internal
+/// execution uses bare [`Value`] for performance; `TypedValue` is constructed
+/// when values leave the interpreter.
+///
+/// # Invariant
+///
+/// The `value` must be consistent with `ty`. This is enforced by a
+/// `debug_assert` in [`TypedValue::new`] — violations are programming bugs,
+/// not user errors.
+///
+/// # Storability
+///
+/// [`TypedValue::is_storable`] checks whether the value can be persisted:
+/// - Pure scalars: always OK.
+/// - Lazy containers with Pure effect: OK (Iterator/Sequence are collected).
+/// - Effectful or Unpure: rejected.
+pub struct TypedValue {
+    value: Value,
+    ty: Ty,
+}
+
+impl TypedValue {
+    /// Create a new TypedValue. Debug-asserts that value and ty are consistent.
+    pub fn new(value: Value, ty: Ty) -> Self {
+        debug_assert!(
+            value_matches_ty(&value, &ty),
+            "TypedValue invariant violated: value={value:?}, ty={ty:?}"
+        );
+        Self { value, ty }
+    }
+
+    /// Borrow the inner value.
+    pub fn value(&self) -> &Value { &self.value }
+
+    /// Borrow the type.
+    pub fn ty(&self) -> &Ty { &self.ty }
+
+    /// Consume and return the inner value, discarding the type.
+    pub fn into_value(self) -> Value { self.value }
+
+    /// Consume and return both parts.
+    pub fn into_parts(self) -> (Value, Ty) { (self.value, self.ty) }
+
+    /// Whether this value can be persisted to storage.
+    /// Delegates to [`Ty::is_storable`].
+    pub fn is_storable(&self) -> bool {
+        self.ty.is_storable()
+    }
+}
+
+impl fmt::Debug for TypedValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "TypedValue({:?})", self.value)
+    }
+}
+
+impl Clone for TypedValue {
+    fn clone(&self) -> Self {
+        Self {
+            value: self.value.clone(),
+            ty: self.ty.clone(),
+        }
+    }
+}
+
+/// Shallow check that a Value variant matches its Ty.
+///
+/// This is a **debug-only sanity check**, not a full recursive validation.
+/// It verifies that the top-level Value constructor corresponds to the top-level
+/// Ty constructor (e.g. `PureValue::Int` ↔ `Ty::Int`). Container contents are
+/// not recursively checked — that would be too expensive for a debug assert.
+fn value_matches_ty(value: &Value, ty: &Ty) -> bool {
+    // Error/Infer/Var types accept any value (unresolved or poison types).
+    if matches!(ty, Ty::Error | Ty::Infer | Ty::Var(_)) {
+        return true;
+    }
+    match (value, ty) {
+        (Value::Pure(PureValue::Int(_)), Ty::Int) => true,
+        (Value::Pure(PureValue::Float(_)), Ty::Float) => true,
+        (Value::Pure(PureValue::String(_)), Ty::String) => true,
+        (Value::Pure(PureValue::Bool(_)), Ty::Bool) => true,
+        (Value::Pure(PureValue::Unit), Ty::Unit) => true,
+        (Value::Pure(PureValue::Range { .. }), Ty::Range) => true,
+        (Value::Pure(PureValue::Byte(_)), Ty::Byte) => true,
+        (Value::Lazy(LazyValue::List(_)), Ty::List(_)) => true,
+        (Value::Lazy(LazyValue::Deque(_)), Ty::Deque(..)) => true,
+        (Value::Lazy(LazyValue::Object(_)), Ty::Object(_)) => true,
+        (Value::Lazy(LazyValue::Tuple(_)), Ty::Tuple(_)) => true,
+        (Value::Lazy(LazyValue::Variant { .. }), Ty::Option(_)) => true,
+        (Value::Lazy(LazyValue::Variant { .. }), Ty::Enum { .. }) => true,
+        (Value::Lazy(LazyValue::Fn(_)), Ty::Fn { kind: FnKind::Lambda, .. }) => true,
+        (Value::Lazy(LazyValue::ExternFn(_)), Ty::Fn { kind: FnKind::Extern, .. }) => true,
+        (Value::Lazy(LazyValue::Iterator(_)), Ty::Iterator(..)) => true,
+        (Value::Lazy(LazyValue::Sequence(_)), Ty::Sequence(..)) => true,
+        (Value::Unpure(UnpureValue::Opaque(_)), Ty::Opaque(_)) => true,
+        // Deque values can also appear as List type (after coercion at type level)
+        (Value::Lazy(LazyValue::Deque(_)), Ty::List(_)) => true,
+        _ => false,
     }
 }

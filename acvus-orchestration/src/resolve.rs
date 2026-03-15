@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use acvus_interpreter::{Interpreter, LazyValue, PureValue, RuntimeError, Stepped, Value};
+use acvus_interpreter::{Interpreter, LazyValue, PureValue, RuntimeError, Stepped, TypedValue, Value};
 use acvus_mir_pass::analysis::reachable_context::partition_context_keys;
 use acvus_utils::{Astr, ContextRequest, Coroutine, ExternCallRequest, Interner, TrackedDeque};
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -17,7 +17,7 @@ fn node_initial_value(node: &CompiledNode) -> Option<&CompiledScript> {
     node.strategy.initial_value.as_ref()
 }
 use crate::node::Node;
-use crate::storage::{EntryMut, EntryRef, StorageDiff};
+use crate::storage::{EntryMut, EntryRef, StoragePatch};
 
 // ---------------------------------------------------------------------------
 // ResolveState — bundled mutable context
@@ -41,6 +41,52 @@ pub struct ResolveState<E> {
     pub entry: E,
     pub turn_context: FxHashMap<Astr, Arc<Value>>,
     pub bind_cache: FxHashMap<Astr, Vec<(Value, Arc<Value>)>>,
+}
+
+impl<E> ResolveState<E> {
+    /// Cache a value in turn_context. This is the **single entry point**
+    /// for all turn_context insertions.
+    pub fn cache(&mut self, name: Astr, value: Arc<Value>) {
+        self.turn_context.insert(name, value);
+    }
+
+    /// Whether a value is already cached for this turn.
+    pub fn is_cached(&self, name: &Astr) -> bool {
+        self.turn_context.contains_key(name)
+    }
+
+    /// Get a cached value from turn_context.
+    pub fn get_cached(&self, name: &Astr) -> Option<Arc<Value>> {
+        self.turn_context.get(name).cloned()
+    }
+}
+
+impl<'j, E: EntryMut<'j>> ResolveState<E> {
+    /// Persist a value to storage. This is the **single entry point**
+    /// for all storage writes.
+    ///
+    /// The type checker guarantees that persistent nodes have storable
+    /// output types at compile time. This debug_assert is defense-in-depth.
+    pub fn persist(&mut self, key: &str, diff: StoragePatch) {
+        self.entry.apply(key, diff);
+    }
+
+    /// Load a value by name: turn_context first (most recent), then storage.
+    pub fn load(&self, name: Astr, name_str: &str) -> Option<Arc<Value>> {
+        self.turn_context
+            .get(&name)
+            .cloned()
+            .or_else(|| self.entry.get(name_str))
+    }
+
+    /// Load @self for a node: turn_context first (this turn's update),
+    /// then storage (previous turn's value).
+    pub fn load_self(&self, name: Astr, name_str: &str) -> Option<Arc<Value>> {
+        self.turn_context
+            .get(&name)
+            .cloned()
+            .or_else(|| self.entry.get(name_str))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -467,7 +513,7 @@ where
         }
 
         // 2. turn_context (already resolved this turn)
-        if let Some(arc) = state.turn_context.get(&name).cloned() {
+        if let Some(arc) = state.get_cached(&name) {
             debug!(context = %name_str, "resolved from turn_context");
             request.resolve(arc);
             lp.enqueue_step(task_id, coroutine);
@@ -665,14 +711,13 @@ where
                 if let Some(entries) = state.bind_cache.get(&node.name)
                     && let Some((_, cached)) = entries.iter().find(|(v, _)| v == &value)
                 {
+                    let cached_value = Value::clone(cached);
                     debug!(node = %node_name_str, "if_modified cache hit, skipping execution");
-                    state
-                        .turn_context
-                        .insert(node.name, Arc::new(Value::clone(cached)));
+                    state.cache(node.name, Arc::new(cached_value.clone()));
                     if lp.remaining_roots.contains(&node_idx) {
                         lp.remaining_roots.remove(&node_idx);
                     }
-                    lp.wake_waiters(node.name, Value::clone(cached));
+                    lp.wake_waiters(node.name, cached_value);
                     return Ok(());
                 }
 
@@ -734,38 +779,30 @@ where
                 // The bind result (`value`) is the accumulated @self — this is
                 // what @node_name should resolve to for other nodes.
                 let stored_value = match &node.strategy.persistency {
-                    CompiledPersistency::Deque { .. } => {
-                        let Value::Lazy(LazyValue::Deque(deque)) = value else {
-                            panic!(
-                                "bind script for deque node '{}' returned non-Deque value",
-                                node_name_str,
-                            );
-                        };
-                        let origin = origin.expect("deque mode must have origin");
-                        let (squashed, diff) = deque.into_diff(&origin);
-                        let stored = Value::deque(squashed.clone());
-                        state.entry.apply(
+                    CompiledPersistency::Sequence { .. } => {
+                        // Pass the value as-is to storage. apply() handles
+                        // collect (if Sequence) and diff computation.
+                        let stored = value.clone();
+                        state.persist(
                             node_name_str,
-                            StorageDiff::Deque { squashed, diff },
+                            StoragePatch::Snapshot(value),
                         );
                         stored
                     }
                     CompiledPersistency::Diff { .. } => {
                         let stored = value.clone();
-                        state.entry.apply(
+                        state.persist(
                             node_name_str,
-                            StorageDiff::Snapshot(value),
+                            StoragePatch::Snapshot(value),
                         );
                         stored
                     }
-                    _ => unreachable!("BindScript only spawned for Deque/Diff modes"),
+                    _ => unreachable!("BindScript only spawned for Sequence/Diff modes"),
                 };
 
                 // Update turn_context with the bind result (not raw).
                 // @node_name must reflect the accumulated value (@self view).
-                state
-                    .turn_context
-                    .insert(node.name, Arc::new(stored_value.clone()));
+                state.cache(node.name, Arc::new(stored_value.clone()));
 
                 info!(node = %node_name_str, "resolve node complete");
 
@@ -801,11 +838,11 @@ where
         // @self = previous stored value (or initial_value on first run)
         if let Some(prev) = self.load_self_value(node_idx, state) {
             let self_val = match &node.strategy.persistency {
-                CompiledPersistency::Deque { .. } => {
+                CompiledPersistency::Sequence { .. } => {
                     let deque = match prev {
                         Value::Lazy(LazyValue::Deque(d)) => d,
                         Value::Lazy(LazyValue::List(items)) => TrackedDeque::from_vec(items),
-                        _ => panic!("deque mode @self: expected Deque or List"),
+                        _ => panic!("sequence mode @self: expected Deque or List"),
                     };
                     origin = Some(deque.clone());
                     let mut working = deque;
@@ -815,8 +852,8 @@ where
                 _ => prev,
             };
             locals.insert(interner.intern("self"), Arc::new(self_val));
-        } else if matches!(&node.strategy.persistency, CompiledPersistency::Deque { .. }) {
-            // First run with no stored value — inject empty deque with checkpoint
+        } else if matches!(&node.strategy.persistency, CompiledPersistency::Sequence { .. }) {
+            // First run with no stored value — inject empty sequence with checkpoint
             let deque = TrackedDeque::new();
             origin = Some(deque.clone());
             let mut working = deque;
@@ -888,7 +925,7 @@ where
                 .push(((**bind_val).clone(), Arc::new(value.clone())));
         }
 
-        // Mode: Deque/Diff → spawn bind script before completing.
+        // Mode: Sequence/Diff → spawn bind script before completing.
         //
         // For Deque/Diff modes, turn_context is NOT set here with the raw value.
         // It will be set to the bind result (accumulated @self) when the bind
@@ -898,7 +935,7 @@ where
         // local variable and MUST NOT leak to turn_context or dep wakers.
         // External consumers of @node_name always see the accumulated value.
         match &node.strategy.persistency {
-            CompiledPersistency::Deque { bind } | CompiledPersistency::Diff { bind } => {
+            CompiledPersistency::Sequence { bind } | CompiledPersistency::Diff { bind } => {
                 let (bind_local, origin) = self.prepare_bind_locals(node_idx, &value, state);
                 debug!(node = %node_name_str, "evaluating bind script");
                 self.spawn_script_task(
@@ -914,14 +951,14 @@ where
                 return; // BindScript will remove from remaining_roots
             }
             CompiledPersistency::Snapshot => {
-                state.entry.apply(
+                state.persist(
                     node_name_str,
-                    StorageDiff::Snapshot(value.clone()),
+                    StoragePatch::Snapshot(value.clone()),
                 );
-                state.turn_context.insert(node.name, Arc::new(value.clone()));
+                state.cache(node.name, Arc::new(value.clone()));
             }
             CompiledPersistency::Ephemeral => {
-                state.turn_context.insert(node.name, Arc::new(value.clone()));
+                state.cache(node.name, Arc::new(value.clone()));
             }
         }
 
@@ -1048,20 +1085,15 @@ where
         }
     }
 
-    /// Try to load the existing @self value from storage or turn_context.
+    /// Try to load the existing @self value from turn_context (this turn's
+    /// update) first, then storage (previous turn's value).
     fn load_self_value<'j, E>(&self, idx: usize, state: &ResolveState<E>) -> Option<Value>
     where
         E: EntryMut<'j>,
     {
         let node = &self.nodes[idx];
         let name_str = self.interner.resolve(node.name);
-        if let Some(arc) = state.entry.get(name_str) {
-            return Some(Value::clone(&arc));
-        }
-        if let Some(arc) = state.turn_context.get(&node.name) {
-            return Some(Value::clone(arc));
-        }
-        None
+        state.load_self(node.name, name_str).map(|arc| Value::clone(&arc))
     }
 
     // -----------------------------------------------------------------------
@@ -1075,9 +1107,7 @@ where
         E: EntryMut<'j>,
     {
         let node = &self.nodes[idx];
-        state
-            .turn_context
-            .insert(node.name, Arc::new(value.clone()));
+        state.cache(node.name, Arc::new(value.clone()));
     }
 
     // -----------------------------------------------------------------------
@@ -1136,13 +1166,13 @@ where
             Resolved::Turn(value) => {
                 debug!(name = %name_str, kind = "turn", "external resolver returned");
                 let arc = Arc::new(value);
-                state.turn_context.insert(name, Arc::clone(&arc));
+                state.cache(name, Arc::clone(&arc));
                 Ok(arc)
             }
             Resolved::Persist(value) => {
                 debug!(name = %name_str, kind = "persist", "external resolver returned");
                 let arc = Arc::new(value);
-                state.entry.apply(name_str, StorageDiff::Snapshot(Value::clone(&arc)));
+                state.persist(name_str, StoragePatch::Snapshot(Value::clone(&arc)));
                 Ok(arc)
             }
         }
@@ -1192,7 +1222,7 @@ where
             _ => {}
         }
         match &node.strategy.persistency {
-            CompiledPersistency::Deque { bind } | CompiledPersistency::Diff { bind } => {
+            CompiledPersistency::Sequence { bind } | CompiledPersistency::Diff { bind } => {
                 eager.extend(bind.context_keys.iter().copied());
             }
             _ => {}
@@ -1221,7 +1251,7 @@ where
             // All other strategies: execute once per turn.
             // Only turn_context counts — storage values from previous turns
             // do NOT satisfy this. The node must re-run each turn.
-            _ => !state.turn_context.contains_key(&name),
+            _ => !state.is_cached(&name),
         }
     }
 

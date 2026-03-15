@@ -75,6 +75,12 @@ pub enum OrchErrorKind {
         persistency: String,
         ty: Ty,
     },
+    /// Node has persistent strategy but output type is not storable
+    /// (contains Fn, Opaque, or effectful Iterator/Sequence).
+    NonStorableOutput {
+        node: String,
+        ty: Ty,
+    },
 
     // Runtime
     FuelExhausted,
@@ -184,6 +190,14 @@ impl<'a> fmt::Display for OrchErrorDisplay<'a> {
                     "node '{}' has {} persistency but its stored type {} is not pure (cannot be persisted)",
                     interner.resolve(*node),
                     persistency,
+                    ty.display(interner)
+                )
+            }
+            OrchErrorKind::NonStorableOutput { node, ty } => {
+                write!(
+                    f,
+                    "node '{node}' has persistent strategy but output type {} is not storable \
+                     (contains Fn, Opaque, or effectful Iterator/Sequence)",
                     ty.display(interner)
                 )
             }

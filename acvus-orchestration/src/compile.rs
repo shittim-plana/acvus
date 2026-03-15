@@ -36,11 +36,14 @@ pub enum CompiledExecution {
 pub enum CompiledPersistency {
     Ephemeral,
     Snapshot,
-    Deque { bind: CompiledScript },
+    Sequence { bind: CompiledScript },
     Diff { bind: CompiledScript },
 }
 
 /// Compiled strategy — groups execution, persistency, initial_value, retry, and assert.
+///
+/// Execution × Persistency matrix behavior is defined here as methods,
+/// not scattered across resolver code.
 #[derive(Debug, Clone)]
 pub struct CompiledStrategy {
     pub execution: CompiledExecution,
@@ -48,6 +51,20 @@ pub struct CompiledStrategy {
     pub initial_value: Option<CompiledScript>,
     pub retry: u32,
     pub assert: Option<CompiledScript>,
+}
+
+impl CompiledStrategy {
+    /// Whether this node's output is persisted to storage.
+    /// Ephemeral nodes only live in turn_context.
+    pub fn persists(&self) -> bool {
+        !matches!(self.persistency, CompiledPersistency::Ephemeral)
+    }
+
+    /// Whether the output type must be storable (`Ty::is_storable()`).
+    /// Only persistent nodes need storable values.
+    pub fn requires_storable(&self) -> bool {
+        self.persists()
+    }
 }
 
 /// A compiled orchestration node.
@@ -59,6 +76,9 @@ pub struct CompiledNode {
     pub strategy: CompiledStrategy,
     pub is_function: bool,
     pub fn_params: Vec<FnParam>,
+    /// The type of values this node produces (stored or ephemeral).
+    /// Used at storage boundaries to construct TypedValue and verify storability.
+    pub output_ty: Ty,
 }
 
 /// Compiled expression (Script → MIR).
@@ -380,6 +400,7 @@ pub fn compile_node(
     compiled_execution: CompiledExecution,
     compiled_persistency: CompiledPersistency,
     compiled_assert: Option<CompiledScript>,
+    output_ty: Ty,
 ) -> Result<CompiledNode, Vec<OrchError>> {
     let (kind, mut all_context_keys): (_, FxHashSet<_>) = match &spec.kind {
         NodeKind::Plain(plain_spec) => {
@@ -422,7 +443,7 @@ pub fn compile_node(
     // persistency context keys contribute
     match &compiled_persistency {
         CompiledPersistency::Ephemeral | CompiledPersistency::Snapshot => {}
-        CompiledPersistency::Deque { bind } | CompiledPersistency::Diff { bind } => {
+        CompiledPersistency::Sequence { bind } | CompiledPersistency::Diff { bind } => {
             all_context_keys.extend(bind.context_keys.iter().copied());
         }
     }
@@ -440,6 +461,7 @@ pub fn compile_node(
         },
         is_function: spec.is_function,
         fn_params: spec.fn_params.clone(),
+        output_ty,
     })
 }
 
@@ -469,7 +491,7 @@ pub struct ExternalContextEnv {
 ///
 /// - `@raw` = `raw_ty` (what the node produces each execution)
 /// - `@self`:
-///   - Deque/Diff with bind: two-pass — compile bind with `@self = Infer`, use tail_ty as self_ty
+///   - Sequence/Diff with bind: two-pass — compile bind with `@self = Infer`, use tail_ty as self_ty
 ///   - Ephemeral/Snapshot with initial_value: initial_value's return type
 ///   - No initial_value: self_ty = raw_ty (fallback, @self not exposed without initial_value)
 fn resolve_node_locals(
@@ -487,7 +509,7 @@ fn resolve_node_locals(
     };
 
     let self_ty = match &spec.strategy.persistency {
-        Persistency::Deque { bind } | Persistency::Diff { bind } => {
+        Persistency::Sequence { bind } | Persistency::Diff { bind } => {
             // Two-pass: compile bind with @self = Infer → typechecker infers self_ty from usage
             let temp_locals = NodeLocalTypes { raw_ty: raw_ty.clone(), self_ty: Ty::Infer };
             let bind_reg = spec.build_node_context(interner, base_registry, ContextScope::Bind, Some(&temp_locals))
@@ -718,7 +740,7 @@ pub fn compute_external_context_env(
             let persistency_name = match &spec.strategy.persistency {
                 Persistency::Ephemeral => unreachable!(),
                 Persistency::Snapshot => "Snapshot",
-                Persistency::Deque { .. } => "Deque",
+                Persistency::Sequence { .. } => "Sequence",
                 Persistency::Diff { .. } => "Diff",
             };
             return Err(vec![OrchError::new(OrchErrorKind::UnpureStoredType {
@@ -846,7 +868,7 @@ pub fn compile_nodes_with_env(
         let persistency = match &spec.strategy.persistency {
             Persistency::Ephemeral => CompiledPersistency::Ephemeral,
             Persistency::Snapshot => CompiledPersistency::Snapshot,
-            Persistency::Deque { bind } | Persistency::Diff { bind } => {
+            Persistency::Sequence { bind } | Persistency::Diff { bind } => {
                 // bind context: @self + @raw + all context (via ContextScope::Bind)
                 let bind_reg = match spec.build_node_context(interner, &base_registry, ContextScope::Bind, env.node_locals.get(&spec.name)) {
                     Ok(r) => r,
@@ -869,7 +891,7 @@ pub fn compile_nodes_with_env(
                     }
                 };
                 match &spec.strategy.persistency {
-                    Persistency::Deque { .. } => CompiledPersistency::Deque { bind: script },
+                    Persistency::Sequence { .. } => CompiledPersistency::Sequence { bind: script },
                     Persistency::Diff { .. } => CompiledPersistency::Diff { bind: script },
                     _ => unreachable!(),
                 }
@@ -960,6 +982,7 @@ pub fn compile_nodes_with_env(
         let compiled_execution = compiled_executions[i].clone();
         let compiled_persistency = compiled_persistencies[i].clone();
         let compiled_assert = compiled_asserts[i].clone();
+        let output_ty = stored_types[i].clone();
         match compile_node(
             interner,
             spec,
@@ -968,8 +991,18 @@ pub fn compile_nodes_with_env(
             compiled_execution,
             compiled_persistency,
             compiled_assert,
+            output_ty,
         ) {
-            Ok(node) => nodes.push(node),
+            Ok(node) => {
+                // Validate: persistent nodes must have storable output types.
+                if node.strategy.requires_storable() && !node.output_ty.is_storable() {
+                    errors.push(OrchError::new(OrchErrorKind::NonStorableOutput {
+                        node: interner.resolve(spec.name).to_string(),
+                        ty: node.output_ty.clone(),
+                    }));
+                }
+                nodes.push(node);
+            }
             Err(errs) => {
                 errors.extend(errs);
                 continue;
@@ -1084,7 +1117,7 @@ mod tests {
             }),
             strategy: Strategy {
                 execution: Execution::OncePerTurn,
-                persistency: Persistency::Deque {
+                persistency: Persistency::Sequence {
                     bind: interner.intern("@self | extend(@raw)"),
                 },
                 initial_value: Some(interner.intern("[]")),
@@ -1126,7 +1159,7 @@ mod tests {
             }),
             strategy: Strategy {
                 execution: Execution::OncePerTurn,
-                persistency: Persistency::Deque {
+                persistency: Persistency::Sequence {
                     bind: interner.intern("@self | extend(@raw)"),
                 },
                 initial_value: Some(interner.intern("[]")),

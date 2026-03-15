@@ -134,7 +134,7 @@ pub enum WebPersistency {
     #[default]
     Ephemeral,
     Snapshot,
-    Deque { bind: String },
+    Sequence { bind: String },
     Diff { bind: String },
 }
 
@@ -236,7 +236,7 @@ impl WebNode {
         let persistency = match &self.strategy.persistency {
             WebPersistency::Ephemeral => Persistency::Ephemeral,
             WebPersistency::Snapshot => Persistency::Snapshot,
-            WebPersistency::Deque { bind } => Persistency::Deque { bind: interner.intern(bind) },
+            WebPersistency::Sequence { bind } => Persistency::Sequence { bind: interner.intern(bind) },
             WebPersistency::Diff { bind } => Persistency::Diff { bind: interner.intern(bind) },
         };
 

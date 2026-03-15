@@ -80,6 +80,7 @@ pub fn build_dag(interner: &Interner, nodes: &[CompiledNode]) -> Result<Dag, Vec
 
 #[cfg(test)]
 mod tests {
+    use acvus_mir::ty::Ty;
     use crate::compile::{CompiledExecution, CompiledStrategy};
     use crate::{ApiKind, CompiledLlm, CompiledPersistency, CompiledNodeKind};
     use acvus_utils::Interner;
@@ -112,6 +113,7 @@ mod tests {
             },
             is_function: false,
             fn_params: vec![],
+            output_ty: Ty::String,
         }
     }
 

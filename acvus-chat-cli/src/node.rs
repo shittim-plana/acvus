@@ -318,7 +318,7 @@ pub fn resolve_node(
                 def.strategy.persistency.inline_bind.as_deref(),
             )
             .map_err(|e| format!("node '{}': deque persistency bind: {e}", def.name))?;
-            Persistency::Deque { bind: interner.intern(&bind) }
+            Persistency::Sequence { bind: interner.intern(&bind) }
         }
         PersistencyKindDef::Diff => {
             let bind = resolve_template(

@@ -293,7 +293,7 @@ impl ChatSession {
         self.engine.journal.flush_tree().await;
         save_cursor(&mut self.engine.journal, self.engine.cursor).await;
 
-        let concrete = result.to_concrete(&self.interner);
+        let concrete = result.value().to_concrete(&self.interner);
         let jcv: JsConcreteValue = concrete.into();
 
         // Build TurnNode for the new cursor

@@ -522,36 +522,41 @@ fn sig_chain(s: &mut TySubst) -> (Vec<Ty>, Ty) {
 fn sig_take_seq(s: &mut TySubst) -> (Vec<Ty>, Ty) {
     let t = s.fresh_var();
     let o = s.fresh_origin();
-    (vec![Ty::Sequence(Box::new(t.clone()), o, Effect::Pure), Ty::Int], Ty::Sequence(Box::new(t), o, Effect::Pure))
+    let e = s.fresh_effect_var();
+    (vec![Ty::Sequence(Box::new(t.clone()), o, e), Ty::Int], Ty::Sequence(Box::new(t), o, e))
 }
 
 fn sig_skip_seq(s: &mut TySubst) -> (Vec<Ty>, Ty) {
     sig_take_seq(s)
 }
 
+// chain_seq: (Sequence<T, O, E>, Iterator<T, E>) → Sequence<T, O, E>
+// Second argument is Iterator (not Sequence) — chain appends from any source.
 fn sig_chain_seq(s: &mut TySubst) -> (Vec<Ty>, Ty) {
     let t = s.fresh_var();
     let o = s.fresh_origin();
+    let e = s.fresh_effect_var();
     (
-        vec![Ty::Sequence(Box::new(t.clone()), o, Effect::Pure), Ty::Sequence(Box::new(t.clone()), o, Effect::Pure)],
-        Ty::Sequence(Box::new(t), o, Effect::Pure),
+        vec![Ty::Sequence(Box::new(t.clone()), o, e), Ty::Iterator(Box::new(t.clone()), e)],
+        Ty::Sequence(Box::new(t), o, e),
     )
 }
 
 // Transform ops: new origin
 
+// map/pmap on Sequence: origin breaks → returns Iterator (not Sequence).
+// Element transformation destroys the TrackedDeque diff relationship.
 fn sig_map_seq(s: &mut TySubst) -> (Vec<Ty>, Ty) {
     let t = s.fresh_var();
     let u = s.fresh_var();
     let o = s.fresh_origin();
-    let o2 = s.fresh_concrete_origin();
     let e = s.fresh_effect_var();
     (
         vec![
             Ty::Sequence(Box::new(t.clone()), o, e),
             Ty::Fn { params: vec![t], ret: Box::new(u.clone()), kind: FnKind::Lambda, captures: vec![], effect: e },
         ],
-        Ty::Sequence(Box::new(u), o2, e),
+        Ty::Iterator(Box::new(u), e),
     )
 }
 
@@ -559,36 +564,36 @@ fn sig_pmap_seq(s: &mut TySubst) -> (Vec<Ty>, Ty) {
     sig_map_seq(s)
 }
 
+// filter on Sequence: origin breaks → returns Iterator.
 fn sig_filter_seq(s: &mut TySubst) -> (Vec<Ty>, Ty) {
     let t = s.fresh_var();
     let o = s.fresh_origin();
-    let o2 = s.fresh_concrete_origin();
     let e = s.fresh_effect_var();
     (
         vec![
             Ty::Sequence(Box::new(t.clone()), o, e),
             Ty::Fn { params: vec![t.clone()], ret: Box::new(Ty::Bool), kind: FnKind::Lambda, captures: vec![], effect: e },
         ],
-        Ty::Sequence(Box::new(t), o2, e),
+        Ty::Iterator(Box::new(t), e),
     )
 }
 
+// flatten on Sequence: origin breaks → returns Iterator.
 fn sig_flatten_seq(s: &mut TySubst) -> (Vec<Ty>, Ty) {
     let t = s.fresh_var();
     let o = s.fresh_origin();
-    let o2 = s.fresh_concrete_origin();
+    let e = s.fresh_effect_var();
     (
-        vec![Ty::Sequence(Box::new(Ty::List(Box::new(t.clone()))), o, Effect::Pure)],
-        Ty::Sequence(Box::new(t), o2, Effect::Pure),
+        vec![Ty::Sequence(Box::new(Ty::List(Box::new(t.clone()))), o, e)],
+        Ty::Iterator(Box::new(t), e),
     )
 }
 
-// (Sequence<T, O, E>, Fn(T) → Iterator<U>) → Sequence<U, O2, E>
+// (Sequence<T, O, E>, Fn(T) → Iterator<U>) → Iterator<U, E>
 fn sig_flat_map_seq(s: &mut TySubst) -> (Vec<Ty>, Ty) {
     let t = s.fresh_var();
     let u = s.fresh_var();
     let o = s.fresh_origin();
-    let o2 = s.fresh_concrete_origin();
     let e = s.fresh_effect_var();
     (
         vec![
@@ -601,16 +606,15 @@ fn sig_flat_map_seq(s: &mut TySubst) -> (Vec<Ty>, Ty) {
                 effect: e,
             },
         ],
-        Ty::Sequence(Box::new(u), o2, e),
+        Ty::Iterator(Box::new(u), e),
     )
 }
 
-// (Sequence<T, O, E>, Fn(T) → List<U>) → Sequence<U, O2, E>
+// (Sequence<T, O, E>, Fn(T) → List<U>) → Iterator<U, E>
 fn sig_flat_map_iter_seq(s: &mut TySubst) -> (Vec<Ty>, Ty) {
     let t = s.fresh_var();
     let u = s.fresh_var();
     let o = s.fresh_origin();
-    let o2 = s.fresh_concrete_origin();
     let e = s.fresh_effect_var();
     (
         vec![
@@ -623,23 +627,24 @@ fn sig_flat_map_iter_seq(s: &mut TySubst) -> (Vec<Ty>, Ty) {
                 effect: e,
             },
         ],
-        Ty::Sequence(Box::new(u), o2, e),
+        Ty::Iterator(Box::new(u), e),
     )
 }
 
-// Sequence<T, O> → Deque<T, O> (same origin — lazy materialization)
+// Sequence<T, O, E> → Deque<T, O> (same origin — lazy materialization)
 fn sig_collect_seq(s: &mut TySubst) -> (Vec<Ty>, Ty) {
     let t = s.fresh_var();
     let o = s.fresh_origin();
-    (vec![Ty::Sequence(Box::new(t.clone()), o, Effect::Pure)], Ty::Deque(Box::new(t), o))
+    let e = s.fresh_effect_var();
+    (vec![Ty::Sequence(Box::new(t.clone()), o, e)], Ty::Deque(Box::new(t), o))
 }
 
-// Sequence<T, O> → Sequence<T, O2> (new origin — order reversed)
+// Sequence reversal: origin breaks → returns Iterator.
 fn sig_rev_seq(s: &mut TySubst) -> (Vec<Ty>, Ty) {
     let t = s.fresh_var();
     let o = s.fresh_origin();
-    let o2 = s.fresh_concrete_origin();
-    (vec![Ty::Sequence(Box::new(t.clone()), o, Effect::Pure)], Ty::Sequence(Box::new(t), o2, Effect::Pure))
+    let e = s.fresh_effect_var();
+    (vec![Ty::Sequence(Box::new(t.clone()), o, e)], Ty::Iterator(Box::new(t), e))
 }
 
 // ---------------------------------------------------------------------------

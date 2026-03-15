@@ -355,7 +355,7 @@ mod tests {
         let mut e = j.entry_mut(root).await.next().await;
         let uuid = e.uuid();
         for (k, v) in entries {
-            e.apply(k, crate::StorageDiff::Snapshot(v));
+            e.apply(k, crate::StoragePatch::Snapshot(v));
         }
         drop(e);
         (j, uuid)

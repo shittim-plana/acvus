@@ -154,7 +154,7 @@ pub(crate) enum PersistencyConfig {
     #[default]
     Ephemeral,
     Snapshot,
-    Deque { bind: String },
+    Sequence { bind: String },
     Diff { bind: String },
 }
 
@@ -279,7 +279,7 @@ pub(crate) fn convert_node(interner: &Interner, cfg: &NodeConfig) -> Result<Node
     let persistency = match &cfg.strategy.persistency {
         PersistencyConfig::Ephemeral => Persistency::Ephemeral,
         PersistencyConfig::Snapshot => Persistency::Snapshot,
-        PersistencyConfig::Deque { bind } => Persistency::Deque { bind: interner.intern(bind) },
+        PersistencyConfig::Sequence { bind } => Persistency::Sequence { bind: interner.intern(bind) },
         PersistencyConfig::Diff { bind } => Persistency::Diff { bind: interner.intern(bind) },
     };
 

@@ -12,11 +12,22 @@ use acvus_utils::Interner;
 use acvus_utils::TrackedDeque;
 use rustc_hash::FxHashMap;
 
+use crate::iter::SequenceChain;
 use crate::builtins;
 use crate::error::RuntimeError;
 use crate::iter::{IterChain, IterOp, SharedIter};
 use crate::value::{FnValue, LazyValue, PureValue, Value};
 use acvus_utils::{Coroutine, Stepped, YieldHandle};
+
+/// Runtime coercion: Deque → SequenceChain (Deque ≤ Sequence).
+/// Panics if the value is neither Sequence nor Deque.
+fn into_sequence_chain(value: Value, context: &str) -> SequenceChain {
+    match value {
+        Value::Lazy(LazyValue::Sequence(sc)) => sc,
+        Value::Lazy(LazyValue::Deque(d)) => SequenceChain::from_stored(d),
+        other => panic!("{context}: expected Sequence or Deque, got {other:?}"),
+    }
+}
 
 pub struct Interpreter {
     interner: Interner,
@@ -680,61 +691,69 @@ impl Interpreter {
                     .collect();
                 Ok((this, Value::string(parts.join(&sep))))
             }
-            // -- Lazy Sequence HOFs (return Sequence) --
+            // -- Sequence structural ops (origin preserved) --
+            // Deque ≤ Sequence coercion: Deque values are accepted and wrapped.
+            BuiltinId::TakeSeq => {
+                let sc = into_sequence_chain(args.remove(0), "take_seq");
+                let Value::Pure(PureValue::Int(n)) = args.remove(0) else {
+                    panic!("take_seq: expected Int")
+                };
+                Ok((this, Value::sequence(sc.take(n as usize))))
+            }
+            BuiltinId::SkipSeq => {
+                let sc = into_sequence_chain(args.remove(0), "skip_seq");
+                let Value::Pure(PureValue::Int(n)) = args.remove(0) else {
+                    panic!("skip_seq: expected Int")
+                };
+                Ok((this, Value::sequence(sc.skip(n as usize))))
+            }
+            BuiltinId::ChainSeq => {
+                let sc = into_sequence_chain(args.remove(0), "chain_seq");
+                let rhs = args.remove(0).into_shared_iter();
+                Ok((this, Value::sequence(sc.chain(rhs))))
+            }
+            // -- Sequence → Iterator coercion (origin breaks) --
+            // map, filter, flatten, flat_map transform elements, so origin
+            // relationship is lost. Coerce to Iterator via into_shared_iter.
             BuiltinId::MapSeq | BuiltinId::PmapSeq => {
                 let shared = args.remove(0).into_shared_iter();
                 let Value::Lazy(LazyValue::Fn(f)) = args.remove(0) else {
-                    panic!("map: expected Fn")
+                    panic!("map_seq: expected Fn")
                 };
-                Ok((this, Value::sequence(shared.map(f))))
+                Ok((this, Value::iterator(shared.map(f))))
             }
             BuiltinId::FilterSeq => {
                 let shared = args.remove(0).into_shared_iter();
                 let Value::Lazy(LazyValue::Fn(f)) = args.remove(0) else {
-                    panic!("filter: expected Fn")
+                    panic!("filter_seq: expected Fn")
                 };
-                Ok((this, Value::sequence(shared.filter(f))))
-            }
-            BuiltinId::TakeSeq => {
-                let shared = args.remove(0).into_shared_iter();
-                let Value::Pure(PureValue::Int(n)) = args.remove(0) else {
-                    panic!("take: expected Int")
-                };
-                Ok((this, Value::sequence(shared.take(n as usize))))
-            }
-            BuiltinId::SkipSeq => {
-                let shared = args.remove(0).into_shared_iter();
-                let Value::Pure(PureValue::Int(n)) = args.remove(0) else {
-                    panic!("skip: expected Int")
-                };
-                Ok((this, Value::sequence(shared.skip(n as usize))))
-            }
-            BuiltinId::ChainSeq => {
-                let a = args.remove(0).into_shared_iter();
-                let b = args.remove(0).into_shared_iter();
-                Ok((this, Value::sequence(a.chain(b))))
+                Ok((this, Value::iterator(shared.filter(f))))
             }
             BuiltinId::FlattenSeq => {
                 let shared = args.remove(0).into_shared_iter();
-                Ok((this, Value::sequence(shared.flatten())))
+                Ok((this, Value::iterator(shared.flatten())))
             }
             BuiltinId::FlatMapSeq | BuiltinId::FlatMapIterSeq => {
                 let shared = args.remove(0).into_shared_iter();
                 let Value::Lazy(LazyValue::Fn(f)) = args.remove(0) else {
-                    panic!("flat_map: expected Fn")
+                    panic!("flat_map_seq: expected Fn")
                 };
-                Ok((this, Value::sequence(shared.flat_map(f))))
+                Ok((this, Value::iterator(shared.flat_map(f))))
             }
+            // -- Sequence collect (origin preserved → Deque) --
             BuiltinId::CollectSeq => {
-                let shared = args.remove(0).into_shared_iter();
-                let (this, items) = Self::exec_collect_vec(this, shared, handle).await?;
-                Ok((this, Value::deque(TrackedDeque::from_vec(items))))
+                let sc = into_sequence_chain(args.remove(0), "collect_seq");
+                // Apply structural ops to origin TrackedDeque.
+                // Chain ops may contain SharedIter that need drive_chain.
+                let (this, deque) = Self::exec_collect_sequence(this, sc, handle).await?;
+                Ok((this, Value::deque(deque)))
             }
             BuiltinId::RevSeq => {
+                // Rev breaks element order → coerce to Iterator, collect, reverse.
                 let shared = args.remove(0).into_shared_iter();
                 let (this, mut items) = Self::exec_collect_vec(this, shared, handle).await?;
                 items.reverse();
-                Ok((this, Value::sequence(SharedIter::from_list(items))))
+                Ok((this, Value::iterator(SharedIter::from_list(items))))
             }
             // -- Lazy HOFs (return Iterator) --
             BuiltinId::Map | BuiltinId::Pmap => {
@@ -954,15 +973,65 @@ impl Interpreter {
         shared: SharedIter,
         handle: &'a YieldHandle<Value>,
     ) -> Result<(Self, Vec<Value>), RuntimeError> {
-        // Check cache first
+        // Check cache first (Pure iterators share cache via Arc<OnceLock>)
         if let Some(cached) = shared.cached() {
-            return Ok((this, cached));
+            return Ok((this, cached.clone()));
         }
 
         let chain = shared.snapshot_chain();
         let (this, items) = Self::drive_chain(this, &chain, handle).await?;
         shared.set_cache(items.clone());
         Ok((this, items))
+    }
+
+    /// Collect a SequenceChain: apply structural ops to origin TrackedDeque.
+    ///
+    /// Chain ops may contain SharedIter with closures, so drive_chain is needed.
+    /// The result preserves the origin's checksum lineage — it can be diffed
+    /// against the storage origin via `TrackedDeque::into_diff`.
+    async fn exec_collect_sequence<'a>(
+        mut this: Self,
+        sc: SequenceChain,
+        handle: &'a YieldHandle<Value>,
+    ) -> Result<(Self, TrackedDeque<Value>), RuntimeError> {
+        let origin_checksum = sc.origin_checksum();
+        let mut deque = sc.origin().clone();
+
+        for op in sc.ops() {
+            match op {
+                crate::iter::SequenceOp::Take(n) => {
+                    // Keep only first n elements: remove excess from back
+                    let n = *n;
+                    let len = deque.len();
+                    if n < len {
+                        for _ in 0..(len - n) {
+                            deque.pop();
+                        }
+                    }
+                }
+                crate::iter::SequenceOp::Skip(n) => {
+                    deque.consume(*n);
+                }
+                crate::iter::SequenceOp::Chain(iter) => {
+                    let items;
+                    (this, items) = Self::exec_collect_vec(this, iter.clone(), handle).await?;
+                    deque.extend(items);
+                }
+            }
+        }
+
+        // Runtime assertion: checksum must still match origin.
+        // If it doesn't, something corrupted the TrackedDeque.
+        assert_eq!(
+            deque.checksum(),
+            origin_checksum,
+            "SequenceChain collect: checksum diverged from origin ({:#x} vs {:#x}). \
+             This indicates a bug in structural op application.",
+            deque.checksum(),
+            origin_checksum,
+        );
+
+        Ok((this, deque))
     }
 
     // -- consuming HOF inner implementations ----------------------------------

@@ -482,9 +482,9 @@ pub fn typecheck_nodes(
             _ => {}
         }
 
-        // persistency: bind script (Deque/Diff) uses @self + @raw + all context
+        // persistency: bind script (Sequence/Diff) uses @self + @raw + all context
         match &spec.strategy.persistency {
-            acvus_orchestration::Persistency::Deque { bind } | acvus_orchestration::Persistency::Diff { bind } => {
+            acvus_orchestration::Persistency::Sequence { bind } | acvus_orchestration::Persistency::Diff { bind } => {
                 let bind_reg = spec.build_node_context(&interner, &full_reg, acvus_orchestration::ContextScope::Bind, locals_ref)
                     .expect("Bind scope should not conflict with reserved @self/@raw");
                 let hint = if locals.self_ty != Ty::Error {

@@ -336,7 +336,7 @@ async fn main() {
             eprintln!("turn error: {e}");
             process::exit(1);
         });
-        println!("{}", format_output(&interner, &response));
+        println!("{}", format_output(&interner, response.value()));
     } else {
         let fetch = HttpFetch {
             client: reqwest::Client::new(),
@@ -363,7 +363,7 @@ async fn main() {
                     eprintln!("turn error: {e}");
                     process::exit(1);
                 });
-                println!("{}", format_output(&interner, &response));
+                println!("{}", format_output(&interner, response.value()));
                 println!("cursor depth: {}", engine.journal.entry(engine.cursor).await.depth());
             }
         } else {
@@ -371,7 +371,7 @@ async fn main() {
                 eprintln!("turn error: {e}");
                 process::exit(1);
             });
-            println!("{}", format_output(&interner, &response));
+            println!("{}", format_output(&interner, response.value()));
         }
     }
 }

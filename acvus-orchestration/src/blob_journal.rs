@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use acvus_interpreter::{ConcreteValue, Value};
+use acvus_interpreter::{ConcreteValue, LazyValue, Value};
 use acvus_utils::Interner;
 use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
 use crate::blob::{BlobHash, BlobStore};
-use crate::storage::{EntryMut, EntryRef, Journal, Prune, StorageDiff};
+use crate::storage::{EntryMut, EntryRef, Journal, Prune, StoragePatch};
 
 // ── Serialization types ──────────────────────────────────────────────
 
@@ -95,27 +95,26 @@ fn deserialize_entries(
         .collect()
 }
 
-// ── StorageDiff application ─────────────────────────────────────────
+// ── StoragePatch application ─────────────────────────────────────────
 
 fn apply_diff(
     state: &mut FxHashMap<String, Arc<Value>>,
     turn_diff: &mut FxHashMap<String, Arc<Value>>,
     key: &str,
-    diff: StorageDiff,
+    diff: StoragePatch,
 ) {
     match diff {
-        StorageDiff::Ephemeral => {}
-        StorageDiff::Snapshot(v) => {
+        StoragePatch::Snapshot(v) => {
             let arc = Arc::new(v);
             state.insert(key.to_string(), Arc::clone(&arc));
             turn_diff.insert(key.to_string(), arc);
         }
-        StorageDiff::Deque { squashed, .. } => {
+        StoragePatch::Sequence { squashed, .. } => {
             let arc = Arc::new(Value::deque(squashed));
             state.insert(key.to_string(), Arc::clone(&arc));
             turn_diff.insert(key.to_string(), arc);
         }
-        StorageDiff::Diff(obj_diff) => {
+        StoragePatch::Object(obj_diff) => {
             let mut fields: FxHashMap<acvus_utils::Astr, Value> = state
                 .get(key)
                 .and_then(|arc| match arc.as_ref() {
@@ -596,7 +595,7 @@ impl<'a, S: BlobStore> EntryMut<'a> for BlobEntryMut<'a, S> {
         hot.state.get(key).cloned()
     }
 
-    fn apply(&mut self, key: &str, diff: StorageDiff) {
+    fn apply(&mut self, key: &str, diff: StoragePatch) {
         let hot = self.journal.hot.as_mut().unwrap();
         debug_assert_eq!(hot.idx, self.idx);
         debug_assert!(
@@ -785,7 +784,7 @@ mod tests {
     async fn apply_and_get() {
         let (mut j, root) = new_journal().await;
         let mut e = j.entry_mut(root).await.next().await;
-        e.apply("x", StorageDiff::Snapshot(Value::string("hello".into())));
+        e.apply("x", StoragePatch::Snapshot(Value::string("hello".into())));
         assert!(matches!(
             &*e.get("x").unwrap(),
             Value::Pure(PureValue::String(v)) if v == "hello"
@@ -801,24 +800,16 @@ mod tests {
         let mut e = j.entry_mut(root).await.next().await;
         e.apply(
             "x",
-            StorageDiff::Snapshot(Value::string("first".into())),
+            StoragePatch::Snapshot(Value::string("first".into())),
         );
         e.apply(
             "x",
-            StorageDiff::Snapshot(Value::object(FxHashMap::from_iter([(
+            StoragePatch::Snapshot(Value::object(FxHashMap::from_iter([(
                 interner.intern("v"),
                 Value::int(2),
             )]))),
         );
         assert!(matches!(&*e.get("x").unwrap(), Value::Lazy(LazyValue::Object(_))));
-    }
-
-    #[tokio::test]
-    async fn ephemeral_is_noop() {
-        let (mut j, root) = new_journal().await;
-        let mut e = j.entry_mut(root).await.next().await;
-        e.apply("x", StorageDiff::Ephemeral);
-        assert!(e.get("x").is_none());
     }
 
     #[tokio::test]
@@ -833,7 +824,7 @@ mod tests {
         };
         e.apply(
             "q",
-            StorageDiff::Deque {
+            StoragePatch::Sequence {
                 squashed: squashed.clone(),
                 diff,
             },
@@ -855,7 +846,7 @@ mod tests {
         let c = interner.intern("c");
         e.apply(
             "obj",
-            StorageDiff::Snapshot(Value::object(FxHashMap::from_iter([
+            StoragePatch::Snapshot(Value::object(FxHashMap::from_iter([
                 (a, Value::int(1)),
                 (b, Value::int(2)),
             ]))),
@@ -864,7 +855,7 @@ mod tests {
             updates: FxHashMap::from_iter([(a, Value::int(100)), (c, Value::int(3))]),
             removals: vec![b],
         };
-        e.apply("obj", StorageDiff::Diff(diff));
+        e.apply("obj", StoragePatch::Object(diff));
         let val = e.get("obj").unwrap();
         let Value::Lazy(LazyValue::Object(fields)) = val.as_ref() else {
             panic!("expected Object")
@@ -903,8 +894,8 @@ mod tests {
         {
             let mut e = j.entry_mut(root).await.next().await;
             n1 = e.uuid();
-            e.apply("x", StorageDiff::Snapshot(Value::int(1)));
-            e.apply("y", StorageDiff::Snapshot(Value::int(2)));
+            e.apply("x", StoragePatch::Snapshot(Value::int(1)));
+            e.apply("y", StoragePatch::Snapshot(Value::int(2)));
         }
 
         let n2;
@@ -915,7 +906,7 @@ mod tests {
             assert!(matches!(&*e.get("x").unwrap(), Value::Pure(PureValue::Int(1))));
             assert!(matches!(&*e.get("y").unwrap(), Value::Pure(PureValue::Int(2))));
             // Modifying child doesn't affect parent.
-            e.apply("x", StorageDiff::Snapshot(Value::int(99)));
+            e.apply("x", StoragePatch::Snapshot(Value::int(99)));
             assert!(matches!(&*e.get("x").unwrap(), Value::Pure(PureValue::Int(99))));
         }
 
@@ -939,13 +930,13 @@ mod tests {
         {
             let mut e = j.entry_mut(root).await.next().await;
             n1 = e.uuid();
-            e.apply("x", StorageDiff::Snapshot(Value::int(1)));
+            e.apply("x", StoragePatch::Snapshot(Value::int(1)));
         }
         let n2;
         {
             let mut e = j.entry_mut(n1).await.next().await;
             n2 = e.uuid();
-            e.apply("x", StorageDiff::Snapshot(Value::int(2)));
+            e.apply("x", StoragePatch::Snapshot(Value::int(2)));
         }
 
         // Fork from n2 → sibling of n2 (child of n1).
@@ -970,7 +961,7 @@ mod tests {
         {
             let mut e = j.entry_mut(n1).await.next().await;
             n2 = e.uuid();
-            e.apply("x", StorageDiff::Snapshot(Value::int(1)));
+            e.apply("x", StoragePatch::Snapshot(Value::int(1)));
         }
 
         j.entry_mut(n2).await.prune(Prune::Leaf);
@@ -1014,7 +1005,7 @@ mod tests {
         {
             let mut e = j.entry_mut(root).await.next().await;
             n1 = e.uuid();
-            e.apply("x", StorageDiff::Snapshot(Value::int(1)));
+            e.apply("x", StoragePatch::Snapshot(Value::int(1)));
         }
 
         let n2;
@@ -1035,7 +1026,7 @@ mod tests {
         // Modifying one child doesn't affect the other.
         {
             let mut e = j.entry_mut(n2).await;
-            e.apply("x", StorageDiff::Snapshot(Value::int(99)));
+            e.apply("x", StoragePatch::Snapshot(Value::int(99)));
         }
         assert!(matches!(&*j.entry(n2).await.get("x").unwrap(), Value::Pure(PureValue::Int(99))));
         assert!(matches!(&*j.entry(n3).await.get("x").unwrap(), Value::Pure(PureValue::Int(1))));
@@ -1049,14 +1040,14 @@ mod tests {
         {
             let mut e = j.entry_mut(root).await.next().await;
             n1 = e.uuid();
-            e.apply("x", StorageDiff::Snapshot(Value::int(1)));
+            e.apply("x", StoragePatch::Snapshot(Value::int(1)));
         }
         {
             let mut e = j.entry_mut(n1).await.next().await;
             // x=1 from parent.
             assert!(matches!(&*e.get("x").unwrap(), Value::Pure(PureValue::Int(1))));
             // Override.
-            e.apply("x", StorageDiff::Snapshot(Value::int(2)));
+            e.apply("x", StoragePatch::Snapshot(Value::int(2)));
             assert!(matches!(&*e.get("x").unwrap(), Value::Pure(PureValue::Int(2))));
         }
     }
@@ -1071,7 +1062,7 @@ mod tests {
         {
             let mut e = j.entry_mut(root).await.next().await;
             n1 = e.uuid();
-            e.apply("x", StorageDiff::Snapshot(Value::int(42)));
+            e.apply("x", StoragePatch::Snapshot(Value::int(42)));
         }
 
         // next() persists n1's snapshot.
@@ -1097,14 +1088,14 @@ mod tests {
         {
             let mut e = j.entry_mut(root).await.next().await;
             n1 = e.uuid();
-            e.apply("x", StorageDiff::Snapshot(Value::int(1)));
+            e.apply("x", StoragePatch::Snapshot(Value::int(1)));
         }
 
         let n2;
         {
             let mut e = j.entry_mut(n1).await.next().await;
             n2 = e.uuid();
-            e.apply("y", StorageDiff::Snapshot(Value::int(2)));
+            e.apply("y", StoragePatch::Snapshot(Value::int(2)));
         }
 
         // Switch back to n1 — triggers hot swap.
@@ -1162,7 +1153,7 @@ mod tests {
         {
             let mut e = j.entry_mut(root).await.next().await;
             n1 = e.uuid();
-            e.apply("x", StorageDiff::Snapshot(Value::int(42)));
+            e.apply("x", StoragePatch::Snapshot(Value::int(42)));
         }
         let n2;
         {
@@ -1211,12 +1202,12 @@ mod tests {
             {
                 let mut e = j.entry_mut(root).await.next().await;
                 n1 = e.uuid();
-                e.apply("x", StorageDiff::Snapshot(Value::int(10)));
+                e.apply("x", StoragePatch::Snapshot(Value::int(10)));
             }
             {
                 let mut e = j.entry_mut(n1).await.next().await;
                 n2 = e.uuid();
-                e.apply("y", StorageDiff::Snapshot(Value::int(20)));
+                e.apply("y", StoragePatch::Snapshot(Value::int(20)));
             }
 
             j.flush_tree().await;
@@ -1249,7 +1240,7 @@ mod tests {
             cursor = e.uuid();
             e.apply(
                 &format!("k{i}"),
-                StorageDiff::Snapshot(Value::int(i as i64)),
+                StoragePatch::Snapshot(Value::int(i as i64)),
             );
         }
 
@@ -1270,7 +1261,7 @@ mod tests {
     async fn as_ref_returns_current_state() {
         let (mut j, root) = new_journal().await;
         let mut e = j.entry_mut(root).await.next().await;
-        e.apply("x", StorageDiff::Snapshot(Value::int(7)));
+        e.apply("x", StoragePatch::Snapshot(Value::int(7)));
         let r = e.as_ref();
         assert!(matches!(&*r.get("x").unwrap(), Value::Pure(PureValue::Int(7))));
         assert_eq!(r.depth(), 1);
@@ -1285,8 +1276,8 @@ mod tests {
         {
             let mut e = j.entry_mut(root).await.next().await;
             n1 = e.uuid();
-            e.apply("a", StorageDiff::Snapshot(Value::int(1)));
-            e.apply("b", StorageDiff::Snapshot(Value::int(2)));
+            e.apply("a", StoragePatch::Snapshot(Value::int(1)));
+            e.apply("b", StoragePatch::Snapshot(Value::int(2)));
         }
 
         let entries = j.entry(n1).await.entries();
@@ -1305,13 +1296,13 @@ mod tests {
         {
             let mut e = j.entry_mut(root).await.next().await;
             n1 = e.uuid();
-            e.apply("x", StorageDiff::Snapshot(Value::int(1)));
+            e.apply("x", StoragePatch::Snapshot(Value::int(1)));
         }
         let n2;
         {
             let mut e = j.entry_mut(n1).await.next().await;
             n2 = e.uuid();
-            e.apply("y", StorageDiff::Snapshot(Value::int(2)));
+            e.apply("y", StoragePatch::Snapshot(Value::int(2)));
         }
 
         // Switch to n1 to mutate.
@@ -1350,7 +1341,7 @@ mod tests {
             uuids.push(cursor);
             e.apply(
                 &format!("k{i}"),
-                StorageDiff::Snapshot(Value::int(i as i64)),
+                StoragePatch::Snapshot(Value::int(i as i64)),
             );
         }
         // Force persist of last node.
@@ -1394,7 +1385,7 @@ mod tests {
             cursor = e.uuid();
             e.apply(
                 &format!("k{i}"),
-                StorageDiff::Snapshot(Value::int(i as i64)),
+                StoragePatch::Snapshot(Value::int(i as i64)),
             );
         }
 
@@ -1424,7 +1415,7 @@ mod tests {
             cursor = e.uuid();
             e.apply(
                 &format!("k{i}"),
-                StorageDiff::Snapshot(Value::int(i as i64)),
+                StoragePatch::Snapshot(Value::int(i as i64)),
             );
         }
 
@@ -1448,7 +1439,7 @@ mod tests {
             cursor = e.uuid();
             e.apply(
                 &format!("k{i}"),
-                StorageDiff::Snapshot(Value::int(i as i64)),
+                StoragePatch::Snapshot(Value::int(i as i64)),
             );
         }
 
@@ -1491,7 +1482,7 @@ mod tests {
                 // Each turn adds a distinct key — snapshot grows, diff stays small.
                 e.apply(
                     &format!("k{i}"),
-                    StorageDiff::Snapshot(Value::int(i as i64)),
+                    StoragePatch::Snapshot(Value::int(i as i64)),
                 );
             }
             j.persist_hot_node().await;

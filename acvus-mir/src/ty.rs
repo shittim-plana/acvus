@@ -198,6 +198,39 @@ impl Ty {
         }
     }
 
+    /// Returns true if this type's values can be persisted to storage.
+    ///
+    /// Storable = can be serialized and restored without losing meaning.
+    /// The rules:
+    /// - **Pure** (scalars): always storable.
+    /// - **Lazy (Pure effect)**: storable. Iterator/Sequence will be collected
+    ///   (materialized to eager) at the storage boundary.
+    /// - **Lazy (Effectful)**: NOT storable. Collecting an effectful iterator
+    ///   could trigger observable side effects in an uncontrolled order.
+    /// - **Unpure** (Opaque): NOT storable. Opaque values are runtime-only handles.
+    /// - **Fn/ExternFn**: NOT storable. Closures and function pointers cannot
+    ///   be serialized.
+    ///
+    /// Recursively checks container contents: `List<Fn>` is not storable.
+    pub fn is_storable(&self) -> bool {
+        match self {
+            Ty::Int | Ty::Float | Ty::String | Ty::Bool | Ty::Unit
+            | Ty::Range | Ty::Byte => true,
+            Ty::List(inner) | Ty::Deque(inner, _) => inner.is_storable(),
+            Ty::Option(inner) => inner.is_storable(),
+            Ty::Tuple(elems) => elems.iter().all(|e| e.is_storable()),
+            Ty::Object(fields) => fields.values().all(|v| v.is_storable()),
+            Ty::Enum { variants, .. } => variants.values().all(|p| {
+                p.as_ref().map_or(true, |ty| ty.is_storable())
+            }),
+            Ty::Iterator(inner, effect) | Ty::Sequence(inner, _, effect) => {
+                *effect != Effect::Effectful && inner.is_storable()
+            }
+            Ty::Fn { .. } | Ty::Opaque(_) => false,
+            Ty::Var(_) | Ty::Infer | Ty::Error => true,
+        }
+    }
+
     /// Convenience: `List<Byte>` (byte array type).
     pub fn bytes() -> Ty {
         Ty::List(Box::new(Ty::Byte))
@@ -3669,5 +3702,363 @@ mod tests {
             Ty::Iterator(_, e) => assert_eq!(e, Effect::Effectful),
             other => panic!("expected Iterator, got {other:?}"),
         }
+    }
+
+    // ================================================================
+    // is_storable tests
+    // ================================================================
+
+    // -- Pure scalars: always storable --
+
+    #[test]
+    fn storable_int() { assert!(Ty::Int.is_storable()); }
+    #[test]
+    fn storable_float() { assert!(Ty::Float.is_storable()); }
+    #[test]
+    fn storable_string() { assert!(Ty::String.is_storable()); }
+    #[test]
+    fn storable_bool() { assert!(Ty::Bool.is_storable()); }
+    #[test]
+    fn storable_unit() { assert!(Ty::Unit.is_storable()); }
+    #[test]
+    fn storable_byte() { assert!(Ty::Byte.is_storable()); }
+    #[test]
+    fn storable_range() { assert!(Ty::Range.is_storable()); }
+
+    // -- Lazy containers with pure contents: storable --
+
+    #[test]
+    fn storable_list_of_int() { assert!(Ty::List(Box::new(Ty::Int)).is_storable()); }
+    #[test]
+    fn storable_option_string() { assert!(Ty::Option(Box::new(Ty::String)).is_storable()); }
+    #[test]
+    fn storable_tuple() { assert!(Ty::Tuple(vec![Ty::Int, Ty::String]).is_storable()); }
+
+    // -- Iterator/Sequence with Pure effect: storable --
+
+    #[test]
+    fn storable_pure_iterator() {
+        assert!(Ty::Iterator(Box::new(Ty::Int), Effect::Pure).is_storable());
+    }
+
+    #[test]
+    fn storable_pure_sequence() {
+        let o = Origin::Concrete(0);
+        assert!(Ty::Sequence(Box::new(Ty::Int), o, Effect::Pure).is_storable());
+    }
+
+    // -- Iterator/Sequence with Effectful: NOT storable --
+
+    #[test]
+    fn not_storable_effectful_iterator() {
+        assert!(!Ty::Iterator(Box::new(Ty::Int), Effect::Effectful).is_storable());
+    }
+
+    #[test]
+    fn not_storable_effectful_sequence() {
+        let o = Origin::Concrete(0);
+        assert!(!Ty::Sequence(Box::new(Ty::Int), o, Effect::Effectful).is_storable());
+    }
+
+    // -- Fn: never storable --
+
+    #[test]
+    fn not_storable_pure_fn() {
+        let fn_ty = Ty::Fn {
+            params: vec![Ty::Int], ret: Box::new(Ty::Int),
+            kind: FnKind::Lambda, captures: vec![], effect: Effect::Pure,
+        };
+        assert!(!fn_ty.is_storable());
+    }
+
+    #[test]
+    fn not_storable_effectful_fn() {
+        let fn_ty = Ty::Fn {
+            params: vec![Ty::Int], ret: Box::new(Ty::Int),
+            kind: FnKind::Lambda, captures: vec![], effect: Effect::Effectful,
+        };
+        assert!(!fn_ty.is_storable());
+    }
+
+    // -- Opaque: never storable --
+
+    #[test]
+    fn not_storable_opaque() {
+        assert!(!Ty::Opaque("Connection".into()).is_storable());
+    }
+
+    // -- Recursive: container with non-storable inner --
+
+    #[test]
+    fn not_storable_list_of_fn() {
+        let fn_ty = Ty::Fn {
+            params: vec![Ty::Int], ret: Box::new(Ty::Int),
+            kind: FnKind::Lambda, captures: vec![], effect: Effect::Pure,
+        };
+        assert!(!Ty::List(Box::new(fn_ty)).is_storable());
+    }
+
+    #[test]
+    fn not_storable_list_of_opaque() {
+        assert!(!Ty::List(Box::new(Ty::Opaque("X".into()))).is_storable());
+    }
+
+    #[test]
+    fn not_storable_iterator_of_effectful_fn() {
+        let fn_ty = Ty::Fn {
+            params: vec![], ret: Box::new(Ty::Int),
+            kind: FnKind::Lambda, captures: vec![], effect: Effect::Effectful,
+        };
+        assert!(!Ty::Iterator(Box::new(fn_ty), Effect::Pure).is_storable());
+    }
+
+    #[test]
+    fn storable_list_of_pure_iterator() {
+        // List<Iterator<Int, Pure>> — Iterator inner is storable, effect is Pure
+        assert!(Ty::List(Box::new(
+            Ty::Iterator(Box::new(Ty::Int), Effect::Pure)
+        )).is_storable());
+    }
+
+    #[test]
+    fn not_storable_list_of_effectful_iterator() {
+        // List<Iterator<Int, Effectful>> — effectful inner makes the whole thing non-storable
+        assert!(!Ty::List(Box::new(
+            Ty::Iterator(Box::new(Ty::Int), Effect::Effectful)
+        )).is_storable());
+    }
+
+    // ================================================================
+    // Builtin soundness: 4 iterable types (List, Deque, Iterator, Sequence)
+    // ================================================================
+    //
+    // Verify that builtin signatures produce correct types and that
+    // type mismatches are properly rejected. Tests use TySubst to
+    // simulate overload resolution.
+
+    fn try_builtin(s: &mut TySubst, name: &str, arg_types: &[Ty]) -> Result<Ty, ()> {
+        use crate::builtins::registry;
+        let candidates = registry().candidates(name);
+        for &id in candidates {
+            let snap = s.snapshot();
+            let entry = registry().get(id);
+            let (params, ret) = (entry.signature)(s);
+            if arg_types.len() != params.len() {
+                s.rollback(snap);
+                continue;
+            }
+            let mut ok = true;
+            for (a, p) in arg_types.iter().zip(params.iter()) {
+                if s.unify(a, p, Polarity::Covariant).is_err() {
+                    ok = false;
+                    break;
+                }
+            }
+            if ok {
+                return Ok(s.resolve(&ret));
+            }
+            s.rollback(snap);
+        }
+        Err(())
+    }
+
+    // -- map: should accept Iterator and Sequence, return correct type --
+
+    #[test]
+    fn builtin_map_on_iterator_returns_iterator() {
+        let mut s = TySubst::new();
+        let ret = try_builtin(&mut s, "map", &[
+            Ty::Iterator(Box::new(Ty::Int), Effect::Pure),
+            Ty::Fn { params: vec![Ty::Int], ret: Box::new(Ty::String),
+                kind: FnKind::Lambda, captures: vec![], effect: Effect::Pure },
+        ]);
+        assert!(matches!(ret, Ok(Ty::Iterator(_, Effect::Pure))));
+    }
+
+    #[test]
+    fn builtin_map_on_sequence_returns_iterator() {
+        // map on Sequence breaks origin → returns Iterator (not Sequence)
+        let mut s = TySubst::new();
+        let o = s.fresh_concrete_origin();
+        let ret = try_builtin(&mut s, "map", &[
+            Ty::Sequence(Box::new(Ty::Int), o, Effect::Pure),
+            Ty::Fn { params: vec![Ty::Int], ret: Box::new(Ty::String),
+                kind: FnKind::Lambda, captures: vec![], effect: Effect::Pure },
+        ]);
+        assert!(matches!(ret, Ok(Ty::Iterator(_, Effect::Pure))));
+    }
+
+    #[test]
+    fn builtin_map_on_list_coerces_to_iterator() {
+        // List ≤ Iterator coercion allows map on List
+        let mut s = TySubst::new();
+        let ret = try_builtin(&mut s, "map", &[
+            Ty::List(Box::new(Ty::Int)),
+            Ty::Fn { params: vec![Ty::Int], ret: Box::new(Ty::String),
+                kind: FnKind::Lambda, captures: vec![], effect: Effect::Pure },
+        ]).unwrap();
+        assert!(matches!(ret, Ty::Iterator(_, Effect::Pure)));
+    }
+
+    // -- take/skip: Sequence preserves origin, Iterator stays Iterator --
+
+    #[test]
+    fn builtin_take_on_sequence_returns_sequence_same_origin() {
+        let mut s = TySubst::new();
+        let o = s.fresh_concrete_origin();
+        let ret = try_builtin(&mut s, "take", &[
+            Ty::Sequence(Box::new(Ty::Int), o, Effect::Pure),
+            Ty::Int,
+        ]).unwrap();
+        match ret {
+            Ty::Sequence(_, ret_o, Effect::Pure) => {
+                assert_eq!(s.resolve_origin(ret_o), s.resolve_origin(o), "origin must be preserved");
+            }
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn builtin_take_on_iterator_returns_iterator() {
+        let mut s = TySubst::new();
+        let ret = try_builtin(&mut s, "take", &[
+            Ty::Iterator(Box::new(Ty::Int), Effect::Pure),
+            Ty::Int,
+        ]).unwrap();
+        assert!(matches!(ret, Ty::Iterator(_, Effect::Pure)));
+    }
+
+    #[test]
+    fn builtin_skip_on_sequence_preserves_origin() {
+        let mut s = TySubst::new();
+        let o = s.fresh_concrete_origin();
+        let ret = try_builtin(&mut s, "skip", &[
+            Ty::Sequence(Box::new(Ty::Int), o, Effect::Pure),
+            Ty::Int,
+        ]).unwrap();
+        match ret {
+            Ty::Sequence(_, ret_o, _) => {
+                assert_eq!(s.resolve_origin(ret_o), s.resolve_origin(o));
+            }
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    // -- chain: Sequence + Iterator → Sequence (same origin) --
+
+    #[test]
+    fn builtin_chain_on_sequence_with_iterator() {
+        let mut s = TySubst::new();
+        let o = s.fresh_concrete_origin();
+        let ret = try_builtin(&mut s, "chain", &[
+            Ty::Sequence(Box::new(Ty::Int), o, Effect::Pure),
+            Ty::Iterator(Box::new(Ty::Int), Effect::Pure),
+        ]).unwrap();
+        match ret {
+            Ty::Sequence(_, ret_o, _) => {
+                assert_eq!(s.resolve_origin(ret_o), s.resolve_origin(o), "chain must preserve origin");
+            }
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    // -- collect: Iterator → List, Sequence → Deque (same origin) --
+
+    #[test]
+    fn builtin_collect_iterator_returns_list() {
+        let mut s = TySubst::new();
+        let ret = try_builtin(&mut s, "collect", &[
+            Ty::Iterator(Box::new(Ty::Int), Effect::Pure),
+        ]).unwrap();
+        assert!(matches!(ret, Ty::List(_)));
+    }
+
+    #[test]
+    fn builtin_collect_sequence_returns_deque_same_origin() {
+        let mut s = TySubst::new();
+        let o = s.fresh_concrete_origin();
+        let ret = try_builtin(&mut s, "collect", &[
+            Ty::Sequence(Box::new(Ty::Int), o, Effect::Pure),
+        ]).unwrap();
+        match ret {
+            Ty::Deque(_, ret_o) => {
+                assert_eq!(s.resolve_origin(ret_o), s.resolve_origin(o), "collect_seq must preserve origin");
+            }
+            other => panic!("expected Deque, got {other:?}"),
+        }
+    }
+
+    // -- filter on Sequence → Iterator (origin lost) --
+
+    #[test]
+    fn builtin_filter_on_sequence_returns_iterator() {
+        let mut s = TySubst::new();
+        let o = s.fresh_concrete_origin();
+        let ret = try_builtin(&mut s, "filter", &[
+            Ty::Sequence(Box::new(Ty::Int), o, Effect::Pure),
+            Ty::Fn { params: vec![Ty::Int], ret: Box::new(Ty::Bool),
+                kind: FnKind::Lambda, captures: vec![], effect: Effect::Pure },
+        ]).unwrap();
+        assert!(matches!(ret, Ty::Iterator(_, Effect::Pure)), "filter on Sequence should return Iterator, got {ret:?}");
+    }
+
+    // -- Effect propagation through HOF --
+
+    #[test]
+    fn builtin_map_effectful_callback_propagates() {
+        let mut s = TySubst::new();
+        let ret = try_builtin(&mut s, "map", &[
+            Ty::Iterator(Box::new(Ty::Int), Effect::Pure),
+            Ty::Fn { params: vec![Ty::Int], ret: Box::new(Ty::String),
+                kind: FnKind::Lambda, captures: vec![], effect: Effect::Effectful },
+        ]).unwrap();
+        match ret {
+            Ty::Iterator(_, e) => assert_eq!(e, Effect::Effectful, "effectful callback should propagate"),
+            other => panic!("expected Iterator, got {other:?}"),
+        }
+    }
+
+    // -- Deque coerces to Sequence for take/skip/chain --
+
+    #[test]
+    fn builtin_take_on_deque_coerces_to_sequence() {
+        let mut s = TySubst::new();
+        let o = s.fresh_concrete_origin();
+        let ret = try_builtin(&mut s, "take", &[
+            Ty::Deque(Box::new(Ty::Int), o),
+            Ty::Int,
+        ]).unwrap();
+        // Deque ≤ Sequence coercion, then take preserves origin
+        match ret {
+            Ty::Sequence(_, ret_o, _) => {
+                assert_eq!(s.resolve_origin(ret_o), s.resolve_origin(o));
+            }
+            other => panic!("expected Sequence (from Deque coercion), got {other:?}"),
+        }
+    }
+
+    // -- Type mismatch: wrong element type --
+
+    #[test]
+    fn builtin_map_element_type_mismatch_fails() {
+        let mut s = TySubst::new();
+        let ret = try_builtin(&mut s, "map", &[
+            Ty::Iterator(Box::new(Ty::Int), Effect::Pure),
+            Ty::Fn { params: vec![Ty::String], ret: Box::new(Ty::String),
+                kind: FnKind::Lambda, captures: vec![], effect: Effect::Pure },
+        ]);
+        assert!(ret.is_err(), "map with wrong element type should fail");
+    }
+
+    // -- Sequence-specific: flatten/flat_map return Iterator --
+
+    #[test]
+    fn builtin_flatten_on_sequence_returns_iterator() {
+        let mut s = TySubst::new();
+        let o = s.fresh_concrete_origin();
+        let ret = try_builtin(&mut s, "flatten", &[
+            Ty::Sequence(Box::new(Ty::List(Box::new(Ty::Int))), o, Effect::Pure),
+        ]).unwrap();
+        assert!(matches!(ret, Ty::Iterator(_, _)), "flatten on Sequence should return Iterator, got {ret:?}");
     }
 }
