@@ -18,7 +18,7 @@ use crate::error::MirError;
 use crate::hints::HintTable;
 use crate::ir::MirModule;
 use crate::lower::Lowerer;
-use crate::ty::Ty;
+use crate::ty::{Ty, TySubst};
 use crate::typeck::TypeChecker;
 
 /// Compile a parsed template into MIR.
@@ -32,7 +32,8 @@ pub fn compile(
     template: &Template,
     registry: &ContextTypeRegistry,
 ) -> Result<(MirModule, HintTable), Vec<MirError>> {
-    let checker = TypeChecker::new(interner, registry.merged());
+    let mut subst = TySubst::new();
+    let checker = TypeChecker::new(interner, registry.merged(), &mut subst);
     let (type_map, builtin_map) = checker.check_template(template)?;
     let lowerer = Lowerer::new(interner, type_map, builtin_map);
     let (module, hints) = lowerer.lower_template(template);
@@ -54,7 +55,21 @@ pub fn compile_script_with_hint(
     registry: &ContextTypeRegistry,
     expected_tail: Option<&Ty>,
 ) -> Result<(MirModule, HintTable, Ty), Vec<MirError>> {
-    let checker = TypeChecker::new(interner, registry.merged());
+    let mut subst = TySubst::new();
+    compile_script_with_hint_subst(interner, script, registry, expected_tail, &mut subst)
+}
+
+/// Like `compile_script_with_hint`, but uses an externally provided `TySubst`.
+/// This allows sharing origin/type-variable state across multiple compilations
+/// (e.g. initial_value and bind script for the same node).
+pub fn compile_script_with_hint_subst(
+    interner: &Interner,
+    script: &Script,
+    registry: &ContextTypeRegistry,
+    expected_tail: Option<&Ty>,
+    subst: &mut TySubst,
+) -> Result<(MirModule, HintTable, Ty), Vec<MirError>> {
+    let checker = TypeChecker::new(interner, registry.merged(), subst);
     let (type_map, builtin_map, tail_ty) =
         checker.check_script_with_hint(script, expected_tail)?;
     let lowerer = Lowerer::new(interner, type_map, builtin_map);
@@ -69,8 +84,9 @@ pub fn compile_analysis(
     template: &Template,
     registry: &ContextTypeRegistry,
 ) -> Result<(MirModule, HintTable), Vec<MirError>> {
+    let mut subst = TySubst::new();
     let checker =
-        TypeChecker::new(interner, registry.merged()).with_analysis_mode();
+        TypeChecker::new(interner, registry.merged(), &mut subst).with_analysis_mode();
     let (type_map, builtin_map) = checker.check_template(template)?;
     let lowerer = Lowerer::new(interner, type_map, builtin_map);
     let (module, hints) = lowerer.lower_template(template);
@@ -84,8 +100,9 @@ pub fn compile_analysis_partial(
     template: &Template,
     registry: &ContextTypeRegistry,
 ) -> (MirModule, HintTable, Vec<MirError>) {
+    let mut subst = TySubst::new();
     let checker =
-        TypeChecker::new(interner, registry.merged()).with_analysis_mode();
+        TypeChecker::new(interner, registry.merged(), &mut subst).with_analysis_mode();
     let (type_map, builtin_map, errors) = checker.check_template_partial(template);
     let lowerer = Lowerer::new(interner, type_map, builtin_map);
     let (module, hints) = lowerer.lower_template(template);
@@ -108,8 +125,9 @@ pub fn compile_script_analysis_with_tail(
     registry: &ContextTypeRegistry,
     expected_tail: Option<&Ty>,
 ) -> Result<(MirModule, HintTable, Ty), Vec<MirError>> {
+    let mut subst = TySubst::new();
     let checker =
-        TypeChecker::new(interner, registry.merged()).with_analysis_mode();
+        TypeChecker::new(interner, registry.merged(), &mut subst).with_analysis_mode();
     let (type_map, builtin_map, tail_ty) =
         checker.check_script_with_hint(script, expected_tail)?;
     let lowerer = Lowerer::new(interner, type_map, builtin_map);
@@ -124,8 +142,9 @@ pub fn compile_script_analysis_with_tail_partial(
     registry: &ContextTypeRegistry,
     expected_tail: Option<&Ty>,
 ) -> (MirModule, HintTable, Ty, Vec<MirError>) {
+    let mut subst = TySubst::new();
     let checker =
-        TypeChecker::new(interner, registry.merged()).with_analysis_mode();
+        TypeChecker::new(interner, registry.merged(), &mut subst).with_analysis_mode();
     let (type_map, builtin_map, tail_ty, errors) =
         checker.check_script_with_hint_partial(script, expected_tail);
     let lowerer = Lowerer::new(interner, type_map, builtin_map);

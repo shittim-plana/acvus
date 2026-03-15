@@ -781,7 +781,7 @@ where
             ScriptPurpose::BindScript {
                 node_idx,
                 value: _raw_value,
-                origin,
+                origin: _,
             } => {
                 let node = &self.nodes[node_idx];
                 let node_name_str = self.interner.resolve(node.name);

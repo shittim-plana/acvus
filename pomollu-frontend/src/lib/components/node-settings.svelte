@@ -94,7 +94,7 @@
 		const persistencies: Record<string, Persistency> = {
 			'ephemeral': { kind: 'ephemeral' },
 			'snapshot': { kind: 'snapshot' },
-			'deque': { kind: 'deque', bind: '' },
+			'sequence': { kind: 'sequence', bind: '' },
 			'diff': { kind: 'diff', bind: '' },
 		};
 		updateNode((n) => ({ ...n, strategy: { ...n.strategy, persistency: persistencies[kind] } }));
@@ -103,14 +103,14 @@
 	const persistencyLabels: Record<string, string> = {
 		'ephemeral': 'Ephemeral',
 		'snapshot': 'Snapshot',
-		'deque': 'Deque',
+		'sequence': 'Sequence',
 		'diff': 'Diff',
 	};
 
 	const persistencyDescriptions: Record<string, string> = {
 		'ephemeral': 'Output is not persisted to storage.',
 		'snapshot': 'Overwrite stored value entirely each time.',
-		'deque': 'Tracked deque. Requires a bind script.',
+		'sequence': 'Tracked sequence. Requires a bind script.',
 		'diff': 'Object field-level patch. Requires a bind script.',
 	};
 
@@ -543,13 +543,13 @@
 								<Select.Content>
 									<Select.Item value="ephemeral">Ephemeral</Select.Item>
 									<Select.Item value="snapshot">Snapshot</Select.Item>
-									<Select.Item value="deque">Deque</Select.Item>
+									<Select.Item value="sequence">Sequence</Select.Item>
 									<Select.Item value="diff">Diff</Select.Item>
 								</Select.Content>
 							</Select.Root>
 							<p class="hint">{persistencyDescriptions[persistency.kind]}</p>
 						</div>
-						{#if persistency.kind === 'deque' || persistency.kind === 'diff'}
+						{#if persistency.kind === 'sequence' || persistency.kind === 'diff'}
 							<div class="field">
 								<Label>Bind</Label>
 								<AcvusEngineField

@@ -3,7 +3,6 @@ mod blob_journal;
 mod compile;
 mod convert;
 mod dag;
-mod display;
 mod dsl;
 mod error;
 pub(crate) mod kind;
@@ -23,22 +22,18 @@ pub use compile::{
 };
 pub use convert::{json_to_value, value_to_literal};
 pub use dag::{Dag, build_dag};
-pub use display::{
-    CompiledDisplayEntry, CompiledIterableDisplay, CompiledStaticDisplay, DisplayEntrySpec,
-    IterableDisplaySpec, RenderedDisplayEntry, StaticDisplaySpec, compile_iterable_display,
-    compile_static_display, render_display, render_display_with_idx,
-};
 pub use dsl::{ContextScope, Execution, FnParam, MessageSpec, NodeLocalTypes, NodeSpec, Persistency, Strategy, TokenBudget};
 pub use error::{OrchError, OrchErrorDisplay, OrchErrorKind};
 pub use kind::{
     CompiledDisplay, CompiledDisplayStatic, CompiledExpr, CompiledLlm, CompiledLlmCache, CompiledNodeKind, CompiledPlain,
-    CompiledToolBinding, CompiledToolParamInfo, ExprSpec, GenerationParams, LlmCacheSpec, LlmSpec,
+    CompiledToolBinding, CompiledToolParamInfo, DisplaySpec, DisplayStaticSpec, ExprSpec,
+    GenerationParams, IteratorSpec, LlmCacheSpec, LlmSpec,
     MaxTokens, NodeKind, PlainSpec, ThinkingConfig, ToolBinding, ToolParamInfo,
 };
 pub use message::{
     Content, ContentItem, Message, ModelResponse, Output, ToolCall, ToolCallExtras, ToolSpec, ToolSpecParam, Usage,
 };
-pub use node::{DisplayNode, DisplayNodeStatic, ExprNode, LlmCacheNode, LlmNode, Node, PlainNode, build_node_table};
+pub use node::{DisplayNode, DisplayNodeStatic, ExprNode, IteratorNode, LlmCacheNode, LlmNode, Node, PlainNode, build_node_table};
 pub use provider::{
     ApiKind, Fetch, HttpRequest, LlmModelKind, ProviderConfig, ProviderError,
     build_cache_request, build_request, create_llm_model, parse_cache_response, parse_response,

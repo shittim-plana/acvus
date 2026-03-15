@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use acvus_interpreter::{RuntimeError, TypedValue, Value};
+use acvus_interpreter::{RuntimeError, TypedValue};
 use acvus_utils::{Astr, Interner};
 use rustc_hash::FxHashMap;
 

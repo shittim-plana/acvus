@@ -97,6 +97,27 @@ pub(crate) enum NodeKindConfig {
         template: String,
         output_ty: Option<crate::schema::TypeDesc>,
     },
+    #[serde(rename = "display")]
+    Display {
+        iterator: String,
+        template: String,
+    },
+    #[serde(rename = "display_static")]
+    DisplayStatic {
+        template: String,
+    },
+    #[serde(rename = "iterator")]
+    Iterator {
+        sources: Vec<IteratorSourceConfig>,
+        #[serde(default)]
+        unordered: bool,
+    },
+}
+
+#[derive(Deserialize)]
+pub(crate) struct IteratorSourceConfig {
+    pub name: String,
+    pub node: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -266,6 +287,23 @@ pub(crate) fn convert_node(interner: &Interner, cfg: &NodeConfig) -> Result<Node
         NodeKindConfig::Plain { template } => NodeKind::Plain(PlainSpec {
             source: template.clone(),
         }),
+        NodeKindConfig::Display { iterator, template } => {
+            NodeKind::Display(acvus_orchestration::DisplaySpec {
+                iterator: iterator.clone(),
+                template: template.clone(),
+            })
+        }
+        NodeKindConfig::DisplayStatic { template } => {
+            NodeKind::DisplayStatic(acvus_orchestration::DisplayStaticSpec {
+                template: template.clone(),
+            })
+        }
+        NodeKindConfig::Iterator { sources, unordered } => {
+            NodeKind::Iterator(acvus_orchestration::IteratorSpec {
+                sources: sources.iter().map(|s| (s.name.clone(), interner.intern(&s.node))).collect(),
+                unordered: *unordered,
+            })
+        }
     };
 
     let execution = match &cfg.strategy.execution {

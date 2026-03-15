@@ -17,7 +17,7 @@ pub type TypeMap = FxHashMap<Span, Ty>;
 /// Produced by the type checker, consumed by the lowerer.
 pub type BuiltinMap = FxHashMap<Span, BuiltinId>;
 
-pub struct TypeChecker<'a> {
+pub struct TypeChecker<'a, 's> {
     /// Interner for string interning.
     interner: &'a Interner,
     /// Context variable types (`@name`, externally declared).
@@ -26,8 +26,8 @@ pub struct TypeChecker<'a> {
     scopes: Vec<FxHashMap<Astr, Ty>>,
     /// Variable types (`$name`, inferred at first assignment).
     variable_types: FxHashMap<Astr, Ty>,
-    /// Unification state.
-    subst: TySubst,
+    /// Unification state (borrowed — may be shared across compilations).
+    subst: &'s mut TySubst,
     /// Cached fresh Vars for `Ty::Infer` context entries.
     infer_vars: FxHashMap<Astr, Ty>,
     /// Accumulated type map.
@@ -46,17 +46,18 @@ pub struct TypeChecker<'a> {
     lambda_effect: Effect,
 }
 
-impl<'a> TypeChecker<'a> {
+impl<'a, 's> TypeChecker<'a, 's> {
     pub fn new(
         interner: &'a Interner,
         context_types: &'a FxHashMap<Astr, Ty>,
+        subst: &'s mut TySubst,
     ) -> Self {
         Self {
             interner,
             scopes: vec![FxHashMap::default()],
             context_types,
             variable_types: FxHashMap::default(),
-            subst: TySubst::new(),
+            subst,
             infer_vars: FxHashMap::default(),
             type_map: TypeMap::default(),
             builtin_map: BuiltinMap::default(),
@@ -149,7 +150,7 @@ impl<'a> TypeChecker<'a> {
                 .as_ref()
                 .map(|e| e.span())
                 .unwrap_or(acvus_ast::Span { start: 0, end: 0 });
-            self.error(MirErrorKind::AmbiguousType, span);
+            self.error(MirErrorKind::AmbiguousType { resolved_ty: resolved_tail.clone() }, span);
             return Err(self.errors);
         }
         let resolved: TypeMap = self
@@ -1483,14 +1484,17 @@ impl<'a> TypeChecker<'a> {
 fn contains_var(ty: &Ty) -> bool {
     match ty {
         Ty::Var(_) => true,
+        Ty::Infer | Ty::Error => false,
+        Ty::Int | Ty::Float | Ty::String | Ty::Bool | Ty::Unit | Ty::Range | Ty::Byte => false,
         Ty::List(inner) | Ty::Deque(inner, _) | Ty::Option(inner) => contains_var(inner),
+        Ty::Iterator(inner, _) | Ty::Sequence(inner, _, _) => contains_var(inner),
         Ty::Object(fields) => fields.values().any(contains_var),
         Ty::Tuple(elems) => elems.iter().any(contains_var),
         Ty::Fn { params, ret, .. } => params.iter().any(contains_var) || contains_var(ret),
         Ty::Enum { variants, .. } => variants
             .values()
             .any(|p| p.as_ref().map_or(false, |ty| contains_var(ty))),
-        _ => false,
+        Ty::Opaque(_) => false,
     }
 }
 
@@ -1533,7 +1537,8 @@ mod tests {
         interner: &Interner,
     ) -> Result<TypeMap, Vec<MirError>> {
         let template = parse(interner, source).expect("parse failed");
-        let checker = TypeChecker::new(interner, context);
+        let mut subst = TySubst::new();
+    let checker = TypeChecker::new(interner, context, &mut subst);
         checker.check_template(&template).map(|(tm, _bm)| tm)
     }
 

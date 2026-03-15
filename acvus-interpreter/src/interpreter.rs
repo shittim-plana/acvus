@@ -16,7 +16,7 @@ use acvus_mir::ty::{Effect, Ty};
 use crate::iter::SequenceChain;
 use crate::builtins;
 use crate::error::RuntimeError;
-use crate::iter::{IterChain, IterHandle, IterOp, IterRepr};
+use crate::iter::{IterHandle, IterOp, IterRepr};
 use crate::value::{FnValue, LazyValue, PureValue, TypedValue, Value};
 use acvus_utils::{Coroutine, Stepped, YieldHandle};
 
@@ -929,7 +929,7 @@ impl Interpreter {
     }
 
     async fn exec_next_inner<'a>(
-        mut this: Self,
+        this: Self,
         ih: IterHandle,
         handle: &'a YieldHandle<TypedValue>,
     ) -> Result<(Self, Option<(Value, IterHandle)>), RuntimeError> {
@@ -1005,7 +1005,7 @@ impl Interpreter {
 
     /// Execute one step of a Suspended iterator.
     async fn exec_next_suspended<'a>(
-        mut this: Self,
+        this: Self,
         source: Vec<Value>,
         ops: Vec<IterOp>,
         offset: usize,

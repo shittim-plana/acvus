@@ -4,13 +4,11 @@ use acvus_interpreter::{IntoValue, TypedValue, Value};
 use acvus_mir::context_registry::ContextTypeRegistry;
 use acvus_mir::ty::Ty;
 use acvus_orchestration::{
-    BlobStore, BlobStoreJournal, DisplayEntrySpec, EntryRef, IterableDisplaySpec, Journal,
-    ProviderConfig, Resolved, StaticDisplaySpec, compile_iterable_display,
-    compile_static_display, render_display, render_display_with_idx,
+    BlobStore, BlobStoreJournal, EntryRef, Journal,
+    ProviderConfig, Resolved,
 };
 use acvus_utils::{Astr, Interner, Stepped};
 use rustc_hash::FxHashMap;
-use serde::Deserialize;
 use tsify::Tsify;
 use uuid::Uuid;
 use wasm_bindgen::prelude::*;
@@ -44,14 +42,6 @@ async fn load_cursor(journal: &BlobStoreJournal<IdbBlobStore>) -> Option<Uuid> {
 // ---------------------------------------------------------------------------
 // ChatSession
 // ---------------------------------------------------------------------------
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct DisplayEntryJson {
-    name: String,
-    condition: String,
-    template: String,
-}
 
 async fn dispatch_extern(
     interner: &Interner,
@@ -98,6 +88,9 @@ pub struct ChatSession {
     compile_registry: ContextTypeRegistry,
     interner: Interner,
     asset_store: Option<std::sync::Arc<IdbAssetStore>>,
+    entrypoint_name: String,
+    /// Whether current evaluation is no_execute (for flush decision).
+    no_execute: bool,
 }
 
 #[wasm_bindgen]
@@ -154,7 +147,7 @@ impl ChatSession {
                 })?;
         let compile_registry = env.registry.to_full();
 
-        let compiled =
+        let mut compiled =
             acvus_orchestration::compile_nodes_with_env(&interner, &specs, env).map_err(
                 |errs| {
                     let msg = errs
@@ -165,6 +158,7 @@ impl ChatSession {
                     JsValue::from_str(&msg)
                 },
             )?;
+
 
         // Providers
         let providers: FxHashMap<String, ProviderConfig> = cfg
@@ -217,11 +211,15 @@ impl ChatSession {
         .await
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
+        let entrypoint_name = cfg.entrypoint.clone();
+
         Ok(ChatSession {
             engine,
             compile_registry,
             interner,
             asset_store,
+            entrypoint_name,
+            no_execute: false,
         })
     }
 
@@ -245,10 +243,16 @@ impl ChatSession {
         Ok(view.into_ts()?.js_value())
     }
 
-    /// Run one turn.
-    pub async fn turn(&mut self, resolve_fn: &js_sys::Function) -> Result<JsValue, JsError> {
-        // SAFETY: WASM is single-threaded -- js_sys::Function is !Send+!Sync
-        // but there is no concurrent access.
+    /// Start an evaluation. Resolves the named node and prepares streaming.
+    ///
+    /// - `no_execute=false`: creates a new journal branch.
+    /// - `no_execute=true`: reads from current cursor (no branch).
+    pub async fn start_evaluate(
+        &mut self,
+        node_name: &str,
+        no_execute: bool,
+        resolve_fn: &js_sys::Function,
+    ) -> Result<(), JsError> {
         struct SendSyncFn(js_sys::Function);
         unsafe impl Send for SendSyncFn {}
         unsafe impl Sync for SendSyncFn {}
@@ -289,166 +293,77 @@ impl ChatSession {
             }
         };
 
-        let (result, _new_cursor) = self
-            .engine
-            .turn(&resolver, &extern_handler)
+        self.no_execute = no_execute;
+        self.engine
+            .start_evaluate(node_name, no_execute, &resolver, &extern_handler)
             .await
             .map_err(|e| JsError::new(&e.to_string()))?;
 
-        // Persist tree + cursor to IDB
-        self.engine.journal.flush_tree().await;
-        save_cursor(&mut self.engine.journal, self.engine.cursor).await;
+        Ok(())
+    }
 
-        let concrete = result.value().to_concrete(&self.interner);
-        let jcv: JsConcreteValue = concrete.into();
+    /// Pull the next item from the current evaluation.
+    ///
+    /// Returns a JsValue (ConcreteValue) or null when done.
+    /// Handles NeedContext/NeedExternCall internally.
+    pub async fn evaluate_next(
+        &mut self,
+        resolve_fn: &js_sys::Function,
+    ) -> Result<JsValue, JsError> {
+        loop {
+            match self.engine.evaluate_next().await {
+                Stepped::Emit(value) => {
+                    let concrete = value.to_concrete(&self.interner);
+                    let jcv: JsConcreteValue = concrete.into();
+                    return Ok(jcv.into_ts()?.js_value());
+                }
+                Stepped::Done => {
+                    // Flush if this was an executing evaluation
+                    if !self.no_execute {
+                        self.engine.journal.flush_tree().await;
+                        save_cursor(&mut self.engine.journal, self.engine.cursor).await;
+                    }
+                    return Ok(JsValue::NULL);
+                }
+                Stepped::Error(e) => {
+                    return Err(JsError::new(&e.to_string()));
+                }
+                Stepped::NeedContext(req) => {
+                    let name = req.name();
+                    let key_str = self.interner.resolve(name);
+                    let js_key = JsValue::from_str(key_str);
+                    let js_result = resolve_fn
+                        .call1(&JsValue::NULL, &js_key)
+                        .unwrap_or(JsValue::UNDEFINED);
+                    let js_value = if js_result.has_type::<js_sys::Promise>() {
+                        let promise: js_sys::Promise = js_result.unchecked_into();
+                        JsFuture::from(promise).await.unwrap_or(JsValue::UNDEFINED)
+                    } else {
+                        js_result
+                    };
+                    let s: String = js_value.as_string().unwrap_or_default();
+                    req.resolve(Arc::new(TypedValue::string(s)));
+                }
+                Stepped::NeedExternCall(req) => {
+                    let name = req.name();
+                    let args = req.args().to_vec();
+                    match dispatch_extern(&self.interner, &self.asset_store, name, args).await {
+                        Ok(v) => req.resolve(Arc::new(v)),
+                        Err(e) => return Err(JsError::new(&e.to_string())),
+                    }
+                }
+            }
+        }
+    }
 
-        // Build TurnNode for the new cursor
-        let cursor = self.engine.cursor;
-        let parent = self.engine.journal.parent_of(cursor);
-        let entry = self.engine.journal.entry(cursor).await;
-        let turn_node = TurnNode {
-            uuid: cursor.to_string(),
-            parent: parent.map(|p| p.to_string()),
-            depth: entry.depth(),
-        };
-
-        let turn_result = TurnResult {
-            value: jcv,
-            turn: turn_node,
-        };
-        Ok(turn_result.into_ts()?.js_value())
+    /// Cancel an in-progress evaluation. Rolls back cursor if executing.
+    pub fn cancel_evaluate(&mut self) {
+        self.engine.cancel_evaluate();
     }
 
     /// Current turn count.
     pub async fn turn_count(&self) -> usize {
         self.engine.history_len().await
-    }
-
-    /// Evaluate an iterator script against storage and return the list length.
-    pub async fn display_list_len(&self, iterator_script: &str) -> Result<usize, JsError> {
-        use acvus_interpreter::Interpreter;
-
-        let (compiled, _) = acvus_orchestration::compile_script(
-            &self.interner,
-            iterator_script,
-            &self.compile_registry,
-        )
-        .map_err(|e| JsError::new(&e.display(&self.interner).to_string()))?;
-
-        let interp = Interpreter::new(&self.interner, compiled.module.clone());
-        let mut coroutine = interp.execute();
-        loop {
-            match coroutine.resume().await {
-                Stepped::Emit(typed_value) => {
-                    let len = match typed_value.value() {
-                        Value::Lazy(acvus_interpreter::LazyValue::List(items)) => items.len(),
-                        Value::Lazy(acvus_interpreter::LazyValue::Deque(deque)) => deque.len(),
-                        _ => return Ok(0),
-                    };
-                    return Ok(len);
-                }
-                Stepped::NeedContext(request) => {
-                    let name = request.name();
-                    let cursor = self.engine.cursor;
-                    let entry = self.engine.journal.entry(cursor).await;
-                    let Some(value) = entry.get(self.interner.resolve(name)) else {
-                        return Ok(0);
-                    };
-                    request.resolve(value);
-                }
-                Stepped::NeedExternCall(request) => {
-                    let name = request.name();
-                    let args = request.args().to_vec();
-                    match dispatch_extern(&self.interner, &self.asset_store, name, args).await {
-                        Ok(tv) => request.resolve(Arc::new(tv)),
-                        Err(e) => return Err(JsError::new(&format!("display extern error: {e}"))),
-                    }
-                }
-                Stepped::Done => return Ok(0),
-                Stepped::Error(e) => return Err(JsError::new(&format!("display error: {e}"))),
-            }
-        }
-    }
-
-    /// Render one index of an iterable display.
-    pub async fn render_display(
-        &self,
-        iterator_script: &str,
-        entries_json: &str,
-        index: usize,
-    ) -> Result<JsValue, JsError> {
-        let entries: Vec<DisplayEntryJson> = serde_json::from_str(entries_json)
-            .map_err(|e| JsError::new(&format!("invalid entries JSON: {e}")))?;
-        let spec = IterableDisplaySpec {
-            iterator: iterator_script.to_string(),
-            entries: entries
-                .into_iter()
-                .map(|e| DisplayEntrySpec {
-                    name: e.name,
-                    condition: e.condition,
-                    template: e.template,
-                })
-                .collect(),
-        };
-        let compiled = compile_iterable_display(&self.interner, &spec, &self.compile_registry)
-            .map_err(|errs| {
-                let msg = errs
-                    .iter()
-                    .map(|e| e.display(&self.interner).to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                JsError::new(&msg)
-            })?;
-        let cursor = self.engine.cursor;
-        let entry = self.engine.journal.entry(cursor).await;
-        let extern_handler = {
-            let interner = self.interner.clone();
-            let asset_store = self.asset_store.clone();
-            move |name: Astr, args: Vec<acvus_interpreter::TypedValue>| {
-                let interner = interner.clone();
-                let asset_store = asset_store.clone();
-                UnsafeSend(async move { dispatch_extern(&interner, &asset_store, name, args).await })
-            }
-        };
-        let result = render_display_with_idx(&self.interner, &compiled, &entry, index, &extern_handler).await;
-        Ok(
-            DisplayRenderResult(result.into_iter().map(Into::into).collect())
-                .into_ts()?
-                .js_value(),
-        )
-    }
-
-    /// Render a static display template.
-    pub async fn render_static(&self, template: &str) -> Result<JsValue, JsError> {
-        let spec = StaticDisplaySpec {
-            template: template.to_string(),
-        };
-        let compiled =
-            compile_static_display(&self.interner, &spec, &self.compile_registry).map_err(|errs| {
-                let msg = errs
-                    .iter()
-                    .map(|e| e.display(&self.interner).to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                JsError::new(&msg)
-            })?;
-        let cursor = self.engine.cursor;
-        let entry = self.engine.journal.entry(cursor).await;
-        let extern_handler = {
-            let interner = self.interner.clone();
-            let asset_store = self.asset_store.clone();
-            move |name: Astr, args: Vec<acvus_interpreter::TypedValue>| {
-                let interner = interner.clone();
-                let asset_store = asset_store.clone();
-                UnsafeSend(async move { dispatch_extern(&interner, &asset_store, name, args).await })
-            }
-        };
-        let result = render_display(&self.interner, &compiled, &entry, &extern_handler).await;
-        Ok(
-            DisplayRenderResult(result.into_iter().map(Into::into).collect())
-                .into_ts()?
-                .js_value(),
-        )
     }
 }
 

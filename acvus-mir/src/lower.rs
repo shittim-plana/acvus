@@ -1497,7 +1497,7 @@ impl<'a> Lowerer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::typeck::TypeChecker;
+    use crate::{ty::TySubst, typeck::TypeChecker};
 
     fn lower(interner: &Interner, source: &str) -> MirModule {
         lower_with(
@@ -1513,7 +1513,8 @@ mod tests {
         context: &FxHashMap<Astr, Ty>,
     ) -> MirModule {
         let template = acvus_ast::parse(interner, source).expect("parse failed");
-        let checker = TypeChecker::new(interner, context);
+        let mut subst = TySubst::new();
+    let checker = TypeChecker::new(interner, context, &mut subst);
         let (type_map, builtin_map) = checker
             .check_template(&template)
             .expect("type check failed");

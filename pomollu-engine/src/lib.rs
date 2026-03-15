@@ -451,20 +451,61 @@ pub fn typecheck_nodes(
             }
         };
 
-        // initial_value: no @self, no @raw
+        // Shared TySubst for initial_value + bind (same origin namespace)
+        let mut shared_subst = acvus_mir::ty::TySubst::new();
+
+        // For Sequence/Diff: 2-pass typecheck (same as resolve_node_locals)
+        // Pass 1: initial_value with raw_ty hint → Deque<T, O>
+        // Pass 2: bind with Sequence<T, O, Pure> as @self hint
+        let is_seq_or_diff = matches!(
+            &spec.strategy.persistency,
+            acvus_orchestration::Persistency::Sequence { .. } | acvus_orchestration::Persistency::Diff { .. }
+        );
+
+        // initial_value
         if let Some(init_src) = spec.strategy.initial_value {
-            let hint = match &locals.self_ty {
-                Ty::Error => None,
-                ty => Some(ty),
-            };
             let init_reg = spec.build_node_context(&interner, &full_reg, acvus_orchestration::ContextScope::InitialValue, locals_ref)
                 .expect("InitialValue scope should not conflict");
-            errors.initial_value = check_script(
-                &interner,
-                interner.resolve(init_src),
-                &init_reg,
-                hint,
-            );
+
+            if is_seq_or_diff {
+                // 2-pass: hint from raw_ty, not locals.self_ty
+                let raw_ty = &locals.raw_ty;
+                let init_hint: Option<Ty> = match raw_ty {
+                    Ty::List(elem) => Some(Ty::List(elem.clone())),
+                    Ty::Deque(elem, origin) => Some(Ty::Deque(elem.clone(), *origin)),
+                    Ty::Sequence(elem, origin, effect) => Some(Ty::Sequence(elem.clone(), *origin, *effect)),
+                    _ => None,
+                };
+                let mut init_errs = check_script_with_subst(
+                    &interner,
+                    interner.resolve(init_src),
+                    &init_reg,
+                    init_hint.as_ref(),
+                    &mut shared_subst,
+                );
+                if !init_errs.is_empty() {
+                    init_errs.push(EngineError::general(
+                        ErrorCategory::Type,
+                        format!("[debug] 2-pass initial_value: raw_ty={}, init_hint={:?}, source='{}'",
+                            raw_ty.display(&interner),
+                            init_hint.as_ref().map(|h| format!("{}", h.display(&interner))),
+                            interner.resolve(init_src)),
+                    ));
+                }
+                errors.initial_value = init_errs;
+            } else {
+                // Non-Sequence: use locals.self_ty as hint
+                let hint = match &locals.self_ty {
+                    Ty::Error => None,
+                    ty => Some(ty),
+                };
+                errors.initial_value = check_script(
+                    &interner,
+                    interner.resolve(init_src),
+                    &init_reg,
+                    hint,
+                );
+            }
         }
 
         // if_modified key: no @self context
@@ -485,18 +526,17 @@ pub fn typecheck_nodes(
         // persistency: bind script (Sequence/Diff) uses @self + @raw + all context
         match &spec.strategy.persistency {
             acvus_orchestration::Persistency::Sequence { bind } | acvus_orchestration::Persistency::Diff { bind } => {
+                // Pass 2: use init_ty coerced to Sequence as @self hint (from shared_subst)
+                // Since shared_subst has the init_ty's origin, resolve it to get Sequence self_ty
                 let bind_reg = spec.build_node_context(&interner, &full_reg, acvus_orchestration::ContextScope::Bind, locals_ref)
                     .expect("Bind scope should not conflict with reserved @self/@raw");
-                let hint = if locals.self_ty != Ty::Error {
-                    Some(&locals.self_ty)
-                } else {
-                    None
-                };
-                errors.bind = check_script(
+                // No external hint for bind — shared_subst already knows the types from pass 1
+                errors.bind = check_script_with_subst(
                     &interner,
                     interner.resolve(*bind),
                     &bind_reg,
-                    hint,
+                    None,
+                    &mut shared_subst,
                 );
             }
             _ => {}
@@ -569,6 +609,17 @@ fn check_script(
     registry: &ContextTypeRegistry,
     expected_tail: Option<&Ty>,
 ) -> Vec<error::EngineError> {
+    let mut subst = acvus_mir::ty::TySubst::new();
+    check_script_with_subst(interner, source, registry, expected_tail, &mut subst)
+}
+
+fn check_script_with_subst(
+    interner: &Interner,
+    source: &str,
+    registry: &ContextTypeRegistry,
+    expected_tail: Option<&Ty>,
+    subst: &mut acvus_mir::ty::TySubst,
+) -> Vec<error::EngineError> {
     use error::EngineError;
 
     if source.trim().is_empty() {
@@ -578,7 +629,7 @@ fn check_script(
         Ok(s) => s,
         Err(e) => return vec![EngineError::from_parse(&e)],
     };
-    match acvus_mir::compile_script_with_hint(interner, &script, registry, expected_tail) {
+    match acvus_mir::compile_script_with_hint_subst(interner, &script, registry, expected_tail, subst) {
         Ok(_) => vec![],
         Err(errs) => EngineError::from_mir_errors(&errs, interner),
     }

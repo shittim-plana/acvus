@@ -128,7 +128,7 @@ export type Execution =
 export type Persistency =
 	| { kind: 'ephemeral' }
 	| { kind: 'snapshot' }
-	| { kind: 'deque'; bind: string }
+	| { kind: 'sequence'; bind: string }
 	| { kind: 'diff'; bind: string };
 
 export type FnParam = {

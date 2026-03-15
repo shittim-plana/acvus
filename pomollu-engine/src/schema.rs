@@ -189,29 +189,6 @@ pub struct TreeView {
 }
 
 // ---------------------------------------------------------------------------
-// JsRenderedDisplayEntry — Tsify wrapper for RenderedDisplayEntry
-// ---------------------------------------------------------------------------
-
-#[derive(Serialize, Tsify)]
-#[serde(rename_all = "camelCase")]
-pub struct JsRenderedDisplayEntry {
-    pub name: String,
-    pub content: String,
-}
-
-impl From<acvus_orchestration::RenderedDisplayEntry> for JsRenderedDisplayEntry {
-    fn from(e: acvus_orchestration::RenderedDisplayEntry) -> Self {
-        Self {
-            name: e.name,
-            content: e.content,
-        }
-    }
-}
-
-#[derive(Serialize, Tsify)]
-pub struct DisplayRenderResult(pub Vec<JsRenderedDisplayEntry>);
-
-// ---------------------------------------------------------------------------
 // JsConcreteValue — Tsify wrapper for acvus_interpreter::ConcreteValue
 // ---------------------------------------------------------------------------
 

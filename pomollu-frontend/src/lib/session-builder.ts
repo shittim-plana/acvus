@@ -137,7 +137,7 @@ function convertExecution(execution: import('./types.js').Execution | undefined)
 function convertPersistency(persistency: import('./types.js').Persistency | undefined): PersistencyConfig {
 	switch (persistency?.kind) {
 		case 'snapshot': return { kind: 'snapshot' };
-		case 'deque': return { kind: 'deque', bind: persistency.bind };
+		case 'sequence': return { kind: 'sequence', bind: persistency.bind };
 		case 'diff': return { kind: 'diff', bind: persistency.bind };
 		default: return { kind: 'ephemeral' };
 	}
@@ -352,6 +352,58 @@ export function buildSessionConfig(bot: Bot): BuildResult | null {
 			}
 		} else if (param.resolution.kind === 'unresolved') {
 			errors.push(`param '${param.name}': unresolved (set to static or dynamic)`);
+		}
+	}
+
+	// Display nodes — convert bot display + regions into NodeConfigs.
+	if (bot.display && bot.display.iterator?.trim() && bot.display.entries?.length > 0) {
+		for (const entry of bot.display.entries) {
+			const displayNodeName = `__display_${entry.name || 'main'}`;
+			nodeConfigs.push({
+				name: displayNodeName,
+				kind: 'display',
+				iterator: bot.display.iterator,
+				template: entry.template,
+				strategy: {
+					execution: { mode: 'once-per-turn' },
+					persistency: { kind: 'ephemeral' },
+					retry: 0,
+				},
+			});
+		}
+	}
+
+	// Region display nodes
+	if (bot.regions) {
+		for (const region of bot.regions) {
+			if (region.kind === 'iterable' && region.iterator?.trim()) {
+				for (const entry of region.entries ?? []) {
+					const regionNodeName = `__region_${region.id}_${entry.name || 'main'}`;
+					nodeConfigs.push({
+						name: regionNodeName,
+						kind: 'display',
+						iterator: region.iterator,
+						template: entry.template,
+						strategy: {
+							execution: { mode: 'once-per-turn' },
+							persistency: { kind: 'ephemeral' },
+							retry: 0,
+						},
+					});
+				}
+			} else if (region.kind === 'static' && region.template?.trim()) {
+				const regionNodeName = `__region_${region.id}`;
+				nodeConfigs.push({
+					name: regionNodeName,
+					kind: 'display_static',
+					template: region.template,
+					strategy: {
+						execution: { mode: 'once-per-turn' },
+						persistency: { kind: 'ephemeral' },
+						retry: 0,
+					},
+				});
+			}
 		}
 	}
 

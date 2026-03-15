@@ -93,33 +93,31 @@ impl Node for DisplayNode {
             loop {
                 let result;
                 (interp, result) = Interpreter::exec_next(interp, current, &handle).await?;
-                match result {
-                    Some((item, rest)) => {
-                        current = rest;
+                let Some((item, rest)) = result else {
+                    break; 
+                };
 
-                        let mut entry_local = local.clone();
-                        entry_local.insert(
-                            item_key,
-                            Arc::new(TypedValue::new(Arc::new(item), item_ty.clone())),
-                        );
-                        entry_local.insert(
-                            index_key,
-                            Arc::new(TypedValue::int(idx as i64)),
-                        );
+                current = rest;
+                let mut entry_local = local.clone();
+                entry_local.insert(
+                    item_key,
+                    Arc::new(TypedValue::new(Arc::new(item), item_ty.clone())),
+                );
+                entry_local.insert(
+                    index_key,
+                    Arc::new(TypedValue::int(idx as i64)),
+                );
 
-                        let content = render_block_in_coroutine(
-                            &interner,
-                            &template.module,
-                            &entry_local,
-                            &handle,
-                        )
-                        .await?;
+                let content = render_block_in_coroutine(
+                    &interner,
+                    &template.module,
+                    &entry_local,
+                    &handle,
+                )
+                .await?;
 
-                        handle.yield_val(TypedValue::string(content)).await;
-                        idx += 1;
-                    }
-                    None => break,
-                }
+                handle.yield_val(TypedValue::string(content)).await;
+                idx += 1;
             }
 
             Ok(())

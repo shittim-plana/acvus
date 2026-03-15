@@ -378,31 +378,42 @@
 			st.lastInput = { param: currentInputParam!, value: currentInput };
 			st.turnDeps = deps;
 			uiState.lock(st.turnDeps);
-			const { value, turn: turnNode } = await cs.turn(resolver);
 
-			// Session was switched during turn — bail out.
-			if (st.chatSessionKey !== snapshotKey) return;
+			// Start streaming evaluation
+			await cs.startEvaluate('main', false, resolver);
 
-			// Turn was cancelled while WASM was running — discard result.
-			if (myTurnId !== st.activeTurnId) return;
+			if (st.chatSessionKey !== snapshotKey) {
+				cs.cancelEvaluate();
+				return;
+			}
 
-			st.treeNodes = [...st.treeNodes, turnNode];
-			st.treeCursor = turnNode.uuid;
-
-			st.turnCount = await cs.turnCount();
 			inputValue = '';
 
-			if (useDisplayEngine) {
-				const newLen = await cs.displayListLen(bot.display.iterator);
-				if (newLen > st.totalListLen) {
-					const newCards = await renderDisplayRange(cs, st.totalListLen, newLen);
-					st.displayCards = [...st.displayCards, ...newCards];
-					st.totalListLen = newLen;
+			// Stream results one by one
+			while (true) {
+				if (myTurnId !== st.activeTurnId) {
+					cs.cancelEvaluate();
+					return;
 				}
-			} else {
-				const content = formatResult(value);
-				st.displayCards = [...st.displayCards, { name: 'User', content: currentInput }, { name: 'Assistant', content }];
+
+				const item = await cs.evaluateNext(resolver);
+				if (item === null) break;
+
+				// Each item is a concrete value — extract display card
+				const card = item as Record<string, unknown>;
+				if (typeof card?.v === 'string') {
+					st.displayCards = [...st.displayCards, { name: '', content: card.v }];
+				}
+				scrollToBottom();
 			}
+
+			// Evaluation complete — update tree state
+			const treeView = cs.tree();
+			if (treeView) {
+				st.treeNodes = treeView.nodes;
+				st.treeCursor = treeView.cursor;
+			}
+			st.turnCount = await cs.turnCount();
 
 			await renderRegions(cs);
 		} catch (err) {
@@ -418,7 +429,7 @@
 				st.chatSessionKey = null;
 			}
 		} finally {
-			turnSession?.finishTurn();
+			turnSession?.finishEvaluate();
 			// Only touch shared state if this is still the active turn.
 			if (myTurnId === st.activeTurnId) {
 				uiState.unlock(st.turnDeps);

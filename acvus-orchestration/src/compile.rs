@@ -211,16 +211,30 @@ pub fn compile_script_with_hint(
     registry: &ContextTypeRegistry,
     expected_tail: Option<&Ty>,
 ) -> Result<(CompiledScript, Ty), OrchError> {
+    let mut subst = acvus_mir::ty::TySubst::new();
+    compile_script_with_hint_subst(interner, source, registry, expected_tail, &mut subst)
+}
+
+/// Like `compile_script_with_hint`, but uses an externally provided `TySubst`.
+/// Allows sharing origin/type-variable state across multiple compilations.
+pub(crate) fn compile_script_with_hint_subst(
+    interner: &Interner,
+    source: &str,
+    registry: &ContextTypeRegistry,
+    expected_tail: Option<&Ty>,
+    subst: &mut acvus_mir::ty::TySubst,
+) -> Result<(CompiledScript, Ty), OrchError> {
     let script = acvus_ast::parse_script(interner, source).map_err(|e| {
         OrchError::new(OrchErrorKind::ScriptParse {
             error: format!("{e}"),
         })
     })?;
-    let (module, _hints, tail_ty) = acvus_mir::compile_script_with_hint(
+    let (module, _hints, tail_ty) = acvus_mir::compile_script_with_hint_subst(
         interner,
         &script,
         registry,
         expected_tail,
+        subst,
     )
     .map_err(|errs| {
         OrchError::new(OrchErrorKind::ScriptCompile {
@@ -420,6 +434,54 @@ pub fn compile_node(
             let (compiled, keys) = compile_expr(interner, expr_spec, registry)?;
             (CompiledNodeKind::Expr(compiled), keys)
         }
+        NodeKind::Display(display_spec) => {
+            let (iter_script, iter_ty) = compile_script(interner, &display_spec.iterator, registry)
+                .map_err(|e| vec![e])?;
+            let item_ty = match &iter_ty {
+                Ty::List(elem) | Ty::Deque(elem, _) => (**elem).clone(),
+                Ty::Iterator(elem, _) | Ty::Sequence(elem, _, _) => (**elem).clone(),
+                _ => Ty::Infer,
+            };
+            let tmpl_registry = registry.with_extra_scoped([
+                (interner.intern("item"), item_ty.clone()),
+                (interner.intern("index"), Ty::Int),
+                (interner.intern("start"), Ty::Int),
+            ]).map_err(|e| vec![OrchError::new(OrchErrorKind::RegistryConflict {
+                key: e.key, tier_a: e.tier_a, tier_b: e.tier_b,
+            })])?;
+            let tmpl_block = compile_template(interner, &display_spec.template, 0, &tmpl_registry)
+                .map_err(|e| vec![e])?;
+            let mut keys = iter_script.context_keys.clone();
+            keys.extend(tmpl_block.context_keys.iter().copied());
+            (CompiledNodeKind::Display(crate::kind::CompiledDisplay {
+                iterator: iter_script,
+                template: CompiledScript {
+                    module: tmpl_block.module,
+                    context_keys: tmpl_block.context_keys,
+                    val_def: tmpl_block.val_def,
+                },
+                item_ty,
+            }), keys)
+        }
+        NodeKind::DisplayStatic(static_spec) => {
+            let tmpl_block = compile_template(interner, &static_spec.template, 0, registry)
+                .map_err(|e| vec![e])?;
+            let keys = tmpl_block.context_keys.clone();
+            (CompiledNodeKind::DisplayStatic(crate::kind::CompiledDisplayStatic {
+                template: CompiledScript {
+                    module: tmpl_block.module,
+                    context_keys: tmpl_block.context_keys,
+                    val_def: tmpl_block.val_def,
+                },
+            }), keys)
+        }
+        NodeKind::Iterator(iter_spec) => {
+            let keys: FxHashSet<Astr> = iter_spec.sources.iter().map(|(_, name)| *name).collect();
+            (CompiledNodeKind::Iterator {
+                sources: iter_spec.sources.clone(),
+                unordered: iter_spec.unordered,
+            }, keys)
+        }
     };
 
     // initial_value context keys contribute to dependencies
@@ -510,26 +572,54 @@ fn resolve_node_locals(
 
     let self_ty = match &spec.strategy.persistency {
         Persistency::Sequence { bind } | Persistency::Diff { bind } => {
-            // Two-pass: compile bind with @self = Infer → typechecker infers self_ty from usage
-            let temp_locals = NodeLocalTypes { raw_ty: raw_ty.clone(), self_ty: Ty::Infer };
+            // Two-pass with shared TySubst:
+            // Pass 1: compile initial_value → Deque<T, O> (origin allocated in subst)
+            // Pass 2: compile bind with @self = Sequence<T, O, Pure> (same origin from subst)
+
+            let mut subst = acvus_mir::ty::TySubst::new();
+
+            // Pass 1: initial_value → Deque<T, O>
+            let init_hint: Option<Ty> = match &raw_ty {
+                Ty::List(elem) => Some(Ty::List(elem.clone())),
+                Ty::Deque(elem, origin) => Some(Ty::Deque(elem.clone(), *origin)),
+                Ty::Sequence(elem, origin, effect) => Some(Ty::Sequence(elem.clone(), *origin, *effect)),
+                _ => None,
+            };
+            let init_ty = if let Some(ref init_src) = spec.strategy.initial_value {
+                let init_reg = spec.build_node_context(interner, base_registry, ContextScope::InitialValue, None)
+                    .map_err(map_conflict)?;
+                compile_script_with_hint_subst(
+                    interner,
+                    interner.resolve(*init_src),
+                    &init_reg,
+                    init_hint.as_ref(),
+                    &mut subst,
+                )
+                .map(|(_, ty)| ty)
+                .unwrap_or(Ty::Error)
+            } else {
+                raw_ty.clone()
+            };
+
+            // Coerce Deque<T, O> → Sequence<T, O, Pure> for @self
+            let self_hint = match init_ty {
+                Ty::Deque(inner, origin) => Ty::Sequence(inner, origin, Effect::Pure),
+                _ => init_ty.clone(),
+            };
+
+            // Pass 2: compile bind with @self = Sequence<T, O, Pure> — same subst!
+            let temp_locals = NodeLocalTypes { raw_ty: raw_ty.clone(), self_ty: self_hint.clone() };
             let bind_reg = spec.build_node_context(interner, base_registry, ContextScope::Bind, Some(&temp_locals))
                 .map_err(map_conflict)?;
-            let resolved_self = compile_script_with_hint(
+            let resolved_self = compile_script_with_hint_subst(
                 interner,
                 interner.resolve(*bind),
                 &bind_reg,
                 None,
+                &mut subst,
             )
             .map(|(_, ty)| ty)
-            .unwrap_or(Ty::Error);
-
-            // Validate initial_value against resolved self_ty
-            if let Some(ref init_src) = spec.strategy.initial_value {
-                let init_reg = spec.build_node_context(interner, base_registry, ContextScope::InitialValue, None)
-                    .map_err(map_conflict)?;
-                let hint = if resolved_self != Ty::Error { Some(&resolved_self) } else { None };
-                let _ = compile_script_with_hint(interner, interner.resolve(*init_src), &init_reg, hint);
-            }
+            .unwrap_or(self_hint);
 
             resolved_self
         }
@@ -806,6 +896,13 @@ pub fn compile_nodes_with_env(
             Ty::Error => None,
             ty => Some(ty),
         };
+        eprintln!(
+            "[initial_value compile] node='{}' stored_type={} hint={:?} source='{}'",
+            interner.resolve(spec.name),
+            stored_types[i].display(interner),
+            hint.map(|h| format!("{}", h.display(interner))),
+            interner.resolve(*init_src),
+        );
         let init_reg = match spec.build_node_context(interner, &base_registry, ContextScope::InitialValue, env.node_locals.get(&spec.name)) {
             Ok(r) => r,
             Err(e) => {
@@ -822,6 +919,15 @@ pub fn compile_nodes_with_env(
         ) {
             Ok(v) => v,
             Err(e) => {
+                errors.push(OrchError::new(OrchErrorKind::ScriptCompile {
+                    context: format!(
+                        "node '{}' initial_value '{}' (stored_type={})",
+                        interner.resolve(spec.name),
+                        interner.resolve(*init_src),
+                        stored_types[i].display(interner),
+                    ),
+                    errors: vec![],
+                }));
                 errors.push(e);
                 initial_value_scripts.push(None);
                 continue;
@@ -1118,7 +1224,7 @@ mod tests {
             strategy: Strategy {
                 execution: Execution::OncePerTurn,
                 persistency: Persistency::Sequence {
-                    bind: interner.intern("@self | extend(@raw)"),
+                    bind: interner.intern("@self | chain(@raw | iter)"),
                 },
                 initial_value: Some(interner.intern("[]")),
                 retry: 0,
@@ -1136,10 +1242,10 @@ mod tests {
         eprintln!("self_ty = {}", locals.self_ty.display(&interner));
         eprintln!("raw_ty = {}", locals.raw_ty.display(&interner));
 
-        // self_ty should be Deque, not List
+        // self_ty should be Sequence (Deque → Sequence coercion via 2-pass)
         assert!(
-            matches!(&locals.self_ty, Ty::Deque(_, _)),
-            "self_ty should be Deque, got: {}",
+            matches!(&locals.self_ty, Ty::Sequence(_, _, _)),
+            "self_ty should be Sequence, got: {}",
             locals.self_ty.display(&interner),
         );
 
@@ -1160,7 +1266,7 @@ mod tests {
             strategy: Strategy {
                 execution: Execution::OncePerTurn,
                 persistency: Persistency::Sequence {
-                    bind: interner.intern("@self | extend(@raw)"),
+                    bind: interner.intern("@self | chain(@raw | iter)"),
                 },
                 initial_value: Some(interner.intern("[]")),
                 retry: 0,
@@ -1176,7 +1282,7 @@ mod tests {
         let hint = Some(&locals.self_ty);
         let result = compile_script_with_hint(
             &interner,
-            "@self | extend(@raw)",
+            "@self | chain(@raw | iter)",
             &bind_reg,
             hint.as_ref().map(|t| *t),
         );

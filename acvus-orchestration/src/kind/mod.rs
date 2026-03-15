@@ -14,7 +14,7 @@ pub use llm::{
 pub use llm_cache::{CompiledLlmCache, LlmCacheSpec, compile_llm_cache};
 pub use plain::{CompiledPlain, PlainSpec, compile_plain};
 
-use acvus_utils::Interner;
+use acvus_utils::{Astr, Interner};
 
 use crate::compile::CompiledMessage;
 
@@ -26,6 +26,29 @@ pub enum NodeKind {
     Llm(LlmSpec),
     LlmCache(LlmCacheSpec),
     Expr(ExprSpec),
+    Display(DisplaySpec),
+    DisplayStatic(DisplayStaticSpec),
+    Iterator(IteratorSpec),
+}
+
+/// Spec for an iterable display node.
+#[derive(Debug, Clone)]
+pub struct DisplaySpec {
+    pub iterator: String,
+    pub template: String,
+}
+
+/// Spec for a static display node.
+#[derive(Debug, Clone)]
+pub struct DisplayStaticSpec {
+    pub template: String,
+}
+
+/// Spec for a composite iterator node.
+#[derive(Debug, Clone)]
+pub struct IteratorSpec {
+    pub sources: Vec<(String, Astr)>,
+    pub unordered: bool,
 }
 
 impl NodeKind {
@@ -36,6 +59,9 @@ impl NodeKind {
             NodeKind::Llm(spec) => spec.output_ty(interner),
             NodeKind::LlmCache(spec) => spec.output_ty(),
             NodeKind::Expr(spec) => spec.output_ty.clone(),
+            NodeKind::Display(_) => acvus_mir::ty::Ty::String,
+            NodeKind::DisplayStatic(_) => acvus_mir::ty::Ty::String,
+            NodeKind::Iterator(_) => acvus_mir::ty::Ty::Infer,
         }
     }
 }
@@ -49,6 +75,13 @@ pub enum CompiledNodeKind {
     Expr(CompiledExpr),
     Display(CompiledDisplay),
     DisplayStatic(CompiledDisplayStatic),
+    /// Composite iterator: pulls from multiple sources, yields items one by one.
+    /// `unordered=false`: sequential (A then B).
+    /// `unordered=true`: concurrent (FuturesUnordered, first-ready wins).
+    Iterator {
+        sources: Vec<(String, Astr)>,
+        unordered: bool,
+    },
 }
 
 impl CompiledNodeKind {
@@ -60,6 +93,7 @@ impl CompiledNodeKind {
             Self::Expr(_) => &[],
             Self::Display(_) => &[],
             Self::DisplayStatic(_) => &[],
+            Self::Iterator { .. } => &[],
         }
     }
 }

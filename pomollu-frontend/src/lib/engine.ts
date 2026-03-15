@@ -94,8 +94,8 @@ function convertTypeDesc(wasm: WasmTypeDesc): TypeDesc {
 			return { kind: 'option', inner: convertTypeDesc(wasm.inner) };
 		case 'list':
 			return { kind: 'list', elem: convertTypeDesc(wasm.elem) };
-		case 'deque':
-			return { kind: 'deque', elem: convertTypeDesc(wasm.elem), origin: wasm.origin };
+		case 'sequence':
+			return { kind: 'sequence', elem: convertTypeDesc(wasm.elem), origin: wasm.origin };
 		case 'object':
 			return {
 				kind: 'object',
@@ -222,7 +222,7 @@ type WebNodeShared = {
 		persistency:
 			| { kind: 'ephemeral' }
 			| { kind: 'snapshot' }
-			| { kind: 'deque'; bind: string }
+			| { kind: 'sequence'; bind: string }
 			| { kind: 'diff'; bind: string };
 		initialValue?: string;
 		retry: number;
@@ -341,7 +341,7 @@ export type ExecutionConfig =
 export type PersistencyConfig =
 	| { kind: 'ephemeral' }
 	| { kind: 'snapshot' }
-	| { kind: 'deque'; bind: string }
+	| { kind: 'sequence'; bind: string }
 	| { kind: 'diff'; bind: string };
 
 export type StrategyConfig = {
@@ -374,9 +374,16 @@ export type NodeConfig = {
 	is_function?: boolean;
 	fn_params?: { name: string; type: string; description?: string }[];
 
-	// Plain/Expr-specific
+	// Plain/Expr/Display-specific
 	template?: string;
 	output_ty?: TypeDesc;
+
+	// Display-specific (iterable)
+	iterator?: string;
+
+	// Iterator node-specific
+	sources?: { name: string; node: string }[];
+	unordered?: boolean;
 };
 
 export type MessageConfig = {
@@ -484,45 +491,57 @@ export class ChatSession {
 	// Exclusive operations (turn, undo, goto)
 	// -----------------------------------------------------------------------
 
-	async turn(resolver: ResolverFn): Promise<TurnResultWithNode> {
+	/**
+	 * Start an evaluation. Must be followed by evaluateNext() calls.
+	 * Acquires exclusive lock — release with finishEvaluate() when done.
+	 */
+	async startEvaluate(nodeName: string, noExecute: boolean, resolver: ResolverFn): Promise<void> {
 		if (this._freed) throw new Error('ChatSession already freed');
 		if (this._crashed) throw new Error('ChatSession crashed — recreate session');
 		await this.acquireExclusive();
 		try {
-			// WASM panic=abort causes a WebAssembly.RuntimeError that escapes
-			// the wasm-bindgen-futures executor, leaving the inner Promise
-			// permanently pending. Catch it via window 'error' and force-reject.
-			return await new Promise<TurnResultWithNode>((resolve, reject) => {
-				let settled = false;
-				const onError = (e: ErrorEvent) => {
-					if (!settled && e.error instanceof WebAssembly.RuntimeError) {
-						settled = true;
-						this._crashed = true;
-						reject(e.error);
-					}
-				};
-				window.addEventListener('error', onError);
-				this.inner.turn(resolver).then(
-					(v) => { settled = true; resolve(v as unknown as TurnResultWithNode); },
-					(e) => { settled = true; reject(e); },
-				).finally(() => {
-					window.removeEventListener('error', onError);
-				});
-			});
-		} finally {
+			await this.inner.start_evaluate(nodeName, noExecute, resolver);
+		} catch (e) {
 			this.releaseExclusive();
+			throw e;
 		}
 	}
 
 	/**
-	 * Call after turn() and all post-turn work is done.
-	 * Actually frees the WASM object if free() was called during turn().
+	 * Pull the next item from the current evaluation.
+	 * Returns the item value, or null when done.
+	 * NeedContext/NeedExternCall are handled internally by the WASM layer.
 	 */
-	finishTurn(): void {
+	async evaluateNext(resolver: ResolverFn): Promise<unknown | null> {
+		if (this._freed) throw new Error('ChatSession already freed');
+		if (this._crashed) throw new Error('ChatSession crashed — recreate session');
+		return await this.inner.evaluate_next(resolver);
+	}
+
+	/**
+	 * Cancel an in-progress evaluation. Rolls back cursor if executing.
+	 */
+	cancelEvaluate(): void {
+		if (this._freed) return;
+		this.inner.cancel_evaluate();
+	}
+
+	/**
+	 * Call after evaluation is complete (evaluateNext returned null).
+	 * Releases the exclusive lock. Actually frees the WASM object if
+	 * free() was called during evaluation.
+	 */
+	finishEvaluate(): void {
+		this.releaseExclusive();
 		if (this._pendingFree && !this._freed) {
 			this._freed = true;
 			this.inner.free();
 		}
+	}
+
+	/** @deprecated Use finishEvaluate() */
+	finishTurn(): void {
+		this.finishEvaluate();
 	}
 
 	/** Undo: move cursor to parent entry. */

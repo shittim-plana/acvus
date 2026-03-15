@@ -10,12 +10,20 @@ use acvus_orchestration::{
     CompiledNode, EntryMut, EntryRef, Fetch, Journal, Node, ProviderConfig, ResolveState, Resolved,
     Resolver, build_dag, build_node_table,
 };
-use acvus_utils::{Astr, Interner};
+use acvus_utils::{Astr, Coroutine, Interner, Stepped};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+/// Pending evaluation: a coroutine that yields items one by one.
+struct EvalState {
+    coroutine: Coroutine<TypedValue, RuntimeError>,
+    no_execute: bool,
+    /// Cursor before this evaluation started (for cancel/rollback).
+    prev_cursor: Uuid,
+}
 
 pub struct ChatEngine<J> {
     nodes: Vec<CompiledNode>,
@@ -28,6 +36,7 @@ pub struct ChatEngine<J> {
     entrypoint_idx: usize,
     side_effect_idxs: Vec<usize>,
     interner: Interner,
+    eval_state: Option<EvalState>,
 }
 
 impl<J> ChatEngine<J>
@@ -90,21 +99,41 @@ where
             entrypoint_idx,
             side_effect_idxs,
             interner: interner.clone(),
+            eval_state: None,
         })
     }
 
-    pub async fn turn<R, EH>(&mut self, resolver: &R, extern_handler: &EH) -> Result<(TypedValue, Uuid), ChatError>
+    /// Start an evaluation. Resolves the named node and prepares streaming.
+    ///
+    /// - `no_execute=false`: creates a new journal branch (cursor advances).
+    /// - `no_execute=true`: reads from current cursor (no branch).
+    pub async fn start_evaluate<R, EH>(
+        &mut self,
+        node_name: &str,
+        no_execute: bool,
+        resolver: &R,
+        extern_handler: &EH,
+    ) -> Result<(), ChatError>
     where
         R: AsyncFn(Astr) -> Resolved + Sync,
         EH: AsyncFn(Astr, Vec<TypedValue>) -> Result<TypedValue, RuntimeError> + Sync,
     {
         let interner = &self.interner;
-        let entrypoint_name = &self.nodes[self.entrypoint_idx].name;
-        tracing::info!(entrypoint = %interner.resolve(*entrypoint_name), "turn start");
+        let node_key = interner.intern(node_name);
+        let node_idx = *self
+            .name_to_idx
+            .get(&node_key)
+            .ok_or_else(|| ChatError::EntrypointNotFound(node_name.to_string()))?;
+
+        tracing::info!(node = %node_name, no_execute, "start_evaluate");
 
         // Block scope: entry borrows journal mutably, released at block end.
         let (new_cursor, bind_cache, entrypoint_value) = {
-            let entry = self.journal.entry_mut(self.cursor).await.next().await;
+            let entry = if no_execute {
+                self.journal.entry_mut(self.cursor).await
+            } else {
+                self.journal.entry_mut(self.cursor).await.next().await
+            };
             let new_cursor = entry.uuid();
 
             let mut rs = ResolveState {
@@ -124,12 +153,12 @@ where
                     rdeps: &self.rdeps,
                 };
 
-                ctx.resolve_node(self.entrypoint_idx, &mut rs, FxHashMap::default(), false)
+                ctx.resolve_node(node_idx, &mut rs, FxHashMap::default(), no_execute)
                     .await
-                    .map_err(|e| ChatError::Resolve(format!("[entrypoint] {e}")))?;
+                    .map_err(|e| ChatError::Resolve(format!("[{}] {e}", node_name)))?;
 
-                // Side effects
-                if !self.side_effect_idxs.is_empty() {
+                // Side effects (only when executing)
+                if !no_execute && !self.side_effect_idxs.is_empty() {
                     let side_effects: Vec<_> = self
                         .side_effect_idxs
                         .iter()
@@ -141,31 +170,129 @@ where
                 }
             }
 
-            // Extract entrypoint value before dropping ResolveState.
-            // For Ephemeral persistence the value lives only in turn_context,
-            // while Snapshot/Sequence/Diff persist to the journal entry.
-            let name = self.nodes[self.entrypoint_idx].name;
+            let name = self.nodes[node_idx].name;
             let name_str = interner.resolve(name);
             let entrypoint_value = rs.load(name, name_str)
                 .ok_or_else(|| ChatError::UnresolvedContext(name_str.to_string()))?;
 
             let bind_cache = std::mem::take(&mut rs.bind_cache);
-            // rs (including entry) dropped here at block end
             (new_cursor, bind_cache, entrypoint_value)
         };
 
         self.bind_cache = bind_cache;
-        self.cursor = new_cursor;
+        if !no_execute {
+            self.cursor = new_cursor;
+        }
 
-        tracing::info!(depth = self.journal.entry(self.cursor).await.depth(), "turn complete");
+        // Convert result to a coroutine that yields items one by one.
+        let value = Arc::unwrap_or_clone(entrypoint_value);
+        let coroutine = value_to_coroutine(value);
+        let prev_cursor = self.cursor;
+        self.eval_state = Some(EvalState { coroutine, no_execute, prev_cursor });
 
-        Ok((Arc::unwrap_or_clone(entrypoint_value), new_cursor))
+        tracing::info!(node = %node_name, "evaluate ready");
+        Ok(())
+    }
+
+    /// Pull the next step from the current evaluation.
+    ///
+    /// Returns the raw `Stepped` variant. Caller must handle:
+    /// - `Emit(value)` — a yielded item
+    /// - `Done` — evaluation complete
+    /// - `Error(e)` — runtime error
+    /// - `NeedContext(req)` — caller resolves and calls `evaluate_next` again
+    /// - `NeedExternCall(req)` — caller resolves and calls `evaluate_next` again
+    pub async fn evaluate_next(&mut self) -> Stepped<TypedValue, RuntimeError> {
+        let state = match self.eval_state.as_mut() {
+            Some(s) => s,
+            None => return Stepped::Done,
+        };
+
+        let stepped = state.coroutine.resume().await;
+        if matches!(stepped, Stepped::Done | Stepped::Error(_)) {
+            self.eval_state = None;
+        }
+        stepped
+    }
+
+    /// Cancel an in-progress evaluation.
+    ///
+    /// Drops the coroutine and rolls back the cursor if this was an executing
+    /// evaluation (no_execute=false). The incomplete branch remains in the
+    /// journal but cursor returns to the previous position (unflushed).
+    pub fn cancel_evaluate(&mut self) {
+        if let Some(state) = self.eval_state.take() {
+            if !state.no_execute {
+                self.cursor = state.prev_cursor;
+            }
+        }
     }
 
     pub async fn history_len(&self) -> usize {
         self.journal.entry(self.cursor).await.depth()
     }
+}
 
+/// Convert a resolved TypedValue into a coroutine that yields items.
+///
+/// - Iterator/List/Deque: yields each element.
+/// - Scalar: yields the single value.
+fn value_to_coroutine(value: TypedValue) -> Coroutine<TypedValue, RuntimeError> {
+    acvus_utils::coroutine(move |handle| async move {
+        match value.value() {
+            Value::Lazy(acvus_interpreter::LazyValue::Iterator(_))
+            | Value::Lazy(acvus_interpreter::LazyValue::Sequence(_)) => {
+                // Iterator/Sequence: use exec_next to pull one by one
+                let ih = Arc::unwrap_or_clone(value.into_value())
+                    .into_iter_handle(acvus_mir::ty::Effect::Pure);
+                let empty_module = acvus_mir::ir::MirModule {
+                    main: acvus_mir::ir::MirBody::default(),
+                    closures: Default::default(),
+                };
+                let mut interp = acvus_interpreter::Interpreter::new(
+                    &acvus_utils::Interner::new(), // dummy — closures already captured
+                    empty_module,
+                );
+                let mut current = ih;
+                loop {
+                    let result;
+                    (interp, result) = acvus_interpreter::Interpreter::exec_next(
+                        interp, current, &handle,
+                    ).await.map_err(|e| e)?;
+                    match result {
+                        Some((item, rest)) => {
+                            current = rest;
+                            handle.yield_val(TypedValue::new(
+                                Arc::new(item),
+                                acvus_mir::ty::Ty::Infer,
+                            )).await;
+                        }
+                        None => break,
+                    }
+                }
+            }
+            Value::Lazy(acvus_interpreter::LazyValue::List(_))
+            | Value::Lazy(acvus_interpreter::LazyValue::Deque(_)) => {
+                // List/Deque: yield each element
+                let items = match Arc::unwrap_or_clone(value.into_value()) {
+                    Value::Lazy(acvus_interpreter::LazyValue::List(items)) => items,
+                    Value::Lazy(acvus_interpreter::LazyValue::Deque(d)) => d.into_vec(),
+                    _ => unreachable!(),
+                };
+                for item in items {
+                    handle.yield_val(TypedValue::new(
+                        Arc::new(item),
+                        acvus_mir::ty::Ty::Infer,
+                    )).await;
+                }
+            }
+            _ => {
+                // Scalar: yield once
+                handle.yield_val(value).await;
+            }
+        }
+        Ok(())
+    })
 }
 
 #[cfg(test)]
@@ -257,6 +384,77 @@ mod tests {
 
     fn noop_extern_handler() -> impl AsyncFn(Astr, Vec<TypedValue>) -> Result<TypedValue, RuntimeError> + Sync {
         |_: Astr, _: Vec<TypedValue>| async { Ok(TypedValue::unit()) }
+    }
+
+    /// Drive evaluate_next to completion, handling NeedContext/NeedExternCall
+    /// via the provided callbacks. Collects all Emit values.
+    async fn drain_evaluate<R, EH>(
+        engine: &mut ChatEngine<TreeJournal>,
+        resolver: &R,
+        extern_handler: &EH,
+    ) -> Vec<TypedValue>
+    where
+        R: AsyncFn(Astr) -> Resolved + Sync,
+        EH: AsyncFn(Astr, Vec<TypedValue>) -> Result<TypedValue, RuntimeError> + Sync,
+    {
+        let mut items = Vec::new();
+        loop {
+            match engine.evaluate_next().await {
+                Stepped::Emit(value) => items.push(value),
+                Stepped::Done => break,
+                Stepped::Error(e) => panic!("evaluate error: {e}"),
+                Stepped::NeedContext(req) => {
+                    let value = resolver(req.name()).await;
+                    let arc = match value {
+                        Resolved::Once(v) | Resolved::Turn(v) | Resolved::Persist(v) => Arc::new(v),
+                    };
+                    req.resolve(arc);
+                }
+                Stepped::NeedExternCall(req) => {
+                    let name = req.name();
+                    let args = req.args().to_vec();
+                    match extern_handler(name, args).await {
+                        Ok(v) => req.resolve(Arc::new(v)),
+                        Err(e) => panic!("extern call error: {e}"),
+                    }
+                }
+            }
+        }
+        items
+    }
+
+    /// Drive evaluate_next and return the first emitted value.
+    async fn evaluate_first<R, EH>(
+        engine: &mut ChatEngine<TreeJournal>,
+        resolver: &R,
+        extern_handler: &EH,
+    ) -> TypedValue
+    where
+        R: AsyncFn(Astr) -> Resolved + Sync,
+        EH: AsyncFn(Astr, Vec<TypedValue>) -> Result<TypedValue, RuntimeError> + Sync,
+    {
+        loop {
+            match engine.evaluate_next().await {
+                Stepped::Emit(value) => return value,
+                Stepped::Done => panic!("evaluate_first: no items emitted"),
+                Stepped::Error(e) => panic!("evaluate error: {e}"),
+                Stepped::NeedContext(req) => {
+                    let value = resolver(req.name()).await;
+                    let arc = match value {
+                        Resolved::Once(v) | Resolved::Turn(v) | Resolved::Persist(v) => Arc::new(v),
+                    };
+                    req.resolve(arc);
+                }
+                Stepped::NeedExternCall(req) => {
+                    let name = req.name();
+                    let args = req.args().to_vec();
+                    match extern_handler(name, args).await {
+                        Ok(v) => req.resolve(Arc::new(v)),
+                        Err(e) => panic!("extern call error: {e}"),
+                    }
+                }
+            }
+        }
     }
 
     fn compile_test_nodes(interner: &Interner, specs: &[NodeSpec]) -> Vec<CompiledNode> {
@@ -381,7 +579,8 @@ mod tests {
         .await
         .unwrap();
 
-        let result = engine.turn(&noop_resolver(), &noop_extern_handler()).await.unwrap().0.into_value();
+        engine.start_evaluate("main", false, &noop_resolver(), &noop_extern_handler()).await.unwrap();
+        let result = evaluate_first(&mut engine, &noop_resolver(), &noop_extern_handler()).await.into_value();
         assert_eq!(*result, Value::string("hello world".into()));
     }
 
@@ -433,14 +632,13 @@ mod tests {
         .await
         .unwrap();
 
-        let result = engine.turn(&noop_resolver(), &noop_extern_handler()).await.unwrap().0.into_value();
-        // stored value = raw output (List of messages)
-        let Value::Lazy(LazyValue::List(msgs)) = result.as_ref() else {
-            panic!("expected List, got {result:?}");
-        };
-        assert_eq!(msgs.len(), 1);
-        let Value::Lazy(LazyValue::Object(msg)) = &msgs[0] else {
-            panic!("expected Object");
+        engine.start_evaluate("main", false, &noop_resolver(), &noop_extern_handler()).await.unwrap();
+        let items = drain_evaluate(&mut engine, &noop_resolver(), &noop_extern_handler()).await;
+        assert!(!items.is_empty(), "expected at least one item");
+        let result = items[0].clone().into_value();
+        // evaluate_next yields individual message objects
+        let Value::Lazy(LazyValue::Object(msg)) = result.as_ref() else {
+            panic!("expected Object, got {result:?}");
         };
         let content_key = interner.intern("content");
         assert_eq!(
@@ -521,13 +719,13 @@ mod tests {
         .await
         .unwrap();
 
-        let result = engine.turn(&noop_resolver(), &noop_extern_handler()).await.unwrap().0.into_value();
-        // stored value = raw output (List of messages)
-        let Value::Lazy(LazyValue::List(msgs)) = result.as_ref() else {
-            panic!("expected List, got {result:?}");
-        };
-        let Value::Lazy(LazyValue::Object(msg)) = msgs.last().unwrap() else {
-            panic!("expected Object");
+        engine.start_evaluate("main", false, &noop_resolver(), &noop_extern_handler()).await.unwrap();
+        // Drain all items; the last one should contain "final answer"
+        let items = drain_evaluate(&mut engine, &noop_resolver(), &noop_extern_handler()).await;
+        let last = items.last().expect("expected at least one value");
+        let result = last.clone().into_value();
+        let Value::Lazy(LazyValue::Object(msg)) = result.as_ref() else {
+            panic!("expected Object, got {result:?}");
         };
         let content_key = interner.intern("content");
         assert_eq!(
@@ -582,10 +780,14 @@ mod tests {
         .await
         .unwrap();
 
-        let r1 = engine.turn(&noop_resolver(), &noop_extern_handler()).await.unwrap().0.into_value();
+        engine.start_evaluate("main", false, &noop_resolver(), &noop_extern_handler()).await.unwrap();
+        let r1 = evaluate_first(&mut engine, &noop_resolver(), &noop_extern_handler()).await.into_value();
+        drain_evaluate(&mut engine, &noop_resolver(), &noop_extern_handler()).await;
         assert_eq!(*r1, Value::string("AB".into()));
 
-        let r2 = engine.turn(&noop_resolver(), &noop_extern_handler()).await.unwrap().0.into_value();
+        engine.start_evaluate("main", false, &noop_resolver(), &noop_extern_handler()).await.unwrap();
+        let r2 = evaluate_first(&mut engine, &noop_resolver(), &noop_extern_handler()).await.into_value();
+        drain_evaluate(&mut engine, &noop_resolver(), &noop_extern_handler()).await;
         assert_eq!(*r2, Value::string("ABB".into()));
     }
 
@@ -643,7 +845,8 @@ mod tests {
         .await
         .unwrap();
 
-        let result = engine.turn(&noop_resolver(), &noop_extern_handler()).await.unwrap().0.into_value();
+        engine.start_evaluate("main", false, &noop_resolver(), &noop_extern_handler()).await.unwrap();
+        let result = evaluate_first(&mut engine, &noop_resolver(), &noop_extern_handler()).await.into_value();
         assert_eq!(*result, Value::string("xx".into()));
     }
 
@@ -704,7 +907,8 @@ mod tests {
             }
         };
 
-        let result = engine.turn(&resolver, &noop_extern_handler()).await.unwrap().0.into_value();
+        engine.start_evaluate("main", false, &resolver, &noop_extern_handler()).await.unwrap();
+        let result = evaluate_first(&mut engine, &resolver, &noop_extern_handler()).await.into_value();
         assert_eq!(*result, Value::string("hihi".into()));
         assert_eq!(
             call_count.load(Ordering::SeqCst),
@@ -763,12 +967,11 @@ mod tests {
         .unwrap();
 
         // Verify LLM output is stored and retrievable
-        let result = engine.turn(&noop_resolver(), &noop_extern_handler()).await.unwrap().0.into_value();
-        let Value::Lazy(LazyValue::List(msgs)) = result.as_ref() else {
-            panic!("expected List, got {result:?}");
-        };
-        let Value::Lazy(LazyValue::Object(msg)) = &msgs[0] else {
-            panic!("expected Object");
+        engine.start_evaluate("main", false, &noop_resolver(), &noop_extern_handler()).await.unwrap();
+        let result = evaluate_first(&mut engine, &noop_resolver(), &noop_extern_handler()).await.into_value();
+        // evaluate_next yields individual message objects
+        let Value::Lazy(LazyValue::Object(msg)) = result.as_ref() else {
+            panic!("expected Object, got {result:?}");
         };
         let content_key = interner.intern("content");
         assert_eq!(msg.get(&content_key), Some(&Value::string("hello".into())));
@@ -814,11 +1017,15 @@ mod tests {
         .unwrap();
 
         // Turn 1: @self = "A" (initial), output = "AB"
-        let r1 = engine.turn(&noop_resolver(), &noop_extern_handler()).await.unwrap().0.into_value();
+        engine.start_evaluate("main", false, &noop_resolver(), &noop_extern_handler()).await.unwrap();
+        let r1 = evaluate_first(&mut engine, &noop_resolver(), &noop_extern_handler()).await.into_value();
+        drain_evaluate(&mut engine, &noop_resolver(), &noop_extern_handler()).await;
         assert_eq!(*r1, Value::string("AB".into()));
 
         // Turn 2: @self = "AB" (persisted), output = "ABB"
-        let r2 = engine.turn(&noop_resolver(), &noop_extern_handler()).await.unwrap().0.into_value();
+        engine.start_evaluate("main", false, &noop_resolver(), &noop_extern_handler()).await.unwrap();
+        let r2 = evaluate_first(&mut engine, &noop_resolver(), &noop_extern_handler()).await.into_value();
+        drain_evaluate(&mut engine, &noop_resolver(), &noop_extern_handler()).await;
         assert_eq!(*r2, Value::string("ABB".into()));
     }
 
@@ -1070,7 +1277,8 @@ mod tests {
         .await
         .unwrap();
 
-        let result = engine.turn(&noop_resolver(), &noop_extern_handler()).await.unwrap().0.into_value();
+        engine.start_evaluate("main", false, &noop_resolver(), &noop_extern_handler()).await.unwrap();
+        let result = evaluate_first(&mut engine, &noop_resolver(), &noop_extern_handler()).await.into_value();
         assert_eq!(*result, Value::string("10".into()));
     }
 
@@ -1185,7 +1393,134 @@ mod tests {
         .await
         .unwrap();
 
-        let result = engine.turn(&noop_resolver(), &noop_extern_handler()).await.unwrap().0.into_value();
+        engine.start_evaluate("main", false, &noop_resolver(), &noop_extern_handler()).await.unwrap();
+        let result = evaluate_first(&mut engine, &noop_resolver(), &noop_extern_handler()).await.into_value();
         assert_eq!(*result, Value::string("6-14".into()));
+    }
+
+    // -- lazy evaluation tests ------------------------------------------------
+
+    /// Verify that iterator evaluation is lazy: extern fn is called only
+    /// as many times as evaluate_next is called, not eagerly for all elements.
+    #[tokio::test]
+    async fn lazy_evaluation_via_extern_count() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let interner = Interner::new();
+
+        // "tracker" is a function node: takes @x, calls extern to count, returns @x.
+        // "main" creates [1,2,3,4,5] | iter | map(x -> @tracker(x))
+        // Since main is an Expr returning Iterator, evaluate_next streams one by one.
+        let nodes = compile_test_nodes(
+            &interner,
+            &[
+                NodeSpec {
+                    name: interner.intern("tracker"),
+                    kind: NodeKind::Expr(ExprSpec {
+                        source: "@x".into(),
+                        output_ty: Ty::Int,
+                    }),
+                    strategy: Strategy {
+                        execution: Execution::default(),
+                        persistency: Persistency::default(),
+                        initial_value: None,
+                        retry: 0,
+                        assert: None,
+                    },
+                    is_function: true,
+                    fn_params: vec![FnParam { name: interner.intern("x"), ty: Ty::Int, description: None }],
+                },
+                NodeSpec {
+                    name: interner.intern("main"),
+                    kind: NodeKind::Expr(ExprSpec {
+                        source: "[1, 2, 3, 4, 5] | iter | map(x -> @tracker(x))".into(),
+                        output_ty: Ty::Infer,
+                    }),
+                    strategy: Strategy {
+                        execution: Execution::default(),
+                        persistency: Persistency::Ephemeral,
+                        initial_value: None,
+                        retry: 0,
+                        assert: None,
+                    },
+                    is_function: false,
+                    fn_params: vec![],
+                },
+            ],
+        );
+
+        let (pname, pconfig) = default_provider();
+        let (journal, root) = TreeJournal::new();
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+
+        let mut engine = ChatEngine::new(
+            nodes,
+            FxHashMap::from_iter([(pname, pconfig)]),
+            MockFetch::new(vec![]),
+            journal,
+            root,
+            "main",
+            &[],
+            &interner,
+        )
+        .await
+        .unwrap();
+
+        let count = Arc::clone(&call_count);
+        let extern_handler = move |_name: Astr, args: Vec<TypedValue>| {
+            let count = Arc::clone(&count);
+            async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                // Return the first arg as-is (pass-through)
+                Ok(args.into_iter().next().unwrap_or(TypedValue::unit()))
+            }
+        };
+
+        engine.start_evaluate("main", false, &noop_resolver(), &extern_handler).await.unwrap();
+
+        // Helper: pull one Emit from evaluate, handling NeedExternCall along the way.
+        let pull_one = |engine: &mut ChatEngine<TreeJournal>, count: &Arc<AtomicUsize>| {
+            // Can't be async closure, so we inline the loop in the test below.
+            let _ = (engine, count);
+        };
+
+        let mut items = Vec::new();
+        let mut done = false;
+
+        // Pull items one by one via Stepped loop
+        while !done {
+            match engine.evaluate_next().await {
+                Stepped::Emit(value) => {
+                    items.push(value);
+                    // Check lazy invariant after 2 items
+                    if items.len() == 2 {
+                        assert_eq!(
+                            call_count.load(Ordering::SeqCst),
+                            2,
+                            "lazy: only 2 extern calls after 2 evaluate_next Emits"
+                        );
+                    }
+                }
+                Stepped::Done => done = true,
+                Stepped::Error(e) => panic!("evaluate error: {e}"),
+                Stepped::NeedContext(req) => {
+                    req.resolve(Arc::new(TypedValue::unit()));
+                }
+                Stepped::NeedExternCall(req) => {
+                    let args = req.args().to_vec();
+                    call_count.fetch_add(1, Ordering::SeqCst);
+                    let result = args.into_iter().next().unwrap_or(TypedValue::unit());
+                    req.resolve(Arc::new(result));
+                }
+            }
+        }
+
+        assert_eq!(items.len(), 5, "should have 5 items total");
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            5,
+            "all 5 extern calls after full consumption"
+        );
     }
 }

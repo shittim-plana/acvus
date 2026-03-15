@@ -60,7 +60,7 @@ function collectScriptsFromNode(node: Node, out: ScriptEntry[]) {
 	if (node.kind === 'expr' && node.exprSource.trim()) {
 		out.push({ source: node.exprSource, mode: 'script' });
 	}
-	if ((node.strategy.persistency?.kind === 'deque' || node.strategy.persistency?.kind === 'diff') && node.strategy.persistency.bind?.trim()) {
+	if ((node.strategy.persistency?.kind === 'sequence' || node.strategy.persistency?.kind === 'diff') && node.strategy.persistency.bind?.trim()) {
 		out.push({ source: node.strategy.persistency.bind, mode: 'script' });
 	}
 }
@@ -511,7 +511,7 @@ function sanitizePersistency(persistency: import('./types.js').Persistency | und
 	switch (persistency?.kind) {
 		case 'ephemeral':
 		case 'snapshot':
-		case 'deque':
+		case 'sequence':
 		case 'diff':
 			return persistency;
 		default:

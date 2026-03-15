@@ -29,7 +29,7 @@ pub enum MirErrorKind {
         expected: Ty,
         got: Ty,
     },
-    AmbiguousType,
+    AmbiguousType { resolved_ty: Ty },
     UnificationFailure {
         expected: Ty,
         got: Ty,
@@ -129,8 +129,8 @@ impl<'a> fmt::Display for MirErrorDisplay<'a> {
                     got.display(interner)
                 )
             }
-            MirErrorKind::AmbiguousType => {
-                write!(f, "cannot infer type: not enough context to determine the type of this expression")
+            MirErrorKind::AmbiguousType { resolved_ty } => {
+                write!(f, "cannot infer type: resolved to {} which contains unresolved type variables", resolved_ty.display(interner))
             }
             MirErrorKind::UnificationFailure { expected, got } => {
                 write!(
