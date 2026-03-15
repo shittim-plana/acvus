@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use acvus_interpreter::{Interpreter, LazyValue, PureValue, RuntimeError, Stepped, Value};
+use acvus_interpreter::{Interpreter, LazyValue, PureValue, RuntimeError, Stepped, TypedValue, Value};
+use acvus_mir::ty::Ty;
 use acvus_utils::{Astr, Interner, YieldHandle};
 use rustc_hash::FxHashMap;
 
@@ -13,8 +14,8 @@ use crate::provider::{ApiKind, Fetch};
 pub async fn render_block_in_coroutine(
     interner: &Interner,
     module: &acvus_mir::ir::MirModule,
-    local: &FxHashMap<Astr, Arc<Value>>,
-    handle: &YieldHandle<Value>,
+    local: &FxHashMap<Astr, Arc<TypedValue>>,
+    handle: &YieldHandle<TypedValue>,
 ) -> Result<String, RuntimeError> {
     let interp = Interpreter::new(interner, module.clone());
     let mut inner = interp.execute();
@@ -22,10 +23,10 @@ pub async fn render_block_in_coroutine(
     loop {
         match inner.resume().await {
             Stepped::Emit(value) => {
-                let Value::Pure(PureValue::String(s)) = value else {
+                let Value::Pure(PureValue::String(s)) = value.value() else {
                     panic!("render_block: expected String, got {value:?}");
                 };
-                output.push_str(&s);
+                output.push_str(s);
             }
             Stepped::NeedContext(request) => {
                 let name = request.name();
@@ -51,9 +52,9 @@ pub async fn render_block_in_coroutine(
 pub async fn eval_script_in_coroutine(
     interner: &Interner,
     module: &acvus_mir::ir::MirModule,
-    local: &FxHashMap<Astr, Arc<Value>>,
-    handle: &YieldHandle<Value>,
-) -> Result<Value, RuntimeError> {
+    local: &FxHashMap<Astr, Arc<TypedValue>>,
+    handle: &YieldHandle<TypedValue>,
+) -> Result<TypedValue, RuntimeError> {
     let interp = Interpreter::new(interner, module.clone());
     let mut inner = interp.execute();
     loop {
@@ -76,7 +77,7 @@ pub async fn eval_script_in_coroutine(
                     .await;
                 request.resolve(value);
             }
-            Stepped::Done => return Ok(Value::unit()),
+            Stepped::Done => return Ok(TypedValue::unit()),
             Stepped::Error(e) => return Err(e),
         }
     }
@@ -96,13 +97,13 @@ pub async fn expand_iterator_in_coroutine(
     slice: &Option<Vec<i64>>,
     role_override: &Option<Astr>,
     interner: &Interner,
-    local: &FxHashMap<Astr, Arc<Value>>,
-    handle: &YieldHandle<Value>,
+    local: &FxHashMap<Astr, Arc<TypedValue>>,
+    handle: &YieldHandle<TypedValue>,
 ) -> Result<Vec<Message>, RuntimeError> {
     let evaluated = eval_script_in_coroutine(interner, &expr.module, local, handle).await?;
 
     let deque_vec;
-    let all_items = match &evaluated {
+    let all_items = match evaluated.value() {
         Value::Lazy(LazyValue::List(items)) => items.as_slice(),
         Value::Lazy(LazyValue::Deque(deque)) => {
             deque_vec = deque.as_slice();
@@ -143,7 +144,7 @@ pub async fn expand_iterator_in_coroutine(
     Ok(messages)
 }
 
-pub fn content_to_value(interner: &Interner, items: &[crate::message::ContentItem]) -> Value {
+pub fn content_to_value(interner: &Interner, items: &[crate::message::ContentItem]) -> TypedValue {
     let role_key = interner.intern("role");
     let content_key = interner.intern("content");
     let content_type_key = interner.intern("content_type");
@@ -161,11 +162,11 @@ pub fn content_to_value(interner: &Interner, items: &[crate::message::ContentIte
             ]))
         })
         .collect();
-    Value::list(values)
+    TypedValue::new(Arc::new(Value::list(values)), Ty::Infer)
 }
 
-pub fn value_to_tool_result(value: &Value) -> String {
-    match value {
+pub fn value_to_tool_result(value: &TypedValue) -> String {
+    match value.value() {
         Value::Pure(PureValue::String(s)) => s.clone(),
         Value::Lazy(LazyValue::Object(obj)) => {
             // Try to find "content" key by iterating

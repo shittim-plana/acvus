@@ -3,9 +3,10 @@ mod project;
 
 use std::path::PathBuf;
 use std::process;
+use std::sync::Arc;
 
 use acvus_chat::ChatEngine;
-use acvus_interpreter::{LazyValue, PureValue, Value};
+use acvus_interpreter::{LazyValue, PureValue, TypedValue, Value};
 use acvus_mir::ty::Ty;
 use acvus_mir::context_registry::PartialContextTypeRegistry;
 use acvus_orchestration::{
@@ -286,29 +287,33 @@ async fn main() {
             let interner_clone = interner_clone.clone();
             async move {
                 if let Some(v) = context_args_astr.get(&name) {
-                    return Resolved::Turn(Value::string(v.clone()));
+                    return Resolved::Turn(TypedValue::new(Arc::new(Value::string(v.clone())), Ty::Infer));
                 }
                 if let Some(val) = defaults.get(&name) {
-                    return Resolved::Turn(val.clone());
+                    return Resolved::Turn(TypedValue::new(Arc::new(val.clone()), Ty::Infer));
                 }
                 let name_str = interner_clone.resolve(name);
                 if render_only {
-                    return Resolved::Turn(Value::string(format!("(@{name_str})")));
+                    return Resolved::Turn(TypedValue::new(Arc::new(Value::string(format!("(@{name_str})"))), Ty::Infer));
                 }
                 eprint!("{name_str}: ");
                 let mut input = String::new();
                 std::io::stdin().read_line(&mut input).unwrap();
-                Resolved::Turn(Value::string(input.trim_end().to_string()))
+                Resolved::Turn(TypedValue::new(Arc::new(Value::string(input.trim_end().to_string())), Ty::Infer))
             }
         }
     };
 
     let extern_handler = {
         let interner = interner.clone();
-        move |name: Astr, args: Vec<Value>| {
+        move |name: Astr, args: Vec<TypedValue>| {
             let interner = interner.clone();
             async move {
-                acvus_ext::regex_call(&interner, name, args).await
+                let values: Vec<&Value> = args.iter().map(|tv| {
+                    tv.value()
+                }).collect();
+                let result = acvus_ext::regex_call(&interner, name, values).await?;
+                Ok(TypedValue::new(Arc::new(result), Ty::Infer))
             }
         }
     };

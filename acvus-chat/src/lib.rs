@@ -24,7 +24,7 @@ pub struct ChatEngine<J> {
     rdeps: Vec<FxHashSet<usize>>,
     pub journal: J,
     pub cursor: Uuid,
-    bind_cache: FxHashMap<Astr, Vec<(Value, Arc<Value>)>>,
+    bind_cache: FxHashMap<Astr, Vec<(TypedValue, Arc<TypedValue>)>>,
     entrypoint_idx: usize,
     side_effect_idxs: Vec<usize>,
     interner: Interner,
@@ -96,7 +96,7 @@ where
     pub async fn turn<R, EH>(&mut self, resolver: &R, extern_handler: &EH) -> Result<(TypedValue, Uuid), ChatError>
     where
         R: AsyncFn(Astr) -> Resolved + Sync,
-        EH: AsyncFn(Astr, Vec<Value>) -> Result<Value, RuntimeError> + Sync,
+        EH: AsyncFn(Astr, Vec<TypedValue>) -> Result<TypedValue, RuntimeError> + Sync,
     {
         let interner = &self.interner;
         let entrypoint_name = &self.nodes[self.entrypoint_idx].name;
@@ -159,9 +159,7 @@ where
 
         tracing::info!(depth = self.journal.entry(self.cursor).await.depth(), "turn complete");
 
-        let output_ty = self.nodes[self.entrypoint_idx].output_ty.clone();
-        let typed_value = TypedValue::new(Value::clone(&entrypoint_value), output_ty);
-        Ok((typed_value, new_cursor))
+        Ok((Arc::unwrap_or_clone(entrypoint_value), new_cursor))
     }
 
     pub async fn history_len(&self) -> usize {
@@ -254,11 +252,11 @@ mod tests {
     }
 
     fn noop_resolver() -> impl AsyncFn(Astr) -> Resolved + Sync {
-        |_: Astr| async { Resolved::Once(Value::unit()) }
+        |_: Astr| async { Resolved::Once(TypedValue::unit()) }
     }
 
-    fn noop_extern_handler() -> impl AsyncFn(Astr, Vec<Value>) -> Result<Value, RuntimeError> + Sync {
-        |_: Astr, _: Vec<Value>| async { Ok(Value::unit()) }
+    fn noop_extern_handler() -> impl AsyncFn(Astr, Vec<TypedValue>) -> Result<TypedValue, RuntimeError> + Sync {
+        |_: Astr, _: Vec<TypedValue>| async { Ok(TypedValue::unit()) }
     }
 
     fn compile_test_nodes(interner: &Interner, specs: &[NodeSpec]) -> Vec<CompiledNode> {
@@ -384,7 +382,7 @@ mod tests {
         .unwrap();
 
         let result = engine.turn(&noop_resolver(), &noop_extern_handler()).await.unwrap().0.into_value();
-        assert_eq!(result, Value::string("hello world".into()));
+        assert_eq!(*result, Value::string("hello world".into()));
     }
 
     #[tokio::test]
@@ -437,7 +435,7 @@ mod tests {
 
         let result = engine.turn(&noop_resolver(), &noop_extern_handler()).await.unwrap().0.into_value();
         // stored value = raw output (List of messages)
-        let Value::Lazy(LazyValue::List(msgs)) = &result else {
+        let Value::Lazy(LazyValue::List(msgs)) = result.as_ref() else {
             panic!("expected List, got {result:?}");
         };
         assert_eq!(msgs.len(), 1);
@@ -525,7 +523,7 @@ mod tests {
 
         let result = engine.turn(&noop_resolver(), &noop_extern_handler()).await.unwrap().0.into_value();
         // stored value = raw output (List of messages)
-        let Value::Lazy(LazyValue::List(msgs)) = &result else {
+        let Value::Lazy(LazyValue::List(msgs)) = result.as_ref() else {
             panic!("expected List, got {result:?}");
         };
         let Value::Lazy(LazyValue::Object(msg)) = msgs.last().unwrap() else {
@@ -585,10 +583,10 @@ mod tests {
         .unwrap();
 
         let r1 = engine.turn(&noop_resolver(), &noop_extern_handler()).await.unwrap().0.into_value();
-        assert_eq!(r1, Value::string("AB".into()));
+        assert_eq!(*r1, Value::string("AB".into()));
 
         let r2 = engine.turn(&noop_resolver(), &noop_extern_handler()).await.unwrap().0.into_value();
-        assert_eq!(r2, Value::string("ABB".into()));
+        assert_eq!(*r2, Value::string("ABB".into()));
     }
 
     /// #7: Always nodes must re-execute every invocation, not just once per turn.
@@ -646,7 +644,7 @@ mod tests {
         .unwrap();
 
         let result = engine.turn(&noop_resolver(), &noop_extern_handler()).await.unwrap().0.into_value();
-        assert_eq!(result, Value::string("xx".into()));
+        assert_eq!(*result, Value::string("xx".into()));
     }
 
     /// #3 (double-prompt): Turn-resolved external values must be cached within a turn.
@@ -702,12 +700,12 @@ mod tests {
             let count = Arc::clone(&count);
             async move {
                 count.fetch_add(1, Ordering::SeqCst);
-                Resolved::Turn(Value::string("hi".into()))
+                Resolved::Turn(TypedValue::string("hi"))
             }
         };
 
         let result = engine.turn(&resolver, &noop_extern_handler()).await.unwrap().0.into_value();
-        assert_eq!(result, Value::string("hihi".into()));
+        assert_eq!(*result, Value::string("hihi".into()));
         assert_eq!(
             call_count.load(Ordering::SeqCst),
             1,
@@ -766,7 +764,7 @@ mod tests {
 
         // Verify LLM output is stored and retrievable
         let result = engine.turn(&noop_resolver(), &noop_extern_handler()).await.unwrap().0.into_value();
-        let Value::Lazy(LazyValue::List(msgs)) = &result else {
+        let Value::Lazy(LazyValue::List(msgs)) = result.as_ref() else {
             panic!("expected List, got {result:?}");
         };
         let Value::Lazy(LazyValue::Object(msg)) = &msgs[0] else {
@@ -817,11 +815,11 @@ mod tests {
 
         // Turn 1: @self = "A" (initial), output = "AB"
         let r1 = engine.turn(&noop_resolver(), &noop_extern_handler()).await.unwrap().0.into_value();
-        assert_eq!(r1, Value::string("AB".into()));
+        assert_eq!(*r1, Value::string("AB".into()));
 
         // Turn 2: @self = "AB" (persisted), output = "ABB"
         let r2 = engine.turn(&noop_resolver(), &noop_extern_handler()).await.unwrap().0.into_value();
-        assert_eq!(r2, Value::string("ABB".into()));
+        assert_eq!(*r2, Value::string("ABB".into()));
     }
 
     // -- function node tests ---------------------------------------------------
@@ -1073,7 +1071,7 @@ mod tests {
         .unwrap();
 
         let result = engine.turn(&noop_resolver(), &noop_extern_handler()).await.unwrap().0.into_value();
-        assert_eq!(result, Value::string("10".into()));
+        assert_eq!(*result, Value::string("10".into()));
     }
 
     /// @funcName context access should produce a resolve error
@@ -1188,6 +1186,6 @@ mod tests {
         .unwrap();
 
         let result = engine.turn(&noop_resolver(), &noop_extern_handler()).await.unwrap().0.into_value();
-        assert_eq!(result, Value::string("6-14".into()));
+        assert_eq!(*result, Value::string("6-14".into()));
     }
 }

@@ -12,11 +12,12 @@ use acvus_utils::Interner;
 use acvus_utils::TrackedDeque;
 use rustc_hash::FxHashMap;
 
+use acvus_mir::ty::Ty;
 use crate::iter::SequenceChain;
 use crate::builtins;
 use crate::error::RuntimeError;
 use crate::iter::{IterChain, IterOp, SharedIter};
-use crate::value::{FnValue, LazyValue, PureValue, Value};
+use crate::value::{FnValue, LazyValue, PureValue, TypedValue, Value};
 use acvus_utils::{Coroutine, Stepped, YieldHandle};
 
 /// Runtime coercion: Deque → SequenceChain (Deque ≤ Sequence).
@@ -226,20 +227,21 @@ impl Interpreter {
         }
     }
 
-    pub fn execute(self) -> Coroutine<Value, RuntimeError> {
+    pub fn execute(self) -> Coroutine<TypedValue, RuntimeError> {
         acvus_utils::coroutine(|handle| async move {
             crate::set_interner_ctx(&self.interner);
             let insts = self.module.main.insts.clone();
+            let val_types = self.module.main.val_types.clone();
             let label_map = build_label_map(&self.module.main);
             let frame = Frame::new(self.module.main.val_count, label_map);
-            Self::run(self, insts, frame, &handle).await?;
+            Self::run(self, insts, val_types, frame, &handle).await?;
             Ok(())
         })
     }
 
     /// Drive the coroutine to completion with a pre-built context map.
     /// Returns all emitted values. Panics on missing context or extern calls.
-    pub async fn execute_with_context(self, context: FxHashMap<Astr, Value>) -> Vec<Value> {
+    pub async fn execute_with_context(self, context: FxHashMap<Astr, TypedValue>) -> Vec<TypedValue> {
         let interner = self.interner.clone();
         let mut coroutine = self.execute();
         let mut emits = Vec::new();
@@ -270,25 +272,28 @@ impl Interpreter {
     fn run<'a>(
         this: Self,
         insts: Vec<Inst>,
+        val_types: FxHashMap<ValueId, Ty>,
         frame: Frame,
-        handle: &'a YieldHandle<Value>,
+        handle: &'a YieldHandle<TypedValue>,
     ) -> BoxFuture<'a, Result<(Self, Frame, Option<Value>), RuntimeError>> {
-        Box::pin(Self::run_inner(this, insts, frame, handle))
+        Box::pin(Self::run_inner(this, insts, val_types, frame, handle))
     }
 
     async fn run_inner(
         mut this: Self,
         insts: Vec<Inst>,
+        val_types: FxHashMap<ValueId, Ty>,
         mut frame: Frame,
-        handle: &YieldHandle<Value>,
+        handle: &YieldHandle<TypedValue>,
     ) -> Result<(Self, Frame, Option<Value>), RuntimeError> {
         let mut pc = 0;
         while pc < insts.len() {
             match &insts[pc].kind {
                 // -- yield --
                 InstKind::Yield(v) => {
-                    let val = frame.take_owned(*v);
-                    handle.yield_val(val).await;
+                    let val = frame.take(*v);
+                    let ty = val_types[v].clone();
+                    handle.yield_val(TypedValue::new(val, ty)).await;
                 }
 
                 // -- constants / constructors --
@@ -488,8 +493,8 @@ impl Interpreter {
 
                 // -- context / variable I/O --
                 InstKind::ContextLoad { dst, name } => {
-                    let arc = handle.request_context(*name).await;
-                    frame.set(*dst, arc);
+                    let typed = handle.request_context(*name).await;
+                    frame.set(*dst, Arc::unwrap_or_clone(typed).into_value());
                 }
                 InstKind::VarLoad { dst, name } => {
                     let v = this.variables.get(name).unwrap_or_else(|| {
@@ -513,9 +518,11 @@ impl Interpreter {
                     frame.set_new(*dst, result);
                 }
                 InstKind::ExternCall { dst, name, args } => {
-                    let arg_values = frame.collect_args(args);
-                    let arc = handle.request_extern_call(*name, arg_values).await;
-                    frame.set_new(*dst, Arc::unwrap_or_clone(arc));
+                    let typed_args: Vec<TypedValue> = args.iter().map(|a| {
+                        TypedValue::new(frame.take(*a), val_types[a].clone())
+                    }).collect();
+                    let arc = handle.request_extern_call(*name, typed_args).await;
+                    frame.set(*dst, Arc::unwrap_or_clone(arc).into_value());
                 }
                 InstKind::ClosureCall { dst, closure, args } => {
                     let callee = frame.take_owned(*closure);
@@ -527,9 +534,11 @@ impl Interpreter {
                             frame.set_new(*dst, result);
                         }
                         Value::Lazy(LazyValue::ExternFn(name)) => {
-                            let arg_values = frame.collect_args(args);
-                            let arc = handle.request_extern_call(name, arg_values).await;
-                            frame.set_new(*dst, Arc::unwrap_or_clone(arc));
+                            let typed_args: Vec<TypedValue> = args.iter().map(|a| {
+                                TypedValue::new(frame.take(*a), val_types[a].clone())
+                            }).collect();
+                            let arc = handle.request_extern_call(name, typed_args).await;
+                            frame.set(*dst, Arc::unwrap_or_clone(arc).into_value());
                         }
                         _ => panic!("ClosureCall: expected Fn or ExternFn, got {callee:?}"),
                     }
@@ -576,7 +585,7 @@ impl Interpreter {
         mut this: Self,
         id: BuiltinId,
         mut args: Vec<Value>,
-        handle: &'a YieldHandle<Value>,
+        handle: &'a YieldHandle<TypedValue>,
     ) -> Result<(Self, Value), RuntimeError> {
         match id {
             BuiltinId::ToString
@@ -864,7 +873,7 @@ impl Interpreter {
     fn drive_chain<'a>(
         this: Self,
         chain: &'a IterChain,
-        handle: &'a YieldHandle<Value>,
+        handle: &'a YieldHandle<TypedValue>,
     ) -> BoxFuture<'a, Result<(Self, Vec<Value>), RuntimeError>> {
         Box::pin(Self::drive_chain_inner(this, chain, handle))
     }
@@ -872,7 +881,7 @@ impl Interpreter {
     async fn drive_chain_inner<'a>(
         mut this: Self,
         chain: &IterChain,
-        handle: &'a YieldHandle<Value>,
+        handle: &'a YieldHandle<TypedValue>,
     ) -> Result<(Self, Vec<Value>), RuntimeError> {
         let mut items: Vec<Value> = chain.source.to_vec();
 
@@ -962,7 +971,7 @@ impl Interpreter {
     async fn exec_collect<'a>(
         this: Self,
         shared: SharedIter,
-        handle: &'a YieldHandle<Value>,
+        handle: &'a YieldHandle<TypedValue>,
     ) -> Result<(Self, Value), RuntimeError> {
         let (this, items) = Self::exec_collect_vec(this, shared, handle).await?;
         Ok((this, Value::list(items)))
@@ -971,7 +980,7 @@ impl Interpreter {
     async fn exec_collect_vec<'a>(
         this: Self,
         shared: SharedIter,
-        handle: &'a YieldHandle<Value>,
+        handle: &'a YieldHandle<TypedValue>,
     ) -> Result<(Self, Vec<Value>), RuntimeError> {
         // Check cache first (Pure iterators share cache via Arc<OnceLock>)
         if let Some(cached) = shared.cached() {
@@ -992,7 +1001,7 @@ impl Interpreter {
     async fn exec_collect_sequence<'a>(
         mut this: Self,
         sc: SequenceChain,
-        handle: &'a YieldHandle<Value>,
+        handle: &'a YieldHandle<TypedValue>,
     ) -> Result<(Self, TrackedDeque<Value>), RuntimeError> {
         let origin_checksum = sc.origin_checksum();
         let mut deque = sc.origin().clone();
@@ -1040,7 +1049,7 @@ impl Interpreter {
         mut this: Self,
         items: Vec<Value>,
         fn_val: FnValue,
-        handle: &'a YieldHandle<Value>,
+        handle: &'a YieldHandle<TypedValue>,
     ) -> Result<(Self, Value), RuntimeError> {
         for item in items {
             let arc_item = Arc::new(item);
@@ -1059,7 +1068,7 @@ impl Interpreter {
         mut this: Self,
         items: Vec<Value>,
         fn_val: FnValue,
-        handle: &'a YieldHandle<Value>,
+        handle: &'a YieldHandle<TypedValue>,
     ) -> Result<(Self, Value), RuntimeError> {
         let mut it = items.into_iter();
         let Some(mut acc) = it.next() else {
@@ -1082,7 +1091,7 @@ impl Interpreter {
         items: Vec<Value>,
         init: Value,
         fn_val: FnValue,
-        handle: &'a YieldHandle<Value>,
+        handle: &'a YieldHandle<TypedValue>,
     ) -> Result<(Self, Value), RuntimeError> {
         let mut acc = init;
         for item in items {
@@ -1101,7 +1110,7 @@ impl Interpreter {
         mut this: Self,
         items: Vec<Value>,
         fn_val: FnValue,
-        handle: &'a YieldHandle<Value>,
+        handle: &'a YieldHandle<TypedValue>,
     ) -> Result<(Self, Value), RuntimeError> {
         for item in items {
             let result;
@@ -1118,7 +1127,7 @@ impl Interpreter {
         mut this: Self,
         items: Vec<Value>,
         fn_val: FnValue,
-        handle: &'a YieldHandle<Value>,
+        handle: &'a YieldHandle<TypedValue>,
     ) -> Result<(Self, Value), RuntimeError> {
         for item in items {
             let result;
@@ -1137,7 +1146,7 @@ impl Interpreter {
         this: Self,
         fn_val: FnValue,
         args: Vec<Arc<Value>>,
-        handle: &'a YieldHandle<Value>,
+        handle: &'a YieldHandle<TypedValue>,
     ) -> Result<(Self, Value), RuntimeError> {
         let closure_body = &fn_val.body;
 
@@ -1153,7 +1162,8 @@ impl Interpreter {
         }
 
         let insts = closure_body.body.insts.clone();
-        let (this, _, result) = Self::run(this, insts, frame, handle).await?;
+        let val_types = closure_body.body.val_types.clone();
+        let (this, _, result) = Self::run(this, insts, val_types, frame, handle).await?;
         Ok((this, result.expect("closure must return a value")))
     }
 }

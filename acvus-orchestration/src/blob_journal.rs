@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
-use acvus_interpreter::{ConcreteValue, LazyValue, Value};
-use acvus_utils::Interner;
+use acvus_interpreter::{ConcreteValue, LazyValue, TypedValue, Value};
+use acvus_mir::ty::Ty;
+use acvus_utils::{Interner, TrackedDeque};
 use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
@@ -60,15 +61,15 @@ struct TreeMeta {
 struct HotNode {
     idx: usize,
     /// Full accumulated state at this node.
-    state: FxHashMap<String, Arc<Value>>,
+    state: FxHashMap<String, Arc<TypedValue>>,
     /// Keys changed during this node's turn (subset of `state`).
-    turn_diff: FxHashMap<String, Arc<Value>>,
+    turn_diff: FxHashMap<String, Arc<TypedValue>>,
 }
 
 // ── Value serialization helpers ─────────────────────────────────────
 
 fn serialize_entries(
-    entries: &FxHashMap<String, Arc<Value>>,
+    entries: &FxHashMap<String, Arc<TypedValue>>,
     interner: &Interner,
 ) -> Vec<u8> {
     let concrete: Vec<(String, ConcreteValue)> = entries
@@ -84,13 +85,13 @@ fn serialize_entries(
 fn deserialize_entries(
     bytes: &[u8],
     interner: &Interner,
-) -> FxHashMap<String, Arc<Value>> {
+) -> FxHashMap<String, Arc<TypedValue>> {
     let concrete: Vec<(String, ConcreteValue)> =
         serde_json::from_slice(bytes).expect("entry deserialization failed");
     concrete
         .into_iter()
         .map(|(k, cv)| {
-            (k, Arc::new(Value::from_concrete(&cv, interner)))
+            (k, Arc::new(TypedValue::from_concrete(&cv, interner, Ty::Infer)))
         })
         .collect()
 }
@@ -98,8 +99,8 @@ fn deserialize_entries(
 // ── StoragePatch application ─────────────────────────────────────────
 
 fn apply_diff(
-    state: &mut FxHashMap<String, Arc<Value>>,
-    turn_diff: &mut FxHashMap<String, Arc<Value>>,
+    state: &mut FxHashMap<String, Arc<TypedValue>>,
+    turn_diff: &mut FxHashMap<String, Arc<TypedValue>>,
     key: &str,
     diff: StoragePatch,
 ) {
@@ -110,15 +111,18 @@ fn apply_diff(
             turn_diff.insert(key.to_string(), arc);
         }
         StoragePatch::Sequence { squashed, .. } => {
-            let arc = Arc::new(Value::deque(squashed));
+            let values = TrackedDeque::from_vec(
+                squashed.into_vec().into_iter().map(|tv| tv.value().clone()).collect(),
+            );
+            let arc = Arc::new(TypedValue::new(Arc::new(Value::deque(values)), Ty::Infer));
             state.insert(key.to_string(), Arc::clone(&arc));
             turn_diff.insert(key.to_string(), arc);
         }
         StoragePatch::Object(obj_diff) => {
             let mut fields: FxHashMap<acvus_utils::Astr, Value> = state
                 .get(key)
-                .and_then(|arc| match arc.as_ref() {
-                    Value::Lazy(acvus_interpreter::LazyValue::Object(fields)) => Some(fields.clone()),
+                .and_then(|arc| match arc.value() {
+                    Value::Lazy(LazyValue::Object(fields)) => Some(fields.clone()),
                     _ => None,
                 })
                 .unwrap_or_default();
@@ -128,7 +132,7 @@ fn apply_diff(
             for k in &obj_diff.removals {
                 fields.remove(k);
             }
-            let arc = Arc::new(Value::object(fields));
+            let arc = Arc::new(TypedValue::new(Arc::new(Value::object(fields)), Ty::Infer));
             state.insert(key.to_string(), Arc::clone(&arc));
             turn_diff.insert(key.to_string(), arc);
         }
@@ -335,7 +339,7 @@ impl<S: BlobStore> BlobStoreJournal<S> {
     ///
     /// If the node has a snapshot → single blob load (O(1)).
     /// Otherwise → walk up to the nearest snapshot ancestor, apply diffs forward.
-    async fn load_state(&self, idx: usize) -> FxHashMap<String, Arc<Value>> {
+    async fn load_state(&self, idx: usize) -> FxHashMap<String, Arc<TypedValue>> {
         // Check hot node first.
         if let Some(ref hot) = self.hot {
             if hot.idx == idx {
@@ -553,20 +557,20 @@ impl<S: BlobStore> Journal for BlobStoreJournal<S> {
 
 pub struct BlobEntryRef<'a, S: BlobStore> {
     _journal: &'a BlobStoreJournal<S>,
-    state: FxHashMap<String, Arc<Value>>,
+    state: FxHashMap<String, Arc<TypedValue>>,
     depth: usize,
     uuid: Uuid,
 }
 
 impl<'a, S: BlobStore> BlobEntryRef<'a, S> {
     /// All key-value pairs visible at this node.
-    pub fn entries(&self) -> FxHashMap<String, Arc<Value>> {
+    pub fn entries(&self) -> FxHashMap<String, Arc<TypedValue>> {
         self.state.clone()
     }
 }
 
 impl<'a, S: BlobStore> EntryRef<'a> for BlobEntryRef<'a, S> {
-    fn get(&self, key: &str) -> Option<Arc<Value>> {
+    fn get(&self, key: &str) -> Option<Arc<TypedValue>> {
         self.state.get(key).cloned()
     }
 
@@ -589,7 +593,7 @@ pub struct BlobEntryMut<'a, S: BlobStore> {
 impl<'a, S: BlobStore> EntryMut<'a> for BlobEntryMut<'a, S> {
     type Ref<'x> = BlobEntryRef<'x, S> where 'a: 'x, Self: 'x;
 
-    fn get(&self, key: &str) -> Option<Arc<Value>> {
+    fn get(&self, key: &str) -> Option<Arc<TypedValue>> {
         let hot = self.journal.hot.as_ref().unwrap();
         debug_assert_eq!(hot.idx, self.idx);
         hot.state.get(key).cloned()
@@ -766,7 +770,7 @@ impl<'a, S: BlobStore> EntryMut<'a> for BlobEntryMut<'a, S> {
 
 #[cfg(test)]
 mod tests {
-    use acvus_interpreter::{LazyValue, PureValue};
+    use acvus_interpreter::{LazyValue, PureValue, TypedValue};
     use acvus_utils::TrackedDeque;
 
     use super::*;
@@ -784,9 +788,9 @@ mod tests {
     async fn apply_and_get() {
         let (mut j, root) = new_journal().await;
         let mut e = j.entry_mut(root).await.next().await;
-        e.apply("x", StoragePatch::Snapshot(Value::string("hello".into())));
+        e.apply("x", StoragePatch::Snapshot(TypedValue::string("hello")));
         assert!(matches!(
-            &*e.get("x").unwrap(),
+            e.get("x").unwrap().value(),
             Value::Pure(PureValue::String(v)) if v == "hello"
         ));
         assert!(e.get("y").is_none());
@@ -800,27 +804,30 @@ mod tests {
         let mut e = j.entry_mut(root).await.next().await;
         e.apply(
             "x",
-            StoragePatch::Snapshot(Value::string("first".into())),
+            StoragePatch::Snapshot(TypedValue::string("first")),
         );
         e.apply(
             "x",
-            StoragePatch::Snapshot(Value::object(FxHashMap::from_iter([(
-                interner.intern("v"),
-                Value::int(2),
-            )]))),
+            StoragePatch::Snapshot(TypedValue::new(
+                Arc::new(Value::object(FxHashMap::from_iter([(
+                    interner.intern("v"),
+                    Value::int(2),
+                )]))),
+                Ty::Infer,
+            )),
         );
-        assert!(matches!(&*e.get("x").unwrap(), Value::Lazy(LazyValue::Object(_))));
+        assert!(matches!(e.get("x").unwrap().value(), Value::Lazy(LazyValue::Object(_))));
     }
 
     #[tokio::test]
     async fn deque_stores_squashed() {
         let (mut j, root) = new_journal().await;
         let mut e = j.entry_mut(root).await.next().await;
-        let squashed = TrackedDeque::from_vec(vec![Value::int(1), Value::int(2)]);
+        let squashed = TrackedDeque::from_vec(vec![TypedValue::int(1), TypedValue::int(2)]);
         let diff = acvus_utils::OwnedDequeDiff {
             consumed: 0,
             removed_back: 0,
-            pushed: vec![Value::int(1), Value::int(2)],
+            pushed: vec![TypedValue::int(1), TypedValue::int(2)],
         };
         e.apply(
             "q",
@@ -830,9 +837,11 @@ mod tests {
             },
         );
         let val = e.get("q").unwrap();
-        assert!(
-            matches!(val.as_ref(), Value::Lazy(LazyValue::Deque(d)) if d.as_slice() == squashed.as_slice())
-        );
+        let Value::Lazy(LazyValue::Deque(d)) = val.value() else {
+            panic!("expected Deque");
+        };
+        let expected: Vec<Value> = squashed.into_vec().into_iter().map(|tv| tv.value().clone()).collect();
+        assert_eq!(d.as_slice(), &expected[..]);
     }
 
     #[tokio::test]
@@ -846,10 +855,13 @@ mod tests {
         let c = interner.intern("c");
         e.apply(
             "obj",
-            StoragePatch::Snapshot(Value::object(FxHashMap::from_iter([
-                (a, Value::int(1)),
-                (b, Value::int(2)),
-            ]))),
+            StoragePatch::Snapshot(TypedValue::new(
+                Arc::new(Value::object(FxHashMap::from_iter([
+                    (a, Value::int(1)),
+                    (b, Value::int(2)),
+                ]))),
+                Ty::Infer,
+            )),
         );
         let diff = ObjectDiff {
             updates: FxHashMap::from_iter([(a, Value::int(100)), (c, Value::int(3))]),
@@ -857,7 +869,7 @@ mod tests {
         };
         e.apply("obj", StoragePatch::Object(diff));
         let val = e.get("obj").unwrap();
-        let Value::Lazy(LazyValue::Object(fields)) = val.as_ref() else {
+        let Value::Lazy(LazyValue::Object(fields)) = val.value() else {
             panic!("expected Object")
         };
         assert_eq!(fields.get(&a), Some(&Value::Pure(PureValue::Int(100))));
@@ -894,8 +906,8 @@ mod tests {
         {
             let mut e = j.entry_mut(root).await.next().await;
             n1 = e.uuid();
-            e.apply("x", StoragePatch::Snapshot(Value::int(1)));
-            e.apply("y", StoragePatch::Snapshot(Value::int(2)));
+            e.apply("x", StoragePatch::Snapshot(TypedValue::int(1)));
+            e.apply("y", StoragePatch::Snapshot(TypedValue::int(2)));
         }
 
         let n2;
@@ -903,22 +915,22 @@ mod tests {
             let mut e = j.entry_mut(n1).await.next().await;
             n2 = e.uuid();
             // Child sees parent's values.
-            assert!(matches!(&*e.get("x").unwrap(), Value::Pure(PureValue::Int(1))));
-            assert!(matches!(&*e.get("y").unwrap(), Value::Pure(PureValue::Int(2))));
+            assert!(matches!(e.get("x").unwrap().value(), Value::Pure(PureValue::Int(1))));
+            assert!(matches!(e.get("y").unwrap().value(), Value::Pure(PureValue::Int(2))));
             // Modifying child doesn't affect parent.
-            e.apply("x", StoragePatch::Snapshot(Value::int(99)));
-            assert!(matches!(&*e.get("x").unwrap(), Value::Pure(PureValue::Int(99))));
+            e.apply("x", StoragePatch::Snapshot(TypedValue::int(99)));
+            assert!(matches!(e.get("x").unwrap().value(), Value::Pure(PureValue::Int(99))));
         }
 
         // Parent unchanged.
         {
             let e = j.entry(n1).await;
-            assert!(matches!(&*e.get("x").unwrap(), Value::Pure(PureValue::Int(1))));
+            assert!(matches!(e.get("x").unwrap().value(), Value::Pure(PureValue::Int(1))));
         }
         // Child has override.
         {
             let e = j.entry(n2).await;
-            assert!(matches!(&*e.get("x").unwrap(), Value::Pure(PureValue::Int(99))));
+            assert!(matches!(e.get("x").unwrap().value(), Value::Pure(PureValue::Int(99))));
         }
     }
 
@@ -930,13 +942,13 @@ mod tests {
         {
             let mut e = j.entry_mut(root).await.next().await;
             n1 = e.uuid();
-            e.apply("x", StoragePatch::Snapshot(Value::int(1)));
+            e.apply("x", StoragePatch::Snapshot(TypedValue::int(1)));
         }
         let n2;
         {
             let mut e = j.entry_mut(n1).await.next().await;
             n2 = e.uuid();
-            e.apply("x", StoragePatch::Snapshot(Value::int(2)));
+            e.apply("x", StoragePatch::Snapshot(TypedValue::int(2)));
         }
 
         // Fork from n2 → sibling of n2 (child of n1).
@@ -944,7 +956,7 @@ mod tests {
             let e = j.entry_mut(n2).await.fork().await;
             assert_eq!(e.depth(), 2);
             // Sees n1's state (x=1), not n2's (x=2).
-            assert!(matches!(&*e.get("x").unwrap(), Value::Pure(PureValue::Int(1))));
+            assert!(matches!(e.get("x").unwrap().value(), Value::Pure(PureValue::Int(1))));
         }
     }
 
@@ -961,7 +973,7 @@ mod tests {
         {
             let mut e = j.entry_mut(n1).await.next().await;
             n2 = e.uuid();
-            e.apply("x", StoragePatch::Snapshot(Value::int(1)));
+            e.apply("x", StoragePatch::Snapshot(TypedValue::int(1)));
         }
 
         j.entry_mut(n2).await.prune(Prune::Leaf);
@@ -1005,7 +1017,7 @@ mod tests {
         {
             let mut e = j.entry_mut(root).await.next().await;
             n1 = e.uuid();
-            e.apply("x", StoragePatch::Snapshot(Value::int(1)));
+            e.apply("x", StoragePatch::Snapshot(TypedValue::int(1)));
         }
 
         let n2;
@@ -1020,16 +1032,16 @@ mod tests {
         }
 
         // Both children see parent's data.
-        assert!(matches!(&*j.entry(n2).await.get("x").unwrap(), Value::Pure(PureValue::Int(1))));
-        assert!(matches!(&*j.entry(n3).await.get("x").unwrap(), Value::Pure(PureValue::Int(1))));
+        assert!(matches!(j.entry(n2).await.get("x").unwrap().value(), Value::Pure(PureValue::Int(1))));
+        assert!(matches!(j.entry(n3).await.get("x").unwrap().value(), Value::Pure(PureValue::Int(1))));
 
         // Modifying one child doesn't affect the other.
         {
             let mut e = j.entry_mut(n2).await;
-            e.apply("x", StoragePatch::Snapshot(Value::int(99)));
+            e.apply("x", StoragePatch::Snapshot(TypedValue::int(99)));
         }
-        assert!(matches!(&*j.entry(n2).await.get("x").unwrap(), Value::Pure(PureValue::Int(99))));
-        assert!(matches!(&*j.entry(n3).await.get("x").unwrap(), Value::Pure(PureValue::Int(1))));
+        assert!(matches!(j.entry(n2).await.get("x").unwrap().value(), Value::Pure(PureValue::Int(99))));
+        assert!(matches!(j.entry(n3).await.get("x").unwrap().value(), Value::Pure(PureValue::Int(1))));
     }
 
     #[tokio::test]
@@ -1040,15 +1052,15 @@ mod tests {
         {
             let mut e = j.entry_mut(root).await.next().await;
             n1 = e.uuid();
-            e.apply("x", StoragePatch::Snapshot(Value::int(1)));
+            e.apply("x", StoragePatch::Snapshot(TypedValue::int(1)));
         }
         {
             let mut e = j.entry_mut(n1).await.next().await;
             // x=1 from parent.
-            assert!(matches!(&*e.get("x").unwrap(), Value::Pure(PureValue::Int(1))));
+            assert!(matches!(e.get("x").unwrap().value(), Value::Pure(PureValue::Int(1))));
             // Override.
-            e.apply("x", StoragePatch::Snapshot(Value::int(2)));
-            assert!(matches!(&*e.get("x").unwrap(), Value::Pure(PureValue::Int(2))));
+            e.apply("x", StoragePatch::Snapshot(TypedValue::int(2)));
+            assert!(matches!(e.get("x").unwrap().value(), Value::Pure(PureValue::Int(2))));
         }
     }
 
@@ -1062,7 +1074,7 @@ mod tests {
         {
             let mut e = j.entry_mut(root).await.next().await;
             n1 = e.uuid();
-            e.apply("x", StoragePatch::Snapshot(Value::int(42)));
+            e.apply("x", StoragePatch::Snapshot(TypedValue::int(42)));
         }
 
         // next() persists n1's snapshot.
@@ -1088,29 +1100,29 @@ mod tests {
         {
             let mut e = j.entry_mut(root).await.next().await;
             n1 = e.uuid();
-            e.apply("x", StoragePatch::Snapshot(Value::int(1)));
+            e.apply("x", StoragePatch::Snapshot(TypedValue::int(1)));
         }
 
         let n2;
         {
             let mut e = j.entry_mut(n1).await.next().await;
             n2 = e.uuid();
-            e.apply("y", StoragePatch::Snapshot(Value::int(2)));
+            e.apply("y", StoragePatch::Snapshot(TypedValue::int(2)));
         }
 
         // Switch back to n1 — triggers hot swap.
         // n2's state should be persisted, n1's state loaded.
         {
             let e = j.entry(n1).await;
-            assert!(matches!(&*e.get("x").unwrap(), Value::Pure(PureValue::Int(1))));
+            assert!(matches!(e.get("x").unwrap().value(), Value::Pure(PureValue::Int(1))));
             assert!(e.get("y").is_none()); // y was added on n2, not n1
         }
 
         // n2 still has its data.
         {
             let e = j.entry(n2).await;
-            assert!(matches!(&*e.get("y").unwrap(), Value::Pure(PureValue::Int(2))));
-            assert!(matches!(&*e.get("x").unwrap(), Value::Pure(PureValue::Int(1)))); // inherited
+            assert!(matches!(e.get("y").unwrap().value(), Value::Pure(PureValue::Int(2))));
+            assert!(matches!(e.get("x").unwrap().value(), Value::Pure(PureValue::Int(1)))); // inherited
         }
     }
 
@@ -1153,7 +1165,7 @@ mod tests {
         {
             let mut e = j.entry_mut(root).await.next().await;
             n1 = e.uuid();
-            e.apply("x", StoragePatch::Snapshot(Value::int(42)));
+            e.apply("x", StoragePatch::Snapshot(TypedValue::int(42)));
         }
         let n2;
         {
@@ -1202,12 +1214,12 @@ mod tests {
             {
                 let mut e = j.entry_mut(root).await.next().await;
                 n1 = e.uuid();
-                e.apply("x", StoragePatch::Snapshot(Value::int(10)));
+                e.apply("x", StoragePatch::Snapshot(TypedValue::int(10)));
             }
             {
                 let mut e = j.entry_mut(n1).await.next().await;
                 n2 = e.uuid();
-                e.apply("y", StoragePatch::Snapshot(Value::int(20)));
+                e.apply("y", StoragePatch::Snapshot(TypedValue::int(20)));
             }
 
             j.flush_tree().await;
@@ -1220,12 +1232,12 @@ mod tests {
         // Verify data is intact.
         {
             let e = j2.entry(n1).await;
-            assert!(matches!(&*e.get("x").unwrap(), Value::Pure(PureValue::Int(10))));
+            assert!(matches!(e.get("x").unwrap().value(), Value::Pure(PureValue::Int(10))));
         }
         {
             let e = j2.entry(n2).await;
-            assert!(matches!(&*e.get("x").unwrap(), Value::Pure(PureValue::Int(10))));
-            assert!(matches!(&*e.get("y").unwrap(), Value::Pure(PureValue::Int(20))));
+            assert!(matches!(e.get("x").unwrap().value(), Value::Pure(PureValue::Int(10))));
+            assert!(matches!(e.get("y").unwrap().value(), Value::Pure(PureValue::Int(20))));
         }
     }
 
@@ -1240,7 +1252,7 @@ mod tests {
             cursor = e.uuid();
             e.apply(
                 &format!("k{i}"),
-                StoragePatch::Snapshot(Value::int(i as i64)),
+                StoragePatch::Snapshot(TypedValue::int(i as i64)),
             );
         }
 
@@ -1249,7 +1261,7 @@ mod tests {
         assert_eq!(e.depth(), 50);
         for i in 0..50 {
             assert!(matches!(
-                &*e.get(&format!("k{i}")).unwrap(),
+                e.get(&format!("k{i}")).unwrap().value(),
                 Value::Pure(PureValue::Int(v)) if *v == i as i64
             ));
         }
@@ -1261,9 +1273,9 @@ mod tests {
     async fn as_ref_returns_current_state() {
         let (mut j, root) = new_journal().await;
         let mut e = j.entry_mut(root).await.next().await;
-        e.apply("x", StoragePatch::Snapshot(Value::int(7)));
+        e.apply("x", StoragePatch::Snapshot(TypedValue::int(7)));
         let r = e.as_ref();
-        assert!(matches!(&*r.get("x").unwrap(), Value::Pure(PureValue::Int(7))));
+        assert!(matches!(r.get("x").unwrap().value(), Value::Pure(PureValue::Int(7))));
         assert_eq!(r.depth(), 1);
     }
 
@@ -1276,8 +1288,8 @@ mod tests {
         {
             let mut e = j.entry_mut(root).await.next().await;
             n1 = e.uuid();
-            e.apply("a", StoragePatch::Snapshot(Value::int(1)));
-            e.apply("b", StoragePatch::Snapshot(Value::int(2)));
+            e.apply("a", StoragePatch::Snapshot(TypedValue::int(1)));
+            e.apply("b", StoragePatch::Snapshot(TypedValue::int(2)));
         }
 
         let entries = j.entry(n1).await.entries();
@@ -1296,13 +1308,13 @@ mod tests {
         {
             let mut e = j.entry_mut(root).await.next().await;
             n1 = e.uuid();
-            e.apply("x", StoragePatch::Snapshot(Value::int(1)));
+            e.apply("x", StoragePatch::Snapshot(TypedValue::int(1)));
         }
         let n2;
         {
             let mut e = j.entry_mut(n1).await.next().await;
             n2 = e.uuid();
-            e.apply("y", StoragePatch::Snapshot(Value::int(2)));
+            e.apply("y", StoragePatch::Snapshot(TypedValue::int(2)));
         }
 
         // Switch to n1 to mutate.
@@ -1311,14 +1323,14 @@ mod tests {
         // But we can read.
         {
             let e = j.entry(n1).await;
-            assert!(matches!(&*e.get("x").unwrap(), Value::Pure(PureValue::Int(1))));
+            assert!(matches!(e.get("x").unwrap().value(), Value::Pure(PureValue::Int(1))));
             assert!(e.get("y").is_none());
         }
 
         // n2 data still intact.
         {
             let e = j.entry(n2).await;
-            assert!(matches!(&*e.get("y").unwrap(), Value::Pure(PureValue::Int(2))));
+            assert!(matches!(e.get("y").unwrap().value(), Value::Pure(PureValue::Int(2))));
         }
     }
 
@@ -1341,7 +1353,7 @@ mod tests {
             uuids.push(cursor);
             e.apply(
                 &format!("k{i}"),
-                StoragePatch::Snapshot(Value::int(i as i64)),
+                StoragePatch::Snapshot(TypedValue::int(i as i64)),
             );
         }
         // Force persist of last node.
@@ -1385,7 +1397,7 @@ mod tests {
             cursor = e.uuid();
             e.apply(
                 &format!("k{i}"),
-                StoragePatch::Snapshot(Value::int(i as i64)),
+                StoragePatch::Snapshot(TypedValue::int(i as i64)),
             );
         }
 
@@ -1394,7 +1406,7 @@ mod tests {
         assert_eq!(e.depth(), 7);
         for i in 1..=7 {
             assert!(matches!(
-                &*e.get(&format!("k{i}")).unwrap(),
+                e.get(&format!("k{i}")).unwrap().value(),
                 Value::Pure(PureValue::Int(v)) if *v == i as i64
             ));
         }
@@ -1415,7 +1427,7 @@ mod tests {
             cursor = e.uuid();
             e.apply(
                 &format!("k{i}"),
-                StoragePatch::Snapshot(Value::int(i as i64)),
+                StoragePatch::Snapshot(TypedValue::int(i as i64)),
             );
         }
 
@@ -1424,8 +1436,8 @@ mod tests {
         let forked = j.entry_mut(cursor).await.fork().await;
         assert_eq!(forked.depth(), 3);
         // Sees state up to depth 2 (parent), not depth 3 changes.
-        assert!(matches!(&*forked.get("k1").unwrap(), Value::Pure(PureValue::Int(1))));
-        assert!(matches!(&*forked.get("k2").unwrap(), Value::Pure(PureValue::Int(2))));
+        assert!(matches!(forked.get("k1").unwrap().value(), Value::Pure(PureValue::Int(1))));
+        assert!(matches!(forked.get("k2").unwrap().value(), Value::Pure(PureValue::Int(2))));
         assert!(forked.get("k3").is_none());
     }
 
@@ -1439,7 +1451,7 @@ mod tests {
             cursor = e.uuid();
             e.apply(
                 &format!("k{i}"),
-                StoragePatch::Snapshot(Value::int(i as i64)),
+                StoragePatch::Snapshot(TypedValue::int(i as i64)),
             );
         }
 
@@ -1449,7 +1461,7 @@ mod tests {
         for i in 1..=200 {
             assert!(
                 matches!(
-                    &*e.get(&format!("k{i}")).unwrap(),
+                    e.get(&format!("k{i}")).unwrap().value(),
                     Value::Pure(PureValue::Int(v)) if *v == i as i64
                 ),
                 "missing k{i} at depth 200"
@@ -1482,7 +1494,7 @@ mod tests {
                 // Each turn adds a distinct key — snapshot grows, diff stays small.
                 e.apply(
                     &format!("k{i}"),
-                    StoragePatch::Snapshot(Value::int(i as i64)),
+                    StoragePatch::Snapshot(TypedValue::int(i as i64)),
                 );
             }
             j.persist_hot_node().await;

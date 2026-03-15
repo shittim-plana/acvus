@@ -13,7 +13,7 @@ use rustc_hash::FxHashMap;
 
 use std::sync::Arc;
 
-use acvus_interpreter::{Coroutine, RuntimeError, Value};
+use acvus_interpreter::{Coroutine, RuntimeError, TypedValue, Value};
 
 use crate::provider::{Fetch, ProviderConfig};
 
@@ -22,8 +22,8 @@ use crate::provider::{Fetch, ProviderConfig};
 pub trait Node: Send + Sync {
     fn spawn(
         &self,
-        local_context: FxHashMap<Astr, Arc<Value>>,
-    ) -> Coroutine<Value, RuntimeError>;
+        local_context: FxHashMap<Astr, Arc<TypedValue>>,
+    ) -> Coroutine<TypedValue, RuntimeError>;
 }
 
 /// Build a node table from compiled nodes.

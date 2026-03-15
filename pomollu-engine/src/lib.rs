@@ -683,11 +683,12 @@ pub async fn evaluate(options: Ts<EvaluateOptions>) -> Result<JsValue, JsError> 
     };
 
     // Build context values
-    let ctx: FxHashMap<Astr, Value> = options.context
+    let ctx: FxHashMap<Astr, acvus_interpreter::TypedValue> = options.context
         .into_iter()
         .map(|(k, v)| {
+            let ty = jcv_to_ty(&interner, &v);
             let cv: acvus_interpreter::ConcreteValue = v.into();
-            (interner.intern(&k), Value::from_concrete(&cv, &interner))
+            (interner.intern(&k), acvus_interpreter::TypedValue::from_concrete(&cv, &interner, ty))
         })
         .collect();
 
@@ -697,8 +698,8 @@ pub async fn evaluate(options: Ts<EvaluateOptions>) -> Result<JsValue, JsError> 
     let result_value = match &options.mode {
         Mode::Template => {
             let mut output = String::new();
-            for v in &emits {
-                match v {
+            for tv in &emits {
+                match tv.value() {
                     Value::Pure(acvus_interpreter::PureValue::String(s)) => output.push_str(s),
                     other => panic!("template emit: expected String, got {other:?}"),
                 }
@@ -708,7 +709,7 @@ pub async fn evaluate(options: Ts<EvaluateOptions>) -> Result<JsValue, JsError> 
         Mode::Script => {
             assert!(emits.len() <= 1, "script emitted {} values, expected at most 1", emits.len());
             match emits.into_iter().next() {
-                Some(v) => v.to_concrete(&interner).into(),
+                Some(tv) => tv.to_concrete(&interner).into(),
                 None => JsConcreteValue::Unit,
             }
         }

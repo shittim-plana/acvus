@@ -1,5 +1,5 @@
 use acvus_ast::Literal;
-use acvus_interpreter::{LazyValue, PureValue, Value};
+use acvus_interpreter::{LazyValue, PureValue, TypedValue, Value};
 use acvus_mir_pass::analysis::reachable_context::KnownValue;
 use acvus_utils::Interner;
 
@@ -26,8 +26,8 @@ pub fn json_to_value(interner: &Interner, v: &serde_json::Value) -> Value {
     }
 }
 
-pub fn value_to_literal(value: &Value) -> Option<Literal> {
-    match value {
+pub fn value_to_literal(value: &TypedValue) -> Option<Literal> {
+    match value.value() {
         Value::Pure(PureValue::String(s)) => Some(Literal::String(s.clone())),
         Value::Pure(PureValue::Bool(b)) => Some(Literal::Bool(*b)),
         Value::Pure(PureValue::Int(i)) => Some(Literal::Int(*i)),
@@ -36,7 +36,11 @@ pub fn value_to_literal(value: &Value) -> Option<Literal> {
     }
 }
 
-pub fn value_to_known(value: &Value) -> Option<KnownValue> {
+pub fn value_to_known(value: &TypedValue) -> Option<KnownValue> {
+    value_to_known_inner(value.value())
+}
+
+fn value_to_known_inner(value: &Value) -> Option<KnownValue> {
     match value {
         Value::Pure(PureValue::String(s)) => Some(KnownValue::Literal(Literal::String(s.clone()))),
         Value::Pure(PureValue::Bool(b)) => Some(KnownValue::Literal(Literal::Bool(*b))),
@@ -44,7 +48,7 @@ pub fn value_to_known(value: &Value) -> Option<KnownValue> {
         Value::Pure(PureValue::Float(f)) => Some(KnownValue::Literal(Literal::Float(*f))),
         Value::Lazy(LazyValue::Variant { tag, payload }) => {
             let payload = match payload {
-                Some(p) => Some(Box::new(value_to_known(p)?)),
+                Some(p) => Some(Box::new(value_to_known_inner(p)?)),
                 None => None,
             };
             Some(KnownValue::Variant { tag: *tag, payload })

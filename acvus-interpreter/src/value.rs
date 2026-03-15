@@ -335,13 +335,13 @@ impl Value {
 /// - Lazy containers with Pure effect: OK (Iterator/Sequence are collected).
 /// - Effectful or Unpure: rejected.
 pub struct TypedValue {
-    value: Value,
+    value: Arc<Value>,
     ty: Ty,
 }
 
 impl TypedValue {
     /// Create a new TypedValue. Debug-asserts that value and ty are consistent.
-    pub fn new(value: Value, ty: Ty) -> Self {
+    pub fn new(value: Arc<Value>, ty: Ty) -> Self {
         debug_assert!(
             value_matches_ty(&value, &ty),
             "TypedValue invariant violated: value={value:?}, ty={ty:?}"
@@ -355,16 +355,42 @@ impl TypedValue {
     /// Borrow the type.
     pub fn ty(&self) -> &Ty { &self.ty }
 
-    /// Consume and return the inner value, discarding the type.
-    pub fn into_value(self) -> Value { self.value }
+    /// Consume and return the inner Arc<Value>, discarding the type.
+    pub fn into_value(self) -> Arc<Value> { self.value }
 
     /// Consume and return both parts.
-    pub fn into_parts(self) -> (Value, Ty) { (self.value, self.ty) }
+    pub fn into_parts(self) -> (Arc<Value>, Ty) { (self.value, self.ty) }
 
     /// Whether this value can be persisted to storage.
     /// Delegates to [`Ty::is_storable`].
     pub fn is_storable(&self) -> bool {
         self.ty.is_storable()
+    }
+
+    // --- Pure scalar constructors ---
+    pub fn int(n: i64) -> Self { Self { value: Arc::new(Value::int(n)), ty: Ty::Int } }
+    pub fn float(f: f64) -> Self { Self { value: Arc::new(Value::float(f)), ty: Ty::Float } }
+    pub fn string(s: impl Into<String>) -> Self { Self { value: Arc::new(Value::string(s.into())), ty: Ty::String } }
+    pub fn bool_(b: bool) -> Self { Self { value: Arc::new(Value::bool_(b)), ty: Ty::Bool } }
+    pub fn unit() -> Self { Self { value: Arc::new(Value::unit()), ty: Ty::Unit } }
+    pub fn byte(b: u8) -> Self { Self { value: Arc::new(Value::byte(b)), ty: Ty::Byte } }
+
+    /// Convert to a serialization-safe [`ConcreteValue`].
+    /// Delegates to [`Value::to_concrete`].
+    pub fn to_concrete(&self, interner: &acvus_utils::Interner) -> ConcreteValue {
+        self.value.to_concrete(interner)
+    }
+
+    /// Restore a TypedValue from a [`ConcreteValue`].
+    /// The type must be provided externally since ConcreteValue is untyped.
+    pub fn from_concrete(cv: &ConcreteValue, interner: &acvus_utils::Interner, ty: Ty) -> Self {
+        Self::new(Arc::new(Value::from_concrete(cv, interner)), ty)
+    }
+}
+
+impl PartialEq for TypedValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
     }
 }
 
@@ -377,7 +403,7 @@ impl fmt::Debug for TypedValue {
 impl Clone for TypedValue {
     fn clone(&self) -> Self {
         Self {
-            value: self.value.clone(),
+            value: Arc::clone(&self.value),
             ty: self.ty.clone(),
         }
     }

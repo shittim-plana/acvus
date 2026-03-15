@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use acvus_interpreter::{Interpreter, LazyValue, PureValue, RuntimeError, Value};
+use acvus_interpreter::{Interpreter, LazyValue, PureValue, RuntimeError, TypedValue, Value};
 use acvus_mir::context_registry::ContextTypeRegistry;
 use acvus_mir::ty::Ty;
 use acvus_utils::{Astr, Interner};
@@ -174,11 +174,11 @@ async fn drive_from_entry<EH>(
     interner: &Interner,
     script: &CompiledScript,
     entry: &(impl EntryRef<'_> + Sync),
-    local: &FxHashMap<String, Arc<Value>>,
+    local: &FxHashMap<String, Arc<TypedValue>>,
     extern_handler: &EH,
-) -> Value
+) -> TypedValue
 where
-    EH: AsyncFn(Astr, Vec<Value>) -> Result<Value, RuntimeError> + Sync,
+    EH: AsyncFn(Astr, Vec<TypedValue>) -> Result<TypedValue, RuntimeError> + Sync,
 {
     let interp = Interpreter::new(interner, script.module.clone());
     let mut coroutine = interp.execute();
@@ -191,7 +191,7 @@ where
                 let name = interner.resolve(request.name()).to_string();
                 let Some(value) = local.get(&name).cloned().or_else(|| entry.get(&name))
                 else {
-                    return Value::unit();
+                    return TypedValue::unit();
                 };
                 request.resolve(value);
             }
@@ -203,7 +203,7 @@ where
                     Err(e) => panic!("display extern call error: {e}"),
                 }
             }
-            acvus_interpreter::Stepped::Done => return Value::unit(),
+            acvus_interpreter::Stepped::Done => return TypedValue::unit(),
             acvus_interpreter::Stepped::Error(e) => panic!("display runtime error: {e}"),
         }
     }
@@ -213,20 +213,20 @@ async fn drive_template_from_entry<EH>(
     interner: &Interner,
     script: &CompiledScript,
     entry: &(impl EntryRef<'_> + Sync),
-    local: &FxHashMap<String, Arc<Value>>,
+    local: &FxHashMap<String, Arc<TypedValue>>,
     extern_handler: &EH,
 ) -> String
 where
-    EH: AsyncFn(Astr, Vec<Value>) -> Result<Value, RuntimeError> + Sync,
+    EH: AsyncFn(Astr, Vec<TypedValue>) -> Result<TypedValue, RuntimeError> + Sync,
 {
     let interp = Interpreter::new(interner, script.module.clone());
     let mut coroutine = interp.execute();
     let mut output = String::new();
     loop {
         match coroutine.resume().await {
-            acvus_interpreter::Stepped::Emit(value) => match value {
-                Value::Pure(PureValue::String(s)) => output.push_str(&s),
-                other => panic!("display template: expected String, got {other:?}"),
+            acvus_interpreter::Stepped::Emit(value) => match value.value() {
+                Value::Pure(PureValue::String(s)) => output.push_str(s),
+                _ => panic!("display template: expected String, got {value:?}"),
             },
             acvus_interpreter::Stepped::NeedContext(request) => {
                 let name = interner.resolve(request.name()).to_string();
@@ -255,17 +255,17 @@ async fn eval_entries<EH>(
     interner: &Interner,
     entries: &[CompiledDisplayEntry],
     entry: &(impl EntryRef<'_> + Sync),
-    local: &FxHashMap<String, Arc<Value>>,
+    local: &FxHashMap<String, Arc<TypedValue>>,
     extern_handler: &EH,
 ) -> Vec<RenderedDisplayEntry>
 where
-    EH: AsyncFn(Astr, Vec<Value>) -> Result<Value, RuntimeError> + Sync,
+    EH: AsyncFn(Astr, Vec<TypedValue>) -> Result<TypedValue, RuntimeError> + Sync,
 {
     let mut result = Vec::new();
     for e in entries {
         if let Some(ref cond) = e.condition {
             let val = drive_from_entry(interner, cond, entry, local, extern_handler).await;
-            let Value::Pure(PureValue::Bool(true)) = val else {
+            let Value::Pure(PureValue::Bool(true)) = val.value() else {
                 continue;
             };
         }
@@ -287,7 +287,7 @@ pub async fn render_display<EH>(
     extern_handler: &EH,
 ) -> Vec<RenderedDisplayEntry>
 where
-    EH: AsyncFn(Astr, Vec<Value>) -> Result<Value, RuntimeError> + Sync,
+    EH: AsyncFn(Astr, Vec<TypedValue>) -> Result<TypedValue, RuntimeError> + Sync,
 {
     let local = FxHashMap::default();
     let content =
@@ -311,7 +311,7 @@ pub async fn render_display_with_idx<EH>(
     extern_handler: &EH,
 ) -> Vec<RenderedDisplayEntry>
 where
-    EH: AsyncFn(Astr, Vec<Value>) -> Result<Value, RuntimeError> + Sync,
+    EH: AsyncFn(Astr, Vec<TypedValue>) -> Result<TypedValue, RuntimeError> + Sync,
 {
     let empty_local = FxHashMap::default();
     let list = drive_from_entry(
@@ -323,7 +323,8 @@ where
     )
     .await;
 
-    let items = match list {
+    let list_value = Arc::try_unwrap(list.into_value()).unwrap_or_else(|arc| (*arc).clone());
+    let items = match list_value {
         Value::Lazy(LazyValue::List(items)) => items,
         Value::Lazy(LazyValue::Deque(deque)) => deque.into_vec(),
         _ => return Vec::new(),
@@ -332,9 +333,10 @@ where
         return Vec::new();
     };
 
+    let item_typed = TypedValue::new(Arc::new(item), display.item_ty.clone());
     let mut local = FxHashMap::default();
-    local.insert("item".into(), Arc::new(item));
-    local.insert("index".into(), Arc::new(Value::int(index as i64)));
+    local.insert("item".into(), Arc::new(item_typed));
+    local.insert("index".into(), Arc::new(TypedValue::int(index as i64)));
 
     eval_entries(interner, &display.entries, entry, &local, extern_handler).await
 }
@@ -346,11 +348,11 @@ mod tests {
     use crate::storage::{EntryMut, Journal, TreeJournal};
     use acvus_utils::Interner;
 
-    async fn noop_extern(_: Astr, _: Vec<Value>) -> Result<Value, RuntimeError> {
-        Ok(Value::unit())
+    async fn noop_extern(_: Astr, _: Vec<TypedValue>) -> Result<TypedValue, RuntimeError> {
+        Ok(TypedValue::unit())
     }
 
-    async fn journal_with(entries: Vec<(&str, Value)>) -> (TreeJournal, uuid::Uuid) {
+    async fn journal_with(entries: Vec<(&str, TypedValue)>) -> (TreeJournal, uuid::Uuid) {
         let (mut j, root) = TreeJournal::new();
         let mut e = j.entry_mut(root).await.next().await;
         let uuid = e.uuid();
@@ -416,7 +418,7 @@ mod tests {
             template: "hello {{ @greeting }}".into(),
         };
         let compiled = compile_static_display(&interner, &spec, &reg).unwrap();
-        let (journal, uuid) = journal_with(vec![("greeting", Value::string("world".into()))]).await;
+        let (journal, uuid) = journal_with(vec![("greeting", TypedValue::string("world"))]).await;
         let result = render_display(&interner, &compiled, &journal.entry(uuid).await, &noop_extern).await;
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].content, "hello world");
@@ -440,11 +442,14 @@ mod tests {
         let compiled = compile_iterable_display(&interner, &spec, &reg).unwrap();
         let (journal, uuid) = journal_with(vec![(
             "messages",
-            Value::list(vec![
-                Value::string("a".into()),
-                Value::string("b".into()),
-                Value::string("c".into()),
-            ]),
+            TypedValue::new(
+                Arc::new(Value::list(vec![
+                    Value::string("a".into()),
+                    Value::string("b".into()),
+                    Value::string("c".into()),
+                ])),
+                Ty::List(Box::new(Ty::String)),
+            ),
         )])
         .await;
         let r0 =
@@ -482,7 +487,10 @@ mod tests {
         let compiled = compile_iterable_display(&interner, &spec, &reg).unwrap();
         let (journal, uuid) = journal_with(vec![(
             "nums",
-            Value::list(vec![Value::int(3), Value::int(10)]),
+            TypedValue::new(
+                Arc::new(Value::list(vec![Value::int(3), Value::int(10)])),
+                Ty::List(Box::new(Ty::Int)),
+            ),
         )])
         .await;
 
@@ -515,7 +523,10 @@ mod tests {
         let compiled = compile_iterable_display(&interner, &spec, &reg).unwrap();
         let (journal, uuid) = journal_with(vec![(
             "items",
-            Value::list(vec![Value::string("only".into())]),
+            TypedValue::new(
+                Arc::new(Value::list(vec![Value::string("only".into())])),
+                Ty::List(Box::new(Ty::String)),
+            ),
         )])
         .await;
         let result =

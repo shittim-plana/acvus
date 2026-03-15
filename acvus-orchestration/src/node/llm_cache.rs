@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use acvus_interpreter::{RuntimeError, Value};
+use acvus_interpreter::{RuntimeError, TypedValue, Value};
 use acvus_utils::{Astr, Interner};
 
 use rustc_hash::FxHashMap;
@@ -50,8 +50,8 @@ where
 {
     fn spawn(
         &self,
-        local: FxHashMap<Astr, Arc<Value>>,
-    ) -> acvus_utils::Coroutine<Value, RuntimeError> {
+        local: FxHashMap<Astr, Arc<TypedValue>>,
+    ) -> acvus_utils::Coroutine<TypedValue, RuntimeError> {
         let messages = self.messages.clone();
         let model = self.model.clone();
         let ttl = self.ttl.clone();
@@ -92,7 +92,7 @@ where
                 .map_err(|e| RuntimeError::fetch(e.to_string()))?;
             debug!(cache_name = %cache_name, "llm_cache created");
 
-            handle.yield_val(Value::string(cache_name)).await;
+            handle.yield_val(TypedValue::string(cache_name)).await;
             Ok(())
         })
     }

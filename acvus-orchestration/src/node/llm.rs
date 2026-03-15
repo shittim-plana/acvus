@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use acvus_interpreter::{RuntimeError, Value};
+use acvus_interpreter::{PureValue, RuntimeError, TypedValue, Value};
+use acvus_mir::ty::Ty;
 use acvus_utils::{Astr, Interner};
 
 use rustc_hash::FxHashMap;
@@ -63,8 +64,8 @@ where
 {
     fn spawn(
         &self,
-        local: FxHashMap<Astr, Arc<Value>>,
-    ) -> acvus_utils::Coroutine<Value, RuntimeError> {
+        local: FxHashMap<Astr, Arc<TypedValue>>,
+    ) -> acvus_utils::Coroutine<TypedValue, RuntimeError> {
         let messages = self.messages.clone();
         let tools = self.tools.clone();
         let api = self.api.clone();
@@ -84,8 +85,8 @@ where
                 let val =
                     eval_script_in_coroutine(&interner, &ck_script.module, &local, &handle)
                         .await?;
-                match val {
-                    Value::Pure(acvus_interpreter::PureValue::String(s)) => Some(s),
+                match val.value() {
+                    Value::Pure(PureValue::String(s)) => Some(s.clone()),
                     _ => None,
                 }
             } else {
@@ -189,7 +190,7 @@ where
                                         .collect(),
                                     _ => FxHashMap::default(),
                                 };
-                                let tool_value = Value::object(tool_args);
+                                let tool_value = TypedValue::new(Arc::new(Value::object(tool_args)), Ty::Infer);
                                 let result = handle
                                     .request_extern_call(
                                         interner.intern(&binding.node),

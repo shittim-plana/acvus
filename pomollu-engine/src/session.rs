@@ -1,4 +1,6 @@
-use acvus_interpreter::{IntoValue, Value};
+use std::sync::Arc;
+
+use acvus_interpreter::{IntoValue, TypedValue, Value};
 use acvus_mir::context_registry::ContextTypeRegistry;
 use acvus_mir::ty::Ty;
 use acvus_orchestration::{
@@ -55,33 +57,37 @@ async fn dispatch_extern(
     interner: &Interner,
     asset_store: &Option<std::sync::Arc<IdbAssetStore>>,
     name: Astr,
-    args: Vec<Value>,
-) -> Result<Value, acvus_interpreter::RuntimeError> {
+    args: Vec<TypedValue>,
+) -> Result<TypedValue, acvus_interpreter::RuntimeError> {
     let name_str = interner.resolve(name);
     match name_str {
         "asset_url" => {
-            let Value::Pure(acvus_interpreter::PureValue::String(ref path)) = args[0] else {
+            let Value::Pure(acvus_interpreter::PureValue::String(ref path)) = *args[0].value() else {
                 return Err(acvus_interpreter::RuntimeError::type_mismatch(
-                    "asset_url", "String", &format!("{:?}", args[0]),
+                    "asset_url", "String", &format!("{:?}", args[0].value()),
                 ));
             };
             acvus_interpreter::set_interner_ctx(interner);
             let Some(store) = asset_store else {
                 let result: Option<String> = None;
-                return Ok(result.into_value());
+                return Ok(TypedValue::new(Arc::new(result.into_value()), Ty::Infer));
             };
             // Check if the asset actually exists
             let exists = store.exists(path).await;
             if !exists {
                 let result: Option<String> = None;
-                return Ok(result.into_value());
+                return Ok(TypedValue::new(Arc::new(result.into_value()), Ty::Infer));
             }
             let version = store.version().await;
             let db_name = store.db_name();
             let result: Option<String> = Some(format!("/asset/{db_name}/{path}?v={version}"));
-            Ok(result.into_value())
+            Ok(TypedValue::new(Arc::new(result.into_value()), Ty::Infer))
         }
-        _ => acvus_ext::regex_call(interner, name, args).await,
+        _ => {
+            let plain_args: Vec<&Value> = args.iter().map(|tv| tv.value()).collect();
+            let value = acvus_ext::regex_call(interner, name, plain_args).await?;
+            Ok(TypedValue::new(Arc::new(value), Ty::Infer))
+        }
     }
 }
 
@@ -194,7 +200,7 @@ impl ChatSession {
 
         // Open asset store if configured
         let asset_store = match &cfg.asset_store_name {
-            Some(name) => Some(std::sync::Arc::new(IdbAssetStore::open(name).await)),
+            Some(name) => Some(Arc::new(IdbAssetStore::open(name).await)),
             None => None,
         };
 
@@ -269,14 +275,14 @@ impl ChatSession {
                 };
 
                 let s: String = value.as_string().unwrap_or_default();
-                Resolved::Turn(Value::string(s))
+                Resolved::Turn(TypedValue::string(s))
             })
         };
 
         let extern_handler = {
             let interner = self.interner.clone();
             let asset_store = self.asset_store.clone();
-            move |name: Astr, args: Vec<acvus_interpreter::Value>| {
+            move |name: Astr, args: Vec<acvus_interpreter::TypedValue>| {
                 let interner = interner.clone();
                 let asset_store = asset_store.clone();
                 UnsafeSend(async move { dispatch_extern(&interner, &asset_store, name, args).await })
@@ -333,8 +339,8 @@ impl ChatSession {
         let mut coroutine = interp.execute();
         loop {
             match coroutine.resume().await {
-                Stepped::Emit(value) => {
-                    let len = match value {
+                Stepped::Emit(typed_value) => {
+                    let len = match typed_value.value() {
                         Value::Lazy(acvus_interpreter::LazyValue::List(items)) => items.len(),
                         Value::Lazy(acvus_interpreter::LazyValue::Deque(deque)) => deque.len(),
                         _ => return Ok(0),
@@ -354,7 +360,7 @@ impl ChatSession {
                     let name = request.name();
                     let args = request.args().to_vec();
                     match dispatch_extern(&self.interner, &self.asset_store, name, args).await {
-                        Ok(value) => request.resolve(std::sync::Arc::new(value)),
+                        Ok(tv) => request.resolve(Arc::new(tv)),
                         Err(e) => return Err(JsError::new(&format!("display extern error: {e}"))),
                     }
                 }
@@ -398,7 +404,7 @@ impl ChatSession {
         let extern_handler = {
             let interner = self.interner.clone();
             let asset_store = self.asset_store.clone();
-            move |name: Astr, args: Vec<acvus_interpreter::Value>| {
+            move |name: Astr, args: Vec<acvus_interpreter::TypedValue>| {
                 let interner = interner.clone();
                 let asset_store = asset_store.clone();
                 UnsafeSend(async move { dispatch_extern(&interner, &asset_store, name, args).await })
@@ -431,7 +437,7 @@ impl ChatSession {
         let extern_handler = {
             let interner = self.interner.clone();
             let asset_store = self.asset_store.clone();
-            move |name: Astr, args: Vec<acvus_interpreter::Value>| {
+            move |name: Astr, args: Vec<acvus_interpreter::TypedValue>| {
                 let interner = interner.clone();
                 let asset_store = asset_store.clone();
                 UnsafeSend(async move { dispatch_extern(&interner, &asset_store, name, args).await })

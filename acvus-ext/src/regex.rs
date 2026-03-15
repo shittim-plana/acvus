@@ -1,6 +1,8 @@
 use acvus_interpreter::{IntoValue, OpaqueValue, PureValue, RuntimeError, UnpureValue, Value};
 #[cfg(test)]
-use acvus_interpreter::LazyValue;
+use acvus_interpreter::{LazyValue, TypedValue};
+#[cfg(test)]
+use std::sync::Arc;
 use acvus_mir::ty::{Effect, FnKind, Ty};
 use acvus_utils::{Astr, Interner};
 use rustc_hash::FxHashMap;
@@ -82,7 +84,7 @@ pub fn regex_context_types(interner: &Interner) -> FxHashMap<Astr, Ty> {
 pub async fn regex_call(
     interner: &Interner,
     name: Astr,
-    args: Vec<Value>,
+    args: Vec<&Value>,
 ) -> Result<Value, RuntimeError> {
     let name_str = interner.resolve(name);
     match name_str {
@@ -197,53 +199,56 @@ mod tests {
         Interner::new()
     }
 
-    async fn call(interner: &Interner, name: &str, args: Vec<Value>) -> Value {
+    async fn call(interner: &Interner, name: &str, args: Vec<TypedValue>) -> TypedValue {
         acvus_interpreter::set_interner_ctx(interner);
-        regex_call(interner, interner.intern(name), args)
+        let refs: Vec<&Value> = args.iter().map(|tv| tv.value()).collect();
+        let value = regex_call(interner, interner.intern(name), refs)
             .await
-            .unwrap()
+            .unwrap();
+        TypedValue::new(Arc::new(value), Ty::Infer)
     }
 
     #[tokio::test]
     async fn compile_and_match() {
         let interner = setup();
-        let re = call(&interner, "regex", vec![Value::string(r"\d+".into())]).await;
+        let re = call(&interner, "regex", vec![TypedValue::string(r"\d+")]).await;
         let result = call(
             &interner,
             "regex_match",
-            vec![re, Value::string("abc123".into())],
+            vec![re, TypedValue::string("abc123")],
         )
         .await;
-        assert_eq!(result, Value::bool_(true));
+        assert_eq!(*result.value(), Value::bool_(true));
     }
 
     #[tokio::test]
     async fn match_no_hit() {
         let interner = setup();
-        let re = call(&interner, "regex", vec![Value::string(r"\d+".into())]).await;
+        let re = call(&interner, "regex", vec![TypedValue::string(r"\d+")]).await;
         let result = call(
             &interner,
             "regex_match",
-            vec![re, Value::string("abc".into())],
+            vec![re, TypedValue::string("abc")],
         )
         .await;
-        assert_eq!(result, Value::bool_(false));
+        assert_eq!(*result.value(), Value::bool_(false));
     }
 
     #[tokio::test]
     async fn find_first() {
         let interner = setup();
-        let re = call(&interner, "regex", vec![Value::string(r"\d+".into())]).await;
+        let re = call(&interner, "regex", vec![TypedValue::string(r"\d+")]).await;
         let result = call(
             &interner,
             "regex_find",
-            vec![re, Value::string("abc123def456".into())],
+            vec![re, TypedValue::string("abc123def456")],
         )
         .await;
         let some_tag = interner.intern("Some");
+        let value = result.value();
         assert!(matches!(
-            result,
-            Value::Lazy(LazyValue::Variant { ref tag, payload: Some(ref inner) })
+            value,
+            Value::Lazy(LazyValue::Variant { tag, payload: Some(inner) })
             if *tag == some_tag && **inner == Value::string("123".into())
         ));
     }
@@ -251,14 +256,14 @@ mod tests {
     #[tokio::test]
     async fn find_all_matches() {
         let interner = setup();
-        let re = call(&interner, "regex", vec![Value::string(r"\d+".into())]).await;
+        let re = call(&interner, "regex", vec![TypedValue::string(r"\d+")]).await;
         let result = call(
             &interner,
             "regex_find_all",
-            vec![re, Value::string("a1b22c333".into())],
+            vec![re, TypedValue::string("a1b22c333")],
         )
         .await;
-        let Value::Lazy(LazyValue::List(items)) = result else {
+        let Value::Lazy(LazyValue::List(items)) = result.value() else {
             panic!("expected List");
         };
         assert_eq!(items.len(), 3);
@@ -270,18 +275,18 @@ mod tests {
     #[tokio::test]
     async fn replace_all() {
         let interner = setup();
-        let re = call(&interner, "regex", vec![Value::string(r"\s+".into())]).await;
+        let re = call(&interner, "regex", vec![TypedValue::string(r"\s+")]).await;
         let result = call(
             &interner,
             "regex_replace",
             vec![
-                Value::string("hello   world  !".into()),
+                TypedValue::string("hello   world  !"),
                 re,
-                Value::string(" ".into()),
+                TypedValue::string(" "),
             ],
         )
         .await;
-        assert_eq!(result, Value::string("hello world !".into()));
+        assert_eq!(*result.value(), Value::string("hello world !".into()));
     }
 
     #[tokio::test]
@@ -290,20 +295,20 @@ mod tests {
         let re = call(
             &interner,
             "regex",
-            vec![Value::string(r"[,;]\s*".into())],
+            vec![TypedValue::string(r"[,;]\s*")],
         )
         .await;
         let result = call(
             &interner,
             "regex_split",
-            vec![re, Value::string("a, b;c; d".into())],
+            vec![re, TypedValue::string("a, b;c; d")],
         )
         .await;
-        let Value::Lazy(LazyValue::List(items)) = result else {
+        let Value::Lazy(LazyValue::List(items)) = result.value() else {
             panic!("expected List");
         };
         assert_eq!(
-            items,
+            *items,
             vec![
                 Value::string("a".into()),
                 Value::string("b".into()),
@@ -319,21 +324,21 @@ mod tests {
         let re = call(
             &interner,
             "regex",
-            vec![Value::string(r"(?s)<thinking>(.*?)</thinking>".into())],
+            vec![TypedValue::string(r"(?s)<thinking>(.*?)</thinking>")],
         )
         .await;
         let result = call(
             &interner,
             "regex_extract",
             vec![
-                Value::string(
-                    "hello <thinking>inner1</thinking> mid <thinking>inner2</thinking> end".into(),
+                TypedValue::string(
+                    "hello <thinking>inner1</thinking> mid <thinking>inner2</thinking> end",
                 ),
                 re,
             ],
         )
         .await;
-        let Value::Lazy(LazyValue::List(items)) = result else {
+        let Value::Lazy(LazyValue::List(items)) = result.value() else {
             panic!("expected List");
         };
         assert_eq!(items.len(), 2);
@@ -344,14 +349,14 @@ mod tests {
     #[tokio::test]
     async fn extract_no_capture_group() {
         let interner = setup();
-        let re = call(&interner, "regex", vec![Value::string(r"\d+".into())]).await;
+        let re = call(&interner, "regex", vec![TypedValue::string(r"\d+")]).await;
         let result = call(
             &interner,
             "regex_extract",
-            vec![Value::string("abc123def".into()), re],
+            vec![TypedValue::string("abc123def"), re],
         )
         .await;
-        let Value::Lazy(LazyValue::List(items)) = result else {
+        let Value::Lazy(LazyValue::List(items)) = result.value() else {
             panic!("expected List");
         };
         assert!(items.is_empty());

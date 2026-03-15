@@ -7,13 +7,13 @@ mod value;
 
 pub use acvus_utils::{ContextRequest, Coroutine, ExternCallRequest, Stepped, YieldHandle};
 
-pub type ValueCoroutine = Coroutine<Value, RuntimeError>;
-pub type ValueStepped = Stepped<Value, RuntimeError>;
+pub type ValueCoroutine = Coroutine<TypedValue, RuntimeError>;
+pub type ValueStepped = Stepped<TypedValue, RuntimeError>;
 pub use builtins::{FromValue, IntoValue};
 pub use error::{RuntimeError, RuntimeErrorKind};
 pub use interpreter::Interpreter;
 pub use iter::{SequenceChain, SharedIter};
-pub use value::{ConcreteValue, FnValue, LazyValue, OpaqueValue, PureValue, TypedValue, UnpureValue, Value};
+pub use value::{ConcreteValue, FnValue, OpaqueValue, TypedValue, UnpureValue,PureValue, LazyValue, Value};
 
 /// Set the thread-local interner context for `IntoValue<Option>` / `FromValue<Option>`
 /// and `builtin_unwrap`. Must be called before executing extern fns that return Option.

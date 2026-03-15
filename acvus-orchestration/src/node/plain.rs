@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use acvus_interpreter::{RuntimeError, Value};
+use acvus_interpreter::{RuntimeError, TypedValue, Value};
 use acvus_utils::{Astr, Interner};
 use rustc_hash::FxHashMap;
 
@@ -26,15 +26,15 @@ impl PlainNode {
 impl Node for PlainNode {
     fn spawn(
         &self,
-        local: FxHashMap<Astr, Arc<Value>>,
-    ) -> acvus_utils::Coroutine<Value, RuntimeError> {
+        local: FxHashMap<Astr, Arc<TypedValue>>,
+    ) -> acvus_utils::Coroutine<TypedValue, RuntimeError> {
         let interner = self.interner.clone();
         let module = self.module.clone();
         acvus_utils::coroutine(move |handle| async move {
             let output = super::helpers::render_block_in_coroutine(
                 &interner, &module, &local, &handle,
             ).await?;
-            handle.yield_val(Value::string(output)).await;
+            handle.yield_val(TypedValue::string(output)).await;
             Ok(())
         })
     }
