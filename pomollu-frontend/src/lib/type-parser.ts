@@ -6,12 +6,21 @@ export type TypeDescOrigin =
 	| { kind: 'concrete'; id: number }
 	| { kind: 'var'; id: number };
 
+export type TypeDescEffect = 'pure' | 'effectful' | { var: number };
+
 export type TypeDesc =
 	| { kind: 'primitive'; name: 'string' | 'int' | 'float' | 'bool' }
 	| { kind: 'option'; inner: TypeDesc }
 	| { kind: 'object'; fields: { name: string; type: TypeDesc }[] }
 	| { kind: 'list'; elem: TypeDesc }
-	| { kind: 'sequence'; elem: TypeDesc; origin: TypeDescOrigin }
+	| { kind: 'deque'; elem: TypeDesc; origin: TypeDescOrigin }
+	| { kind: 'iterator'; elem: TypeDesc; effect: TypeDescEffect }
+	| { kind: 'sequence'; elem: TypeDesc; origin: TypeDescOrigin; effect: TypeDescEffect }
+	| { kind: 'tuple'; items: TypeDesc[] }
+	| { kind: 'fn'; params: TypeDesc[]; ret: TypeDesc }
+	| { kind: 'unit' }
+	| { kind: 'byte' }
+	| { kind: 'range' }
 	| { kind: 'enum'; name: string; variants: { tag: string; hasPayload: boolean; payloadType?: TypeDesc }[] }
 	| { kind: 'unsupported'; raw: string };
 

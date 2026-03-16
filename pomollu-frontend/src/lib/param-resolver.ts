@@ -839,12 +839,15 @@ export function toWebNode(node: Node, api: ApiKind | undefined, discoveredFnPara
 
 export type DiscoveredFnParam = { name: string; inferredType: TypeDesc };
 
-/** Convert a context binding to an Expr WebNode. */
+/** Convert a context binding to an Expr WebNode.
+ * `history` binding is forced to Iterator<{content, content_type, role}>.
+ * Other bindings infer type from script. */
 export function bindingToExprNode(name: string, script: string): WebNode {
 	return {
 		name,
 		kind: 'expr',
 		exprSource: script,
+		outputTy: name === HISTORY_BINDING_NAME ? HISTORY_ENTRY_TYPE : undefined,
 		strategy: {
 			execution: { mode: 'once-per-turn' },
 			persistency: { kind: 'ephemeral' },

@@ -60,6 +60,10 @@ pub enum WebNodeKind {
     Expr {
         #[serde(default)]
         expr_source: String,
+        /// Optional forced output type. If provided, overrides type inference.
+        /// Used for context bindings like `history` where the type is known.
+        #[serde(default)]
+        output_ty: Option<crate::schema::TypeDesc>,
     },
     #[serde(rename = "plain")]
     Plain {},
@@ -216,9 +220,13 @@ impl WebNode {
             }),
             WebNodeKind::Expr {
                 expr_source,
+                output_ty,
             } => NodeKind::Expr(ExprSpec {
                 source: expr_source.clone(),
-                output_ty: acvus_mir::ty::Ty::Infer,
+                output_ty: match output_ty {
+                    Some(desc) => crate::schema::desc_to_ty(interner, desc),
+                    None => acvus_mir::ty::Ty::Infer,
+                },
             }),
             WebNodeKind::Plain {} => NodeKind::Plain(PlainSpec {
                 source: String::new(),

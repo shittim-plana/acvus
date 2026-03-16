@@ -206,7 +206,7 @@ export type ContextBinding = {
 
 export const HISTORY_BINDING_NAME = 'history';
 export const HISTORY_ENTRY_TYPE: TypeDesc = {
-	kind: 'list',
+	kind: 'iterator',
 	elem: {
 		kind: 'object',
 		fields: [
@@ -215,6 +215,7 @@ export const HISTORY_ENTRY_TYPE: TypeDesc = {
 			{ name: 'role', type: { kind: 'primitive', name: 'string' } },
 		],
 	},
+	effect: 'pure',
 };
 
 /** Type of a tag entry: {key: String, value: String}. */

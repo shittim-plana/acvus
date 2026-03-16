@@ -224,6 +224,23 @@ pub enum TypeDesc {
     List { elem: Box<TypeDesc> },
     #[serde(rename = "deque")]
     Deque { elem: Box<TypeDesc>, origin: TypeDescOrigin },
+    #[serde(rename = "iterator")]
+    Iterator { elem: Box<TypeDesc>, effect: TypeDescEffect },
+    #[serde(rename = "sequence")]
+    Sequence { elem: Box<TypeDesc>, origin: TypeDescOrigin, effect: TypeDescEffect },
+    #[serde(rename = "tuple")]
+    Tuple { items: Vec<TypeDesc> },
+    #[serde(rename = "fn")]
+    Fn {
+        params: Vec<TypeDesc>,
+        ret: Box<TypeDesc>,
+    },
+    #[serde(rename = "unit")]
+    Unit,
+    #[serde(rename = "byte")]
+    Byte,
+    #[serde(rename = "range")]
+    Range,
     #[serde(rename = "enum")]
     Enum {
         name: String,
@@ -231,6 +248,14 @@ pub enum TypeDesc {
     },
     #[serde(rename = "unsupported")]
     Unsupported { raw: String },
+}
+
+#[derive(Serialize, Deserialize, Clone, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub enum TypeDescEffect {
+    Pure,
+    Effectful,
+    Var { id: u32 },
 }
 
 #[derive(Serialize, Deserialize, Clone, Tsify)]
@@ -260,15 +285,31 @@ pub struct TypeDescVariant {
 // TypeDesc ↔ Ty conversion
 // ---------------------------------------------------------------------------
 
+fn effect_to_desc(effect: &acvus_mir::ty::Effect) -> TypeDescEffect {
+    match effect {
+        acvus_mir::ty::Effect::Pure => TypeDescEffect::Pure,
+        acvus_mir::ty::Effect::Effectful => TypeDescEffect::Effectful,
+        acvus_mir::ty::Effect::Var(id) => TypeDescEffect::Var { id: *id },
+    }
+}
+
+fn desc_to_effect(desc: &TypeDescEffect) -> acvus_mir::ty::Effect {
+    match desc {
+        TypeDescEffect::Pure => acvus_mir::ty::Effect::Pure,
+        TypeDescEffect::Effectful => acvus_mir::ty::Effect::Effectful,
+        TypeDescEffect::Var { id } => acvus_mir::ty::Effect::Var(*id),
+    }
+}
+
 pub fn ty_to_desc(interner: &Interner, ty: &Ty) -> TypeDesc {
     match ty {
         Ty::Int => TypeDesc::Primitive { name: "int".into() },
         Ty::Float => TypeDesc::Primitive { name: "float".into() },
         Ty::String => TypeDesc::Primitive { name: "string".into() },
         Ty::Bool => TypeDesc::Primitive { name: "bool".into() },
-        Ty::Unit => TypeDesc::Unsupported { raw: "Unit".into() },
-        Ty::Range => TypeDesc::Unsupported { raw: "Range".into() },
-        Ty::Byte => TypeDesc::Unsupported { raw: "Byte".into() },
+        Ty::Unit => TypeDesc::Unit,
+        Ty::Range => TypeDesc::Range,
+        Ty::Byte => TypeDesc::Byte,
         Ty::Option(inner) => TypeDesc::Option {
             inner: Box::new(ty_to_desc(interner, inner)),
         },
@@ -308,12 +349,27 @@ pub fn ty_to_desc(interner: &Interner, ty: &Ty) -> TypeDesc {
                 acvus_mir::ty::Origin::Var(id) => TypeDescOrigin::Var { id: *id },
             },
         },
+        Ty::Tuple(items) => TypeDesc::Tuple {
+            items: items.iter().map(|t| ty_to_desc(interner, t)).collect(),
+        },
+        Ty::Fn { params, ret, .. } => TypeDesc::Fn {
+            params: params.iter().map(|t| ty_to_desc(interner, t)).collect(),
+            ret: Box::new(ty_to_desc(interner, ret)),
+        },
+        Ty::Iterator(inner, effect) => TypeDesc::Iterator {
+            elem: Box::new(ty_to_desc(interner, inner)),
+            effect: effect_to_desc(effect),
+        },
+        Ty::Sequence(inner, origin, effect) => TypeDesc::Sequence {
+            elem: Box::new(ty_to_desc(interner, inner)),
+            origin: match origin {
+                acvus_mir::ty::Origin::Concrete(id) => TypeDescOrigin::Concrete { id: *id },
+                acvus_mir::ty::Origin::Var(id) => TypeDescOrigin::Var { id: *id },
+            },
+            effect: effect_to_desc(effect),
+        },
         Ty::Var(_) | Ty::Infer | Ty::Error => TypeDesc::Unsupported { raw: "?".into() },
-        Ty::Fn { .. } => TypeDesc::Unsupported { raw: "Fn".into() },
         Ty::Opaque(_) => TypeDesc::Unsupported { raw: "Opaque".into() },
-        Ty::Tuple(_) => TypeDesc::Unsupported { raw: "Tuple".into() },
-        Ty::Iterator(..) => TypeDesc::Unsupported { raw: "Iterator".into() },
-        Ty::Sequence(..) => TypeDesc::Unsupported { raw: "Sequence".into() },
     }
 }
 
@@ -363,6 +419,29 @@ pub fn desc_to_ty(interner: &Interner, desc: &TypeDesc) -> Ty {
                 variants: ty_variants,
             }
         }
+        TypeDesc::Iterator { elem, effect } => {
+            Ty::Iterator(Box::new(desc_to_ty(interner, elem)), desc_to_effect(effect))
+        }
+        TypeDesc::Sequence { elem, origin, effect } => {
+            let o = match origin {
+                TypeDescOrigin::Concrete { id } => acvus_mir::ty::Origin::Concrete(*id),
+                TypeDescOrigin::Var { id } => acvus_mir::ty::Origin::Var(*id),
+            };
+            Ty::Sequence(Box::new(desc_to_ty(interner, elem)), o, desc_to_effect(effect))
+        }
+        TypeDesc::Tuple { items } => {
+            Ty::Tuple(items.iter().map(|t| desc_to_ty(interner, t)).collect())
+        }
+        TypeDesc::Fn { params, ret } => Ty::Fn {
+            params: params.iter().map(|t| desc_to_ty(interner, t)).collect(),
+            ret: Box::new(desc_to_ty(interner, ret)),
+            kind: acvus_mir::ty::FnKind::Lambda,
+            captures: vec![],
+            effect: acvus_mir::ty::Effect::Pure,
+        },
+        TypeDesc::Unit => Ty::Unit,
+        TypeDesc::Byte => Ty::Byte,
+        TypeDesc::Range => Ty::Range,
         TypeDesc::Unsupported { .. } => Ty::Infer,
     }
 }

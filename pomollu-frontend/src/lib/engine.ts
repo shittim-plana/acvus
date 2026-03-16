@@ -94,8 +94,22 @@ function convertTypeDesc(wasm: WasmTypeDesc): TypeDesc {
 			return { kind: 'option', inner: convertTypeDesc(wasm.inner) };
 		case 'list':
 			return { kind: 'list', elem: convertTypeDesc(wasm.elem) };
+		case 'deque':
+			return { kind: 'deque', elem: convertTypeDesc(wasm.elem), origin: wasm.origin };
+		case 'iterator':
+			return { kind: 'iterator', elem: convertTypeDesc(wasm.elem), effect: wasm.effect };
 		case 'sequence':
-			return { kind: 'sequence', elem: convertTypeDesc(wasm.elem), origin: wasm.origin };
+			return { kind: 'sequence', elem: convertTypeDesc(wasm.elem), origin: wasm.origin, effect: wasm.effect };
+		case 'tuple':
+			return { kind: 'tuple', items: wasm.items.map((t: WasmTypeDesc) => convertTypeDesc(t)) };
+		case 'fn':
+			return { kind: 'fn', params: wasm.params.map((t: WasmTypeDesc) => convertTypeDesc(t)), ret: convertTypeDesc(wasm.ret) };
+		case 'unit':
+			return { kind: 'unit' };
+		case 'byte':
+			return { kind: 'byte' };
+		case 'range':
+			return { kind: 'range' };
 		case 'object':
 			return {
 				kind: 'object',
@@ -155,6 +169,7 @@ export type WebNode = WebNodeShared & (
 	| {
 		kind: 'expr';
 		exprSource: string;
+		outputTy?: TypeDesc;
 	}
 	| {
 		kind: 'plain';
