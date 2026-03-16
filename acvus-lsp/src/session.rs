@@ -637,9 +637,6 @@ fn check_script_with_subst(
     expected_tail: Option<&Ty>,
     subst: &mut TySubst,
 ) -> Vec<LspError> {
-    if source.trim().is_empty() {
-        return vec![];
-    }
     let script = match acvus_ast::parse_script(interner, source) {
         Ok(s) => s,
         Err(e) => {
@@ -667,9 +664,6 @@ fn check_template(
     source: &str,
     registry: &ContextTypeRegistry,
 ) -> Vec<LspError> {
-    if source.trim().is_empty() {
-        return vec![];
-    }
     let ast = match acvus_ast::parse(interner, source) {
         Ok(a) => a,
         Err(e) => {
@@ -695,10 +689,6 @@ fn discover_context_keys(
     registry: &ContextTypeRegistry,
     known: &FxHashMap<Astr, KnownValue>,
 ) -> Vec<ContextKeyInfo> {
-    if source.trim().is_empty() {
-        return vec![];
-    }
-
     let module = match mode {
         ScriptMode::Template => {
             let ast = match acvus_ast::parse(interner, source) {
@@ -948,9 +938,13 @@ fn typecheck_node(
         }
     }
 
-    // expr source
+    // expr source — use output_ty as hint (forced type for bindings like @history)
     if let acvus_orchestration::NodeKind::Expr(expr_spec) = &spec.kind {
-        errors.expr_source = check_script(interner, &expr_spec.source, &node_reg, None);
+        let hint = match &expr_spec.output_ty {
+            Ty::Infer => None,
+            ty => Some(ty),
+        };
+        errors.expr_source = check_script(interner, &expr_spec.source, &node_reg, hint);
     }
 
     errors
@@ -1032,9 +1026,6 @@ fn infer_tail_type(
     source: &str,
     scope: &ContextTypeRegistry,
 ) -> Option<Ty> {
-    if source.trim().is_empty() {
-        return None;
-    }
     let script = acvus_ast::parse_script(interner, source).ok()?;
     let (_module, _hints, tail_ty, _errs) =
         acvus_mir::compile_script_analysis_with_tail_partial(interner, &script, scope, None);

@@ -67,14 +67,21 @@ export class AnalysisOrchestrator {
 	analyzePrompt(prompt: Prompt, getApi: GetApi): LevelResult {
 		const nodeNames = collectNodeNames(prompt.children);
 		nodeNames.add('context');
-		const providedKeys = new Set(prompt.contextBindings.map((b) => b.name).filter((n) => n));
+
+		// Ensure @history always exists (forced Iterator type)
+		const bindings = [...prompt.contextBindings];
+		if (!bindings.some(b => b.name === HISTORY_BINDING_NAME)) {
+			bindings.push({ name: HISTORY_BINDING_NAME, script: '' });
+		}
+
+		const providedKeys = new Set(bindings.map((b) => b.name).filter((n) => n));
 		const provided: Record<string, TypeDesc> = { context: CONTEXT_TYPE };
 		const userTypes: Record<string, TypeDesc> = {};
 		applyUserTypeOverrides(userTypes, prompt.paramOverrides);
 
 		return this.analyzeLevel(this.promptDocs, 'prompt', {
 			children: prompt.children,
-			bindings: prompt.contextBindings,
+			bindings,
 			paramOverrides: prompt.paramOverrides,
 			nodeNames,
 			providedKeys,
@@ -200,17 +207,20 @@ export class AnalysisOrchestrator {
 		const allNodes = collectNodes(opts.children).filter((n) => n.name);
 		const webNodes: import('./engine.js').WebNode[] = allNodes
 			.map((n) => toWebNode(n, getApi(n.providerId), nodeFnParams[n.name], blockLookup, allNodes));
-		// Context bindings → Expr nodes (same as session-builder)
+		// Context bindings → Expr nodes
 		for (const b of opts.bindings) {
-			if (!b.name || !b.script.trim()) continue;
-			webNodes.push(bindingToExprNode(b.name, b.script));
+			if (!b.name) continue;
+			// history is always registered (forced Iterator type), others need script
+			if (b.name === HISTORY_BINDING_NAME || b.script.trim()) {
+				webNodes.push(bindingToExprNode(b.name, b.script));
+			}
 		}
 		const typecheckResult = this.session.rebuildNodes(webNodes, flatInitial);
 
 		const EMPTY_ENV: ContextEnvResult = { contextTypes: {}, nodeLocals: {}, nodeErrors: {}, nodeFnParams: {}, scriptErrors: {} };
 		const env: ContextEnvResult = typecheckResult.envErrors.length > 0
 			? EMPTY_ENV
-			: { ...typecheckResult, nodeFnParams };
+			: { ...typecheckResult, nodeFnParams, scriptErrors: {} };
 
 		// Step 2: Build provided scope from rebuildNodes contextTypes.
 		// contextTypes includes system tier (turn_index, node names with correct types).
