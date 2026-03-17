@@ -137,7 +137,7 @@ function convertExecution(execution: import('./types.js').Execution | undefined)
 
 function convertPersistency(persistency: import('./types.js').Persistency | undefined): PersistencyConfig {
 	switch (persistency?.kind) {
-		case 'snapshot': return { kind: 'snapshot' };
+		case 'snapshot': return { kind: 'patch', bind: '@raw' }; // legacy migration
 		case 'sequence': return { kind: 'sequence', bind: persistency.bind };
 		case 'patch': return { kind: 'patch', bind: persistency.bind };
 		default: return { kind: 'ephemeral' };
@@ -157,6 +157,44 @@ function webNodeToNodeConfig(wn: import('./engine.js').WebNode): NodeConfig {
 		return { name: wn.name, kind: 'expr', template: wn.exprSource, output_ty: wn.outputTy, strategy };
 	}
 	return { name: wn.name, kind: wn.kind, strategy };
+}
+
+// ---------------------------------------------------------------------------
+// Internal node factories — single source of truth for all generated nodes.
+// All internal nodes are ephemeral (no persistence, no retry).
+// ---------------------------------------------------------------------------
+
+const INTERNAL_STRATEGY: StrategyConfig = {
+	execution: { mode: 'once-per-turn' },
+	persistency: { kind: 'ephemeral' },
+	retry: 0,
+};
+
+function createInternalScript(name: string, template: string, outputTy?: TypeDesc): NodeConfig {
+	return { name, kind: 'expr', template, strategy: INTERNAL_STRATEGY, output_ty: outputTy };
+}
+
+function createInternalTemplate(name: string, template: string): NodeConfig {
+	return { name, kind: 'plain', template, strategy: INTERNAL_STRATEGY };
+}
+
+/** Per-item entry: condition (filter) + transform (map). */
+type IteratorEntryDef = {
+	condition?: string;
+	transform: { kind: 'template'; source: string } | { kind: 'script'; source: string };
+};
+
+/** Iterator source config for the WASM layer. */
+type IteratorSourceDef = {
+	name: string;
+	expr: string;
+	entries?: IteratorEntryDef[];
+	start?: string;
+	end?: string;
+};
+
+function createInternalIterator(name: string, sources: IteratorSourceDef[]): NodeConfig {
+	return { name, kind: 'iterator', sources, unordered: true, strategy: INTERNAL_STRATEGY };
 }
 
 function escapeAcvusString(s: string): string {
@@ -191,16 +229,7 @@ function buildContextNodes(allBlocks: Block[], bot: Bot): NodeConfig[] {
 
 			// Each text content part → plain node (template mode → String)
 			const partNodeName = `__ctx_${ctxIdx++}`;
-			nodes.push({
-				name: partNodeName,
-				kind: 'plain',
-				template: part.value,
-				strategy: {
-					execution: { mode: 'once-per-turn' },
-					persistency: { kind: 'ephemeral' },
-					retry: 0,
-				},
-			});
+			nodes.push(createInternalTemplate(partNodeName, part.value));
 
 			const entry = `{name: ${escapeAcvusString(b.name)}, description: ${escapeAcvusString(b.info.description)}, tags: ${tagsToAcvus(b.info.tags)}, content: @${partNodeName}, content_type: ${escapeAcvusString(part.content_type)},}`;
 
@@ -227,17 +256,7 @@ function buildContextNodes(allBlocks: Block[], bot: Bot): NodeConfig[] {
 	fields.push(`custom: [${customEntries.join(', ')}]`);
 	fields.push(`bot_name: ${escapeAcvusString(bot.name)}`);
 
-	nodes.push({
-		name: 'context',
-		kind: 'expr',
-		template: `{${fields.join(', ')},}`,
-		strategy: {
-			execution: { mode: 'once-per-turn' },
-			persistency: { kind: 'ephemeral' },
-			retry: 0,
-		},
-		output_ty: CONTEXT_TYPE
-	});
+	nodes.push(createInternalScript('context', `{${fields.join(', ')},}`, CONTEXT_TYPE));
 
 	return nodes;
 }
@@ -246,7 +265,17 @@ export type BuildResult =
 	| { ok: true; config: SessionConfig }
 	| { ok: false; errors: string[] };
 
-export function buildSessionConfig(bot: Bot): BuildResult | null {
+export type DisplayRange = {
+	start: number;
+	end: number | undefined;
+};
+
+export type DisplayRanges = {
+	main?: DisplayRange;
+	regions?: Record<string, DisplayRange>;
+};
+
+export function buildSessionConfig(bot: Bot, ranges?: DisplayRanges): BuildResult | null {
 	const prompt = promptStore.get(bot.promptId);
 	if (!prompt) return { ok: false as const, errors: ['Prompt not found. Select a prompt in bot settings.'] };
 	const profile = profileStore.get(bot.profileId);
@@ -293,8 +322,7 @@ export function buildSessionConfig(bot: Bot): BuildResult | null {
 	// Convert user-defined nodes → NodeConfigs
 	const nodeConfigs: NodeConfig[] = allNodes.map((n) => convertNode(n, blockLookup, allNodes, errors, allDiscovered));
 
-	// Prompt contextBindings → Expr nodes (also tracked as side effects)
-	const sideEffects: string[] = [];
+	// Prompt contextBindings → Expr nodes
 	for (const binding of prompt.contextBindings) {
 		if (binding.name && binding.script.trim()) {
 			if (seenNodeNames.has(binding.name)) {
@@ -302,7 +330,6 @@ export function buildSessionConfig(bot: Bot): BuildResult | null {
 			}
 			seenNodeNames.add(binding.name);
 			nodeConfigs.push(webNodeToNodeConfig(bindingToExprNode(binding.name, binding.script)));
-			sideEffects.push(binding.name);
 		}
 	}
 
@@ -337,18 +364,7 @@ export function buildSessionConfig(bot: Bot): BuildResult | null {
 			if (!script.trim()) {
 				errors.push(`static param '${param.name}': empty script`);
 			}
-			nodeConfigs.push({
-				name: param.name,
-				kind: 'expr',
-				template: script,
-				strategy: {
-					execution: { mode: 'once-per-turn' },
-					persistency: { kind: 'snapshot' },
-					retry: 0,
-				},
-				output_ty: ty
-			});
-			sideEffects.push(param.name);
+			nodeConfigs.push(createInternalScript(param.name, script, ty));
 		} else if (param.resolution.kind === 'dynamic') {
 			if (ty) {
 				context[param.name] = { type: ty };
@@ -360,63 +376,54 @@ export function buildSessionConfig(bot: Bot): BuildResult | null {
 		}
 	}
 
-	// Display nodes — convert bot display + regions into NodeConfigs.
-	if (bot.display && bot.display.iterator?.trim() && bot.display.entries?.length > 0) {
-		for (const entry of bot.display.entries) {
-			const displayNodeName = `__display_${entry.name || 'main'}`;
-			nodeConfigs.push({
-				name: displayNodeName,
-				kind: 'display',
-				iterator: bot.display.iterator,
-				template: entry.template,
-				strategy: {
-					execution: { mode: 'once-per-turn' },
-					persistency: { kind: 'ephemeral' },
-					retry: 0,
-				},
-			});
-		}
+	// Display → Iterator sources. Each display config becomes an iterator source
+	// with per-entry condition+transform bindings (first-match). No separate Display nodes.
+	const iterSources: IteratorSourceDef[] = [];
+
+	// Main display → iterator source with entries
+	if (bot.display?.iterator?.trim() && bot.display.entries?.length > 0) {
+		iterSources.push({
+			name: 'main',
+			expr: bot.display.iterator,
+			entries: bot.display.entries.map(e => ({
+				condition: e.condition.trim() || undefined,
+				transform: { kind: 'template' as const, source: e.template },
+			})),
+			start: String(ranges?.main?.start ?? 0),
+			end: ranges?.main?.end !== undefined ? `Some(${ranges.main.end})` : 'None',
+		});
 	}
 
-	// Region display nodes
+	// Region display → iterator sources
 	if (bot.regions) {
 		for (const region of bot.regions) {
 			if (region.kind === 'iterable' && region.iterator?.trim()) {
-				for (const entry of region.entries ?? []) {
-					const regionNodeName = `__region_${region.id}_${entry.name || 'main'}`;
-					nodeConfigs.push({
-						name: regionNodeName,
-						kind: 'display',
-						iterator: region.iterator,
-						template: entry.template,
-						strategy: {
-							execution: { mode: 'once-per-turn' },
-							persistency: { kind: 'ephemeral' },
-							retry: 0,
-						},
-					});
-				}
+				iterSources.push({
+					name: region.name || region.id,
+					expr: region.iterator,
+					entries: region.entries.map(e => ({
+						condition: e.condition.trim() || undefined,
+						transform: { kind: 'template' as const, source: e.template },
+					})),
+					start: String(ranges?.regions?.[region.id]?.start ?? 0),
+					end: ranges?.regions?.[region.id]?.end !== undefined ? `Some(${ranges.regions![region.id].end})` : 'None',
+				});
 			} else if (region.kind === 'static' && region.template?.trim()) {
-				const regionNodeName = `__region_${region.id}`;
-				nodeConfigs.push({
-					name: regionNodeName,
-					kind: 'display_static',
-					template: region.template,
-					strategy: {
-						execution: { mode: 'once-per-turn' },
-						persistency: { kind: 'ephemeral' },
-						retry: 0,
-					},
+				// Static region: separate template node, referenced by iterator source.
+				// Use a sanitized name (no hyphens) since it appears in acvus script as @identifier.
+				const safeIdx = iterSources.length;
+				const nodeName = `__static_region_${safeIdx}`;
+				nodeConfigs.push(createInternalTemplate(nodeName, region.template));
+				iterSources.push({
+					name: region.name || region.id,
+					expr: `@${nodeName}`,
 				});
 			}
 		}
 	}
 
-	// Entrypoint: must be a node named "entrypoint".
-	const entrypoint = allNodes.find(n => n.name === 'entrypoint')?.name;
-	if (!entrypoint) {
-		errors.push("no node named 'entrypoint': create one to serve as the main execution entry");
-	}
+	// __display_root: single iterator node that pulls from all sources.
+	nodeConfigs.push(createInternalIterator('__display_root', iterSources));
 
 	// Validate inputParam is a dynamic context param
 	if (prompt.inputParam) {
@@ -437,9 +444,8 @@ export function buildSessionConfig(bot: Bot): BuildResult | null {
 		config: {
 			nodes: nodeConfigs,
 			providers,
-			entrypoint: entrypoint!,
+			entrypoint: '__display_root',
 			context,
-			side_effects: sideEffects,
 			asset_store_name: `asset_${bot.id}`,
 		}
 	};

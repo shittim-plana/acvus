@@ -156,7 +156,7 @@
 			st.treeCursor = treeView.cursor;
 		}
 
-		if (useDisplayEngine) {
+		if (useDisplayEngine && st.turnCount > 0) {
 			await initialDisplayLoad(cs);
 		}
 
@@ -165,28 +165,11 @@
 
 	async function initialDisplayLoad(cs: ChatSession) {
 		if (cs.freed) return;
-		const len = await cs.displayListLen(bot.display.iterator);
-		st.totalListLen = len;
-		st.loadedFrom = Math.max(0, len - 5);
-		if (len > 0) {
-			st.displayCards = await renderDisplayRange(cs, st.loadedFrom, len);
-		} else {
-			st.displayCards = [];
-		}
+		// Use no_execute=true to read existing data without running nodes.
+		// Evaluate __display_root → yields {name, item} for each display/region.
+		await evaluateDisplay(cs, true);
 		scrollToBottom();
 	}
-
-	// Re-render static regions when bot.regions changes
-	let regionsKey = $derived(JSON.stringify(bot.regions));
-	$effect(() => {
-		void regionsKey;
-		if (!isConfigured || st.isLoading) return;
-		ensureChatSession().then((cs) => {
-			if (!st.isLoading) renderRegions(cs);
-		}).catch((e) => {
-			st.runtimeError = e instanceof Error ? e.message : String(e);
-		});
-	});
 
 	// Layout from bot
 	let layout = $derived<GridLayout>(bot.layout);
@@ -218,55 +201,103 @@
 		return JSON.stringify(value);
 	}
 
-	// --- Display engine helpers ---
+	// --- Display engine ---
 
-	function buildEntriesJson(): string {
-		return JSON.stringify(
-			bot.display.entries.map((e) => ({
-				name: e.name,
-				condition: e.condition,
-				template: e.template,
-			}))
-		);
-	}
+	/** Display start/end state per source. */
+	let displayStart = $state(0);
+	let displayEnd = $state<number | undefined>(undefined);
+	let regionStarts = $state<Record<string, number>>({});
+	let regionEnds = $state<Record<string, number | undefined>>({});
 
-	async function renderDisplayRange(cs: ChatSession, start: number, end: number): Promise<RenderedCard[]> {
-		const entriesJson = buildEntriesJson();
-		const cards: RenderedCard[] = [];
-		for (let i = start; i < end; i++) {
-			const rendered = await cs.renderDisplay(bot.display.iterator, entriesJson, i);
-			cards.push(...rendered);
-		}
-		return cards;
-	}
+	/**
+	 * Evaluate __display_root via startEvaluate + evaluateNext.
+	 * Yields {name: String, item: String} for each rendered card.
+	 * Dispatches to main display or region based on `name`.
+	 */
+	/**
+	 * Evaluate __display_root — the single evaluation entry point.
+	 * noExecute=false: execute deps (LLM calls etc.) + render display (submit).
+	 * noExecute=true: render display from existing storage (refresh/scroll).
+	 * extraResolver: optional resolver for additional context (e.g. inputParam).
+	 */
+	async function evaluateDisplay(
+		cs: ChatSession,
+		noExecute: boolean,
+		extraResolver?: (key: string) => string | undefined,
+	) {
+		if (cs.freed) return;
 
-	async function renderRegions(cs: ChatSession) {
-		const newRegionData = new Map(st.regionData);
-		for (const region of bot.regions) {
-			try {
-				if (region.kind === 'static') {
-					const cards = await cs.renderStatic(region.template);
-					newRegionData.set(region.id, { id: region.id, name: region.name, cards });
-				} else if (region.kind === 'iterable') {
-					const len = await cs.displayListLen(region.iterator);
-					const entriesJson = JSON.stringify(
-						region.entries.map((e) => ({
-							name: e.name,
-							condition: e.condition,
-							template: e.template,
-						}))
-					);
-					const cards: RenderedCard[] = [];
-					for (let i = 0; i < len; i++) {
-						const rendered = await cs.renderDisplay(region.iterator, entriesJson, i);
-						cards.push(...rendered);
-					}
-					newRegionData.set(region.id, { id: region.id, name: region.name, cards });
+		const resolver = (key: string): string | Promise<string> => {
+			// Extra resolver (e.g. inputParam from submit)
+			const extra = extraResolver?.(key);
+			if (extra !== undefined) return extra;
+			// Display bounds
+			if (key === '__display_start') return String(displayStart);
+			if (key === '__display_end') return displayEnd !== undefined ? `Some(${displayEnd})` : 'None';
+			for (const region of bot.regions) {
+				if (key === `__region_${region.id}_start`) return String(regionStarts[region.id] ?? 0);
+				if (key === `__region_${region.id}_end`) {
+					const end = regionEnds[region.id];
+					return end !== undefined ? `Some(${end})` : 'None';
 				}
-			} catch (e) {
-				console.warn('[renderRegions] region failed:', region.id, e);
+			}
+			// Fallback: pending resolve (user interaction)
+			return new Promise<string>((resolve) => {
+				st.pendingResolve = { key, resolve };
+				st.pendingValue = '';
+			});
+		};
+
+		await cs.startEvaluate('__display_root', noExecute, resolver);
+
+		const prevCardCount = st.displayCards.length;
+		const mainCards: RenderedCard[] = [];
+		const newRegionData = new Map<string, RenderedRegion>();
+
+		while (true) {
+			const item = await cs.evaluateNext(resolver);
+			if (item === null) break;
+
+			// Each item is {name: String, item: String}
+			const tagged = item as { fields?: [string, unknown][] } | Record<string, unknown>;
+			let name = '';
+			let content = '';
+
+			if ('fields' in tagged && Array.isArray(tagged.fields)) {
+				for (const [k, v] of tagged.fields) {
+					if (k === 'name' && typeof v === 'object' && v && 'v' in v) name = (v as { v: string }).v;
+					if (k === 'item' && typeof v === 'object' && v && 'v' in v) content = (v as { v: string }).v;
+				}
+			} else {
+				name = String((tagged as Record<string, unknown>).name ?? '');
+				content = String((tagged as Record<string, unknown>).item ?? '');
+			}
+
+			if (name === 'main') {
+				mainCards.push({ name: '', content });
+				if (!noExecute && mainCards.length > prevCardCount) {
+					// New item beyond what was previously displayed — update incrementally
+					st.displayCards = [...mainCards];
+					scrollToBottom();
+				}
+			} else {
+				const region = bot.regions.find(r => (r.name || r.id) === name);
+				const regionId = region?.id ?? name;
+				const existing = newRegionData.get(regionId);
+				if (existing) {
+					existing.cards.push({ name: '', content });
+				} else {
+					newRegionData.set(regionId, {
+						id: regionId,
+						name: region?.name ?? name,
+						cards: [{ name: '', content }],
+					});
+				}
 			}
 		}
+
+		cs.finishEvaluate();
+		st.displayCards = mainCards;
 		st.regionData = newRegionData;
 	}
 
@@ -279,7 +310,7 @@
 		if (!sentinelEl) return;
 		observer = new IntersectionObserver(
 			(entries) => {
-				if (entries[0]?.isIntersecting && !loadingMore && st.loadedFrom > 0) {
+				if (entries[0]?.isIntersecting && !loadingMore && displayStart > 0) {
 					loadMore();
 				}
 			},
@@ -301,20 +332,32 @@
 	});
 
 	async function loadMore() {
-		if (!st.chatSession || st.chatSession.freed || st.chatSession.busy || loadingMore || st.loadedFrom <= 0 || st.isLoading) return;
+		if (!st.chatSession || st.chatSession.freed || st.chatSession.busy || loadingMore || displayStart <= 0 || st.isLoading) return;
 		loadingMore = true;
 
-		const newStart = Math.max(0, st.loadedFrom - 5);
-		const newEnd = st.loadedFrom;
+		const newStart = Math.max(0, displayStart - 5);
+		const prevEnd = displayStart;
 
 		try {
 			const prevHeight = viewportEl?.scrollHeight ?? 0;
 
-			const olderCards = await renderDisplayRange(st.chatSession, newStart, newEnd);
-			st.displayCards = [...olderCards, ...st.displayCards];
-			st.loadedFrom = newStart;
+			// Temporarily set start/end for this load
+			const savedStart = displayStart;
+			const savedEnd = displayEnd;
+			displayStart = newStart;
+			displayEnd = prevEnd;
 
-			// Preserve scroll position
+			await evaluateDisplay(st.chatSession, true);
+
+			// Merge: older cards prepended
+			const olderCards = st.displayCards;
+			displayStart = newStart;
+			displayEnd = savedEnd;
+
+			// Re-evaluate full range to get complete card list
+			// (simpler than merging — cards are cheap strings)
+			await evaluateDisplay(st.chatSession, true);
+
 			await tick();
 			if (viewportEl) {
 				const newHeight = viewportEl.scrollHeight;
@@ -367,55 +410,27 @@
 			const snapshotKey = st.chatSessionKey;
 			turnSession = cs;
 
-			const resolver = (key: string): string | Promise<string> => {
-				if (key === currentInputParam) return currentInput;
-				return new Promise<string>((resolve) => {
-					st.pendingResolve = { key, resolve };
-					st.pendingValue = '';
-				});
-			};
-
 			st.lastInput = { param: currentInputParam!, value: currentInput };
 			st.turnDeps = deps;
 			uiState.lock(st.turnDeps);
 
-			// Start streaming evaluation
-			await cs.startEvaluate('main', false, resolver);
-
-			if (st.chatSessionKey !== snapshotKey) {
-				cs.cancelEvaluate();
-				return;
-			}
-
 			inputValue = '';
 
-			// Stream results one by one
-			while (true) {
-				if (myTurnId !== st.activeTurnId) {
-					cs.cancelEvaluate();
-					return;
-				}
+			// Execute + render in one pass: __display_root with noExecute=false
+			// triggers dependency execution (LLM calls etc.) and streams display items.
+			await evaluateDisplay(cs, false, (key) =>
+				key === currentInputParam ? currentInput : undefined
+			);
+			turnSession = null; // prevent double-finish in finally
 
-				const item = await cs.evaluateNext(resolver);
-				if (item === null) break;
+			if (st.chatSessionKey !== snapshotKey) return;
 
-				// Each item is a concrete value — extract display card
-				const card = item as Record<string, unknown>;
-				if (typeof card?.v === 'string') {
-					st.displayCards = [...st.displayCards, { name: '', content: card.v }];
-				}
-				scrollToBottom();
-			}
-
-			// Evaluation complete — update tree state
 			const treeView = cs.tree();
 			if (treeView) {
 				st.treeNodes = treeView.nodes;
 				st.treeCursor = treeView.cursor;
 			}
 			st.turnCount = await cs.turnCount();
-
-			await renderRegions(cs);
 		} catch (err) {
 			// Stale turn (cancelled or superseded) — just clean up WASM.
 			if (myTurnId !== st.activeTurnId) {
@@ -480,12 +495,11 @@
 			st.treeCursor = treeView.cursor;
 		}
 		st.turnCount = await cs.turnCount();
-		if (useDisplayEngine) {
+		if (useDisplayEngine && st.turnCount > 0) {
 			await initialDisplayLoad(cs);
 		} else {
 			st.displayCards = [];
 		}
-		await renderRegions(cs);
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
@@ -505,7 +519,7 @@
 		<div
 			class="flex flex-col gap-3 p-4 md:p-6 lg:px-8 max-w-4xl mx-auto w-full"
 		>
-			{#if useDisplayEngine && st.loadedFrom > 0}
+			{#if useDisplayEngine && displayStart > 0}
 				<div bind:this={sentinelEl} class="flex justify-center py-2">
 					{#if loadingMore}
 						<Loader2 class="h-4 w-4 animate-spin text-muted-foreground" />

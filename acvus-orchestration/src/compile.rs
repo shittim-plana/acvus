@@ -35,7 +35,6 @@ pub enum CompiledExecution {
 #[derive(Debug, Clone)]
 pub enum CompiledPersistency {
     Ephemeral,
-    Snapshot,
     Sequence { bind: CompiledScript },
     Patch { bind: CompiledScript },
 }
@@ -397,52 +396,110 @@ pub fn compile_node(
             let (compiled, keys) = compile_expr(interner, expr_spec, registry)?;
             (CompiledNodeKind::Expr(compiled), keys)
         }
-        NodeKind::Display(display_spec) => {
-            let iter_hint = Ty::Iterator(Box::new(Ty::Infer), acvus_mir::ty::Effect::Pure);
-            let (iter_script, iter_ty) = compile_script_with_hint(interner, &display_spec.iterator, registry, Some(&iter_hint))
-                .map_err(|e| vec![e])?;
-            let item_ty = match &iter_ty {
-                Ty::Iterator(elem, _) => (**elem).clone(),
-                Ty::Error => Ty::Error,
-                _ => Ty::Infer,
-            };
-            let tmpl_registry = registry.with_extra_scoped([
-                (interner.intern("item"), item_ty.clone()),
-                (interner.intern("index"), Ty::Int),
-                (interner.intern("start"), Ty::Int),
-            ]).map_err(|e| vec![OrchError::new(OrchErrorKind::RegistryConflict {
-                key: e.key, tier_a: e.tier_a, tier_b: e.tier_b,
-            })])?;
-            let tmpl_block = compile_template(interner, &display_spec.template, 0, &tmpl_registry)
-                .map_err(|e| vec![e])?;
-            let mut keys = iter_script.context_keys.clone();
-            keys.extend(tmpl_block.context_keys.iter().copied());
-            (CompiledNodeKind::Display(crate::kind::CompiledDisplay {
-                iterator: iter_script,
-                template: CompiledScript {
-                    module: tmpl_block.module,
-                    context_keys: tmpl_block.context_keys,
-                    val_def: tmpl_block.val_def,
-                },
-                item_ty,
-            }), keys)
-        }
-        NodeKind::DisplayStatic(static_spec) => {
-            let tmpl_block = compile_template(interner, &static_spec.template, 0, registry)
-                .map_err(|e| vec![e])?;
-            let keys = tmpl_block.context_keys.clone();
-            (CompiledNodeKind::DisplayStatic(crate::kind::CompiledDisplayStatic {
-                template: CompiledScript {
-                    module: tmpl_block.module,
-                    context_keys: tmpl_block.context_keys,
-                    val_def: tmpl_block.val_def,
-                },
-            }), keys)
-        }
         NodeKind::Iterator(iter_spec) => {
-            let keys: FxHashSet<Astr> = iter_spec.sources.iter().map(|(_, name)| *name).collect();
+            let mut keys = FxHashSet::default();
+            let mut compiled_sources = Vec::with_capacity(iter_spec.sources.len());
+
+            for source in &iter_spec.sources {
+                // Compile the source expression (evaluated in node's body context)
+                let (expr_script, expr_ty) = compile_script(interner, interner.resolve(source.expr), registry)
+                    .map_err(|e| vec![e])?;
+                keys.extend(expr_script.context_keys.iter().copied());
+
+                // Determine item type from the expr's result type
+                let item_ty = match &expr_ty {
+                    Ty::Iterator(elem, _)
+                    | Ty::Sequence(elem, _, _)
+                    | Ty::List(elem)
+                    | Ty::Deque(elem, _) => (**elem).clone(),
+                    Ty::Error => Ty::Error,
+                    _ => Ty::Infer,
+                };
+
+                // Entry scripts need @item and @index in scope
+                let transform_registry = registry.with_extra_scoped([
+                    (interner.intern("item"), item_ty.clone()),
+                    (interner.intern("index"), Ty::Int),
+                ]).map_err(|e| vec![OrchError::new(OrchErrorKind::RegistryConflict {
+                    key: e.key, tier_a: e.tier_a, tier_b: e.tier_b,
+                })])?;
+
+                let mut compiled_entries = Vec::with_capacity(source.entries.len());
+                for entry in &source.entries {
+                    // Compile optional condition as Bool script
+                    let condition = match &entry.condition {
+                        Some(src) => {
+                            let (script, _) = compile_script_with_hint(
+                                interner, interner.resolve(*src), &transform_registry, Some(&Ty::Bool),
+                            ).map_err(|e| vec![e])?;
+                            keys.extend(script.context_keys.iter().copied());
+                            Some(script)
+                        }
+                        None => None,
+                    };
+
+                    // Compile transform (Template or Script)
+                    let transform = match &entry.transform {
+                        crate::kind::SourceTransform::Template(src) => {
+                            let tmpl_block = compile_template(interner, interner.resolve(*src), 0, &transform_registry)
+                                .map_err(|e| vec![e])?;
+                            keys.extend(tmpl_block.context_keys.iter().copied());
+                            crate::kind::CompiledSourceTransform::Template(CompiledScript {
+                                module: tmpl_block.module,
+                                context_keys: tmpl_block.context_keys,
+                                val_def: tmpl_block.val_def,
+                            })
+                        }
+                        crate::kind::SourceTransform::Script(src) => {
+                            let (script, _) = compile_script(interner, interner.resolve(*src), &transform_registry)
+                                .map_err(|e| vec![e])?;
+                            keys.extend(script.context_keys.iter().copied());
+                            crate::kind::CompiledSourceTransform::Script(script)
+                        }
+                    };
+
+                    compiled_entries.push(crate::kind::CompiledIteratorEntry {
+                        condition,
+                        transform,
+                    });
+                }
+
+                // start: script → Int
+                let start = match &source.start {
+                    Some(src) => {
+                        let (s, _) = compile_script_with_hint(
+                            interner, interner.resolve(*src), registry, Some(&Ty::Int),
+                        ).map_err(|e| vec![e])?;
+                        keys.extend(s.context_keys.iter().copied());
+                        Some(s)
+                    }
+                    None => None,
+                };
+
+                // end: script → Option<Int>
+                let end = match &source.end {
+                    Some(src) => {
+                        let opt_int = Ty::Option(Box::new(Ty::Int));
+                        let (s, _) = compile_script_with_hint(
+                            interner, interner.resolve(*src), registry, Some(&opt_int),
+                        ).map_err(|e| vec![e])?;
+                        keys.extend(s.context_keys.iter().copied());
+                        Some(s)
+                    }
+                    None => None,
+                };
+
+                compiled_sources.push(crate::kind::CompiledIteratorSource {
+                    name: source.name.clone(),
+                    expr: expr_script,
+                    entries: compiled_entries,
+                    start,
+                    end,
+                });
+            }
+
             (CompiledNodeKind::Iterator {
-                sources: iter_spec.sources.clone(),
+                sources: compiled_sources,
                 unordered: iter_spec.unordered,
             }, keys)
         }
@@ -468,7 +525,7 @@ pub fn compile_node(
 
     // persistency context keys contribute
     match &compiled_persistency {
-        CompiledPersistency::Ephemeral | CompiledPersistency::Snapshot => {}
+        CompiledPersistency::Ephemeral => {}
         CompiledPersistency::Sequence { bind } | CompiledPersistency::Patch { bind } => {
             all_context_keys.extend(bind.context_keys.iter().copied());
         }
@@ -518,7 +575,7 @@ pub struct ExternalContextEnv {
 /// - `@raw` = `raw_ty` (what the node produces each execution)
 /// - `@self`:
 ///   - Sequence/Patch with bind: two-pass — compile bind with `@self = Infer`, use tail_ty as self_ty
-///   - Ephemeral/Snapshot with initial_value: initial_value's return type
+///   - Ephemeral with initial_value: initial_value's return type
 ///   - No initial_value: self_ty = raw_ty (fallback, @self not exposed without initial_value)
 fn resolve_node_locals(
     interner: &Interner,
@@ -590,7 +647,7 @@ fn resolve_node_locals(
             resolved_self
         }
         _ => {
-            // Ephemeral/Snapshot: self_ty from initial_value if present, else raw_ty
+            // Ephemeral: self_ty from initial_value if present, else raw_ty
             if let Some(ref init_src) = spec.strategy.initial_value {
                 let init_reg = spec.build_node_context(interner, base_registry, ContextScope::InitialValue, None)
                     .map_err(map_conflict)?;
@@ -795,7 +852,6 @@ pub fn compute_external_context_env(
         if !matches!(spec.strategy.persistency, Persistency::Ephemeral) && !stored_types[i].is_pureable() {
             let persistency_name = match &spec.strategy.persistency {
                 Persistency::Ephemeral => unreachable!(),
-                Persistency::Snapshot => "Snapshot",
                 Persistency::Sequence { .. } => "Sequence",
                 Persistency::Patch { .. } => "Patch",
             };
@@ -933,8 +989,19 @@ pub fn compile_nodes_with_env(
     for spec in specs.iter() {
         let persistency = match &spec.strategy.persistency {
             Persistency::Ephemeral => CompiledPersistency::Ephemeral,
-            Persistency::Snapshot => CompiledPersistency::Snapshot,
             Persistency::Sequence { bind } | Persistency::Patch { bind } => {
+                // Sequence requires initial_value (bind always references @self for accumulation)
+                if matches!(&spec.strategy.persistency, Persistency::Sequence { .. })
+                    && spec.strategy.initial_value.is_none()
+                {
+                    errors.push(OrchError::new(OrchErrorKind::MissingInitialValue {
+                        node: spec.name,
+                        persistency: "Sequence",
+                    }));
+                    compiled_persistencies.push(CompiledPersistency::Ephemeral);
+                    continue;
+                }
+
                 // bind context: @self + @raw + all context (via ContextScope::Bind)
                 let bind_reg = match spec.build_node_context(interner, &base_registry, ContextScope::Bind, env.node_locals.get(&spec.name)) {
                     Ok(r) => r,

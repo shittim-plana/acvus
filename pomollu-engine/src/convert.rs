@@ -137,7 +137,6 @@ pub struct WebFnParam {
 pub enum WebPersistency {
     #[default]
     Ephemeral,
-    Snapshot,
     Sequence { bind: String },
     Patch { bind: String },
 }
@@ -243,7 +242,6 @@ impl WebNode {
 
         let persistency = match &self.strategy.persistency {
             WebPersistency::Ephemeral => Persistency::Ephemeral,
-            WebPersistency::Snapshot => Persistency::Snapshot,
             WebPersistency::Sequence { bind } => Persistency::Sequence { bind: interner.intern(bind) },
             WebPersistency::Patch { bind } => Persistency::Patch { bind: interner.intern(bind) },
         };

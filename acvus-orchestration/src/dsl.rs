@@ -123,16 +123,23 @@ pub enum Execution {
 }
 
 /// Persistency mode — determines how node output is persisted.
+///
+/// Every persistent mode requires a `bind` script that transforms the raw
+/// node output (`@raw`) into the stored value. The bind result is diffed
+/// against the previous value via `PatchDiff::compute` for history tracking.
+///
+/// - Simple overwrite: `Patch { bind: "@raw" }` (identity — stores @raw as-is)
+/// - Accumulation: `Sequence { bind: "@self | chain(@raw | iter)" }`
+/// - Partial update: `Patch { bind: "{count: @self.count + 1, ..@self}" }`
 #[derive(Debug, Clone, Default)]
 pub enum Persistency {
     /// Don't persist to storage.
     #[default]
     Ephemeral,
-    /// Overwrite the stored value entirely each time.
-    Snapshot,
     /// Tracked sequence with diff-based updates. `bind` script transforms @raw → stored value.
     Sequence { bind: Astr },
-    /// Object field-level patch. `bind` script transforms @raw → stored value.
+    /// Recursive value patch. `bind` script transforms @raw → stored value.
+    /// The result is diffed against the previous value for history tracking.
     Patch { bind: Astr },
 }
 

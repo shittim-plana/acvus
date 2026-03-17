@@ -1,4 +1,3 @@
-mod display;
 mod expr;
 pub(crate) mod helpers;
 mod iterator;
@@ -7,7 +6,6 @@ mod llm_cache;
 mod plain;
 
 use acvus_utils::{Astr, Interner};
-pub use display::{DisplayNode, DisplayNodeStatic};
 pub use iterator::IteratorNode;
 pub use expr::ExprNode;
 pub use llm::LlmNode;
@@ -74,20 +72,6 @@ where
                         cache,
                         provider_config,
                         Arc::clone(&fetch),
-                        interner,
-                    ))
-                }
-                CompiledNodeKind::Display(display) => {
-                    Arc::new(DisplayNode::new(
-                        display.iterator.clone(),
-                        display.template.clone(),
-                        display.item_ty.clone(),
-                        interner,
-                    ))
-                }
-                CompiledNodeKind::DisplayStatic(static_display) => {
-                    Arc::new(DisplayNodeStatic::new(
-                        static_display.template.clone(),
                         interner,
                     ))
                 }

@@ -174,6 +174,62 @@ impl SequenceChain {
         !self.ops.is_empty()
     }
 
+    /// Collect by applying all ops to the origin TrackedDeque.
+    ///
+    /// Preserves checksum lineage — the result can be diffed against
+    /// a clone of the origin via `TrackedDeque::into_diff`.
+    ///
+    /// Chain ops require async exec_next, so this takes a handle.
+    pub async fn collect(
+        self,
+        handle: &acvus_utils::YieldHandle<crate::TypedValue>,
+    ) -> Result<TrackedDeque<Value>, crate::error::RuntimeError> {
+        let mut deque = self.origin;
+
+        for op in self.ops {
+            match op {
+                SequenceOp::Take(n) => {
+                    // Keep only first n items
+                    let len = deque.len();
+                    if n < len {
+                        for _ in 0..(len - n) {
+                            deque.pop();
+                        }
+                    }
+                }
+                SequenceOp::Skip(n) => {
+                    deque.consume(n.min(deque.len()));
+                }
+                SequenceOp::Chain(ih) => {
+                    // Pull items from IterHandle via exec_next
+                    let empty_module = acvus_mir::ir::MirModule {
+                        main: acvus_mir::ir::MirBody::default(),
+                        closures: Default::default(),
+                    };
+                    let mut interp = crate::Interpreter::new(
+                        &acvus_utils::Interner::new(),
+                        empty_module,
+                    );
+                    let mut current = ih;
+                    loop {
+                        let result;
+                        (interp, result) =
+                            crate::Interpreter::exec_next(interp, current, handle).await?;
+                        match result {
+                            Some((item, rest)) => {
+                                deque.push(item);
+                                current = rest;
+                            }
+                            None => break,
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(deque)
+    }
+
     /// The origin's checksum — for verification against storage.
     pub fn origin_checksum(&self) -> u64 {
         self.origin.checksum()

@@ -96,7 +96,6 @@
 	function setPersistencyKind(kind: string) {
 		const persistencies: Record<string, Persistency> = {
 			'ephemeral': { kind: 'ephemeral' },
-			'snapshot': { kind: 'snapshot' },
 			'sequence': { kind: 'sequence', bind: '' },
 			'patch': { kind: 'patch', bind: '' },
 		};
@@ -105,14 +104,12 @@
 
 	const persistencyLabels: Record<string, string> = {
 		'ephemeral': 'Ephemeral',
-		'snapshot': 'Snapshot',
 		'sequence': 'Sequence',
 		'patch': 'Patch',
 	};
 
 	const persistencyDescriptions: Record<string, string> = {
 		'ephemeral': 'Output is not persisted to storage.',
-		'snapshot': 'Overwrite stored value entirely each time.',
 		'sequence': 'Tracked sequence. Requires a bind script.',
 		'patch': 'Recursive deep-patch. Requires a bind script.',
 	};
@@ -544,7 +541,6 @@
 								<Select.Trigger class="w-full">{persistencyLabels[persistency.kind]}</Select.Trigger>
 								<Select.Content>
 									<Select.Item value="ephemeral">Ephemeral</Select.Item>
-									<Select.Item value="snapshot">Snapshot</Select.Item>
 									<Select.Item value="sequence">Sequence</Select.Item>
 									<Select.Item value="patch">Patch</Select.Item>
 								</Select.Content>

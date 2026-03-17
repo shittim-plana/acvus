@@ -613,13 +613,63 @@ impl Interpreter {
             | BuiltinId::RepeatStr
             | BuiltinId::Unwrap
             | BuiltinId::First
-            | BuiltinId::FirstIter
             | BuiltinId::Last
-            | BuiltinId::LastIter
-            | BuiltinId::ContainsIter
             | BuiltinId::UnwrapOr => {
                 let result = builtins::call_pure(id, args)?;
                 Ok((this, result))
+            }
+
+            // -- Iterator-consuming builtins (need exec_next with handle) --
+            // Return Option<Value> as Variant (Some/None) to match pure versions.
+            BuiltinId::FirstIter => {
+                let some_tag = this.interner.intern("Some");
+                let none_tag = this.interner.intern("None");
+                let ih = args.remove(0).into_iter_handle(Effect::Pure);
+                let (this, result) = Self::exec_next(this, ih, handle).await?;
+                match result {
+                    Some((item, _rest)) => Ok((this, Value::variant(some_tag, Some(Box::new(item))))),
+                    None => Ok((this, Value::variant(none_tag, None))),
+                }
+            }
+            BuiltinId::LastIter => {
+                let some_tag = this.interner.intern("Some");
+                let none_tag = this.interner.intern("None");
+                let ih = args.remove(0).into_iter_handle(Effect::Pure);
+                let mut current = ih;
+                let mut last_item: Option<Value> = None;
+                loop {
+                    let result;
+                    (this, result) = Self::exec_next(this, current, handle).await?;
+                    match result {
+                        Some((item, rest)) => {
+                            last_item = Some(item);
+                            current = rest;
+                        }
+                        None => break,
+                    }
+                }
+                match last_item {
+                    Some(item) => Ok((this, Value::variant(some_tag, Some(Box::new(item))))),
+                    None => Ok((this, Value::variant(none_tag, None))),
+                }
+            }
+            BuiltinId::ContainsIter => {
+                let ih = args.remove(0).into_iter_handle(Effect::Pure);
+                let needle = args.remove(0);
+                let mut current = ih;
+                loop {
+                    let result;
+                    (this, result) = Self::exec_next(this, current, handle).await?;
+                    match result {
+                        Some((item, rest)) => {
+                            if item == needle {
+                                return Ok((this, Value::Pure(PureValue::Bool(true))));
+                            }
+                            current = rest;
+                        }
+                        None => return Ok((this, Value::Pure(PureValue::Bool(false)))),
+                    }
+                }
             }
 
             // -- Iterator constructors --

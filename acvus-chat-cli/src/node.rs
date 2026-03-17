@@ -82,7 +82,6 @@ struct ExecutionDef {
 enum PersistencyKindDef {
     #[default]
     Ephemeral,
-    Snapshot,
     Deque,
     Diff,
 }
@@ -310,7 +309,6 @@ pub fn resolve_node(
 
     let persistency = match def.strategy.persistency.kind {
         PersistencyKindDef::Ephemeral => Persistency::Ephemeral,
-        PersistencyKindDef::Snapshot => Persistency::Snapshot,
         PersistencyKindDef::Deque => {
             let bind = resolve_template(
                 base_dir,

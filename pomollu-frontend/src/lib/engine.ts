@@ -185,7 +185,6 @@ type WebNodeShared = {
 			| { mode: 'if-modified'; key: string };
 		persistency:
 			| { kind: 'ephemeral' }
-			| { kind: 'snapshot' }
 			| { kind: 'sequence'; bind: string }
 			| { kind: 'patch'; bind: string };
 		initialValue?: string;
@@ -267,7 +266,6 @@ export type SessionConfig = {
 	providers: Record<string, ProviderConfig>;
 	entrypoint: string;
 	context?: Record<string, { type?: TypeDesc }>;
-	side_effects?: string[];
 	asset_store_name?: string;
 };
 
@@ -278,7 +276,6 @@ export type ExecutionConfig =
 
 export type PersistencyConfig =
 	| { kind: 'ephemeral' }
-	| { kind: 'snapshot' }
 	| { kind: 'sequence'; bind: string }
 	| { kind: 'patch'; bind: string };
 
@@ -309,8 +306,16 @@ export type NodeConfig = {
 	fn_params?: { name: string; type: string; description?: string }[];
 	template?: string;
 	output_ty?: TypeDesc;
-	iterator?: string;
-	sources?: { name: string; node: string }[];
+	sources?: {
+		name: string;
+		expr: string;
+		entries?: {
+			condition?: string;
+			transform: { kind: 'template'; source: string } | { kind: 'script'; source: string };
+		}[];
+		start?: string;
+		end?: string;
+	}[];
 	unordered?: boolean;
 };
 

@@ -209,8 +209,6 @@ fn rebuild_fingerprint(specs: &[NodeSpec], registry: &PartialContextTypeRegistry
             }
             acvus_orchestration::NodeKind::Plain(_)
             | acvus_orchestration::NodeKind::LlmCache(_)
-            | acvus_orchestration::NodeKind::Display(_)
-            | acvus_orchestration::NodeKind::DisplayStatic(_)
             | acvus_orchestration::NodeKind::Iterator(_) => {}
         }
         // Hash strategy
@@ -224,7 +222,7 @@ fn rebuild_fingerprint(specs: &[NodeSpec], registry: &PartialContextTypeRegistry
             Persistency::Sequence { bind } | Persistency::Patch { bind } => {
                 interner.resolve(*bind).hash(&mut hasher);
             }
-            Persistency::Ephemeral | Persistency::Snapshot => {}
+            Persistency::Ephemeral => {}
         }
     }
     // Hash registry user keys (the part that changes between 1st and 2nd rebuild)
@@ -856,7 +854,7 @@ fn typecheck_node(
                     &mut shared_subst,
                 );
             }
-            Persistency::Ephemeral | Persistency::Snapshot => {
+            Persistency::Ephemeral => {
                 let hint = match &locals.self_ty {
                     Ty::Error => None,
                     ty => Some(ty),
@@ -897,7 +895,7 @@ fn typecheck_node(
                 &mut shared_subst,
             );
         }
-        Persistency::Ephemeral | Persistency::Snapshot => {}
+        Persistency::Ephemeral => {}
     }
 
     // assert
@@ -919,8 +917,6 @@ fn typecheck_node(
         acvus_orchestration::NodeKind::Plain(_)
         | acvus_orchestration::NodeKind::Expr(_)
         | acvus_orchestration::NodeKind::LlmCache(_)
-        | acvus_orchestration::NodeKind::Display(_)
-        | acvus_orchestration::NodeKind::DisplayStatic(_)
         | acvus_orchestration::NodeKind::Iterator(_) => &[],
     };
 
@@ -1283,7 +1279,7 @@ mod tests {
             }),
             strategy: Strategy {
                 execution: Execution::Always,
-                persistency: Persistency::Snapshot,
+                persistency: Persistency::Patch { bind: interner.intern("@raw") },
                 initial_value: Some(interner.intern(initial_value)),
                 retry: 0,
                 assert: None,

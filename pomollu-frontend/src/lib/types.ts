@@ -127,7 +127,6 @@ export type Execution =
 
 export type Persistency =
 	| { kind: 'ephemeral' }
-	| { kind: 'snapshot' }
 	| { kind: 'sequence'; bind: string }
 	| { kind: 'patch'; bind: string };
 

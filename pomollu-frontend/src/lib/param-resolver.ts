@@ -763,8 +763,8 @@ function sanitizeExecution(execution: import('./types.js').Execution | undefined
 
 function sanitizePersistency(persistency: import('./types.js').Persistency | undefined): import('./types.js').Persistency {
 	switch (persistency?.kind) {
+		case 'snapshot': return { kind: 'patch', bind: '@raw' }; // legacy migration
 		case 'ephemeral':
-		case 'snapshot':
 		case 'sequence':
 		case 'patch':
 			return persistency;

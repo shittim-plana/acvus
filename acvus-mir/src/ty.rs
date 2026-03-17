@@ -44,7 +44,7 @@ pub enum Purity {
 ///
 /// Forms a lattice: `Pure < Effectful`. Unification is lattice join (max).
 /// `Var(u32)` is an effect variable for polymorphism in HOF signatures.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Effect {
     Pure,
     Effectful,
@@ -62,7 +62,7 @@ impl fmt::Display for Effect {
 }
 
 /// Distinguishes lambda closures from extern function references.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum FnKind {
     Lambda,
     Extern,
@@ -76,7 +76,7 @@ pub struct TyVar(pub u32);
 /// - `Concrete(u32)`: a fixed origin created by `[]` literals — unique provenance.
 /// - `Var(u32)`: an origin variable created by builtin signatures (e.g. `extend`) —
 ///   binds to the actual origin of the input Deque during unification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Origin {
     Concrete(u32),
     Var(u32),

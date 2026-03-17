@@ -82,6 +82,12 @@ pub enum OrchErrorKind {
         ty: Ty,
     },
 
+    // Persistency — initial_value required
+    MissingInitialValue {
+        node: Astr,
+        persistency: &'static str,
+    },
+
     // Runtime
     FuelExhausted,
     ModelError(String),
@@ -199,6 +205,15 @@ impl<'a> fmt::Display for OrchErrorDisplay<'a> {
                     "node '{node}' has persistent strategy but output type {} is not storable \
                      (contains Fn, Opaque, or effectful Iterator/Sequence)",
                     ty.display(interner)
+                )
+            }
+            OrchErrorKind::MissingInitialValue { node, persistency } => {
+                write!(
+                    f,
+                    "node '{}' has {} persistency but no initial_value — \
+                     Sequence and Patch modes require initial_value",
+                    interner.resolve(*node),
+                    persistency,
                 )
             }
             OrchErrorKind::FuelExhausted => write!(f, "fuel exhausted"),

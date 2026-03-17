@@ -21,8 +21,6 @@ pub(crate) struct SessionConfig {
     #[serde(default)]
     pub context: FxHashMap<String, ContextDecl>,
     #[serde(default)]
-    pub side_effects: Vec<String>,
-    #[serde(default)]
     pub asset_store_name: Option<String>,
 }
 
@@ -97,15 +95,6 @@ pub(crate) enum NodeKindConfig {
         template: String,
         output_ty: Option<crate::schema::TypeDesc>,
     },
-    #[serde(rename = "display")]
-    Display {
-        iterator: String,
-        template: String,
-    },
-    #[serde(rename = "display_static")]
-    DisplayStatic {
-        template: String,
-    },
     #[serde(rename = "iterator")]
     Iterator {
         sources: Vec<IteratorSourceConfig>,
@@ -117,7 +106,27 @@ pub(crate) enum NodeKindConfig {
 #[derive(Deserialize)]
 pub(crate) struct IteratorSourceConfig {
     pub name: String,
-    pub node: String,
+    pub expr: String,
+    #[serde(default)]
+    pub entries: Vec<IteratorEntryConfig>,
+    #[serde(default)]
+    pub start: Option<String>,
+    #[serde(default)]
+    pub end: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct IteratorEntryConfig {
+    #[serde(default)]
+    pub condition: Option<String>,
+    pub transform: TransformConfig,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub(crate) enum TransformConfig {
+    Template { source: String },
+    Script { source: String },
 }
 
 #[derive(Deserialize, Default)]
@@ -174,7 +183,6 @@ pub(crate) struct TokenBudgetConfig {
 pub(crate) enum PersistencyConfig {
     #[default]
     Ephemeral,
-    Snapshot,
     Sequence { bind: String },
     Patch { bind: String },
 }
@@ -287,20 +295,29 @@ pub(crate) fn convert_node(interner: &Interner, cfg: &NodeConfig) -> Result<Node
         NodeKindConfig::Plain { template } => NodeKind::Plain(PlainSpec {
             source: template.clone(),
         }),
-        NodeKindConfig::Display { iterator, template } => {
-            NodeKind::Display(acvus_orchestration::DisplaySpec {
-                iterator: iterator.clone(),
-                template: template.clone(),
-            })
-        }
-        NodeKindConfig::DisplayStatic { template } => {
-            NodeKind::DisplayStatic(acvus_orchestration::DisplayStaticSpec {
-                template: template.clone(),
-            })
-        }
         NodeKindConfig::Iterator { sources, unordered } => {
             NodeKind::Iterator(acvus_orchestration::IteratorSpec {
-                sources: sources.iter().map(|s| (s.name.clone(), interner.intern(&s.node))).collect(),
+                sources: sources.iter().map(|s| {
+                    acvus_orchestration::IteratorSource {
+                        name: s.name.clone(),
+                        expr: interner.intern(&s.expr),
+                        entries: s.entries.iter().map(|e| {
+                            acvus_orchestration::IteratorEntry {
+                                condition: e.condition.as_ref().map(|c| interner.intern(c)),
+                                transform: match &e.transform {
+                                    TransformConfig::Template { source } => {
+                                        acvus_orchestration::SourceTransform::Template(interner.intern(source))
+                                    }
+                                    TransformConfig::Script { source } => {
+                                        acvus_orchestration::SourceTransform::Script(interner.intern(source))
+                                    }
+                                },
+                            }
+                        }).collect(),
+                        start: s.start.as_ref().map(|v| interner.intern(v)),
+                        end: s.end.as_ref().map(|v| interner.intern(v)),
+                    }
+                }).collect(),
                 unordered: *unordered,
             })
         }
@@ -316,7 +333,6 @@ pub(crate) fn convert_node(interner: &Interner, cfg: &NodeConfig) -> Result<Node
 
     let persistency = match &cfg.strategy.persistency {
         PersistencyConfig::Ephemeral => Persistency::Ephemeral,
-        PersistencyConfig::Snapshot => Persistency::Snapshot,
         PersistencyConfig::Sequence { bind } => Persistency::Sequence { bind: interner.intern(bind) },
         PersistencyConfig::Patch { bind } => Persistency::Patch { bind: interner.intern(bind) },
     };

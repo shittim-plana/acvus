@@ -7,7 +7,7 @@ use acvus_orchestration::{
     BlobStore, BlobStoreJournal, EntryRef, Journal,
     ProviderConfig, Resolved,
 };
-use acvus_utils::{Astr, Interner, Stepped};
+use acvus_utils::{Astr, Interner};
 use rustc_hash::FxHashMap;
 use tsify::Tsify;
 use uuid::Uuid;
@@ -205,7 +205,6 @@ impl ChatSession {
             journal,
             cursor,
             &cfg.entrypoint,
-            &cfg.side_effects,
             &interner,
         )
         .await
@@ -310,49 +309,61 @@ impl ChatSession {
         &mut self,
         resolve_fn: &js_sys::Function,
     ) -> Result<JsValue, JsError> {
-        loop {
-            match self.engine.evaluate_next().await {
-                Stepped::Emit(value) => {
-                    let concrete = value.to_concrete(&self.interner);
-                    let jcv: JsConcreteValue = concrete.into();
-                    return Ok(jcv.into_ts()?.js_value());
-                }
-                Stepped::Done => {
-                    // Flush if this was an executing evaluation
-                    if !self.no_execute {
-                        self.engine.journal.flush_tree().await;
-                        save_cursor(&mut self.engine.journal, self.engine.cursor).await;
-                    }
-                    return Ok(JsValue::NULL);
-                }
-                Stepped::Error(e) => {
-                    return Err(JsError::new(&e.to_string()));
-                }
-                Stepped::NeedContext(req) => {
-                    let name = req.name();
-                    let key_str = self.interner.resolve(name);
-                    let js_key = JsValue::from_str(key_str);
-                    let js_result = resolve_fn
-                        .call1(&JsValue::NULL, &js_key)
-                        .unwrap_or(JsValue::UNDEFINED);
-                    let js_value = if js_result.has_type::<js_sys::Promise>() {
-                        let promise: js_sys::Promise = js_result.unchecked_into();
-                        JsFuture::from(promise).await.unwrap_or(JsValue::UNDEFINED)
-                    } else {
-                        js_result
-                    };
-                    let s: String = js_value.as_string().unwrap_or_default();
-                    req.resolve(Arc::new(TypedValue::string(s)));
-                }
-                Stepped::NeedExternCall(req) => {
-                    let name = req.name();
-                    let args = req.args().to_vec();
-                    match dispatch_extern(&self.interner, &self.asset_store, name, args).await {
-                        Ok(v) => req.resolve(Arc::new(v)),
-                        Err(e) => return Err(JsError::new(&e.to_string())),
-                    }
-                }
+        struct SendSyncFn(js_sys::Function);
+        unsafe impl Send for SendSyncFn {}
+        unsafe impl Sync for SendSyncFn {}
+
+        let wrapped = SendSyncFn(resolve_fn.clone());
+        let interner = self.interner.clone();
+
+        let resolver = move |key: Astr| {
+            let resolve_fn = wrapped.0.clone();
+            let interner = interner.clone();
+            UnsafeSend(async move {
+                let this = JsValue::NULL;
+                let key_str = interner.resolve(key);
+                let js_key = JsValue::from_str(key_str);
+                let result = resolve_fn
+                    .call1(&this, &js_key)
+                    .unwrap_or(JsValue::UNDEFINED);
+
+                let value = if result.has_type::<js_sys::Promise>() {
+                    let promise: js_sys::Promise = result.unchecked_into();
+                    JsFuture::from(promise).await.unwrap_or(JsValue::UNDEFINED)
+                } else {
+                    result
+                };
+
+                let s: String = value.as_string().unwrap_or_default();
+                Resolved::Turn(TypedValue::string(s))
+            })
+        };
+
+        let extern_handler = {
+            let interner = self.interner.clone();
+            let asset_store = self.asset_store.clone();
+            move |name: Astr, args: Vec<acvus_interpreter::TypedValue>| {
+                let interner = interner.clone();
+                let asset_store = asset_store.clone();
+                UnsafeSend(async move { dispatch_extern(&interner, &asset_store, name, args).await })
             }
+        };
+
+        match self.engine.evaluate_next(&resolver, &extern_handler).await {
+            Ok(Some(value)) => {
+                let concrete = value.to_concrete(&self.interner);
+                let jcv: JsConcreteValue = concrete.into();
+                Ok(jcv.into_ts()?.js_value())
+            }
+            Ok(None) => {
+                // Flush if this was an executing evaluation
+                if !self.no_execute {
+                    self.engine.journal.flush_tree().await;
+                    save_cursor(&mut self.engine.journal, self.engine.cursor).await;
+                }
+                Ok(JsValue::NULL)
+            }
+            Err(e) => Err(JsError::new(&e.to_string())),
         }
     }
 

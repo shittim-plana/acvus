@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use acvus_chat::ChatEngine;
 use acvus_interpreter::{LazyValue, PureValue, TypedValue, Value};
-use acvus_utils::Stepped;
 use acvus_mir::ty::Ty;
 use acvus_mir::context_registry::PartialContextTypeRegistry;
 use acvus_orchestration::{
@@ -330,7 +329,6 @@ async fn main() {
             journal,
             root,
             &spec.entrypoint,
-            &[],
             &interner,
         )
         .await
@@ -343,23 +341,10 @@ async fn main() {
             process::exit(1);
         });
         loop {
-            match engine.evaluate_next().await {
-                Stepped::Emit(item) => println!("{}", format_output(&interner, item.value())),
-                Stepped::Done => break,
-                Stepped::Error(e) => { eprintln!("evaluate error: {e}"); process::exit(1); }
-                Stepped::NeedContext(req) => {
-                    let val = resolver(req.name()).await;
-                    let arc = match val { Resolved::Once(v) | Resolved::Turn(v) | Resolved::Persist(v) => Arc::new(v) };
-                    req.resolve(arc);
-                }
-                Stepped::NeedExternCall(req) => {
-                    let name = req.name();
-                    let args = req.args().to_vec();
-                    match extern_handler(name, args).await {
-                        Ok(v) => req.resolve(Arc::new(v)),
-                        Err(e) => { eprintln!("extern error: {e}"); process::exit(1); }
-                    }
-                }
+            match engine.evaluate_next(&resolver, &extern_handler).await {
+                Ok(Some(item)) => println!("{}", format_output(&interner, item.value())),
+                Ok(None) => break,
+                Err(e) => { eprintln!("evaluate error: {e}"); process::exit(1); }
             }
         }
     } else {
@@ -373,7 +358,6 @@ async fn main() {
             journal,
             root,
             &spec.entrypoint,
-            &[],
             &interner,
         )
         .await
@@ -389,23 +373,10 @@ async fn main() {
                     process::exit(1);
                 });
                 loop {
-                    match engine.evaluate_next().await {
-                        Stepped::Emit(item) => println!("{}", format_output(&interner, item.value())),
-                        Stepped::Done => break,
-                        Stepped::Error(e) => { eprintln!("evaluate error: {e}"); process::exit(1); }
-                        Stepped::NeedContext(req) => {
-                            let val = resolver(req.name()).await;
-                            let arc = match val { Resolved::Once(v) | Resolved::Turn(v) | Resolved::Persist(v) => Arc::new(v) };
-                            req.resolve(arc);
-                        }
-                        Stepped::NeedExternCall(req) => {
-                            let name = req.name();
-                            let args = req.args().to_vec();
-                            match extern_handler(name, args).await {
-                                Ok(v) => req.resolve(Arc::new(v)),
-                                Err(e) => { eprintln!("extern error: {e}"); process::exit(1); }
-                            }
-                        }
+                    match engine.evaluate_next(&resolver, &extern_handler).await {
+                        Ok(Some(item)) => println!("{}", format_output(&interner, item.value())),
+                        Ok(None) => break,
+                        Err(e) => { eprintln!("evaluate error: {e}"); process::exit(1); }
                     }
                 }
                 println!("cursor depth: {}", engine.journal.entry(engine.cursor).await.depth());
@@ -416,23 +387,10 @@ async fn main() {
                 process::exit(1);
             });
             loop {
-                match engine.evaluate_next().await {
-                    Stepped::Emit(item) => println!("{}", format_output(&interner, item.value())),
-                    Stepped::Done => break,
-                    Stepped::Error(e) => { eprintln!("evaluate error: {e}"); process::exit(1); }
-                    Stepped::NeedContext(req) => {
-                        let val = resolver(req.name()).await;
-                        let arc = match val { Resolved::Once(v) | Resolved::Turn(v) | Resolved::Persist(v) => Arc::new(v) };
-                        req.resolve(arc);
-                    }
-                    Stepped::NeedExternCall(req) => {
-                        let name = req.name();
-                        let args = req.args().to_vec();
-                        match extern_handler(name, args).await {
-                            Ok(v) => req.resolve(Arc::new(v)),
-                            Err(e) => { eprintln!("extern error: {e}"); process::exit(1); }
-                        }
-                    }
+                match engine.evaluate_next(&resolver, &extern_handler).await {
+                    Ok(Some(item)) => println!("{}", format_output(&interner, item.value())),
+                    Ok(None) => break,
+                    Err(e) => { eprintln!("evaluate error: {e}"); process::exit(1); }
                 }
             }
         }
