@@ -1018,5 +1018,151 @@ mod tests {
             );
             assert!(result.is_err(), "Option<Effectful> should be move-only");
         }
+
+        // -- Branch tests: move in one branch, use after merge --
+        // Note: @context loads always create fresh values (ContextLoad → Alive),
+        // so branch tests must use $var (mutable variable) which tracks liveness.
+
+        /// B1: $var holding move-only value, consumed in one branch, used after merge → ERROR
+        /// (conservative: any branch moves → merged state is Moved)
+        #[test]
+        fn reject_branch_move_then_use() {
+            // $a holds effectful iter, consumed in true branch, used again after merge
+            let result = compile_template(
+                "{{ $a = @src }}{{ true = @flag }}{{ $a | collect | len | to_string }}{{_}}nothing{{/}}{{ $a | collect | len | to_string }}",
+                &[("flag", Ty::Bool), ("src", eff_iter_ty())],
+            );
+            assert!(result.is_err(), "should reject use after move across branch: {result:?}");
+            assert!(has_use_after_move(&result.unwrap_err()));
+        }
+
+        /// B2: $var consumed in both branches, then used after merge → ERROR
+        #[test]
+        fn reject_both_branches_move_then_use() {
+            let result = compile_template(
+                "{{ $a = @src }}{{ true = @flag }}{{ $a | collect | len | to_string }}{{_}}{{ $a | collect | len | to_string }}{{/}}{{ $a | collect | len | to_string }}",
+                &[("flag", Ty::Bool), ("src", eff_iter_ty())],
+            );
+            assert!(result.is_err(), "should reject use after move in both branches: {result:?}");
+        }
+
+        /// B3: $var consumed in one branch only, no use after merge → OK
+        #[test]
+        fn accept_branch_move_no_use_after() {
+            let result = compile_template(
+                "{{ $a = @src }}{{ true = @flag }}{{ $a | collect | len | to_string }}{{_}}nothing{{/}}",
+                &[("flag", Ty::Bool), ("src", eff_iter_ty())],
+            );
+            assert!(result.is_ok(), "move in branch without post-merge use should be OK: {result:?}");
+        }
+
+        // -- Nested closure + move-only tests --
+        // Note: Lambda body cannot contain pipe expressions (-> binds tighter than |).
+        // Use collect(x) call syntax instead of x | collect.
+
+        /// N1: Closure capturing effectful iterator → FnOnce, called twice → ERROR
+        /// f captures move-only x via closure, so f itself is move-only.
+        /// Second call of f → use after move.
+        #[test]
+        fn reject_fnonce_double_call() {
+            let result = compile_script(
+                "x = @src; f = (z -> collect(x)); a = f(0); b = f(0); a",
+                &[("src", eff_iter_ty())],
+            );
+            assert!(result.is_err(), "FnOnce called twice should be rejected: {result:?}");
+            assert!(has_use_after_move(&result.unwrap_err()));
+        }
+
+        /// N2: Closure capturing pure value → Fn, called multiple times → OK
+        #[test]
+        fn accept_pure_capture_fn_multi_call() {
+            let result = compile_script(
+                "x = @val; f = (a -> x + a); a = f(1); b = f(2); a + b",
+                &[("val", Ty::Int)],
+            );
+            assert!(result.is_ok(), "Fn with pure captures should be callable multiple times: {result:?}");
+        }
+
+        /// N3: Closure capturing effectful → used once → OK
+        #[test]
+        fn accept_fnonce_single_call() {
+            let result = compile_script(
+                "x = @src; f = (z -> collect(x)); f(0)",
+                &[("src", eff_iter_ty())],
+            );
+            assert!(result.is_ok(), "FnOnce called once should be OK: {result:?}");
+        }
+
+        // -- Lambda return coercion tests --
+
+        /// L1: Lambda returns Deque where Iterator expected (flat_map) → Cast inserted at return
+        #[test]
+        fn accept_lambda_return_deque_as_iterator() {
+            // flat_map expects Fn(T) → Iterator<U>
+            // Lambda body [x, x*2] returns Deque → DequeToIterator Cast inserted
+            let result = compile_script(
+                "@items | flat_map(x -> [x, x * 2]) | collect",
+                &[("items", Ty::List(Box::new(Ty::Int)))],
+            );
+            assert!(result.is_ok(), "lambda returning Deque where Iterator expected should compile: {result:?}");
+        }
+
+        /// L2: Lambda returns Int (no coercion needed for map)
+        #[test]
+        fn accept_lambda_return_scalar() {
+            let result = compile_script(
+                "@items | map(x -> x + 1) | collect",
+                &[("items", Ty::List(Box::new(Ty::Int)))],
+            );
+            assert!(result.is_ok(), "lambda returning scalar should compile: {result:?}");
+        }
+
+        /// L3: Nested flat_map with Deque return at both levels
+        #[test]
+        fn accept_nested_flat_map_deque_return() {
+            let result = compile_script(
+                "@items | flat_map(x -> [x, x + 10]) | map(x -> x * 2) | collect",
+                &[("items", Ty::List(Box::new(Ty::Int)))],
+            );
+            assert!(result.is_ok(), "nested flat_map + map with Deque return should compile: {result:?}");
+        }
+
+        // -- ClosureCall FnOnce tests --
+
+        /// F1: FnOnce passed to map (HOF calls it multiple times) → should be OK
+        /// because at the MIR level, the fn is passed once to BuiltinCall.
+        #[test]
+        fn accept_fnonce_passed_to_map() {
+            // f captures effectful, passed to map (single use of f at MIR level)
+            let result = compile_script(
+                "x = @src; f = (z -> collect(x)); @items | map(f) | collect",
+                &[("src", eff_iter_ty()), ("items", Ty::List(Box::new(Ty::Int)))],
+            );
+            // This should compile — f is passed once to map (single BuiltinCall arg)
+            assert!(result.is_ok(), "FnOnce passed once to HOF should be OK: {result:?}");
+        }
+
+        /// F2: Lambda with @context in body (not capture) should be Fn, not FnOnce.
+        /// @src is a ContextLoad in the lambda body, executed at each call, not captured.
+        #[test]
+        fn accept_lambda_context_in_body_is_fn() {
+            let result = compile_template(
+                "{{ $f = (z -> collect(@src)) }}{{ $f(0) | len | to_string }}{{ $f(0) | len | to_string }}",
+                &[("src", eff_iter_ty())],
+            );
+            // @src is NOT captured — it's loaded fresh each call via ContextLoad.
+            // So the lambda is Fn (not FnOnce), callable multiple times.
+            assert!(result.is_ok(), "Lambda with @context in body (not capture) should be Fn: {result:?}");
+        }
+
+        /// F3: Closure explicitly capturing a local move-only value, called twice → ERROR
+        #[test]
+        fn reject_fnonce_local_capture_double() {
+            let result = compile_script(
+                "x = @src; f = (z -> collect(x)); a = f(0); b = f(0); a",
+                &[("src", eff_iter_ty())],
+            );
+            assert!(result.is_err(), "FnOnce with local capture double call should be rejected: {result:?}");
+        }
     }
 }

@@ -1006,3 +1006,113 @@ impl CheckCtx {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::{CastKind, DebugInfo, Inst, MirBody, MirModule};
+    use acvus_ast::Literal;
+
+    fn span() -> Span {
+        Span { start: 0, end: 0 }
+    }
+
+    fn inst(kind: InstKind) -> Inst {
+        Inst { span: span(), kind }
+    }
+
+    fn make_module(insts: Vec<Inst>, val_types: FxHashMap<ValueId, Ty>) -> MirModule {
+        MirModule {
+            main: MirBody {
+                insts,
+                val_types,
+                debug: DebugInfo::new(),
+                val_count: 100,
+                label_count: 10,
+            },
+            closures: FxHashMap::default(),
+        }
+    }
+
+    #[test]
+    fn const_type_matches() {
+        let mut vt = FxHashMap::default();
+        vt.insert(ValueId(0), Ty::Int);
+        let module = make_module(
+            vec![inst(InstKind::Const { dst: ValueId(0), value: Literal::Int(42) })],
+            vt,
+        );
+        let errors = check_types(&module);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn const_type_mismatch() {
+        let mut vt = FxHashMap::default();
+        vt.insert(ValueId(0), Ty::String); // wrong: Literal::Int should be Int
+        let module = make_module(
+            vec![inst(InstKind::Const { dst: ValueId(0), value: Literal::Int(42) })],
+            vt,
+        );
+        let errors = check_types(&module);
+        assert!(!errors.is_empty(), "type mismatch should be caught");
+    }
+
+    #[test]
+    fn cast_skipped() {
+        // Cast should not produce type errors even though src != dst type
+        let mut vt = FxHashMap::default();
+        vt.insert(ValueId(0), Ty::List(Box::new(Ty::Int)));
+        vt.insert(ValueId(1), Ty::Iterator(Box::new(Ty::Int), Effect::Pure));
+        let module = make_module(
+            vec![inst(InstKind::Cast { dst: ValueId(1), src: ValueId(0), kind: CastKind::ListToIterator })],
+            vt,
+        );
+        let errors = check_types(&module);
+        assert!(errors.is_empty(), "Cast should be skipped by type checker");
+    }
+
+    #[test]
+    fn binop_type_mismatch() {
+        let mut vt = FxHashMap::default();
+        vt.insert(ValueId(0), Ty::Int);
+        vt.insert(ValueId(1), Ty::String); // mismatch
+        vt.insert(ValueId(2), Ty::Int);
+        let module = make_module(
+            vec![inst(InstKind::BinOp { dst: ValueId(2), op: acvus_ast::BinOp::Add, left: ValueId(0), right: ValueId(1) })],
+            vt,
+        );
+        let errors = check_types(&module);
+        assert!(!errors.is_empty(), "BinOp type mismatch should be caught");
+    }
+
+    #[test]
+    fn make_tuple_arity_mismatch() {
+        let mut vt = FxHashMap::default();
+        vt.insert(ValueId(0), Ty::Int);
+        vt.insert(ValueId(1), Ty::Tuple(vec![Ty::Int, Ty::String])); // expects 2 elements
+        let module = make_module(
+            vec![inst(InstKind::MakeTuple { dst: ValueId(1), elements: vec![ValueId(0)] })], // only 1
+            vt,
+        );
+        let errors = check_types(&module);
+        assert!(!errors.is_empty(), "tuple arity mismatch should be caught");
+    }
+
+    #[test]
+    fn jump_args_type_match() {
+        // BlockLabel with param, Jump with matching arg type
+        let mut vt = FxHashMap::default();
+        vt.insert(ValueId(0), Ty::Int);
+        vt.insert(ValueId(1), Ty::Int);
+        let module = make_module(
+            vec![
+                inst(InstKind::BlockLabel { label: Label(0), params: vec![ValueId(1)], merge_of: None }),
+                inst(InstKind::Jump { label: Label(0), args: vec![ValueId(0)] }),
+            ],
+            vt,
+        );
+        let errors = check_types(&module);
+        assert!(errors.is_empty(), "matching jump arg types should pass: {errors:?}");
+    }
+}
