@@ -112,5 +112,18 @@ pub fn entries() -> Vec<(BuiltinId, BuiltinExecute)> {
         (BuiltinId::Chain,        sync(chain_iter)),
         (BuiltinId::Flatten,      sync(flatten_iter)),
         (BuiltinId::FlatMap,      sync(flat_map_fn)),
+        // Purification (manual — attaches ConsumptionTracker)
+        (BuiltinId::PurifyIter,   Box::new(purify_iter)),
     ]
+}
+
+fn purify_iter(args: Vec<TypedValue>) -> Result<TypedValue, crate::error::RuntimeError> {
+    use super::types::FromTyped;
+    use super::types::IntoTyped;
+
+    let mut it = args.into_iter();
+    let tv = it.next().expect("missing arg 0");
+    let ih = IterHandle::from_typed(tv)?;
+    let purified = ih.with_consumption_tracker();
+    Ok(purified.into_typed())
 }

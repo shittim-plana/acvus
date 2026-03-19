@@ -174,9 +174,11 @@ export type Node = {
 
 // --- Context parameter resolution ---
 
+export type ParamLifetime = 'once' | 'turn' | 'persist';
+
 export type ParamResolution =
 	| { kind: 'static'; value: string }
-	| { kind: 'dynamic' }
+	| { kind: 'dynamic'; lifetime?: ParamLifetime }
 	| { kind: 'unresolved' };
 
 export type ContextParam = {

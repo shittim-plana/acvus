@@ -4,7 +4,6 @@ mod interner_ctx;
 pub mod iter;
 mod interpreter;
 mod value;
-mod verify;
 
 pub use acvus_utils::{ContextRequest, Coroutine, ExternCallRequest, Stepped, YieldHandle};
 

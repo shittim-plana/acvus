@@ -106,6 +106,32 @@ pub struct EvaluateResult {
 }
 
 // ---------------------------------------------------------------------------
+// Param config — lifetime for dynamic parameters
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize, Clone, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct ParamConfig {
+    /// Maps param name → lifetime for dynamic params.
+    #[serde(default)]
+    pub params: FxHashMap<String, ParamLifetime>,
+}
+
+#[derive(Deserialize, Clone, Copy, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub enum ParamLifetime {
+    Once,
+    Turn,
+    Persist,
+}
+
+impl Default for ParamLifetime {
+    fn default() -> Self {
+        Self::Turn
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tree / turn types
 // ---------------------------------------------------------------------------
 

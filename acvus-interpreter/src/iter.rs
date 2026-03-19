@@ -1,9 +1,35 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use acvus_mir::ty::Effect;
 use acvus_utils::TrackedDeque;
 
 use crate::value::{FnValue, Value};
+
+// =========================================================================
+// ConsumptionTracker — runtime guarantee for purified iterators
+// =========================================================================
+
+/// Tracks whether a purified iterator was fully consumed.
+/// Created by `purify_iter`, checked by orchestrator at finalization.
+#[derive(Debug)]
+pub struct ConsumptionTracker {
+    exhausted: AtomicBool,
+}
+
+impl ConsumptionTracker {
+    pub fn new() -> Self {
+        Self { exhausted: AtomicBool::new(false) }
+    }
+
+    pub fn mark_exhausted(&self) {
+        self.exhausted.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_exhausted(&self) -> bool {
+        self.exhausted.load(Ordering::SeqCst)
+    }
+}
 
 // =========================================================================
 // IterChain / IterOp — flat chain representation for drive_chain
@@ -299,6 +325,7 @@ pub enum IterRepr {
 pub struct IterHandle {
     state: Arc<Mutex<IterRepr>>,
     effect: Effect,
+    consumption_tracker: Option<Arc<ConsumptionTracker>>,
 }
 
 impl IterHandle {
@@ -316,6 +343,7 @@ impl IterHandle {
                 offset,
             })),
             effect,
+            consumption_tracker: None,
         }
     }
 
@@ -334,6 +362,7 @@ impl IterHandle {
         Self {
             state: Arc::new(Mutex::new(IterRepr::Done)),
             effect,
+            consumption_tracker: None,
         }
     }
 
@@ -350,6 +379,7 @@ impl IterHandle {
                 second: other,
             })),
             effect,
+            consumption_tracker: None,
         }
     }
 
@@ -403,6 +433,7 @@ impl IterHandle {
                         op,
                     })),
                     effect,
+                    consumption_tracker: None,
                 }
             }
         }
@@ -451,6 +482,20 @@ impl IterHandle {
     pub fn effect(&self) -> Effect {
         self.effect
     }
+
+    /// Attach a consumption tracker and set effect to Pure.
+    /// Used by `purify_iter` to convert an Effectful iterator to Pure
+    /// with a runtime consumption guarantee.
+    pub fn with_consumption_tracker(mut self) -> Self {
+        self.consumption_tracker = Some(Arc::new(ConsumptionTracker::new()));
+        self.effect = Effect::Pure;
+        self
+    }
+
+    /// Access the consumption tracker, if any.
+    pub fn consumption_tracker(&self) -> Option<&Arc<ConsumptionTracker>> {
+        self.consumption_tracker.as_ref()
+    }
 }
 
 impl Clone for IterHandle {
@@ -460,11 +505,13 @@ impl Clone for IterHandle {
             Effect::Pure => Self {
                 state: Arc::clone(&self.state),
                 effect: self.effect,
+                consumption_tracker: self.consumption_tracker.clone(),
             },
             // Effectful: deep copy — each clone runs independently.
             _ => Self {
                 state: Arc::new(Mutex::new(self.state.lock().unwrap().clone())),
                 effect: self.effect,
+                consumption_tracker: self.consumption_tracker.clone(),
             },
         }
     }
@@ -488,5 +535,31 @@ impl std::fmt::Debug for IterHandle {
 impl PartialEq for IterHandle {
     fn eq(&self, _other: &Self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn consumption_tracker_starts_not_exhausted() {
+        let tracker = ConsumptionTracker::new();
+        assert!(!tracker.is_exhausted());
+    }
+
+    #[test]
+    fn consumption_tracker_mark_exhausted() {
+        let tracker = ConsumptionTracker::new();
+        tracker.mark_exhausted();
+        assert!(tracker.is_exhausted());
+    }
+
+    #[test]
+    fn consumption_tracker_shared_via_arc() {
+        let tracker = Arc::new(ConsumptionTracker::new());
+        let clone = Arc::clone(&tracker);
+        clone.mark_exhausted();
+        assert!(tracker.is_exhausted());
     }
 }

@@ -65,6 +65,8 @@ pub enum BuiltinId {
     // -- Iterator next --
     Next,
     NextSeq,
+    // -- Iterator purification --
+    PurifyIter,
 }
 
 impl BuiltinId {
@@ -454,6 +456,15 @@ fn sig_flat_map(s: &mut TySubst) -> (Vec<Ty>, Ty) {
     )
 }
 
+fn sig_purify_iter(s: &mut TySubst) -> (Vec<Ty>, Ty) {
+    let t = s.fresh_var();
+    let e = s.fresh_effect_var();
+    (
+        vec![Ty::Iterator(Box::new(t.clone()), e)],
+        Ty::Iterator(Box::new(t), Effect::Pure),
+    )
+}
+
 fn sig_iter(s: &mut TySubst) -> (Vec<Ty>, Ty) {
     let t = s.fresh_var();
     (vec![Ty::List(Box::new(t.clone()))], Ty::Iterator(Box::new(t), Effect::Pure))
@@ -607,6 +618,7 @@ fn build_registry() -> BuiltinRegistry {
     r.add("skip",      BuiltinId::Skip,      sig_skip,      None);
     r.add("chain",     BuiltinId::ChainSeq,  sig_chain_seq, None);
     r.add("chain",     BuiltinId::Chain,     sig_chain,     None);
+    r.add("purify_iter", BuiltinId::PurifyIter, sig_purify_iter, None);
 
     r
 }

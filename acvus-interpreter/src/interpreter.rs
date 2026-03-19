@@ -576,7 +576,12 @@ impl Interpreter {
     ) -> Result<(Self, Option<(Value, IterHandle)>), RuntimeError> {
         let state = ih.get_state();
         match state {
-            IterRepr::Done => Ok((this, None)),
+            IterRepr::Done => {
+                if let Some(tracker) = ih.consumption_tracker() {
+                    tracker.mark_exhausted();
+                }
+                Ok((this, None))
+            }
 
             IterRepr::Evaluated { head, tail } => {
                 Ok((this, Some((head, tail))))
@@ -611,6 +616,9 @@ impl Interpreter {
                             });
                         }
                         None => {
+                            if let Some(tracker) = ih.consumption_tracker() {
+                                tracker.mark_exhausted();
+                            }
                             ih.set_state(IterRepr::Done);
                         }
                     }
@@ -634,6 +642,9 @@ impl Interpreter {
                             });
                         }
                         None => {
+                            if let Some(tracker) = ih.consumption_tracker() {
+                                tracker.mark_exhausted();
+                            }
                             ih.set_state(IterRepr::Done);
                         }
                     }

@@ -238,34 +238,26 @@ impl ChatSession {
         no_execute: bool,
         resolve_fn: &js_sys::Function,
     ) -> Result<(), JsError> {
-        struct SendSyncFn(js_sys::Function);
-        unsafe impl Send for SendSyncFn {}
-        unsafe impl Sync for SendSyncFn {}
+        let resolver = {
+            struct SendSyncFn(js_sys::Function);
+            unsafe impl Send for SendSyncFn {}
+            unsafe impl Sync for SendSyncFn {}
 
-        let wrapped = SendSyncFn(resolve_fn.clone());
-        let interner = self.interner.clone();
+            let wrapped = SendSyncFn(resolve_fn.clone());
+            let interner = self.interner.clone();
+            let context_types = build_context_types(&self.compile_registry);
 
-        let resolver = move |key: Astr| {
-            let resolve_fn = wrapped.0.clone();
-            let interner = interner.clone();
-            UnsafeSend(async move {
-                let this = JsValue::NULL;
-                let key_str = interner.resolve(key);
-                let js_key = JsValue::from_str(key_str);
-                let result = resolve_fn
-                    .call1(&this, &js_key)
-                    .unwrap_or(JsValue::UNDEFINED);
+            move |key: Astr| {
+                let resolve_fn = wrapped.0.clone();
+                let interner = interner.clone();
+                let ty = context_types.get(&key).cloned().unwrap_or(Ty::String);
 
-                let value = if result.has_type::<js_sys::Promise>() {
-                    let promise: js_sys::Promise = result.unchecked_into();
-                    JsFuture::from(promise).await.unwrap_or(JsValue::UNDEFINED)
-                } else {
-                    result
-                };
-
-                let s: String = value.as_string().unwrap_or_default();
-                Resolved::Turn(TypedValue::string(s))
-            })
+                UnsafeSend(async move {
+                    let key_str = interner.resolve(key).to_string();
+                    let value = invoke_js_resolve(&resolve_fn, &key_str).await;
+                    resolve_js_value(value, ty, ParamLifetime::Turn, &interner)
+                })
+            }
         };
 
         let extern_handler = {
@@ -295,34 +287,26 @@ impl ChatSession {
         &mut self,
         resolve_fn: &js_sys::Function,
     ) -> Result<JsValue, JsError> {
-        struct SendSyncFn(js_sys::Function);
-        unsafe impl Send for SendSyncFn {}
-        unsafe impl Sync for SendSyncFn {}
+        let resolver = {
+            struct SendSyncFn(js_sys::Function);
+            unsafe impl Send for SendSyncFn {}
+            unsafe impl Sync for SendSyncFn {}
 
-        let wrapped = SendSyncFn(resolve_fn.clone());
-        let interner = self.interner.clone();
+            let wrapped = SendSyncFn(resolve_fn.clone());
+            let interner = self.interner.clone();
+            let context_types = build_context_types(&self.compile_registry);
 
-        let resolver = move |key: Astr| {
-            let resolve_fn = wrapped.0.clone();
-            let interner = interner.clone();
-            UnsafeSend(async move {
-                let this = JsValue::NULL;
-                let key_str = interner.resolve(key);
-                let js_key = JsValue::from_str(key_str);
-                let result = resolve_fn
-                    .call1(&this, &js_key)
-                    .unwrap_or(JsValue::UNDEFINED);
+            move |key: Astr| {
+                let resolve_fn = wrapped.0.clone();
+                let interner = interner.clone();
+                let ty = context_types.get(&key).cloned().unwrap_or(Ty::String);
 
-                let value = if result.has_type::<js_sys::Promise>() {
-                    let promise: js_sys::Promise = result.unchecked_into();
-                    JsFuture::from(promise).await.unwrap_or(JsValue::UNDEFINED)
-                } else {
-                    result
-                };
-
-                let s: String = value.as_string().unwrap_or_default();
-                Resolved::Turn(TypedValue::string(s))
-            })
+                UnsafeSend(async move {
+                    let key_str = interner.resolve(key).to_string();
+                    let value = invoke_js_resolve(&resolve_fn, &key_str).await;
+                    resolve_js_value(value, ty, ParamLifetime::Turn, &interner)
+                })
+            }
         };
 
         let extern_handler = {
@@ -435,5 +419,62 @@ impl ChatSession {
                 .collect(),
         };
         Ok(view.into_ts()?.js_value())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Resolver helpers — shared between start_evaluate and evaluate_next
+// ---------------------------------------------------------------------------
+
+/// Build a merged context type map from the public accessors of `ContextTypeRegistry`.
+fn build_context_types(registry: &ContextTypeRegistry) -> FxHashMap<Astr, Ty> {
+    let mut types = FxHashMap::default();
+    types.extend(registry.extern_fns().iter().map(|(k, v)| (*k, v.clone())));
+    types.extend(registry.system().iter().map(|(k, v)| (*k, v.clone())));
+    types.extend(registry.user().iter().map(|(k, v)| (*k, v.clone())));
+    types
+}
+
+/// Invoke a JS resolve function by key, awaiting the result if it returns a Promise.
+async fn invoke_js_resolve(resolve_fn: &js_sys::Function, key: &str) -> JsValue {
+    let this = JsValue::NULL;
+    let js_key = JsValue::from_str(key);
+    let result = resolve_fn
+        .call1(&this, &js_key)
+        .unwrap_or(JsValue::UNDEFINED);
+
+    if result.has_type::<js_sys::Promise>() {
+        let promise: js_sys::Promise = result.unchecked_into();
+        JsFuture::from(promise).await.unwrap_or(JsValue::UNDEFINED)
+    } else {
+        result
+    }
+}
+
+/// Convert a JsValue from the resolver callback into a `Resolved` value.
+///
+/// Tries `JsConcreteValue` deserialization first (typed); falls back to plain string.
+fn resolve_js_value(
+    value: JsValue,
+    ty: Ty,
+    lifetime: ParamLifetime,
+    interner: &Interner,
+) -> Resolved {
+    let concrete: acvus_interpreter::ConcreteValue =
+        serde_wasm_bindgen::from_value::<JsConcreteValue>(value.clone())
+            .map(|jcv| jcv.into())
+            .unwrap_or_else(|_| {
+                // Backward compatibility: plain string from JS
+                let s = value.as_string().unwrap_or_default();
+                acvus_interpreter::ConcreteValue::String { v: s }
+            });
+
+    let val = Value::from_concrete(&concrete, interner);
+    let typed = TypedValue::new(val, ty);
+
+    match lifetime {
+        ParamLifetime::Once => Resolved::Once(typed),
+        ParamLifetime::Turn => Resolved::Turn(typed),
+        ParamLifetime::Persist => Resolved::Persist(typed),
     }
 }

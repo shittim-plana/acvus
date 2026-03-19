@@ -1164,5 +1164,37 @@ mod tests {
             );
             assert!(result.is_err(), "FnOnce with local capture double call should be rejected: {result:?}");
         }
+
+        // -- purify_iter tests --
+
+        /// purify_iter converts Effectful to Pure — reuse should be allowed
+        #[test]
+        fn accept_purify_iter_reuse() {
+            let result = compile_script(
+                "x = @src | purify_iter; a = x | collect; b = x | collect; a",
+                &[("src", eff_iter_ty())],
+            );
+            assert!(result.is_ok(), "purified iterator should be reusable (Pure): {result:?}");
+        }
+
+        /// purify_iter on Pure is a no-op
+        #[test]
+        fn accept_purify_iter_pure_passthrough() {
+            let result = compile_script(
+                "@items | purify_iter | collect",
+                &[("items", Ty::List(Box::new(Ty::Int)))],
+            );
+            assert!(result.is_ok(), "purify_iter on Pure should work: {result:?}");
+        }
+
+        /// Effectful without purify_iter — still rejected
+        #[test]
+        fn reject_effectful_without_purify() {
+            let result = compile_script(
+                "x = @src; a = x | collect; b = x | collect; a",
+                &[("src", eff_iter_ty())],
+            );
+            assert!(result.is_err(), "effectful without purify should still be rejected");
+        }
     }
 }

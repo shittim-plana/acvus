@@ -1522,6 +1522,7 @@ dependencies = [
  "rust_decimal",
  "rustc-hash",
  "serde",
+ "serde-wasm-bindgen",
  "serde_json",
  "tsify",
  "uuid",

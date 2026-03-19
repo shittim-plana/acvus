@@ -334,7 +334,11 @@ export type ProviderConfig = {
 	api_key: string;
 };
 
-export type ResolverFn = (key: string) => string | Promise<string>;
+import type { JsConcreteValue } from '$lib/wasm/pomollu_engine.js';
+
+/** Resolved value from the frontend. String is supported for backward compatibility. */
+export type ResolvedValue = JsConcreteValue | string;
+export type ResolverFn = (key: string) => ResolvedValue | Promise<ResolvedValue>;
 
 export class ChatSession {
 	private inner: WasmChatSession;
