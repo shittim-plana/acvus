@@ -101,7 +101,6 @@ fn all_builtins_covered() {
         BuiltinId::FlatMap,
         BuiltinId::TakeSeq, BuiltinId::SkipSeq, BuiltinId::ChainSeq,
         BuiltinId::Next, BuiltinId::NextSeq,
-        BuiltinId::PurifyIter,
     ];
 
     let async_set: std::collections::HashSet<BuiltinId> = async_ids.iter().copied().collect();

@@ -1165,29 +1165,7 @@ mod tests {
             assert!(result.is_err(), "FnOnce with local capture double call should be rejected: {result:?}");
         }
 
-        // -- purify_iter tests --
-
-        /// purify_iter converts Effectful to Pure — reuse should be allowed
-        #[test]
-        fn accept_purify_iter_reuse() {
-            let result = compile_script(
-                "x = @src | purify_iter; a = x | collect; b = x | collect; a",
-                &[("src", eff_iter_ty())],
-            );
-            assert!(result.is_ok(), "purified iterator should be reusable (Pure): {result:?}");
-        }
-
-        /// purify_iter on Pure is a no-op
-        #[test]
-        fn accept_purify_iter_pure_passthrough() {
-            let result = compile_script(
-                "@items | purify_iter | collect",
-                &[("items", Ty::List(Box::new(Ty::Int)))],
-            );
-            assert!(result.is_ok(), "purify_iter on Pure should work: {result:?}");
-        }
-
-        /// Effectful without purify_iter — still rejected (soundness baseline)
+        /// Effectful without purify — still rejected (soundness baseline)
         #[test]
         fn reject_effectful_without_purify() {
             let result = compile_script(
@@ -1197,27 +1175,7 @@ mod tests {
             assert!(result.is_err(), "effectful without purify should still be rejected");
         }
 
-        /// purify_iter + HOF pipe chain (filter → map → collect)
-        #[test]
-        fn accept_purify_iter_pipe_chain() {
-            let result = compile_script(
-                "@src | purify_iter | filter(x -> x > 0) | map(x -> x * 2) | collect",
-                &[("src", eff_iter_ty())],
-            );
-            assert!(result.is_ok(), "purify_iter + HOF chain should work: {result:?}");
-        }
-
-        /// purify_iter result stored in $var, reused multiple times
-        #[test]
-        fn accept_purify_iter_var_reuse() {
-            let result = compile_template(
-                "{{ $p = @src | purify_iter }}{{ $p | collect | len | to_string }}{{ $p | collect | len | to_string }}",
-                &[("src", eff_iter_ty())],
-            );
-            assert!(result.is_ok(), "purified in $var should be reusable: {result:?}");
-        }
-
-        /// Effectful in $var without purify — reuse rejected (soundness)
+        /// Effectful in $var — reuse rejected (soundness)
         #[test]
         fn reject_effectful_var_without_purify() {
             let result = compile_template(
@@ -1225,26 +1183,6 @@ mod tests {
                 &[("src", eff_iter_ty())],
             );
             assert!(result.is_err(), "effectful $var without purify should be rejected");
-        }
-
-        /// purify_iter single use (basic completeness)
-        #[test]
-        fn accept_purify_iter_single_use() {
-            let result = compile_script(
-                "@src | purify_iter | collect",
-                &[("src", eff_iter_ty())],
-            );
-            assert!(result.is_ok(), "purify_iter single use should work: {result:?}");
-        }
-
-        /// purify_iter result captured by closure → Fn (not FnOnce, because Pure)
-        #[test]
-        fn accept_purify_iter_capture_not_fnonce() {
-            let result = compile_script(
-                "p = @src | purify_iter; f = (z -> collect(p)); a = f(0); b = f(0); a",
-                &[("src", eff_iter_ty())],
-            );
-            assert!(result.is_ok(), "closure capturing purified should be Fn (not FnOnce): {result:?}");
         }
     }
 }

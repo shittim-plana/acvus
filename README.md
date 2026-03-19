@@ -1,20 +1,21 @@
 # Acvus
 
-A compiled template engine for LLM orchestration. Templates go through a full compiler pipeline — parsing, type checking with variance, MIR lowering, static analysis — before executing as a dependency-resolved DAG. No async runtime dependency. Runs natively in WASM.
+A compiled template engine for LLM orchestration. Templates go through a full compiler pipeline — parsing, type checking with variance, MIR lowering, validation, static analysis — before executing as a dependency-resolved DAG. No async runtime dependency. Runs natively in WASM.
 
 ## How it works
 
 Templates and scripts are compiled, not interpreted:
 
 ```
-Source → AST → Type Check (with variance) → MIR (SSA) → Analysis Passes → DAG → Execution
+Source → AST → Type Check (with variance) → MIR (SSA) → Validation → Analysis Passes → DAG → Execution
 ```
 
 Each stage catches a different class of errors before anything runs:
 
 - **Parser** (lalrpop + logos): Syntax errors, malformed patterns, unclosed blocks.
-- **Type checker**: Mismatched operations (`Int + String`), undefined context references, origin conflicts between deques, variance violations in coercions.
-- **MIR lowering**: SSA intermediate representation with structured control flow, closures, iterators, and tagged variants.
+- **Type checker**: Mismatched operations (`Int + String`), undefined context references, origin conflicts between deques, variance violations in coercions, effect subtyping (`Pure ≤ Effectful`).
+- **MIR lowering**: SSA intermediate representation with structured control flow, closures, iterators, and tagged variants. Explicit `Cast` instructions for all type coercions.
+- **Validation**: Type consistency (every instruction's in/out types match exactly, Cast excluded), move semantics (effectful values consumed at most once).
 - **Analysis passes**: Dead branch pruning, reachable context partitioning (eager vs. lazy), variable mutation tracking. A dependency-aware `PassManager` topologically orders passes by their type-level requirements.
 - **DAG builder**: Infers node dependencies from context references, topologically sorts, detects cycles.
 - **Resolver**: Coroutine-based event loop. Prefetches eager dependencies, defers lazy ones until actually needed. Serializes concurrent writes to the same node state.
@@ -59,7 +60,13 @@ Format strings interpolate expressions inline: `"hello {{ name }}, age {{ age | 
 
 ### Builtins
 
-List: `filter`, `map`, `pmap`, `find`, `reduce`, `fold`, `any`, `all`, `len`, `reverse`, `flatten`, `join`, `contains`.
+Iterator (effect-polymorphic): `filter`, `map`, `pmap`, `find`, `reduce`, `fold`, `any`, `all`, `flatten`, `flat_map`, `join`, `contains`, `first`, `last`, `collect`, `take`, `skip`, `chain`, `iter`, `rev_iter`, `next`.
+
+List: `len`, `reverse`.
+
+Deque (origin-preserving): `append`, `extend`, `consume`.
+
+Sequence (origin-preserving): `take`, `skip`, `chain`, `next`.
 
 Type conversion: `to_string`, `to_float`, `to_int`, `char_to_int`, `int_to_char`.
 
@@ -67,30 +74,57 @@ String: `contains_str`, `substring`, `len_str`, `trim`, `trim_start`, `trim_end`
 
 Byte: `to_bytes`, `to_utf8`, `to_utf8_lossy`.
 
-Other: `unwrap`.
+Option: `unwrap`, `unwrap_or`.
 
 Extension modules (e.g. `acvus-ext`) register additional extern functions at compile time.
 
 ## Type system
 
-Static types with variance. The type checker runs before execution and catches errors that other template engines only surface at runtime.
+Static types with variance and effect tracking. The type checker runs before execution and catches errors that other template engines only surface at runtime.
 
-**Types**: `Int`, `Float`, `String`, `Bool`, `Unit`, `Byte`, `Range`, `List<T>`, `Deque<T>`, `Iterator<T>`, `Option<T>`, `Tuple`, `Object`, `Enum`, `Fn`.
+**Types**: `Int`, `Float`, `String`, `Bool`, `Unit`, `Byte`, `Range`, `List<T>`, `Deque<T, O>`, `Iterator<T, E>`, `Sequence<T, O, E>`, `Option<T>`, `Tuple`, `Object`, `Enum`, `Fn`, `Opaque`.
 
-**Variance**: Covariant, contravariant, and invariant positions are tracked during unification.
+### Variance
 
-- `Deque<T>` unifies to `List<T>` in covariant position (safe widening).
-- `List<T>` unifies to `Iterator<T>` in covariant position.
+Covariant, contravariant, and invariant positions are tracked during unification.
+
+- `Deque<T, O>` coerces to `List<T>` (origin erased). Explicit `Cast` instruction.
+- `List<T>` coerces to `Iterator<T, Pure>`. Explicit `Cast` instruction.
+- `Deque<T, O>` coerces to `Sequence<T, O, Pure>`. Explicit `Cast` instruction.
 - Function parameters are contravariant — polarity flips.
-- Invariant positions require exact match.
+- Generic type parameters are invariant.
 
-**Origin tracking**: Each `Deque` carries an origin identity. Two deques from different `[]` literals have different origins. Mixing them in invariant position is a compile-time error — prevents silent data corruption from accidentally extending the wrong collection.
+All coercions are mediated by explicit `Cast` instructions in MIR. The interpreter never performs implicit type conversions.
 
-**Analysis mode**: Unknown context references get fresh type variables instead of errors, enabling incremental type discovery. The frontend uses this to discover what parameters a template needs and what types they should have, before the user has filled them in.
+### Origin tracking
+
+Each `Deque` carries an origin identity. Two deques from different `[]` literals have different origins. Mixing them in invariant position is a compile-time error — prevents silent data corruption from accidentally extending the wrong collection.
+
+### Effect system
+
+Functions and iterators carry an effect annotation: `Pure` or `Effectful`.
+
+- **Pure**: No side effects. Values are freely copyable.
+- **Effectful**: Has side effects (network calls, non-deterministic). Values are move-only — consumed at most once.
+
+Effect subtyping: `Pure ≤ Effectful` in covariant position. A pure callback is accepted where an effectful callback is expected. Effect variables in builtin signatures bind via lattice join.
+
+### Move semantics
+
+Effectful values (`Iterator<T, Effectful>`, `Sequence<T, O, Effectful>`, `Opaque`) are move-only. The compiler's move check pass performs forward dataflow analysis over the CFG:
+
+- Using a move-only value after it has been consumed is a compile-time error.
+- `$variable` reassignment revives a moved variable.
+- Conservative join at branch merge points: if any branch moves a value, it's moved after the merge.
+- Closures capturing move-only values become FnOnce (single-call).
+
+### Analysis mode
+
+Unknown context references get fresh type variables instead of errors, enabling incremental type discovery. The frontend uses this to discover what parameters a template needs and what types they should have, before the user has filled them in.
 
 ## Orchestration
 
-A project is a set of TOML node definitions and `.acvus` templates:
+A project is a set of node definitions and templates:
 
 ```
 my-project/
@@ -115,8 +149,8 @@ model = "gemini-2.5-flash"
 mode = "once-per-turn"
 
 [persistency]
-kind = "deque"
-inline_bind = "@self | extend(@raw)"
+kind = "sequence"
+inline_bind = "@self | chain([@raw])"
 
 [[messages]]
 role = "system"
@@ -131,9 +165,10 @@ template = "user.acvus"
 ```
 
 **Node kinds**:
-- `llm` — API call to a language model. Messages are compiled templates.
+- `llm` — API call to a language model. Messages are compiled templates. Provider-specific implementations: OpenAI-compatible, Anthropic, Google (Gemini), Google with context caching.
 - `plain` — Template rendering. No API call.
 - `expr` — Script evaluation. Returns a computed value.
+- `iterator` — Iterates over a source and applies per-item template rendering.
 
 **Execution strategies**:
 - `always` — Runs every invocation.
@@ -142,9 +177,8 @@ template = "user.acvus"
 
 **Persistency modes**:
 - `ephemeral` — Not stored.
-- `snapshot` — Full overwrite each turn.
-- `deque` — Append-only with bind script. Tracks diffs.
-- `diff` — Object field-level patches with bind script.
+- `sequence` — Append-only with bind script. Tracks diffs via origin checksums.
+- `patch` — Object field-level patches with bind script.
 
 **Retry and assert**: Nodes can specify `retry` count and an `assert` script (must return `Bool`). If the assert fails, the node retries up to the limit.
 
@@ -152,6 +186,20 @@ template = "user.acvus"
 retry = 3
 assert = "@self | len_str > 0"
 ```
+
+### Function nodes
+
+Nodes can be declared as functions, callable from other nodes' templates:
+
+```toml
+name = "double"
+kind = "expr"
+source = "@x * 2"
+is_function = true
+fn_params = [{ name = "x", type = "Int" }]
+```
+
+Other nodes call them as `@double(5)`. The resolver spawns the function node on demand with typed parameters injected as context.
 
 ### Tool calls
 
@@ -232,6 +280,7 @@ Errors are structured enums at every layer. No string formatting for error const
 
 - **Parse errors**: Span-annotated syntax errors.
 - **Type errors**: `TypeMismatchBinOp`, `UnificationFailure`, `OriginMismatch`, `UndefinedContext`, etc. Each variant carries the relevant types for display.
+- **Validation errors**: `UseAfterMove`, `TypeMismatch` at instruction level. Detected by MIR validation passes before execution.
 - **Orchestration errors**: `CycleDetected`, `RegistryConflict`, `ToolParamType`, etc.
 - **Runtime errors**: Propagated as `Result` through the coroutine protocol. No panics, no unwind. WASM-safe with `panic=abort`.
 
@@ -241,14 +290,14 @@ All error display requires an explicit interner reference — no hidden thread-l
 
 ```
 acvus-ast               Parser (lalrpop + logos)
-acvus-mir               Type checker + MIR lowering (variance, origin tracking)
-acvus-mir-pass          Analysis passes (reachable context, val def map, var dirty)
+acvus-mir               Type checker, MIR lowering, validation, analysis passes, optimization
 acvus-mir-cli           CLI for MIR inspection
 acvus-mir-test          MIR snapshot tests (insta)
 acvus-interpreter       Runtime values, sync execution, RuntimeError
 acvus-interpreter-test  Interpreter e2e tests
 acvus-utils             Astr (interned strings), TrackedDeque, coroutine primitives
 acvus-ext               Extension modules (regex, builtins)
+acvus-lsp               Language server — diagnostics, completions, hover, context key discovery
 acvus-orchestration     Node compilation, DAG, resolver, blob store, storage traits
 acvus-chat              Chat engine — multi-turn orchestration with tree history
 acvus-chat-cli          CLI — TOML projects, multi-provider HTTP
@@ -258,15 +307,15 @@ pomollu-frontend        Web UI (SvelteKit + Tailwind) — block editor, typed pa
 
 ## WASM
 
-The core pipeline has no tokio, no reqwest, no OS dependencies. `acvus-ast`, `acvus-mir`, `acvus-mir-pass`, and `acvus-interpreter` compile to `wasm32-unknown-unknown` directly. `acvus-orchestration` produces `BoxFuture` values — the caller supplies the executor and fetch implementation. Runtime errors use `Result`, not panics, so `panic=abort` is safe.
+The core pipeline has no tokio, no reqwest, no OS dependencies. `acvus-ast`, `acvus-mir`, and `acvus-interpreter` compile to `wasm32-unknown-unknown` directly. `acvus-orchestration` produces `BoxFuture` values — the caller supplies the executor and fetch implementation. Runtime errors use `Result`, not panics, so `panic=abort` is safe.
 
 `pomollu-engine` exposes WASM bindings for the browser:
 
-- `analyze()` — discover context keys and infer types.
-- `typecheck()` — full type checking with span-annotated errors.
-- `typecheckNodes()` — whole-project orchestration type check.
 - `evaluate()` — execute a template with given context.
-- `ChatSession` — multi-turn execution with tree history, undo, fork, and branch navigation.
+- `ChatSession` — multi-turn execution with tree history, undo, fork, and branch navigation. Resolver callback supports typed values (`JsConcreteValue`) with backward-compatible string fallback.
+- `LanguageSession` — incremental document analysis: diagnostics, completions, context key discovery, whole-project node type checking (`rebuildNodes`).
+
+All input/output types use tsify for auto-generated TypeScript bindings. No manual JS↔Rust conversion at the API boundary.
 
 ## Examples
 
