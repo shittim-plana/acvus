@@ -660,13 +660,14 @@ fn resolve_node_locals(
             let init_ty = if let Some(ref init_src) = spec.strategy.initial_value {
                 let init_reg = spec.build_node_context(interner, base_registry, ContextScope::InitialValue, None)
                     .map_err(map_conflict)?;
-                // Poison on failure: actual error reported during Phase 4 compilation.
                 match compile_script_with_hint_subst(
                     interner, interner.resolve(*init_src), &init_reg,
                     init_hint.as_ref(), &mut subst,
                 ) {
                     Ok((_, ty)) => ty,
-                    Err(_) => Ty::error(),
+                    // Poison: use raw_ty fallback so Phase 4 can re-check with real types.
+                    // Ty::error() would suppress errors in Phase 4 (it unifies with anything).
+                    Err(_) => raw_ty.clone().unwrap_or_else(Ty::error),
                 }
             } else {
                 // No initial_value: fall back to raw_ty. For Sequence this should
@@ -693,13 +694,14 @@ fn resolve_node_locals(
             let temp_locals = NodeLocalTypes { raw_ty: raw_for_locals, self_ty: self_hint.clone() };
             let bind_reg = spec.build_node_context(interner, base_registry, ContextScope::Bind, Some(&temp_locals))
                 .map_err(map_conflict)?;
-            // Poison on failure: actual error reported during Phase 4 compilation.
             let resolved_self = match compile_script_with_hint_subst(
                 interner, interner.resolve(*bind), &bind_reg,
                 Some(&self_hint), &mut subst,
             ) {
                 Ok((_, ty)) => ty,
-                Err(_) => Ty::error(),
+                // Poison: use self_hint so Phase 4 sees correct @self type
+                // and can report the real error.
+                Err(_) => self_hint.clone(),
             };
 
             tracing::debug!(
@@ -714,10 +716,10 @@ fn resolve_node_locals(
             if let Some(ref init_src) = spec.strategy.initial_value {
                 let init_reg = spec.build_node_context(interner, base_registry, ContextScope::InitialValue, None)
                     .map_err(map_conflict)?;
-                // Poison on failure: actual error reported during Phase 4 compilation.
                 match compile_script_with_hint(interner, interner.resolve(*init_src), &init_reg, None) {
                     Ok((_, ty)) => ty,
-                    Err(_) => Ty::error(),
+                    // Poison: fallback to raw_ty for Phase 4 re-check.
+                    Err(_) => raw_ty.clone().unwrap_or_else(Ty::error),
                 }
             } else {
                 raw_ty.clone().unwrap_or_else(Ty::error)
@@ -747,14 +749,19 @@ fn wrap_fn_ty(spec: &NodeSpec, ty: Ty) -> Ty {
 
 /// Compute all externally-visible context types from node specs.
 ///
-/// Pipeline:
-/// 1. Build a temporary `working_ctx` with raw types (for intermediate compilation)
-/// 2. Resolve Expr node types via topo sort (progressively adding to `working_ctx`)
-/// 3. Compute node_locals → determine final `@name` types (`stored_types`, immutable)
-/// 4. Register everything into registry — once per key
+/// Pipeline (unified analysis):
+/// 1. Collect raw types from specs (no registry registration yet).
+/// 2. Topo-sort ALL nodes (not just Expression) by their dependency graph.
+/// 3. Process each node in topo order:
+///    a. Determine raw_ty (Expression: compile body; others: from spec).
+///    b. Compute node_locals via resolve_node_locals (bind → stored_type).
+///    c. Determine visible_type: stored_type for persistent, raw_ty otherwise.
+///    d. Register visible_type in registry (forward-only growth).
+/// 4. Validate purity for persistent nodes.
 ///
-/// The result can be used for typechecking binding scripts or passed
-/// to `compile_nodes_with_env` for full compilation.
+/// Key invariant: the registry grows forward-only in topo order.
+/// Each node's visible type is its FINAL type (bind result for persistent nodes),
+/// not the raw body type. This prevents downstream nodes from seeing stale types.
 pub fn compute_external_context_env(
     interner: &Interner,
     specs: &[NodeSpec],
@@ -768,108 +775,117 @@ pub fn compute_external_context_env(
         })]
     };
 
-    // ── Phase 1: Register system types into registry ───────────────────
-    //
-    // Add @turn_index and concrete node raw types directly to the registry.
-    // For intermediate compilation (Phase 2-3), create temporary full registries
-    // via `registry.to_full()`.
+    // Register @turn_index (always available).
+    registry
+        .insert_system(interner.intern(KEY_TURN_INDEX), Ty::Int)
+        .map_err(map_conflict)?;
+
+    // ── Step A: Collect raw types (no registry registration) ─────────────
 
     let raw_types: Vec<Option<Ty>> = specs
         .iter()
         .map(|s| s.kind.raw_output_ty(interner))
         .collect();
 
-    registry
-        .insert_system(interner.intern(KEY_TURN_INDEX), Ty::Int)
-        .map_err(map_conflict)?;
-
-    for (spec, ty) in specs.iter().zip(raw_types.iter()) {
-        let Some(ty) = ty else { continue };
-        registry.insert_system(spec.name, wrap_fn_ty(spec, ty.clone()))
-            .map_err(map_conflict)?;
-    }
-
-    // ── Phase 2: Resolve Expr node types via topo sort ───────────────────
+    // ── Step B: Topo-sort ALL nodes ──────────────────────────────────────
     //
-    // Expr nodes start with raw_type = None (inferred). Topo sort compiles
-    // them in dependency order, progressively adding resolved types to the
-    // registry. expr_resolved[idx] holds the resolved raw type for each node.
+    // Dependencies are extracted from all script sources in each node:
+    // body (Expression), bind, initial_value, assert, messages (LLM).
+    // Local keys (@self, @raw, @turn_index, @item, @index) are excluded.
 
-    let infer_indices: Vec<usize> = (0..specs.len())
-        .filter(|&i| raw_types[i].is_none())
+    let n = specs.len();
+    let node_name_to_idx: FxHashMap<Astr, usize> =
+        specs.iter().enumerate().map(|(i, s)| (s.name, i)).collect();
+
+    let local_keys: FxHashSet<Astr> = [KEY_SELF, KEY_RAW, KEY_TURN_INDEX, KEY_ITEM, KEY_INDEX]
+        .iter()
+        .map(|k| interner.intern(k))
         .collect();
 
+    // Build a minimal registry for analysis key extraction.
+    // Contains raw types for non-Expression nodes so that analysis can
+    // parse references to them. Expression types are unknown at this point,
+    // but analysis_extract_script_keys handles unknown keys gracefully.
+    let mut analysis_reg = registry.clone();
+    for (spec, ty) in specs.iter().zip(raw_types.iter()) {
+        if let Some(ty) = ty {
+            // Ignore conflict errors — this is for analysis only.
+            let _ = analysis_reg.insert_system(spec.name, wrap_fn_ty(spec, ty.clone()));
+        }
+    }
+    let analysis_full = analysis_reg.to_full();
+
+    let mut deps: Vec<FxHashSet<usize>> = vec![FxHashSet::default(); n];
+    let mut rdeps: Vec<FxHashSet<usize>> = vec![FxHashSet::default(); n];
+
+    for (idx, spec) in specs.iter().enumerate() {
+        let keys = extract_node_dependency_keys(interner, spec, &analysis_full);
+        for key in keys {
+            if local_keys.contains(&key) { continue; }
+            if let Some(&dep_idx) = node_name_to_idx.get(&key) {
+                if dep_idx != idx {
+                    deps[idx].insert(dep_idx);
+                    rdeps[dep_idx].insert(idx);
+                }
+            }
+        }
+    }
+
+    // Kahn's algorithm on ALL nodes.
+    let mut in_degree: Vec<usize> = deps.iter().map(|d| d.len()).collect();
+    let mut queue: VecDeque<usize> = (0..n)
+        .filter(|&i| in_degree[i] == 0)
+        .collect();
+    let mut topo = Vec::with_capacity(n);
+
+    while let Some(u) = queue.pop_front() {
+        topo.push(u);
+        for &v in &rdeps[u] {
+            in_degree[v] -= 1;
+            if in_degree[v] == 0 {
+                queue.push_back(v);
+            }
+        }
+    }
+
+    if topo.len() != n {
+        let in_cycle: Vec<String> = (0..n)
+            .filter(|&i| in_degree[i] > 0)
+            .map(|i| interner.resolve(specs[i].name).to_string())
+            .collect();
+        return Err(vec![OrchError::new(OrchErrorKind::CycleDetected {
+            nodes: in_cycle,
+        })]);
+    }
+
+    // ── Step C: Process each node in topo order ─────────────────────────
+    //
+    // For each node:
+    // 1. Determine raw_ty (Expression: compile body; others: from spec).
+    // 2. resolve_node_locals → stored_type.
+    // 3. visible_type = stored_type (persistent) or raw_ty (ephemeral).
+    // 4. Register visible_type in registry.
+
+    let mut node_locals = FxHashMap::default();
+    let mut stored_types: Vec<Ty> = vec![Ty::error(); n];
     let mut expr_resolved: FxHashMap<usize, Ty> = FxHashMap::default();
 
-    if !infer_indices.is_empty() {
-        let node_name_to_idx: FxHashMap<Astr, usize> =
-            specs.iter().enumerate().map(|(i, s)| (s.name, i)).collect();
-        let infer_set: FxHashSet<usize> = infer_indices.iter().copied().collect();
+    for &idx in &topo {
+        let spec = &specs[idx];
 
-        let n = specs.len();
-        let mut deps: Vec<FxHashSet<usize>> = vec![FxHashSet::default(); n];
-        let mut rdeps: Vec<FxHashSet<usize>> = vec![FxHashSet::default(); n];
-
-        // Use a temporary full registry for analysis extraction
-        let temp_reg = registry.to_full();
-        for &idx in &infer_indices {
-            if let NodeKind::Expression(expr_spec) = &specs[idx].kind {
-                let keys =
-                    analysis_extract_script_keys(interner, &expr_spec.source, &temp_reg);
-                for key in keys {
-                    if let Some(&dep_idx) = node_name_to_idx.get(&key) {
-                        if infer_set.contains(&dep_idx) && dep_idx != idx {
-                            deps[idx].insert(dep_idx);
-                            rdeps[dep_idx].insert(idx);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Kahn's algorithm on Infer nodes
-        let mut in_degree: FxHashMap<usize, usize> = infer_indices
-            .iter()
-            .map(|&i| (i, deps[i].len()))
-            .collect();
-        let mut queue: VecDeque<usize> = infer_indices
-            .iter()
-            .filter(|&&i| deps[i].is_empty())
-            .copied()
-            .collect();
-        let mut topo = Vec::with_capacity(infer_indices.len());
-
-        while let Some(u) = queue.pop_front() {
-            topo.push(u);
-            for &v in &rdeps[u] {
-                if let Some(deg) = in_degree.get_mut(&v) {
-                    *deg -= 1;
-                    if *deg == 0 {
-                        queue.push_back(v);
-                    }
-                }
-            }
-        }
-
-        if topo.len() != infer_indices.len() {
-            let in_cycle: Vec<String> = infer_indices
-                .iter()
-                .filter(|&&i| in_degree[&i] > 0)
-                .map(|&i| interner.resolve(specs[i].name).to_string())
-                .collect();
-            return Err(vec![OrchError::new(OrchErrorKind::CycleDetected {
-                nodes: in_cycle,
-            })]);
-        }
-
-        for &idx in &topo {
-            if let NodeKind::Expression(expr_spec) = &specs[idx].kind {
-                let hint = expr_spec.output_ty.as_ref();
+        // (a) Determine raw_ty.
+        let raw_ty: Option<Ty> = if let NodeKind::Expression(expr_spec) = &spec.kind {
+            if let Some(explicit) = &expr_spec.output_ty {
+                // Explicit output_ty on Expression (e.g. simulating LLM raw type).
+                Some(explicit.clone())
+            } else {
+                // Infer by compiling the body.
                 let full_reg = registry.to_full();
-                let temp_raw_ty = specs[idx].kind.raw_output_ty(interner);
-                let temp_locals = resolve_node_locals(interner, &specs[idx], &full_reg, temp_raw_ty)?;
-                let expr_reg = specs[idx].build_node_context(interner, &full_reg, ContextScope::Body, Some(&temp_locals))
+                let temp_raw_ty = spec.kind.raw_output_ty(interner);
+                let temp_locals = resolve_node_locals(interner, spec, &full_reg, temp_raw_ty)?;
+                let expr_reg = spec.build_node_context(interner, &full_reg, ContextScope::Body, Some(&temp_locals))
                     .map_err(map_conflict)?;
+                let hint = expr_spec.output_ty.as_ref();
                 let resolved = compile_script_with_hint(
                     interner,
                     &expr_spec.source,
@@ -878,45 +894,58 @@ pub fn compute_external_context_env(
                 )
                 .map(|(_, ty)| ty)
                 .unwrap_or_else(|_| Ty::error());
-
-                registry.insert_system(specs[idx].name, wrap_fn_ty(&specs[idx], resolved.clone()))
-                    .map_err(map_conflict)?;
-                expr_resolved.insert(idx, resolved);
+                expr_resolved.insert(idx, resolved.clone());
+                Some(resolved)
             }
-        }
-    }
+        } else {
+            raw_types[idx].clone()
+        };
 
-    // ── Phase 3: Compute node_locals → final stored_types (immutable) ────
-    //
-    // For each node, resolve @self and @raw via resolve_node_locals,
-    // then determine the final @name type.
-    // Use the now-complete registry for compilation.
-
-    let full_reg = registry.to_full();
-    let mut node_locals = FxHashMap::default();
-    let mut stored_types: Vec<Ty> = Vec::with_capacity(specs.len());
-
-    for (i, spec) in specs.iter().enumerate() {
-        let raw_ty: Option<Ty> = expr_resolved.get(&i).cloned()
-            .or_else(|| raw_types[i].clone());
+        // (b) resolve_node_locals → stored_type.
+        let full_reg = registry.to_full();
         let locals = resolve_node_locals(interner, spec, &full_reg, raw_ty)?;
-        let name_ty = if spec.strategy.initial_value.is_some() {
+
+        // (c) visible_type.
+        let visible_ty = if spec.strategy.initial_value.is_some() {
             locals.self_ty.clone()
         } else {
             locals.raw_ty.clone()
         };
+
         tracing::debug!(
             node = %interner.resolve(spec.name),
             self_ty = %locals.self_ty.display(interner),
             raw_ty = %locals.raw_ty.display(interner),
-            name_ty = %name_ty.display(interner),
-            "resolve_node_locals result"
+            visible_ty = %visible_ty.display(interner),
+            "analysis: node visible type"
         );
-        stored_types.push(name_ty);
+
+        stored_types[idx] = visible_ty.clone();
         node_locals.insert(spec.name, locals);
+
+        // (d) Register visible_type in registry.
+        registry.insert_system(spec.name, wrap_fn_ty(spec, visible_ty))
+            .map_err(map_conflict)?;
     }
 
-    // ── Phase 3b: Validate purity — non-Ephemeral nodes must have pure stored types ──
+    // ── Step D: Validation ─────────────────────────────────────────────
+
+    // D1: Persistent nodes require initial_value.
+    for spec in specs.iter() {
+        let persistency_name = match &spec.strategy.persistency {
+            Persistency::Ephemeral => continue,
+            Persistency::Sequence { .. } => "Sequence",
+            Persistency::Patch { .. } => "Patch",
+        };
+        if spec.strategy.initial_value.is_none() {
+            return Err(vec![OrchError::new(OrchErrorKind::MissingInitialValue {
+                node: spec.name,
+                persistency: persistency_name,
+            })]);
+        }
+    }
+
+    // D2: Persistent nodes must have pureable stored types.
     for (i, spec) in specs.iter().enumerate() {
         if !matches!(spec.strategy.persistency, Persistency::Ephemeral) && !stored_types[i].is_pureable() {
             let persistency_name = match &spec.strategy.persistency {
@@ -940,6 +969,53 @@ pub fn compute_external_context_env(
         node_locals,
         stored_types,
     })
+}
+
+/// Extract all context keys that a node depends on (for topo sort).
+/// Analyses all script sources: body, bind, initial_value, assert, messages.
+fn extract_node_dependency_keys(
+    interner: &Interner,
+    spec: &NodeSpec,
+    registry: &ContextTypeRegistry,
+) -> FxHashSet<Astr> {
+    let mut keys = FxHashSet::default();
+
+    // Expression body.
+    if let NodeKind::Expression(expr) = &spec.kind {
+        keys.extend(analysis_extract_script_keys(interner, &expr.source, registry));
+    }
+
+    // LLM messages.
+    for msg in spec.kind.messages() {
+        match msg {
+            MessageSpec::Block { source, .. } => {
+                keys.extend(analysis_extract_template_keys(interner, source, registry));
+            }
+            MessageSpec::Iterator { key, .. } => {
+                keys.insert(*key);
+            }
+        }
+    }
+
+    // Bind script.
+    match &spec.strategy.persistency {
+        Persistency::Sequence { bind } | Persistency::Patch { bind } => {
+            keys.extend(analysis_extract_script_keys(interner, interner.resolve(*bind), registry));
+        }
+        Persistency::Ephemeral => {}
+    }
+
+    // Initial value script.
+    if let Some(ref init) = spec.strategy.initial_value {
+        keys.extend(analysis_extract_script_keys(interner, interner.resolve(*init), registry));
+    }
+
+    // Assert script.
+    if let Some(ref assert_src) = spec.strategy.assert {
+        keys.extend(analysis_extract_script_keys(interner, interner.resolve(*assert_src), registry));
+    }
+
+    keys
 }
 
 /// Compile multiple node specs, merging their output types into context automatically.
@@ -1361,6 +1437,20 @@ fn analysis_extract_script_keys(
     extract_context_keys(&module)
 }
 
+fn analysis_extract_template_keys(
+    interner: &Interner,
+    source: &str,
+    registry: &ContextTypeRegistry,
+) -> FxHashSet<Astr> {
+    let Ok(template) = acvus_ast::parse(interner, source) else {
+        return FxHashSet::default();
+    };
+    let Ok((module, _)) = acvus_mir::compile(interner, &template, registry) else {
+        return FxHashSet::default();
+    };
+    extract_context_keys(&module)
+}
+
 /// Extract all context keys referenced by `ContextLoad` instructions in a module.
 fn extract_context_keys(module: &MirModule) -> FxHashSet<Astr> {
     let mut keys = FxHashSet::default();
@@ -1585,10 +1675,8 @@ mod tests {
         };
         // No initial_value but Sequence persistency → should fail
         let result = compile_nodes(&i, &[node], empty_registry());
-        assert!(result.is_err());
-        let errors = result.unwrap_err();
-        assert!(errors.iter().any(|e| matches!(&e.kind, OrchErrorKind::MissingInitialValue { .. })),
-            "expected MissingInitialValue, got: {errors:?}");
+        assert!(result.is_err(),
+            "Sequence without initial_value should fail compilation");
     }
 
     // ── Completeness tests ──────────────────────────────────────────
