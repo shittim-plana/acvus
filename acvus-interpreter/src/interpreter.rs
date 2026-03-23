@@ -571,7 +571,14 @@ impl Interpreter {
             }
             InstKind::ListIndex { dst, list, index } => {
                 let val = match frame.get(*list) {
-                    Value::List(l) => l[*index as usize].share(),
+                    Value::List(l) => {
+                        let idx = if *index < 0 {
+                            (l.len() as i32 + *index) as usize
+                        } else {
+                            *index as usize
+                        };
+                        l[idx].share()
+                    }
                     other => panic!("ListIndex on non-list: {other:?}"),
                 };
                 frame.set(*dst, val);
