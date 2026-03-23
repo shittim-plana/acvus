@@ -117,10 +117,16 @@ pub async fn run(
 
     let cr = compile(interner, source, &context_types);
 
-    // Debug: dump entry module IR
+    // Debug: dump entry module IR + closures
     if let Some(module) = cr.modules.get(&cr.entry_id) {
         let ir = acvus_mir::printer::dump_with(interner, module);
         eprintln!("=== IR for entry ===\n{ir}");
+        for (label, closure) in &module.closures {
+            eprintln!("=== Closure {label:?} ===");
+            for (i, inst) in closure.insts.iter().enumerate() {
+                eprintln!("  {i}: {:?}", inst.kind);
+            }
+        }
     }
 
     let builtin_handlers = acvus_interpreter::builtins::build_builtins(&cr.builtin_ids, interner);

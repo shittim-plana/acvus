@@ -733,6 +733,7 @@ impl<'a> Lowerer<'a> {
                 // Swap state.
                 let saved_body = std::mem::replace(&mut self.body, sub_body);
                 let saved_scopes = std::mem::replace(&mut self.scopes, sub_scopes);
+                let saved_projections = std::mem::replace(&mut self.projections, FxHashSet::default());
 
                 // lower_expr calls maybe_cast(body.span(), val) which will
                 // pick up any lambda return coercion registered by the typechecker.
@@ -748,6 +749,7 @@ impl<'a> Lowerer<'a> {
 
                 let mut closure_body_mir = std::mem::replace(&mut self.body, saved_body);
                 self.scopes = saved_scopes;
+                self.projections = saved_projections;
 
                 closure_body_mir.capture_regs = closure_capture_regs;
                 closure_body_mir.param_regs = closure_param_regs;
