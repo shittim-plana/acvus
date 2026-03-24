@@ -1933,7 +1933,7 @@ mod tests {
         let i = Interner::new();
         let context = FxHashMap::from_iter([(i.intern("items"), Ty::List(Box::new(Ty::Int)))]);
         let src =
-            "{{ x = @items | filter(x -> x != 0) | collect }}{{ x | len | to_string }}{{_}}{{/}}";
+            "{{ x = @items | filter(|x| -> x != 0) | collect }}{{ x | len | to_string }}{{_}}{{/}}";
         let result = check_with_interner(src, &context, &i);
         assert!(result.is_ok());
     }
@@ -2230,7 +2230,7 @@ mod tests {
             (i.intern("threshold"), Ty::Int),
         ]);
         // threshold is captured by the lambda
-        let src = "{{ @items | filter(x -> x > @threshold) | collect | len | to_string }}";
+        let src = "{{ @items | filter(|x| -> x > @threshold) | collect | len | to_string }}";
         assert!(check_with_interner(src, &ctx, &i).is_ok());
     }
 
@@ -2239,7 +2239,7 @@ mod tests {
         // Lambda params are local, not captures.
         let i = Interner::new();
         let ctx = FxHashMap::from_iter([(i.intern("items"), Ty::List(Box::new(Ty::Int)))]);
-        let src = "{{ @items | map(x -> x + 1) | collect | len | to_string }}";
+        let src = "{{ @items | map(|x| -> x + 1) | collect | len | to_string }}";
         assert!(check_with_interner(src, &ctx, &i).is_ok());
     }
 
@@ -2252,7 +2252,7 @@ mod tests {
             (i.intern("factor"), Ty::Int),
         ]);
         // Inner lambda captures @factor from context (not from outer lambda scope).
-        let src = "{{ @items | map(x -> x * @factor) | collect | len | to_string }}";
+        let src = "{{ @items | map(|x| -> x * @factor) | collect | len | to_string }}";
         assert!(check_with_interner(src, &ctx, &i).is_ok());
     }
 }

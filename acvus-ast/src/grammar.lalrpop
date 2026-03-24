@@ -4,7 +4,7 @@ use crate::ast::*;
 use crate::span::Span;
 use crate::token::Token;
 use crate::error::{ParseError, ParseErrorKind};
-use crate::tag_content::{TagContent, ListElem, expr_to_lambda, build_list};
+use crate::tag_content::{TagContent, ListElem, build_list};
 use crate::parser::expr_to_pattern;
 
 grammar(interner: &Interner);
@@ -121,25 +121,29 @@ pub TagContent: TagContent = {
 // ── Expressions (precedence climbing) ──────────────────────────────────
 
 Expr: Expr = {
+    // Lambda: |params| -> body (body is full Expr, so pipes are allowed inside)
+    <l:@L> "|" <params:CommaSep<LambdaParamRule>> "|" "->" <body:Expr> <r:@R> =>
+        Expr::Lambda {
+            params,
+            body: Box::new(body),
+            span: Span::new(l, r),
+        },
     PipeExpr,
 };
 
-// Pipe: left-associative (lowest precedence)
+// Pipe: left-associative (lowest precedence among non-lambda)
 PipeExpr: Expr = {
-    <l:@L> <left:PipeExpr> "|" <right:LambdaExpr> <r:@R> =>
+    <l:@L> <left:PipeExpr> "|" <right:OrExpr> <r:@R> =>
         Expr::Pipe {
             left: Box::new(left),
             right: Box::new(right),
             span: Span::new(l, r),
         },
-    LambdaExpr,
+    OrExpr,
 };
 
-// Lambda: OrExpr -> LambdaExpr (right-associative)
-LambdaExpr: Expr = {
-    <l:@L> <params:OrExpr> "->" <body:LambdaExpr> <r:@R> =>
-        expr_to_lambda(interner, params, body, Span::new(l, r)),
-    OrExpr,
+LambdaParamRule: LambdaParam = {
+    <l:@L> <name:"ident"> <r:@R> => LambdaParam { name, span: Span::new(l, r) },
 };
 
 // Logical Or: left-associative

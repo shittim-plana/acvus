@@ -135,7 +135,7 @@ pub enum Expr {
         right: Box<Expr>,
         span: Span,
     },
-    /// Lambda: `x -> expr` or `(x, y) -> expr`.
+    /// Lambda: `|x| -> expr` or `|x, y| -> expr`.
     Lambda {
         params: Vec<LambdaParam>,
         body: Box<Expr>,

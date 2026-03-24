@@ -3,6 +3,7 @@ pub mod error;
 pub mod lexer;
 pub mod parser;
 pub mod span;
+pub mod substitute;
 pub mod tag_content;
 pub mod token;
 

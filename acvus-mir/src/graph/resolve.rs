@@ -1403,7 +1403,7 @@ mod tests {
                 ("make_list", "[1, 2, 3]", Some(vec![]), Constraint::Inferred),
                 (
                     "main",
-                    "make_list() | iter | map(x -> x + 1) | collect | len",
+                    "make_list() | iter | map(|x| -> x + 1) | collect | len",
                     None,
                     Constraint::Inferred,
                 ),

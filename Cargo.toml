@@ -14,7 +14,8 @@ members = [
     "acvus-ext",
     "acvus-lsp",
     "acvus-orchestration-test",
-    "pomollu-engine"
+    "pomollu-engine",
+    "acvus-macro"
 ]
 
 [workspace.dependencies]

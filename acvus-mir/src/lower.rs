@@ -1212,7 +1212,7 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // Expression call (e.g., (x -> x)(42), or complex pipe)
+        // Expression call (e.g., (|x| -> x)(42), or complex pipe)
         self.set_origin(dst, ValOrigin::Call(self.interner.intern("<closure>")));
         let func_reg = self.lower_expr(func);
         self.emit_inst(

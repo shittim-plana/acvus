@@ -116,6 +116,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "acvus-macro"
+version = "0.1.0"
+dependencies = [
+ "acvus-ast",
+ "acvus-utils",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "acvus-mir"
 version = "0.1.0"
 dependencies = [
@@ -188,6 +199,8 @@ dependencies = [
 name = "acvus-utils"
 version = "0.1.0"
 dependencies = [
+ "acvus-ast",
+ "acvus-macro",
  "futures",
  "parking_lot",
  "rustc-hash",

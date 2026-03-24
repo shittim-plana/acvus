@@ -49,7 +49,7 @@ Default case.
 {{ @input | trim }}
 
 {{-- Lambda + pipe --}}
-{{ @messages | filter(m -> m.role == "user") | len | to_string }}
+{{ @messages | filter(|m| -> m.role == "user") | len | to_string }}
 ```
 
 String is the only emit type. Explicit `to_string` required for non-string values. `Int + Float` arithmetic is a type error — explicit conversion needed.

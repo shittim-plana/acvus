@@ -871,7 +871,7 @@ mod tests {
         let context =
             FxHashMap::from_iter([(interner.intern("items"), Ty::List(Box::new(Ty::Int)))]);
         let out = compile_and_dump(
-            "{{ x = @items | filter(x -> x != 0) | collect }}{{ x | len | to_string }}{{_}}{{/}}",
+            "{{ x = @items | filter(|x| -> x != 0) | collect }}{{ x | len | to_string }}{{_}}{{/}}",
             &context,
             &interner,
         );

@@ -1070,7 +1070,7 @@ mod tests {
         #[test]
         fn accept_effectful_pipe_chain() {
             let result = compile_script(
-                "@src | filter(x -> x > 0) | map(x -> x * 2) | collect",
+                "@src | filter(|x| -> x > 0) | map(|x| -> x * 2) | collect",
                 &[("src", eff_iter_ty())],
             );
             assert!(
@@ -1175,7 +1175,7 @@ mod tests {
         #[test]
         fn reject_fnonce_double_call() {
             let result = compile_script(
-                "x = @src; f = (z -> collect(x)); a = f(0); b = f(0); a",
+                "x = @src; f = (|z| -> collect(x)); a = f(0); b = f(0); a",
                 &[("src", eff_iter_ty())],
             );
             assert!(
@@ -1189,7 +1189,7 @@ mod tests {
         #[test]
         fn accept_pure_capture_fn_multi_call() {
             let result = compile_script(
-                "x = @val; f = (a -> x + a); a = f(1); b = f(2); a + b",
+                "x = @val; f = (|a| -> x + a); a = f(1); b = f(2); a + b",
                 &[("val", Ty::Int)],
             );
             assert!(
@@ -1202,7 +1202,7 @@ mod tests {
         #[test]
         fn accept_fnonce_single_call() {
             let result = compile_script(
-                "x = @src; f = (z -> collect(x)); f(0)",
+                "x = @src; f = (|z| -> collect(x)); f(0)",
                 &[("src", eff_iter_ty())],
             );
             assert!(
@@ -1219,7 +1219,7 @@ mod tests {
             // flat_map expects Fn(T) → Iterator<U>
             // Lambda body [x, x*2] returns Deque → DequeToIterator Cast inserted
             let result = compile_script(
-                "@items | flat_map(x -> [x, x * 2]) | collect",
+                "@items | flat_map(|x| -> [x, x * 2]) | collect",
                 &[("items", Ty::List(Box::new(Ty::Int)))],
             );
             assert!(
@@ -1232,7 +1232,7 @@ mod tests {
         #[test]
         fn accept_lambda_return_scalar() {
             let result = compile_script(
-                "@items | map(x -> x + 1) | collect",
+                "@items | map(|x| -> x + 1) | collect",
                 &[("items", Ty::List(Box::new(Ty::Int)))],
             );
             assert!(
@@ -1245,7 +1245,7 @@ mod tests {
         #[test]
         fn accept_nested_flat_map_deque_return() {
             let result = compile_script(
-                "@items | flat_map(x -> [x, x + 10]) | map(x -> x * 2) | collect",
+                "@items | flat_map(|x| -> [x, x + 10]) | map(|x| -> x * 2) | collect",
                 &[("items", Ty::List(Box::new(Ty::Int)))],
             );
             assert!(
@@ -1262,7 +1262,7 @@ mod tests {
         fn accept_fnonce_passed_to_map() {
             // f captures effectful, passed to map (single use of f at MIR level)
             let result = compile_script(
-                "x = @src; f = (z -> collect(x)); @items | map(f) | collect",
+                "x = @src; f = (|z| -> collect(x)); @items | map(f) | collect",
                 &[
                     ("src", eff_iter_ty()),
                     ("items", Ty::List(Box::new(Ty::Int))),
@@ -1280,7 +1280,7 @@ mod tests {
         #[test]
         fn accept_lambda_context_in_body_is_fn() {
             let result = compile_template(
-                "{{ $f = (z -> collect(@src)) }}{{ $f(0) | len | to_string }}{{ $f(0) | len | to_string }}",
+                "{{ $f = (|z| -> collect(@src)) }}{{ $f(0) | len | to_string }}{{ $f(0) | len | to_string }}",
                 &[("src", eff_iter_ty())],
             );
             // @src is NOT captured — it's loaded fresh each call via ContextLoad.
@@ -1295,7 +1295,7 @@ mod tests {
         #[test]
         fn reject_fnonce_local_capture_double() {
             let result = compile_script(
-                "x = @src; f = (z -> collect(x)); a = f(0); b = f(0); a",
+                "x = @src; f = (|z| -> collect(x)); a = f(0); b = f(0); a",
                 &[("src", eff_iter_ty())],
             );
             assert!(

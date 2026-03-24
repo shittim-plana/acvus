@@ -1116,7 +1116,7 @@ async fn effect_fn_type_cannot_persist() {
     // A lambda expression produces a Fn type.
     // Attempting to persist it via Patch should fail.
     let result = NodeBuilder::new(Interner::new())
-        .patch("f", r#"\x -> x + 1"#, "@raw", r#"\x -> x"#)
+        .patch("f", r#"|x| -> x + 1"#, "@raw", r#"|x| -> x"#)
         .try_build();
     assert!(
         result.is_err(),

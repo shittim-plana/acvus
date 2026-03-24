@@ -850,7 +850,7 @@ mod tests {
     #[test]
     fn tokenize_complex_expr() {
         let interner = Interner::new();
-        let tokens: Vec<_> = ExprTokenizer::new("list | filter(x -> x != 0)", 0, &interner)
+        let tokens: Vec<_> = ExprTokenizer::new("list | filter(|x| -> x != 0)", 0, &interner)
             .collect::<Result<_, _>>()
             .unwrap();
         let types: Vec<_> = tokens.iter().map(|t| &t.1).collect();
@@ -858,12 +858,14 @@ mod tests {
         assert!(matches!(types[1], Token::Pipe));
         assert!(matches!(types[2], Token::Ident(s) if interner.resolve(*s) == "filter"));
         assert!(matches!(types[3], Token::LParen));
-        assert!(matches!(types[4], Token::Ident(s) if interner.resolve(*s) == "x"));
-        assert!(matches!(types[5], Token::Arrow));
-        assert!(matches!(types[6], Token::Ident(s) if interner.resolve(*s) == "x"));
-        assert!(matches!(types[7], Token::Neq));
-        assert!(matches!(types[8], Token::IntLit(0)));
-        assert!(matches!(types[9], Token::RParen));
+        assert!(matches!(types[4], Token::Pipe));
+        assert!(matches!(types[5], Token::Ident(s) if interner.resolve(*s) == "x"));
+        assert!(matches!(types[6], Token::Pipe));
+        assert!(matches!(types[7], Token::Arrow));
+        assert!(matches!(types[8], Token::Ident(s) if interner.resolve(*s) == "x"));
+        assert!(matches!(types[9], Token::Neq));
+        assert!(matches!(types[10], Token::IntLit(0)));
+        assert!(matches!(types[11], Token::RParen));
     }
 
     #[test]

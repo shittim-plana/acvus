@@ -111,7 +111,7 @@ mod tests {
         let i = Interner::new();
         assert!(compile_template(
             &i,
-            r#"{{ x = @items | filter(x -> x != 0) | collect }}{{ x | len | to_string }}{{_}}{{/}}"#,
+            r#"{{ x = @items | filter(|x| -> x != 0) | collect }}{{ x | len | to_string }}{{_}}{{/}}"#,
             &[("items", Ty::List(Box::new(Ty::Int)))],
         ).is_ok());
     }
@@ -282,7 +282,7 @@ mod tests {
         let ctx = extern_fn_ctx(&i);
         assert!(compile_template(
             &i,
-            r#"{{ x = @items | map(i -> @mapper(i)) | collect }}{{ x | len | to_string }}{{_}}{{/}}"#,
+            r#"{{ x = @items | map(|i| -> @mapper(i)) | collect }}{{ x | len | to_string }}{{_}}{{/}}"#,
             &ctx,
         ).is_ok());
     }

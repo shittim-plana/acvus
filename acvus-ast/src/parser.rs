@@ -705,7 +705,7 @@ mod tests {
 
     #[test]
     fn parse_pipe_and_lambda() {
-        let (_interner, result) = parse("{{ list | filter(x -> x != 0) | map(x -> x * 2) }}");
+        let (_interner, result) = parse("{{ list | filter(|x| -> x != 0) | map(|x| -> x * 2) }}");
         let t = result.unwrap();
         assert_eq!(t.body.len(), 1);
         if let Node::InlineExpr { expr, .. } = &t.body[0] {

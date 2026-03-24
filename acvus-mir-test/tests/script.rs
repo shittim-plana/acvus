@@ -226,7 +226,7 @@ fn func_pipe_chain() {
     let c = ctx(&i, &[("items", Ty::List(Box::new(Ty::Int)))]);
     let ir = compile_script_ir(
         &i,
-        "@items | filter(x -> x > 0) | collect",
+        "@items | filter(|x| -> x > 0) | collect",
         &c,
     )
     .unwrap();
