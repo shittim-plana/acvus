@@ -110,14 +110,9 @@ dependencies = [
 name = "acvus-lsp"
 version = "0.1.0"
 dependencies = [
- "acvus-ast",
- "acvus-ext",
  "acvus-mir",
- "acvus-orchestration",
  "acvus-utils",
  "rustc-hash",
- "serde",
- "serde_json",
 ]
 
 [[package]]

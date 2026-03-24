@@ -152,6 +152,7 @@ impl ExternRegistry {
             functions.push(Function {
                 id,
                 name,
+                namespace: None,
                 kind: FnKind::Extern {
                     deps: Freeze::new(vec![]),
                 },

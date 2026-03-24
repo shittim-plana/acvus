@@ -147,6 +147,7 @@ mod tests {
             .map(|(name, source)| Function {
                 id: FunctionId::alloc(),
                 name: interner.intern(name),
+                namespace: None,
                 kind: FnKind::Local(SourceCode {
                     name: interner.intern(name),
                     source: interner.intern(source),
@@ -159,6 +160,7 @@ mod tests {
             })
             .collect();
         CompilationGraph {
+            namespaces: Freeze::new(vec![]),
             functions: Freeze::new(unit_list),
             contexts: Freeze::new(vec![]),
         }

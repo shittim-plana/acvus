@@ -223,13 +223,16 @@ mod tests {
             .map(|&name| Context {
                 id: ContextId::alloc(),
                 name: interner.intern(name),
+                namespace: None,
                 constraint: Constraint::Exact(crate::ty::Ty::Int),
             })
             .collect();
         let graph = CompilationGraph {
+            namespaces: Freeze::new(vec![]),
             functions: Freeze::new(vec![Function {
                 id: fn_id,
                 name: interner.intern("test_unit"),
+                namespace: None,
                 kind: FnKind::Local(SourceCode {
                     name: interner.intern("test"),
                     source: interner.intern(source),

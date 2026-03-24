@@ -330,6 +330,7 @@ mod tests {
             .map(|(name, ty)| Context {
                 id: ContextId::alloc(),
                 name: interner.intern(name),
+                namespace: None,
                 constraint: Constraint::Exact(ty.clone()),
             })
             .collect();
@@ -337,6 +338,7 @@ mod tests {
         functions.push(Function {
             id: FunctionId::alloc(),
             name: interner.intern("test"),
+            namespace: None,
             kind: FnKind::Local(SourceCode {
                 name: interner.intern("test"),
                 source: interner.intern(source),
@@ -348,6 +350,7 @@ mod tests {
             },
         });
         CompilationGraph {
+            namespaces: Freeze::new(vec![]),
             functions: Freeze::new(functions),
             contexts: Freeze::new(contexts),
         }
@@ -490,6 +493,7 @@ mod tests {
             .map(|(name, ty)| Context {
                 id: ContextId::alloc(),
                 name: interner.intern(name),
+                namespace: None,
                 constraint: Constraint::Exact(ty.clone()),
             })
             .collect();
@@ -504,6 +508,7 @@ mod tests {
             functions.push(Function {
                 id: fid,
                 name: aname,
+                namespace: None,
                 kind: FnKind::Local(SourceCode {
                     name: aname,
                     source: interner.intern(source),
@@ -526,6 +531,7 @@ mod tests {
         let graph = CompilationGraph {
             functions: Freeze::new(functions),
             contexts: Freeze::new(contexts),
+            namespaces: Default::default(),
         };
         (graph, ids)
     }
@@ -551,6 +557,7 @@ mod tests {
             .map(|(name, ty)| Context {
                 id: ContextId::alloc(),
                 name: interner.intern(name),
+                namespace: None,
                 constraint: Constraint::Exact(ty.clone()),
             })
             .collect();
@@ -565,6 +572,7 @@ mod tests {
             functions.push(Function {
                 id: fid,
                 name: aname,
+                namespace: None,
                 kind: FnKind::Local(SourceCode {
                     name: aname,
                     source: interner.intern(source),
@@ -588,6 +596,7 @@ mod tests {
         let graph = CompilationGraph {
             functions: Freeze::new(functions),
             contexts: Freeze::new(contexts),
+            namespaces: Default::default(),
         };
         let ext = extract::extract(interner, &graph);
         let inf = crate::graph::infer::infer(interner, &graph, &ext);
@@ -1927,6 +1936,7 @@ mod tests {
         Function {
             id: FunctionId::alloc(),
             name: interner.intern(name),
+            namespace: None,
             kind: FnKind::Extern {
                 deps: Freeze::new(vec![]),
             },

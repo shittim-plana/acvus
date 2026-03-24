@@ -26,6 +26,7 @@ fn make_graph(
         .map(|(name, ty)| Context {
             id: ContextId::alloc(),
             name: interner.intern(name),
+            namespace: None,
             constraint: Constraint::Exact(ty.clone()),
         })
         .collect();
@@ -34,6 +35,7 @@ fn make_graph(
     functions.push(Function {
         id: test_id,
         name: interner.intern("test"),
+        namespace: None,
         kind: FnKind::Local(SourceCode {
             name: interner.intern("test"),
             source: interner.intern(source),
@@ -45,6 +47,7 @@ fn make_graph(
         },
     });
     let graph = CompilationGraph {
+        namespaces: Freeze::new(vec![]),
         functions: Freeze::new(functions),
         contexts: Freeze::new(contexts),
     };

@@ -36,6 +36,7 @@ async fn run_ext(
         .map(|(name, ty)| Context {
             id: ContextId::alloc(),
             name: *name,
+            namespace: None,
             constraint: Constraint::Exact(ty.clone()),
         })
         .collect();
@@ -49,6 +50,7 @@ async fn run_ext(
     functions.push(Function {
         id: entry_id,
         name: interner.intern("test"),
+        namespace: None,
         kind: FnKind::Local(SourceCode {
             name: interner.intern("test"),
             source: interner.intern(source),
@@ -61,6 +63,7 @@ async fn run_ext(
     });
 
     let graph = CompilationGraph {
+        namespaces: Freeze::new(vec![]),
         functions: Freeze::new(functions),
         contexts: Freeze::new(contexts),
     };

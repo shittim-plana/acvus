@@ -464,6 +464,10 @@ fn patch_instructions(
     for phi in phi_insertions {
         block_phis.entry(phi.block).or_default().push(phi);
     }
+    // Sort PHIs by ContextId for deterministic block param ordering.
+    for phis in block_phis.values_mut() {
+        phis.sort_by_key(|p| p.context);
+    }
 
     let mut jump_extra_args: FxHashMap<(Label, Label), Vec<ValueId>> = FxHashMap::default();
     for phi in phi_insertions {

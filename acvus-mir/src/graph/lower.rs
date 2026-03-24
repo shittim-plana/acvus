@@ -167,13 +167,16 @@ mod tests {
             .map(|(name, ty)| Context {
                 id: ContextId::alloc(),
                 name: interner.intern(name),
+                namespace: None,
                 constraint: Constraint::Exact(ty.clone()),
             })
             .collect();
         CompilationGraph {
+            namespaces: Freeze::new(vec![]),
             functions: Freeze::new(vec![Function {
                 id: FunctionId::alloc(),
                 name: interner.intern("test"),
+                namespace: None,
                 kind: FnKind::Local(SourceCode {
                     name: interner.intern("test"),
                     source: interner.intern(source),

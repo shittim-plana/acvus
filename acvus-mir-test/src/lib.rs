@@ -27,11 +27,13 @@ pub fn compile_to_ir_with(
     let contexts: Vec<Context> = ctx.iter().map(|(name, ty)| Context {
         id: ContextId::alloc(),
         name: interner.intern(name),
+        namespace: None,
         constraint: Constraint::Exact(ty.clone()),
     }).collect();
     let mut functions = vec![Function {
         id: FunctionId::alloc(),
         name: interner.intern("test"),
+        namespace: None,
         kind: FnKind::Local(SourceCode {
             name: interner.intern("test"),
             source: interner.intern(source),
@@ -44,6 +46,7 @@ pub fn compile_to_ir_with(
     }];
     functions.extend_from_slice(extern_fns);
     let graph = CompilationGraph {
+        namespaces: Freeze::new(vec![]),
         functions: Freeze::new(functions),
         contexts: Freeze::new(contexts),
     };
@@ -105,13 +108,16 @@ pub fn compile_script_ir(
         .map(|(name, ty)| Context {
             id: ContextId::alloc(),
             name: *name,
+            namespace: None,
             constraint: Constraint::Exact(ty.clone()),
         })
         .collect();
     let graph = CompilationGraph {
+        namespaces: Freeze::new(vec![]),
         functions: Freeze::new(vec![Function {
             id: FunctionId::alloc(),
             name: interner.intern("test"),
+            namespace: None,
             kind: FnKind::Local(SourceCode {
                 name: interner.intern("test"),
                 source: interner.intern(source),

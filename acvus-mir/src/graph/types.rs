@@ -99,6 +99,8 @@ pub enum FnKind {
 pub struct Function {
     pub id: FunctionId,
     pub name: Astr,
+    /// Namespace this function belongs to. `None` = root (global).
+    pub namespace: Option<NamespaceId>,
     pub kind: FnKind,
     pub constraint: FnConstraint,
 }
@@ -110,13 +112,27 @@ pub struct Function {
 pub struct Context {
     pub id: ContextId,
     pub name: Astr,
+    /// Namespace this context belongs to. `None` = root (global).
+    pub namespace: Option<NamespaceId>,
     pub constraint: Constraint,
+}
+
+// ── Namespace ────────────────────────────────────────────────────────
+
+/// A flat scope for qualified access.
+/// - Unqualified `@name` / `func()` → resolves in root only.
+/// - Qualified `@ns::name` / `ns::func()` → resolves in the named namespace only.
+#[derive(Debug, Clone)]
+pub struct Namespace {
+    pub id: NamespaceId,
+    pub name: Astr,
 }
 
 // ── Compilation graph ───────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct CompilationGraph {
+    pub namespaces: Freeze<Vec<Namespace>>,
     pub functions: Freeze<Vec<Function>>,
     pub contexts: Freeze<Vec<Context>>,
 }

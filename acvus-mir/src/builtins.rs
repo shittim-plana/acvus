@@ -440,6 +440,7 @@ fn make_builtin(interner: &Interner, name: &str, sig_fn: SigFn) -> Function {
     Function {
         id: FunctionId::alloc(),
         name: interner.intern(name),
+        namespace: None,
         kind: FnKind::Extern {
             deps: Freeze::new(vec![]),
         },

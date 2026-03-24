@@ -24,6 +24,7 @@ fn compile_analysis(
     let mut contexts: Vec<Context> = ctx.iter().map(|(name, ty)| Context {
         id: ContextId::alloc(),
         name: interner.intern(name),
+        namespace: None,
         constraint: Constraint::Exact(ty.clone()),
     }).collect();
 
@@ -36,15 +37,18 @@ fn compile_analysis(
             contexts.push(Context {
                 id: ContextId::alloc(),
                 name,
+                namespace: None,
                 constraint: Constraint::Inferred,
             });
         }
     }
 
     let graph = CompilationGraph {
+        namespaces: Freeze::new(vec![]),
         functions: Freeze::new(vec![Function {
             id: FunctionId::alloc(),
             name: interner.intern("test"),
+            namespace: None,
             kind: FnKind::Local(SourceCode {
                 name: interner.intern("test"),
                 source: interner.intern(source),
@@ -364,6 +368,7 @@ fn extern_async_call() {
     let fetch_user = Function {
         id: FunctionId::alloc(),
         name: i.intern("fetch_user"),
+        namespace: None,
         kind: FnKind::Extern {
             deps: Freeze::new(vec![]),
         },

@@ -45,11 +45,17 @@ pub struct ContextInfo {
 pub struct IncrementalGraph {
     interner: Interner,
 
+    // ── Namespaces ──
+    namespaces: FxHashMap<NamespaceId, Namespace>,
+    name_to_ns: FxHashMap<Astr, NamespaceId>,
+
     // ── Source data ──
     functions: FxHashMap<FunctionId, Function>,
     contexts: FxHashMap<ContextId, Context>,
-    name_to_fn: FxHashMap<Astr, FunctionId>,
-    name_to_ctx: FxHashMap<Astr, ContextId>,
+    /// (namespace, name) → FunctionId. namespace=None means root.
+    name_to_fn: FxHashMap<(Option<NamespaceId>, Astr), FunctionId>,
+    /// (namespace, name) → ContextId. namespace=None means root.
+    name_to_ctx: FxHashMap<(Option<NamespaceId>, Astr), ContextId>,
 
     // ── Phase 0: Extract cache ──
     extract_cache: FxHashMap<FunctionId, ExtractEntry>,
@@ -74,6 +80,8 @@ impl IncrementalGraph {
     pub fn new(interner: &Interner) -> Self {
         Self {
             interner: interner.clone(),
+            namespaces: FxHashMap::default(),
+            name_to_ns: FxHashMap::default(),
             functions: FxHashMap::default(),
             contexts: FxHashMap::default(),
             name_to_fn: FxHashMap::default(),
@@ -89,10 +97,39 @@ impl IncrementalGraph {
         }
     }
 
+    // ── Namespace management ─────────────────────────────────────────
+
+    pub fn add_namespace(&mut self, ns: Namespace) {
+        self.name_to_ns.insert(ns.name, ns.id);
+        self.namespaces.insert(ns.id, ns);
+    }
+
+    pub fn remove_namespace(&mut self, id: NamespaceId) {
+        if let Some(ns) = self.namespaces.remove(&id) {
+            self.name_to_ns.remove(&ns.name);
+            // Remove all functions and contexts in this namespace.
+            let fn_ids: Vec<FunctionId> = self.functions.values()
+                .filter(|f| f.namespace == Some(id))
+                .map(|f| f.id)
+                .collect();
+            for fid in fn_ids {
+                self.remove_function(fid);
+            }
+            let ctx_ids: Vec<ContextId> = self.contexts.values()
+                .filter(|c| c.namespace == Some(id))
+                .map(|c| c.id)
+                .collect();
+            for cid in ctx_ids {
+                self.remove_context(cid);
+            }
+        }
+    }
+
     // ── Registration ────────────────────────────────────────────────
 
     pub fn add_function(&mut self, func: Function) {
-        self.name_to_fn.insert(func.name, func.id);
+        let key = (func.namespace, func.name);
+        self.name_to_fn.insert(key, func.id);
         let id = func.id;
         self.functions.insert(id, func);
         self.run_extract(id);
@@ -101,19 +138,20 @@ impl IncrementalGraph {
 
     pub fn remove_function(&mut self, id: FunctionId) {
         if let Some(func) = self.functions.remove(&id) {
-            self.name_to_fn.remove(&func.name);
+            let key = (func.namespace, func.name);
+            self.name_to_fn.remove(&key);
             self.extract_cache.remove(&id);
             self.call_edges.remove(&id);
             self.resolve_cache.remove(&id);
             self.diagnostics.remove(&id);
-            // Remove from reverse edges.
             self.remove_reverse_edges(id);
             self.rebuild_graph();
         }
     }
 
     pub fn add_context(&mut self, ctx: Context) {
-        self.name_to_ctx.insert(ctx.name, ctx.id);
+        let key = (ctx.namespace, ctx.name);
+        self.name_to_ctx.insert(key, ctx.id);
         self.contexts.insert(ctx.id, ctx);
         // Context change can affect all infer/resolve — full rebuild.
         self.invalidate_all_infer();
@@ -122,7 +160,8 @@ impl IncrementalGraph {
 
     pub fn remove_context(&mut self, id: ContextId) {
         if let Some(ctx) = self.contexts.remove(&id) {
-            self.name_to_ctx.remove(&ctx.name);
+            let key = (ctx.namespace, ctx.name);
+            self.name_to_ctx.remove(&key);
             self.invalidate_all_infer();
             self.run_infer_and_resolve();
         }
@@ -209,6 +248,62 @@ impl IncrementalGraph {
         &self.interner
     }
 
+    pub fn namespace(&self, id: NamespaceId) -> Option<&Namespace> {
+        self.namespaces.get(&id)
+    }
+
+    pub fn namespace_by_name(&self, name: Astr) -> Option<&Namespace> {
+        self.name_to_ns.get(&name).and_then(|id| self.namespaces.get(id))
+    }
+
+    // ── Resolution ───────────────────────────────────────────────────
+
+    /// Resolve a function name.
+    /// - `qualifier = None` → unqualified, root only.
+    /// - `qualifier = Some(ns_name)` → qualified, specific namespace only.
+    pub fn resolve_fn(&self, qualifier: Option<Astr>, name: Astr) -> Option<FunctionId> {
+        match qualifier {
+            None => self.name_to_fn.get(&(None, name)).copied(),
+            Some(ns_name) => {
+                let ns_id = self.name_to_ns.get(&ns_name)?;
+                self.name_to_fn.get(&(Some(*ns_id), name)).copied()
+            }
+        }
+    }
+
+    /// Resolve a context name.
+    /// - `qualifier = None` → unqualified, root only.
+    /// - `qualifier = Some(ns_name)` → qualified, specific namespace only.
+    pub fn resolve_ctx(&self, qualifier: Option<Astr>, name: Astr) -> Option<ContextId> {
+        match qualifier {
+            None => self.name_to_ctx.get(&(None, name)).copied(),
+            Some(ns_name) => {
+                let ns_id = self.name_to_ns.get(&ns_name)?;
+                self.name_to_ctx.get(&(Some(*ns_id), name)).copied()
+            }
+        }
+    }
+
+    /// All contexts visible from a namespace (own namespace + root).
+    /// Used by LSP for completions.
+    pub fn visible_contexts(&self, ns: Option<NamespaceId>) -> Vec<(Option<NamespaceId>, Astr, &Context)> {
+        self.contexts.values()
+            .filter(|c| c.namespace.is_none() || c.namespace == ns)
+            .map(|c| (c.namespace, c.name, c))
+            .collect()
+    }
+
+    /// All functions callable from a namespace:
+    /// - Root functions (unqualified)
+    /// - Same-namespace functions (would need qualified, but are accessible)
+    /// Used by LSP for completions.
+    pub fn visible_functions(&self, ns: Option<NamespaceId>) -> Vec<(Option<NamespaceId>, Astr, &Function)> {
+        self.functions.values()
+            .filter(|f| f.namespace.is_none() || f.namespace == ns)
+            .map(|f| (f.namespace, f.name, f))
+            .collect()
+    }
+
     // ── Internal: Extract ───────────────────────────────────────────
 
     fn run_extract(&mut self, id: FunctionId) {
@@ -232,7 +327,13 @@ impl IncrementalGraph {
         // Run extract.
         if let Some((refs, parsed)) = extract_one(&self.interner, func) {
             // Update call edges.
-            let new_edges = extract_call_edges(&parsed, &self.name_to_fn, id);
+            // TODO: qualified call edges once AST supports ns:func() syntax.
+            // For now, only unqualified (root) names are resolved.
+            let root_fn_names: FxHashMap<Astr, FunctionId> = self.name_to_fn.iter()
+                .filter(|((ns, _), _)| ns.is_none())
+                .map(|((_, name), &id)| (*name, id))
+                .collect();
+            let new_edges = extract_call_edges(&parsed, &root_fn_names, id);
             self.remove_reverse_edges(id);
             for &callee in &new_edges {
                 self.reverse_edges.entry(callee).or_default().push(id);
@@ -471,8 +572,12 @@ impl IncrementalGraph {
     }
 
     fn propagate_effects(&mut self) {
-        let name_to_ctx_id: FxHashMap<Astr, ContextId> =
-            self.contexts.values().map(|c| (c.name, c.id)).collect();
+        // TODO: namespace-aware context resolution once AST supports @ns:name.
+        // For now, only root contexts are resolved by name.
+        let name_to_ctx_id: FxHashMap<Astr, ContextId> = self.contexts.values()
+            .filter(|c| c.namespace.is_none())
+            .map(|c| (c.name, c.id))
+            .collect();
 
         // Collect direct reads/writes from extract cache.
         for scc_idx in 0..self.scc_order.len() {
