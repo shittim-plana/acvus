@@ -335,7 +335,7 @@ impl Clone for Value {
                 }
             }
             Value::Handle(_) => panic!("clone: Handle is move-only"),
-            Value::Opaque(_) => panic!("clone: Opaque is move-only"),
+            Value::Opaque(o) => Value::Opaque(o.clone()),
         }
     }
 }
@@ -388,6 +388,12 @@ impl PartialEq for FnValue {
 }
 
 // ── OpaqueValue ──────────────────────────────────────────────────────
+
+impl Clone for OpaqueValue {
+    fn clone(&self) -> Self {
+        Self { type_name: self.type_name, inner: Arc::clone(&self.inner) }
+    }
+}
 
 impl OpaqueValue {
     pub fn new<T: Any + Send + Sync>(type_name: &'static str, value: T) -> Self {

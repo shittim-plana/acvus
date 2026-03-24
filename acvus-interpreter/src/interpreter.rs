@@ -3,6 +3,7 @@ use std::sync::Arc;
 use acvus_ast::{BinOp, Literal, RangeKind, UnaryOp};
 use acvus_mir::graph::FunctionId;
 use acvus_mir::ir::{Callee, CastKind, Inst, InstKind, Label, MirBody, MirModule, ValueId};
+use acvus_mir::ty::Ty;
 use acvus_utils::{Astr, Freeze, Interner, LocalFactory, LocalVec, TrackedDeque};
 use futures::future::BoxFuture;
 use rustc_hash::FxHashMap;
@@ -78,6 +79,18 @@ impl Frame {
     #[inline]
     fn share(&self, id: ValueId) -> Value {
         self.get(id).share()
+    }
+
+    /// Move-aware value extraction: take if move-only type, share otherwise.
+    /// Soundness: move_check guarantees move-only values are used at most once.
+    #[inline]
+    fn use_val(&mut self, id: ValueId, val_types: &FxHashMap<ValueId, Ty>) -> Value {
+        if let Some(ty) = val_types.get(&id) {
+            if acvus_mir::validate::move_check::is_move_only(ty) == Some(true) {
+                return self.take(id);
+            }
+        }
+        self.share(id)
     }
 
     // ── Control flow ─────────────────────────────────────────────
@@ -285,6 +298,7 @@ impl Interpreter {
         let insts: Arc<[Inst]> = m.main.insts.clone().into();
         let closures = m.closures.clone();
         let param_regs = m.main.param_regs.clone();
+        let val_types = m.main.val_types.clone();
         let label_map = build_label_map(&m.main);
         let mut frame = Frame::new(&m.main.val_factory, label_map);
         // Bind args to param_regs.
@@ -292,7 +306,7 @@ impl Interpreter {
             frame.set(*reg, val.clone());
         }
         let mut projection_map: FxHashMap<ValueId, ContextId> = FxHashMap::default();
-        self.run_loop(&insts, &closures, &mut frame, &mut projection_map).await
+        self.run_loop(&insts, &closures, &mut frame, &mut projection_map, &val_types).await
     }
 
     /// Shared execution loop — used by both execute and closure calls.
@@ -303,8 +317,9 @@ impl Interpreter {
         closures: &'s FxHashMap<Label, Arc<MirBody>>,
         frame: &'s mut Frame,
         projection_map: &'s mut FxHashMap<ValueId, ContextId>,
+        val_types: &'s FxHashMap<ValueId, Ty>,
     ) -> BoxFuture<'s, Result<Value, RuntimeError>> {
-        Box::pin(self.run_loop_inner(insts, closures, frame, projection_map))
+        Box::pin(self.run_loop_inner(insts, closures, frame, projection_map, val_types))
     }
 
     async fn run_loop_inner(
@@ -313,10 +328,11 @@ impl Interpreter {
         closures: &FxHashMap<Label, Arc<MirBody>>,
         frame: &mut Frame,
         projection_map: &mut FxHashMap<ValueId, ContextId>,
+        val_types: &FxHashMap<ValueId, Ty>,
     ) -> Result<Value, RuntimeError> {
         let mut pc = 0;
         while pc < insts.len() {
-            match self.execute_inst(insts, closures, pc, frame, projection_map).await? {
+            match self.execute_inst(insts, closures, pc, frame, projection_map, val_types).await? {
                 Flow::Next => pc += 1,
                 Flow::Jump(target) => pc = target,
                 Flow::Return(val) => return Ok(val),
@@ -333,6 +349,7 @@ impl Interpreter {
         pc: usize,
         frame: &mut Frame,
         projection_map: &mut FxHashMap<ValueId, ContextId>,
+        val_types: &FxHashMap<ValueId, Ty>,
     ) -> Result<Flow, RuntimeError> {
         match &insts[pc].kind {
             // ── Constants ────────────────────────────────────
@@ -547,16 +564,16 @@ impl Interpreter {
             InstKind::FunctionCall { dst, callee, args } => {
                 let result = match callee {
                     Callee::Direct(id) => {
-                        let arg_vals: Args = args.iter().map(|a| frame.share(*a)).collect();
+                        let arg_vals: Args = args.iter().map(|a| frame.use_val(*a, val_types)).collect();
                         self.dispatch_call(id, arg_vals).await?
                     }
                     Callee::Indirect(val_id) => {
                         let fv = frame.take(*val_id).into_fn();
                         match args.len() {
-                            1 => self.call_closure(&fv, frame.share(args[0])).await?,
-                            2 => self.call_closure_2(&fv, frame.share(args[0]), frame.share(args[1])).await?,
+                            1 => self.call_closure(&fv, frame.use_val(args[0], val_types)).await?,
+                            2 => self.call_closure_2(&fv, frame.use_val(args[0], val_types), frame.use_val(args[1], val_types)).await?,
                             _ => {
-                                let arg = if args.is_empty() { Value::Unit } else { frame.share(args[0]) };
+                                let arg = if args.is_empty() { Value::Unit } else { frame.use_val(args[0], val_types) };
                                 self.call_closure(&fv, arg).await?
                             }
                         }
@@ -896,7 +913,7 @@ impl Interpreter {
         }
 
         let empty_closures = FxHashMap::default();
-        self.run_loop(&body.insts, &empty_closures, &mut frame, &mut projection_map).await
+        self.run_loop(&body.insts, &empty_closures, &mut frame, &mut projection_map, &body.val_types).await
     }
 
     /// Call a closure with two arguments (for reduce, fold).
@@ -919,7 +936,7 @@ impl Interpreter {
         if let Some(&r) = params.next() { frame.set(r, arg2); }
 
         let empty_closures = FxHashMap::default();
-        self.run_loop(&body.insts, &empty_closures, &mut frame, &mut projection_map).await
+        self.run_loop(&body.insts, &empty_closures, &mut frame, &mut projection_map, &body.val_types).await
     }
 
     /// Dispatch a direct function call by FunctionId.
