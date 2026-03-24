@@ -21,7 +21,7 @@ pub type Args = SmallVec<[Value; 4]>;
 pub const ASYNC_FUTURE_SIZE: usize = 1024;
 
 /// Sync builtin — no future overhead.
-pub type SyncBuiltinFn = fn(Args) -> Result<Value, RuntimeError>;
+pub type SyncBuiltinFn = fn(Args, &Interner) -> Result<Value, RuntimeError>;
 
 /// Async builtin — stack-allocated future, receives &mut Interpreter.
 pub type AsyncBuiltinFn = for<'x> fn(
@@ -726,6 +726,37 @@ impl Interpreter {
                         *state = EffectfulState::Done;
                         Ok(None)
                     }
+                    EffectfulState::Generator { next_fn, elem_ops, take_remaining } => {
+                        if let Some(0) = take_remaining {
+                            *state = EffectfulState::Done;
+                            return Ok(None);
+                        }
+
+                        while let Some(val) = next_fn.get_mut()() {
+                            let result = self.apply_ops(val, elem_ops).await?;
+
+                            match result {
+                                ApplyResult::Emit(v) => {
+                                    if let Some(rem) = take_remaining {
+                                        *rem -= 1;
+                                    }
+                                    return Ok(Some(v));
+                                }
+                                ApplyResult::Skip => continue,
+                                ApplyResult::Expand(items) => {
+                                    if let Some(first) = items.into_iter().next() {
+                                        if let Some(rem) = take_remaining {
+                                            *rem -= 1;
+                                        }
+                                        return Ok(Some(first));
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                        *state = EffectfulState::Done;
+                        Ok(None)
+                    }
                 }
             }
         }
@@ -900,7 +931,7 @@ impl Interpreter {
         match self.function(id) {
             Executable::Builtin(BuiltinHandler::Sync(f)) => {
                 let f = *f;
-                f(args)
+                f(args, &self.shared.interner)
             }
             Executable::Builtin(BuiltinHandler::Async(f)) => {
                 let f = *f;

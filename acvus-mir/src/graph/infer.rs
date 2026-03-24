@@ -675,7 +675,7 @@ pub fn infer(
                 names.iter().filter_map(|n| name_to_ctx_id.get(n).copied()).collect()
             })
             .unwrap_or_default();
-        let mut effect = EffectSet { reads, writes, io: false };
+        let mut effect = EffectSet { reads, writes, io: false, self_modifying: false };
 
         // Union effects carried by parameters (Iterator<T,E>, Fn{effect}, Sequence<T,_,E>).
         if let Some(meta) = functions.get(&fid) {

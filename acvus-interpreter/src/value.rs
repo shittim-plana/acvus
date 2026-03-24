@@ -3,7 +3,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use acvus_mir::ir::MirBody;
-use acvus_utils::{Astr, TrackedDeque};
+use acvus_utils::{Astr, Interner, TrackedDeque};
 use rustc_hash::FxHashMap;
 
 pub use crate::iter::{IterHandle, SequenceChain};
@@ -117,6 +117,14 @@ impl Value {
     pub fn deque(d: TrackedDeque<Value>) -> Self { Value::Deque(Arc::new(d)) }
     pub fn variant(tag: Astr, payload: Option<Value>) -> Self {
         Value::Variant { tag, payload: payload.map(|v| Arc::new(v)) }
+    }
+
+    // Option (well-known variants)
+    pub fn some(interner: &Interner, payload: Value) -> Self {
+        Value::Variant { tag: interner.intern("Some"), payload: Some(Arc::new(payload)) }
+    }
+    pub fn none(interner: &Interner) -> Self {
+        Value::Variant { tag: interner.intern("None"), payload: None }
     }
 
     // Boxed

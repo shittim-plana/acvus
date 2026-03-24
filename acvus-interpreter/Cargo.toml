@@ -13,6 +13,7 @@ rust_decimal = "1.40.0"
 rustc-hash = { workspace = true }
 smallvec = "1"
 stackfuture = "0.3"
+sync_wrapper = "1"
 uuid = { workspace = true }
 tracing = "0.1"
 serde = { version = "1.0.228", features = ["derive"] }

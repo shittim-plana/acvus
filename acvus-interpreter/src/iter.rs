@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use acvus_mir::ty::Effect;
 use acvus_utils::TrackedDeque;
+use sync_wrapper::SyncWrapper;
 
 use crate::value::{FnValue, Value};
 
@@ -71,6 +72,13 @@ pub enum EffectfulState {
         /// Remaining elements to take (None = unlimited).
         take_remaining: Option<usize>,
     },
+    /// Lazy pull from an opaque generator closure.
+    /// The closure is called repeatedly; `None` signals exhaustion.
+    Generator {
+        next_fn: SyncWrapper<Box<dyn FnMut() -> Option<Value> + Send>>,
+        elem_ops: Vec<IterOp>,
+        take_remaining: Option<usize>,
+    },
     Done,
 }
 
@@ -119,6 +127,19 @@ impl IterHandle {
     /// Create from a plain list (no ops).
     pub fn from_list(items: Vec<Value>, effect: Effect) -> Self {
         Self::new(items, Vec::new(), effect)
+    }
+
+    /// Create a lazy iterator from a generator closure.
+    /// The closure is called on each pull; returns `None` when exhausted.
+    pub fn from_fn(effect: Effect, f: impl FnMut() -> Option<Value> + Send + 'static) -> Self {
+        Self::Effectful {
+            state: EffectfulState::Generator {
+                next_fn: SyncWrapper::new(Box::new(f)),
+                elem_ops: Vec::new(),
+                take_remaining: None,
+            },
+            effect,
+        }
     }
 
     /// Create a done (empty) iterator.
@@ -254,15 +275,26 @@ impl IterHandle {
                 }
             }
             Self::Effectful { mut state, effect } => {
-                if let EffectfulState::Suspended { source, elem_ops, offset, take_remaining } = &mut state {
-                    match op {
-                        IterOp::Skip(n) => *offset += n,
-                        IterOp::Take(n) => {
-                            *take_remaining = Some(take_remaining.map_or(n, |prev| prev.min(n)));
+                match &mut state {
+                    EffectfulState::Suspended { source, elem_ops, offset, take_remaining } => {
+                        match op {
+                            IterOp::Skip(n) => *offset += n,
+                            IterOp::Take(n) => {
+                                *take_remaining = Some(take_remaining.map_or(n, |prev| prev.min(n)));
+                            }
+                            IterOp::Chain(extra) => source.extend(extra),
+                            other => elem_ops.push(other),
                         }
-                        IterOp::Chain(extra) => source.extend(extra),
-                        other => elem_ops.push(other),
                     }
+                    EffectfulState::Generator { elem_ops, take_remaining, .. } => {
+                        match op {
+                            IterOp::Take(n) => {
+                                *take_remaining = Some(take_remaining.map_or(n, |prev| prev.min(n)));
+                            }
+                            other => elem_ops.push(other),
+                        }
+                    }
+                    EffectfulState::Done => {}
                 }
                 Self::Effectful { state, effect }
             }
@@ -296,6 +328,9 @@ impl std::fmt::Debug for IterHandle {
                 match state {
                     EffectfulState::Suspended { source, elem_ops, offset, .. } => {
                         write!(f, "Iter::Effectful(len={}, ops={}, off={})", source.len(), elem_ops.len(), offset)
+                    }
+                    EffectfulState::Generator { elem_ops, .. } => {
+                        write!(f, "Iter::Generator(ops={})", elem_ops.len())
                     }
                     EffectfulState::Done => write!(f, "Iter::Effectful(done)"),
                 }

@@ -138,19 +138,23 @@ pub struct EffectSet {
     pub reads: BTreeSet<ContextId>,
     pub writes: BTreeSet<ContextId>,
     pub io: bool,
+    /// Value is consumed/mutated on use (e.g. Iterator cursor advance).
+    /// Propagates through combinators: map(self_mod_iter, f) → self_mod.
+    pub self_modifying: bool,
 }
 
 impl EffectSet {
     pub fn is_pure(&self) -> bool {
-        self.reads.is_empty() && self.writes.is_empty() && !self.io
+        self.reads.is_empty() && self.writes.is_empty() && !self.io && !self.self_modifying
     }
 
-    /// Union of two effect sets: reads ∪ reads, writes ∪ writes, io || io.
+    /// Union of two effect sets. All effects propagate (contagious).
     pub fn union(&self, other: &Self) -> Self {
         Self {
             reads: self.reads.union(&other.reads).copied().collect(),
             writes: self.writes.union(&other.writes).copied().collect(),
             io: self.io || other.io,
+            self_modifying: self.self_modifying || other.self_modifying,
         }
     }
 }
@@ -170,6 +174,9 @@ impl fmt::Display for EffectSet {
         }
         if self.io {
             parts.push("io".to_string());
+        }
+        if self.self_modifying {
+            parts.push("mut".to_string());
         }
         write!(f, "{})", parts.join(", "))
     }
@@ -194,6 +201,11 @@ impl Effect {
     /// Opaque IO effect (e.g. context access without known ContextId).
     pub fn io() -> Self {
         Effect::Resolved(EffectSet { io: true, ..EffectSet::default() })
+    }
+
+    /// Self-modifying effect: value mutates on use (e.g. Iterator cursor).
+    pub fn self_modifying() -> Self {
+        Effect::Resolved(EffectSet { self_modifying: true, ..EffectSet::default() })
     }
 
     pub fn is_pure(&self) -> bool {
@@ -5604,6 +5616,7 @@ mod tests {
                 reads: [c1].into_iter().collect(),
                 writes: [c2].into_iter().collect(),
                 io: false,
+                self_modifying: false,
             });
             assert!(!e.is_pure());
             assert!(e.is_effectful());
@@ -5656,6 +5669,7 @@ mod tests {
                 reads: [c1].into_iter().collect(),
                 writes: [c2].into_iter().collect(),
                 io: false,
+                self_modifying: false,
             });
             let s = format!("{e}");
             assert!(s.starts_with("Effectful("));

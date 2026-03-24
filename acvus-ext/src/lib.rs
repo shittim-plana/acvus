@@ -1,3 +1,3 @@
 mod regex;
 
-pub use regex::{regex_call, regex_context_types};
+pub use regex::regex_registry;

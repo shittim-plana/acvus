@@ -3,6 +3,7 @@ pub mod blob_journal;
 pub mod builtins;
 mod error;
 pub mod executor;
+pub mod extern_fn;
 pub mod iter;
 mod interpreter;
 pub mod journal;
@@ -15,3 +16,4 @@ pub use interpreter::{Args, AsyncBuiltinFn, BuiltinHandler, ExecResult, Executab
 pub use iter::{IterHandle, SequenceChain};
 pub use journal::{ContextOverlay, ContextWrite, EntryLifecycle, EntryMut, EntryRef, Journal};
 pub use value::{FnValue, HandleValue, OpaqueValue, RangeValue, Value};
+pub use extern_fn::{ExternFn, ExternFnBuilder, ExternRegistry, Registered};

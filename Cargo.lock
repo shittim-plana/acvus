@@ -81,6 +81,7 @@ dependencies = [
  "serde_json",
  "smallvec",
  "stackfuture",
+ "sync_wrapper",
  "tokio",
  "tracing",
  "trait-variant",

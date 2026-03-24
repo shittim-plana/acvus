@@ -119,63 +119,63 @@ pub fn build_builtins(
 
 // ── String builtins ──────────────────────────────────────────────────
 
-fn builtin_len_str(args: Args) -> Result<Value, RuntimeError> {
+fn builtin_len_str(args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     Ok(Value::Int(args[0].as_str().len() as i64))
 }
 
-fn builtin_trim(args: Args) -> Result<Value, RuntimeError> {
+fn builtin_trim(args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     Ok(Value::string(args[0].as_str().trim()))
 }
 
-fn builtin_trim_start(args: Args) -> Result<Value, RuntimeError> {
+fn builtin_trim_start(args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     Ok(Value::string(args[0].as_str().trim_start()))
 }
 
-fn builtin_trim_end(args: Args) -> Result<Value, RuntimeError> {
+fn builtin_trim_end(args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     Ok(Value::string(args[0].as_str().trim_end()))
 }
 
-fn builtin_upper(args: Args) -> Result<Value, RuntimeError> {
+fn builtin_upper(args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     Ok(Value::string(args[0].as_str().to_uppercase()))
 }
 
-fn builtin_lower(args: Args) -> Result<Value, RuntimeError> {
+fn builtin_lower(args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     Ok(Value::string(args[0].as_str().to_lowercase()))
 }
 
-fn builtin_contains_str(args: Args) -> Result<Value, RuntimeError> {
+fn builtin_contains_str(args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     Ok(Value::Bool(args[0].as_str().contains(args[1].as_str())))
 }
 
-fn builtin_starts_with_str(args: Args) -> Result<Value, RuntimeError> {
+fn builtin_starts_with_str(args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     Ok(Value::Bool(args[0].as_str().starts_with(args[1].as_str())))
 }
 
-fn builtin_ends_with_str(args: Args) -> Result<Value, RuntimeError> {
+fn builtin_ends_with_str(args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     Ok(Value::Bool(args[0].as_str().ends_with(args[1].as_str())))
 }
 
-fn builtin_replace_str(args: Args) -> Result<Value, RuntimeError> {
+fn builtin_replace_str(args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let s = args[0].as_str();
     let from = args[1].as_str();
     let to = args[2].as_str();
     Ok(Value::string(s.replace(from, to)))
 }
 
-fn builtin_split_str(args: Args) -> Result<Value, RuntimeError> {
+fn builtin_split_str(args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let s = args[0].as_str();
     let sep = args[1].as_str();
     let items: Vec<Value> = s.split(sep).map(Value::string).collect();
     Ok(Value::list(items))
 }
 
-fn builtin_repeat_str(args: Args) -> Result<Value, RuntimeError> {
+fn builtin_repeat_str(args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let s = args[0].as_str();
     let n = args[1].as_int();
     Ok(Value::string(s.repeat(n.max(0) as usize)))
 }
 
-fn builtin_substring(args: Args) -> Result<Value, RuntimeError> {
+fn builtin_substring(args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let s = args[0].as_str();
     let start = args[1].as_int().max(0) as usize;
     let end = args[2].as_int().max(0) as usize;
@@ -186,11 +186,11 @@ fn builtin_substring(args: Args) -> Result<Value, RuntimeError> {
 
 // ── List builtins ────────────────────────────────────────────────────
 
-fn builtin_len(args: Args) -> Result<Value, RuntimeError> {
+fn builtin_len(args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     Ok(Value::Int(args[0].as_list().len() as i64))
 }
 
-fn builtin_reverse(mut args: Args) -> Result<Value, RuntimeError> {
+fn builtin_reverse(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let list = args[0].take().into_list();
     let mut items: Vec<Value> = Arc::try_unwrap(list)
         .unwrap_or_else(|arc| arc.as_ref().iter().map(|v| v.share()).collect());
@@ -200,7 +200,7 @@ fn builtin_reverse(mut args: Args) -> Result<Value, RuntimeError> {
 
 // ── Conversion builtins ──────────────────────────────────────────────
 
-fn builtin_to_string(args: Args) -> Result<Value, RuntimeError> {
+fn builtin_to_string(args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let s = match &args[0] {
         Value::Int(n) => n.to_string(),
         Value::Float(f) => f.to_string(),
@@ -213,7 +213,7 @@ fn builtin_to_string(args: Args) -> Result<Value, RuntimeError> {
     Ok(Value::string(s))
 }
 
-fn builtin_to_int(args: Args) -> Result<Value, RuntimeError> {
+fn builtin_to_int(args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     use crate::error::ValueKind;
     let n = match &args[0] {
         Value::Int(n) => *n,
@@ -226,7 +226,7 @@ fn builtin_to_int(args: Args) -> Result<Value, RuntimeError> {
     Ok(Value::Int(n))
 }
 
-fn builtin_to_float(args: Args) -> Result<Value, RuntimeError> {
+fn builtin_to_float(args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     use crate::error::ValueKind;
     let f = match &args[0] {
         Value::Int(n) => *n as f64,
@@ -240,7 +240,7 @@ fn builtin_to_float(args: Args) -> Result<Value, RuntimeError> {
 
 // ── Option builtins ──────────────────────────────────────────────────
 
-fn builtin_unwrap(mut args: Args) -> Result<Value, RuntimeError> {
+fn builtin_unwrap(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     match args[0].take() {
         Value::Variant { payload: Some(p), .. } => {
             Ok(Arc::try_unwrap(p).unwrap_or_else(|arc| arc.as_ref().share()))
@@ -252,7 +252,7 @@ fn builtin_unwrap(mut args: Args) -> Result<Value, RuntimeError> {
     }
 }
 
-fn builtin_unwrap_or(mut args: Args) -> Result<Value, RuntimeError> {
+fn builtin_unwrap_or(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     match args[0].take() {
         Value::Variant { payload: Some(p), .. } => {
             Ok(Arc::try_unwrap(p).unwrap_or_else(|arc| arc.as_ref().share()))
@@ -264,13 +264,13 @@ fn builtin_unwrap_or(mut args: Args) -> Result<Value, RuntimeError> {
 
 // ── Conversion (extra) ───────────────────────────────────────────────
 
-fn builtin_char_to_int(args: Args) -> Result<Value, RuntimeError> {
+fn builtin_char_to_int(args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let s = args[0].as_str();
     let ch = s.chars().next().unwrap_or('\0');
     Ok(Value::Int(ch as i64))
 }
 
-fn builtin_int_to_char(args: Args) -> Result<Value, RuntimeError> {
+fn builtin_int_to_char(args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let n = args[0].as_int();
     let ch = char::from_u32(n as u32).unwrap_or('\u{FFFD}');
     Ok(Value::string(ch.to_string()))
@@ -278,27 +278,27 @@ fn builtin_int_to_char(args: Args) -> Result<Value, RuntimeError> {
 
 // ── Bytes builtins ───────────────────────────────────────────────────
 
-fn builtin_to_bytes(args: Args) -> Result<Value, RuntimeError> {
+fn builtin_to_bytes(args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let s = args[0].as_str();
     let bytes: Vec<Value> = s.bytes().map(Value::byte).collect();
     Ok(Value::list(bytes))
 }
 
-fn builtin_to_utf8(args: Args) -> Result<Value, RuntimeError> {
+fn builtin_to_utf8(args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let bytes: Vec<u8> = args[0].as_list().iter().map(|v| v.as_byte()).collect();
     let s = String::from_utf8(bytes)
         .map_err(|_| RuntimeError::unexpected_type("to_utf8", &[crate::error::ValueKind::List], crate::error::ValueKind::List))?;
     Ok(Value::string(s))
 }
 
-fn builtin_to_utf8_lossy(args: Args) -> Result<Value, RuntimeError> {
+fn builtin_to_utf8_lossy(args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let bytes: Vec<u8> = args[0].as_list().iter().map(|v| v.as_byte()).collect();
     Ok(Value::string(String::from_utf8_lossy(&bytes).into_owned()))
 }
 
 // ── Deque builtins ───────────────────────────────────────────────────
 
-fn builtin_append(mut args: Args) -> Result<Value, RuntimeError> {
+fn builtin_append(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let mut deque = match args[0].take() {
         Value::Deque(d) => Arc::try_unwrap(d).unwrap_or_else(|arc| (*arc).clone()),
         other => panic!("append: expected Deque, got {other:?}"),
@@ -308,7 +308,7 @@ fn builtin_append(mut args: Args) -> Result<Value, RuntimeError> {
     Ok(Value::Deque(Arc::new(deque)))
 }
 
-fn builtin_extend(mut args: Args) -> Result<Value, RuntimeError> {
+fn builtin_extend(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let mut deque = match args[0].take() {
         Value::Deque(d) => Arc::try_unwrap(d).unwrap_or_else(|arc| (*arc).clone()),
         other => panic!("extend: expected Deque, got {other:?}"),
@@ -320,7 +320,7 @@ fn builtin_extend(mut args: Args) -> Result<Value, RuntimeError> {
     Ok(Value::Deque(Arc::new(deque)))
 }
 
-fn builtin_consume(mut args: Args) -> Result<Value, RuntimeError> {
+fn builtin_consume(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let mut deque = match args[0].take() {
         Value::Deque(d) => Arc::try_unwrap(d).unwrap_or_else(|arc| (*arc).clone()),
         other => panic!("consume: expected Deque, got {other:?}"),
@@ -332,7 +332,7 @@ fn builtin_consume(mut args: Args) -> Result<Value, RuntimeError> {
 
 // ── Iterator constructors ────────────────────────────────────────────
 
-fn builtin_iter(mut args: Args) -> Result<Value, RuntimeError> {
+fn builtin_iter(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let items = match args[0].take() {
         Value::List(l) => Arc::try_unwrap(l).unwrap_or_else(|arc| arc.as_ref().clone()),
         Value::Deque(d) => {
@@ -344,7 +344,7 @@ fn builtin_iter(mut args: Args) -> Result<Value, RuntimeError> {
     Ok(Value::iterator(IterHandle::from_list(items, Effect::pure())))
 }
 
-fn builtin_rev_iter(mut args: Args) -> Result<Value, RuntimeError> {
+fn builtin_rev_iter(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let mut items = match args[0].take() {
         Value::List(l) => Arc::try_unwrap(l).unwrap_or_else(|arc| arc.as_ref().clone()),
         Value::Deque(d) => {
@@ -359,49 +359,49 @@ fn builtin_rev_iter(mut args: Args) -> Result<Value, RuntimeError> {
 
 // ── Iterator lazy combinators ────────────────────────────────────────
 
-fn builtin_map(mut args: Args) -> Result<Value, RuntimeError> {
+fn builtin_map(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let iter = args[0].take().into_iterator();
     let f = args[1].take().into_fn();
     Ok(Value::iterator(iter.map(*f)))
 }
 
-fn builtin_pmap(mut args: Args) -> Result<Value, RuntimeError> {
+fn builtin_pmap(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     // pmap = map at runtime; parallelism is a scheduling concern.
     let iter = args[0].take().into_iterator();
     let f = args[1].take().into_fn();
     Ok(Value::iterator(iter.map(*f)))
 }
 
-fn builtin_filter(mut args: Args) -> Result<Value, RuntimeError> {
+fn builtin_filter(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let iter = args[0].take().into_iterator();
     let f = args[1].take().into_fn();
     Ok(Value::iterator(iter.filter(*f)))
 }
 
-fn builtin_take(mut args: Args) -> Result<Value, RuntimeError> {
+fn builtin_take(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let iter = args[0].take().into_iterator();
     let n = args[1].as_int().max(0) as usize;
     Ok(Value::iterator(iter.take(n)))
 }
 
-fn builtin_skip(mut args: Args) -> Result<Value, RuntimeError> {
+fn builtin_skip(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let iter = args[0].take().into_iterator();
     let n = args[1].as_int().max(0) as usize;
     Ok(Value::iterator(iter.skip(n)))
 }
 
-fn builtin_chain(mut args: Args) -> Result<Value, RuntimeError> {
+fn builtin_chain(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let a = args[0].take().into_iterator();
     let b = args[1].take().into_iterator();
     Ok(Value::iterator(a.chain(*b)))
 }
 
-fn builtin_flatten(mut args: Args) -> Result<Value, RuntimeError> {
+fn builtin_flatten(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let iter = args[0].take().into_iterator();
     Ok(Value::iterator(iter.flatten()))
 }
 
-fn builtin_flat_map(mut args: Args) -> Result<Value, RuntimeError> {
+fn builtin_flat_map(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let iter = args[0].take().into_iterator();
     let f = args[1].take().into_fn();
     Ok(Value::iterator(iter.flat_map(*f)))
@@ -409,19 +409,19 @@ fn builtin_flat_map(mut args: Args) -> Result<Value, RuntimeError> {
 
 // ── Sequence lazy ops ────────────────────────────────────────────────
 
-fn builtin_take_seq(mut args: Args) -> Result<Value, RuntimeError> {
+fn builtin_take_seq(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let seq = args[0].take().into_sequence();
     let n = args[1].as_int().max(0) as usize;
     Ok(Value::sequence(seq.take(n)))
 }
 
-fn builtin_skip_seq(mut args: Args) -> Result<Value, RuntimeError> {
+fn builtin_skip_seq(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let seq = args[0].take().into_sequence();
     let n = args[1].as_int().max(0) as usize;
     Ok(Value::sequence(seq.skip(n)))
 }
 
-fn builtin_chain_seq(mut args: Args) -> Result<Value, RuntimeError> {
+fn builtin_chain_seq(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let seq = args[0].take().into_sequence();
     let iter = args[1].take().into_iterator();
     Ok(Value::sequence(seq.chain(*iter)))

@@ -456,7 +456,7 @@ impl IncrementalGraph {
                     .filter_map(|n| name_to_ctx_id.get(n).copied())
                     .collect();
                 if let Some(meta) = scc_result.fn_metas.get_mut(&fid) {
-                    meta.effect = EffectSet { reads, writes, io: false };
+                    meta.effect = EffectSet { reads, writes, io: false, self_modifying: false };
                 }
             }
         }
