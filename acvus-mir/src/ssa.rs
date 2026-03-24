@@ -11,14 +11,14 @@
 //! 3. When all predecessors of a block are known, `seal_block(block)`
 //! 4. `finish()` returns the PHI insertions to apply
 
-use crate::graph::ContextId;
+use crate::graph::QualifiedRef;
 use crate::ir::{Label, ValueId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 /// A pending PHI that needs to be resolved when the block is sealed.
 #[derive(Debug, Clone)]
 struct PendingPhi {
-    context: ContextId,
+    context: QualifiedRef,
     /// The ValueId allocated for this PHI result (block param).
     result: ValueId,
 }
@@ -28,7 +28,7 @@ struct PendingPhi {
 pub struct SSABuilder {
     /// Current definition of each context variable per block.
     /// (block, context) → ValueId
-    current_defs: FxHashMap<(Label, ContextId), ValueId>,
+    current_defs: FxHashMap<(Label, QualifiedRef), ValueId>,
 
     /// Predecessors of each block.
     predecessors: FxHashMap<Label, Vec<Label>>,
@@ -52,7 +52,7 @@ pub struct PhiInsertion {
     /// The merge block where this PHI lives.
     pub block: Label,
     /// Which context variable this PHI is for.
-    pub context: ContextId,
+    pub context: QualifiedRef,
     /// The ValueId that represents the PHI result (block param).
     pub result: ValueId,
     /// Incoming values from predecessors: (predecessor_block, ValueId).
@@ -85,7 +85,7 @@ impl SSABuilder {
     }
 
     /// Define a context variable in a block.
-    pub fn define(&mut self, block: Label, context: ContextId, value: ValueId) {
+    pub fn define(&mut self, block: Label, context: QualifiedRef, value: ValueId) {
         self.current_defs.insert((block, context), value);
     }
 
@@ -98,7 +98,7 @@ impl SSABuilder {
     pub fn use_var(
         &mut self,
         block: Label,
-        context: ContextId,
+        context: QualifiedRef,
         alloc_val: &mut impl FnMut() -> ValueId,
     ) -> ValueId {
         // Local definition in this block?
@@ -152,7 +152,7 @@ impl SSABuilder {
     fn use_var_sealed(
         &mut self,
         block: Label,
-        context: ContextId,
+        context: QualifiedRef,
         alloc_val: &mut impl FnMut() -> ValueId,
     ) -> ValueId {
         let preds = self.predecessors.get(&block).cloned().unwrap_or_default();
@@ -183,7 +183,7 @@ impl SSABuilder {
     fn resolve_phi(
         &mut self,
         block: Label,
-        context: ContextId,
+        context: QualifiedRef,
         phi_val: ValueId,
         alloc_val: &mut impl FnMut() -> ValueId,
     ) {
@@ -224,6 +224,7 @@ impl SSABuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acvus_utils::Interner;
 
     fn label(n: u32) -> Label {
         Label(n)
@@ -239,12 +240,17 @@ mod tests {
         }
     }
 
+    fn make_ctx(interner: &Interner, name: &str) -> QualifiedRef {
+        QualifiedRef::root(interner.intern(name))
+    }
+
     // ── Completeness: correct PHI insertion ──
 
     /// Single block, define then use — no PHI needed.
     #[test]
     fn single_block_no_phi() {
-        let ctx = ContextId::alloc();
+        let i = Interner::new();
+        let ctx = make_ctx(&i, "x");
         let mut ssa = SSABuilder::new();
         let mut alloc = make_val_alloc();
 
@@ -259,7 +265,8 @@ mod tests {
     /// Linear blocks: define in block 0, use in block 1 — no PHI.
     #[test]
     fn linear_blocks_no_phi() {
-        let ctx = ContextId::alloc();
+        let i = Interner::new();
+        let ctx = make_ctx(&i, "x");
         let mut ssa = SSABuilder::new();
         let mut alloc = make_val_alloc();
 
@@ -276,7 +283,8 @@ mod tests {
     /// Diamond: block 0 → block 1 (write), block 0 → block 2 (no write), merge at block 3.
     #[test]
     fn diamond_phi_inserted() {
-        let ctx = ContextId::alloc();
+        let i = Interner::new();
+        let ctx = make_ctx(&i, "x");
         let mut ssa = SSABuilder::new();
         let mut alloc = make_val_alloc();
 
@@ -313,7 +321,8 @@ mod tests {
     /// Diamond where both sides write — PHI with two different values.
     #[test]
     fn diamond_both_write_phi() {
-        let ctx = ContextId::alloc();
+        let i = Interner::new();
+        let ctx = make_ctx(&i, "x");
         let mut ssa = SSABuilder::new();
         let mut alloc = make_val_alloc();
 
@@ -350,7 +359,8 @@ mod tests {
     /// Nested diamond: outer branch, inner branch in one arm.
     #[test]
     fn nested_diamond() {
-        let ctx = ContextId::alloc();
+        let i = Interner::new();
+        let ctx = make_ctx(&i, "x");
         let mut ssa = SSABuilder::new();
         let mut alloc = make_val_alloc();
 
@@ -416,7 +426,8 @@ mod tests {
     /// Loop: block 0 → block 1 (loop header) → block 2 (body, writes) → back to block 1.
     #[test]
     fn loop_back_edge_phi() {
-        let ctx = ContextId::alloc();
+        let i = Interner::new();
+        let ctx = make_ctx(&i, "x");
         let mut ssa = SSABuilder::new();
         let mut alloc = make_val_alloc();
 
@@ -462,7 +473,8 @@ mod tests {
     /// Diamond where neither side writes — no PHI needed (both use same value).
     #[test]
     fn diamond_no_write_no_phi() {
-        let ctx = ContextId::alloc();
+        let i = Interner::new();
+        let ctx = make_ctx(&i, "x");
         let mut ssa = SSABuilder::new();
         let mut alloc = make_val_alloc();
 
@@ -490,8 +502,9 @@ mod tests {
     /// Multiple contexts — independent PHIs.
     #[test]
     fn multiple_contexts_independent() {
-        let ctx_a = ContextId::alloc();
-        let ctx_b = ContextId::alloc();
+        let i = Interner::new();
+        let ctx_a = make_ctx(&i, "a");
+        let ctx_b = make_ctx(&i, "b");
         let mut ssa = SSABuilder::new();
         let mut alloc = make_val_alloc();
 
@@ -521,7 +534,7 @@ mod tests {
         let phis = ssa.finish();
         // ctx_a should have PHI (different values from two sides)
         // ctx_b should NOT have PHI (same value from both sides — trivial)
-        let phi_contexts: Vec<ContextId> = phis.iter().map(|p| p.context).collect();
+        let phi_contexts: Vec<QualifiedRef> = phis.iter().map(|p| p.context).collect();
         assert!(phi_contexts.contains(&ctx_a), "ctx_a needs PHI");
         assert!(
             !phi_contexts.contains(&ctx_b),

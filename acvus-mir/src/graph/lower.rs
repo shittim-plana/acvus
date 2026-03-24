@@ -55,13 +55,6 @@ pub fn lower(
     let mut modules = FxHashMap::default();
     let mut errors = Vec::new();
 
-    // Build context name → ContextId mapping from graph.
-    let name_to_ctx_id: FxHashMap<Astr, ContextId> = graph
-        .contexts
-        .iter()
-        .map(|ctx| (ctx.name, ctx.id))
-        .collect();
-
     for func in graph.functions.iter() {
         let FnKind::Local(_source) = &func.kind else {
             continue;
@@ -75,19 +68,15 @@ pub fn lower(
 
         // Build name_to_id for this function: only contexts that this function references.
         let fn_refs = extract.fn_refs.get(&func.id);
-        let name_to_id: FxHashMap<Astr, (ContextId, Ty)> = match fn_refs {
+        let name_to_id: FxHashMap<Astr, (QualifiedRef, Ty)> = match fn_refs {
             Some(refs) => refs
                 .context_reads
                 .iter()
                 .chain(refs.context_writes.iter())
                 .map(|r| {
-                    let name = r.name;
-                    let id = name_to_ctx_id
-                        .get(&name)
-                        .copied()
-                        .unwrap_or_else(ContextId::alloc);
-                    let ty = resolved.context_type(id).cloned().unwrap_or(Ty::error());
-                    (name, (id, ty))
+                    let qref = *r;
+                    let ty = resolved.context_type(&qref).cloned().unwrap_or(Ty::error());
+                    (r.name, (qref, ty))
                 })
                 .collect(),
             None => FxHashMap::default(),
@@ -166,7 +155,6 @@ mod tests {
         let contexts = ctx
             .iter()
             .map(|(name, ty)| Context {
-                id: ContextId::alloc(),
                 name: interner.intern(name),
                 namespace: None,
                 constraint: Constraint::Exact(ty.clone()),

@@ -120,19 +120,19 @@ impl LspSession {
         name: &str,
         namespace: Option<NamespaceId>,
         constraint: Constraint,
-    ) -> ContextId {
-        let id = ContextId::alloc();
+    ) -> QualifiedRef {
+        let interned = self.graph.interner().intern(name);
+        let qref = QualifiedRef::root(interned);
         self.graph.add_context(Context {
-            id,
-            name: self.graph.interner().intern(name),
+            name: interned,
             namespace,
             constraint,
         });
-        id
+        qref
     }
 
-    pub fn remove_context(&mut self, id: ContextId) {
-        self.graph.remove_context(id);
+    pub fn remove_context(&mut self, qref: QualifiedRef) {
+        self.graph.remove_context(qref);
     }
 
     // ── Document lifecycle ──────────────────────────────────────────

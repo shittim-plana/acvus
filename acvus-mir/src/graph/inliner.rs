@@ -219,9 +219,9 @@ fn remap_inst(
         },
 
         // Context
-        InstKind::ContextProject { dst, id } => InstKind::ContextProject {
+        InstKind::ContextProject { dst, ctx } => InstKind::ContextProject {
             dst: r(*dst),
-            id: *id,
+            ctx: *ctx,
         },
         InstKind::ContextLoad { dst, src } => InstKind::ContextLoad {
             dst: r(*dst),

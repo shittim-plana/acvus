@@ -11,7 +11,6 @@ use rustc_hash::FxHashMap;
 /// Compile via batch pipeline, return error messages (sorted).
 fn batch_errors(interner: &Interner, source: &str, ctx: &[(&str, Ty)]) -> Vec<String> {
     let contexts: Vec<Context> = ctx.iter().map(|(name, ty)| Context {
-        id: ContextId::alloc(),
         name: interner.intern(name),
         namespace: None,
         constraint: Constraint::Exact(ty.clone()),

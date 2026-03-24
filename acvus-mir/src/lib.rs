@@ -24,17 +24,17 @@ pub use pass::AnalysisPass;
 use acvus_utils::Astr;
 use rustc_hash::FxHashMap;
 
-use crate::graph::ContextId;
+use crate::graph::QualifiedRef;
 use crate::ty::Ty;
 
-/// Build a name→(ContextId, Ty) mapping from a context type map.
+/// Build a name→(QualifiedRef, Ty) mapping from a context type map.
 pub fn build_name_to_id(
     context: &FxHashMap<Astr, Ty>,
-) -> acvus_utils::Freeze<FxHashMap<Astr, (ContextId, Ty)>> {
+) -> acvus_utils::Freeze<FxHashMap<Astr, (QualifiedRef, Ty)>> {
     acvus_utils::Freeze::new(
         context
             .iter()
-            .map(|(&name, ty)| (name, (ContextId::alloc(), ty.clone())))
+            .map(|(&name, ty)| (name, (QualifiedRef::root(name), ty.clone())))
             .collect(),
     )
 }

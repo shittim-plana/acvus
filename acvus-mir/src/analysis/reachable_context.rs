@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use crate::graph::ContextId;
+use crate::graph::QualifiedRef;
 use crate::ir::{InstKind, Label, MirModule, ValueId};
 use acvus_ast::Literal;
 use acvus_utils::Astr;
@@ -16,17 +16,17 @@ use crate::analysis::value_transfer::ValueDomainTransfer;
 #[derive(Debug, Clone, Default)]
 pub struct ContextKeyPartition {
     /// Keys on unconditionally reachable paths -- fetch upfront.
-    pub eager: FxHashSet<ContextId>,
+    pub eager: FxHashSet<QualifiedRef>,
     /// Keys behind unknown branch conditions -- resolve lazily via coroutine.
-    pub lazy: FxHashSet<ContextId>,
+    pub lazy: FxHashSet<QualifiedRef>,
     /// Known keys that appear on reachable (non-dead) paths.
     /// These are excluded from eager/lazy (already resolved for orchestration)
     /// but tracked separately for UI discovery.
-    pub reachable_known: FxHashSet<ContextId>,
+    pub reachable_known: FxHashSet<QualifiedRef>,
     /// Keys in dead (pruned) branches -- not needed at runtime, but the
     /// typechecker still sees these references and needs their types injected.
     /// Callers should include these in type injection but NOT in unresolved params.
-    pub pruned: FxHashSet<ContextId>,
+    pub pruned: FxHashSet<QualifiedRef>,
 }
 
 /// A known context value for branch pruning.
@@ -52,9 +52,9 @@ pub enum KnownValue {
 /// already in `known`.
 pub fn reachable_context_keys(
     module: &MirModule,
-    known: &FxHashMap<ContextId, KnownValue>,
+    known: &FxHashMap<QualifiedRef, KnownValue>,
     val_def: &ValDefMap,
-) -> FxHashSet<ContextId> {
+) -> FxHashSet<QualifiedRef> {
     let p = partition_context_keys(module, known, val_def);
     let mut all = p.eager;
     all.extend(p.lazy);
@@ -70,7 +70,7 @@ pub fn reachable_context_keys(
 ///   -- resolve on-demand via coroutine.
 pub fn partition_context_keys(
     module: &MirModule,
-    known: &FxHashMap<ContextId, KnownValue>,
+    known: &FxHashMap<QualifiedRef, KnownValue>,
     val_def: &ValDefMap,
 ) -> ContextKeyPartition {
     let mut partition = ContextKeyPartition::default();
@@ -86,11 +86,11 @@ pub fn partition_context_keys(
     // Closures: conservatively treat all context loads as lazy
     for closure in module.closures.values() {
         for inst in &closure.insts {
-            if let InstKind::ContextProject { id, .. } = &inst.kind {
-                if known.contains_key(id) {
-                    partition.reachable_known.insert(*id);
+            if let InstKind::ContextProject { ctx, .. } = &inst.kind {
+                if known.contains_key(ctx) {
+                    partition.reachable_known.insert(*ctx);
                 } else {
-                    partition.lazy.insert(*id);
+                    partition.lazy.insert(*ctx);
                 }
             }
         }
@@ -114,7 +114,7 @@ enum Reach {
 fn partition_from_body(
     insts: &[crate::ir::Inst],
     val_types: &FxHashMap<ValueId, crate::ty::Ty>,
-    known: &FxHashMap<ContextId, KnownValue>,
+    known: &FxHashMap<QualifiedRef, KnownValue>,
     _val_def: &ValDefMap,
     partition: &mut ContextKeyPartition,
 ) {
@@ -137,18 +137,18 @@ fn partition_from_body(
     for (i, block) in cfg.blocks.iter().enumerate() {
         let block_reach = reach[i];
         for &inst_idx in &block.inst_indices {
-            if let InstKind::ContextProject { id, .. } = &insts[inst_idx].kind {
+            if let InstKind::ContextProject { ctx, .. } = &insts[inst_idx].kind {
                 match block_reach {
                     Reach::Unreachable => {
-                        partition.pruned.insert(*id);
+                        partition.pruned.insert(*ctx);
                     }
                     _ => {
-                        if known.contains_key(id) {
-                            partition.reachable_known.insert(*id);
+                        if known.contains_key(ctx) {
+                            partition.reachable_known.insert(*ctx);
                         } else {
                             match block_reach {
-                                Reach::Definite => partition.eager.insert(*id),
-                                Reach::Conditional => partition.lazy.insert(*id),
+                                Reach::Definite => partition.eager.insert(*ctx),
+                                Reach::Conditional => partition.lazy.insert(*ctx),
                                 Reach::Unreachable => unreachable!(),
                             };
                         }
@@ -254,7 +254,7 @@ fn enqueue_reach(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::ContextId;
+    use crate::graph::QualifiedRef;
     use crate::ir::{DebugInfo, Inst, MirBody};
     use crate::ty::Ty;
     use acvus_ast::{Literal, RangeKind, Span};
@@ -288,23 +288,47 @@ mod tests {
         ValDefMapAnalysis.run(module, ())
     }
 
+    fn test_interner() -> Interner {
+        Interner::new()
+    }
+
+    fn qref(interner: &Interner, name: &str) -> QualifiedRef {
+        QualifiedRef::root(interner.intern(name))
+    }
+
+    /// Shared interner for tests.
+    fn shared_interner() -> &'static Interner {
+        use std::sync::LazyLock;
+        static INTERNER: LazyLock<Interner> = LazyLock::new(Interner::new);
+        &INTERNER
+    }
+
+    /// Create a unique QualifiedRef for tests. Uses a shared interner with
+    /// monotonically increasing names to ensure uniqueness.
+    fn alloc_qref() -> QualifiedRef {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        QualifiedRef::root(shared_interner().intern(&format!("ctx_{n}")))
+    }
+
     /// No branches -- all context loads are needed.
     #[test]
     fn no_branches_all_needed() {
-        let id0 = ContextId::alloc();
-        let id1 = ContextId::alloc();
+        let id0 = alloc_qref();
+        let id1 = alloc_qref();
         let mut vf = LocalFactory::<ValueId>::new();
         let v0 = vf.next();
         let v1 = vf.next();
         let module = make_module(vec![
             inst(InstKind::ContextProject {
                 dst: v0,
-                id: id0,
+                ctx: id0,
                 
             }),
             inst(InstKind::ContextProject {
                 dst: v1,
-                id: id1,
+                ctx: id1,
                 
             }),
         ]);
@@ -316,20 +340,20 @@ mod tests {
     /// Known context key is excluded from needed set.
     #[test]
     fn known_key_excluded() {
-        let id0 = ContextId::alloc();
-        let id1 = ContextId::alloc();
+        let id0 = alloc_qref();
+        let id1 = alloc_qref();
         let mut vf = LocalFactory::<ValueId>::new();
         let v0 = vf.next();
         let v1 = vf.next();
         let module = make_module(vec![
             inst(InstKind::ContextProject {
                 dst: v0,
-                id: id0,
+                ctx: id0,
                 
             }),
             inst(InstKind::ContextProject {
                 dst: v1,
-                id: id1,
+                ctx: id1,
                 
             }),
         ]);
@@ -343,9 +367,9 @@ mod tests {
     /// Match on known context value -- dead branch pruned.
     #[test]
     fn branch_then_taken() {
-        let id0 = ContextId::alloc();
-        let id1 = ContextId::alloc();
-        let id2 = ContextId::alloc();
+        let id0 = alloc_qref();
+        let id1 = alloc_qref();
+        let id2 = alloc_qref();
         let mut vf = LocalFactory::<ValueId>::new();
         let v0 = vf.next();
         let v1 = vf.next();
@@ -354,7 +378,7 @@ mod tests {
         let module = make_module(vec![
             inst(InstKind::ContextProject {
                 dst: v0,
-                id: id0,
+                ctx: id0,
                 
             }),
             inst(InstKind::TestLiteral {
@@ -376,7 +400,7 @@ mod tests {
             }),
             inst(InstKind::ContextProject {
                 dst: v2,
-                id: id1,
+                ctx: id1,
                 
             }),
             inst(InstKind::Return(v2)),
@@ -387,7 +411,7 @@ mod tests {
             }),
             inst(InstKind::ContextProject {
                 dst: v3,
-                id: id2,
+                ctx: id2,
                 
             }),
             inst(InstKind::Return(v3)),
@@ -406,9 +430,9 @@ mod tests {
     /// Match on known context value -- else branch taken.
     #[test]
     fn branch_else_taken() {
-        let id0 = ContextId::alloc();
-        let id1 = ContextId::alloc();
-        let id2 = ContextId::alloc();
+        let id0 = alloc_qref();
+        let id1 = alloc_qref();
+        let id2 = alloc_qref();
         let mut vf = LocalFactory::<ValueId>::new();
         let v0 = vf.next();
         let v1 = vf.next();
@@ -417,7 +441,7 @@ mod tests {
         let module = make_module(vec![
             inst(InstKind::ContextProject {
                 dst: v0,
-                id: id0,
+                ctx: id0,
                 
             }),
             inst(InstKind::TestLiteral {
@@ -439,7 +463,7 @@ mod tests {
             }),
             inst(InstKind::ContextProject {
                 dst: v2,
-                id: id1,
+                ctx: id1,
                 
             }),
             inst(InstKind::Return(v2)),
@@ -450,7 +474,7 @@ mod tests {
             }),
             inst(InstKind::ContextProject {
                 dst: v3,
-                id: id2,
+                ctx: id2,
                 
             }),
             inst(InstKind::Return(v3)),
@@ -468,9 +492,9 @@ mod tests {
     /// Unknown condition -- both branches are live (conservative).
     #[test]
     fn unknown_condition_both_live() {
-        let id0 = ContextId::alloc();
-        let id1 = ContextId::alloc();
-        let id2 = ContextId::alloc();
+        let id0 = alloc_qref();
+        let id1 = alloc_qref();
+        let id2 = alloc_qref();
         let mut vf = LocalFactory::<ValueId>::new();
         let v0 = vf.next();
         let v1 = vf.next();
@@ -479,7 +503,7 @@ mod tests {
         let module = make_module(vec![
             inst(InstKind::ContextProject {
                 dst: v0,
-                id: id0,
+                ctx: id0,
                 
             }),
             inst(InstKind::TestLiteral {
@@ -501,7 +525,7 @@ mod tests {
             }),
             inst(InstKind::ContextProject {
                 dst: v2,
-                id: id1,
+                ctx: id1,
                 
             }),
             inst(InstKind::Return(v2)),
@@ -512,7 +536,7 @@ mod tests {
             }),
             inst(InstKind::ContextProject {
                 dst: v3,
-                id: id2,
+                ctx: id2,
                 
             }),
             inst(InstKind::Return(v3)),
@@ -530,9 +554,9 @@ mod tests {
     /// Nested match -- chained dead branch elimination.
     #[test]
     fn nested_match_known_condition() {
-        let id0 = ContextId::alloc();
-        let id1 = ContextId::alloc();
-        let id2 = ContextId::alloc();
+        let id0 = alloc_qref();
+        let id1 = alloc_qref();
+        let id2 = alloc_qref();
         let mut vf = LocalFactory::<ValueId>::new();
         let v0 = vf.next();
         let v1 = vf.next();
@@ -541,7 +565,7 @@ mod tests {
         let module = make_module(vec![
             inst(InstKind::ContextProject {
                 dst: v0,
-                id: id0,
+                ctx: id0,
                 
             }),
             inst(InstKind::TestLiteral {
@@ -563,7 +587,7 @@ mod tests {
             }),
             inst(InstKind::ContextProject {
                 dst: v2,
-                id: id1,
+                ctx: id1,
                 
             }),
             inst(InstKind::Jump {
@@ -577,7 +601,7 @@ mod tests {
             }),
             inst(InstKind::ContextProject {
                 dst: v3,
-                id: id2,
+                ctx: id2,
                 
             }),
             inst(InstKind::Jump {
@@ -603,9 +627,9 @@ mod tests {
     /// Range test with known value.
     #[test]
     fn range_condition_evaluated() {
-        let id0 = ContextId::alloc();
-        let id1 = ContextId::alloc();
-        let id2 = ContextId::alloc();
+        let id0 = alloc_qref();
+        let id1 = alloc_qref();
+        let id2 = alloc_qref();
         let mut vf = LocalFactory::<ValueId>::new();
         let v0 = vf.next();
         let v1 = vf.next();
@@ -614,7 +638,7 @@ mod tests {
         let module = make_module(vec![
             inst(InstKind::ContextProject {
                 dst: v0,
-                id: id0,
+                ctx: id0,
                 
             }),
             inst(InstKind::TestRange {
@@ -638,7 +662,7 @@ mod tests {
             }),
             inst(InstKind::ContextProject {
                 dst: v2,
-                id: id1,
+                ctx: id1,
                 
             }),
             inst(InstKind::Return(v2)),
@@ -649,7 +673,7 @@ mod tests {
             }),
             inst(InstKind::ContextProject {
                 dst: v3,
-                id: id2,
+                ctx: id2,
                 
             }),
             inst(InstKind::Return(v3)),
@@ -666,10 +690,10 @@ mod tests {
     /// Multi-arm match -- chained tests, middle arm matched.
     #[test]
     fn multi_arm_match_middle() {
-        let id0 = ContextId::alloc();
-        let id1 = ContextId::alloc();
-        let id2 = ContextId::alloc();
-        let id3 = ContextId::alloc();
+        let id0 = alloc_qref();
+        let id1 = alloc_qref();
+        let id2 = alloc_qref();
+        let id3 = alloc_qref();
         let mut vf = LocalFactory::<ValueId>::new();
         let v0 = vf.next();
         let v1 = vf.next();
@@ -680,7 +704,7 @@ mod tests {
         let module = make_module(vec![
             inst(InstKind::ContextProject {
                 dst: v0,
-                id: id0,
+                ctx: id0,
                 
             }),
             inst(InstKind::TestLiteral {
@@ -702,7 +726,7 @@ mod tests {
             }),
             inst(InstKind::ContextProject {
                 dst: v2,
-                id: id1,
+                ctx: id1,
                 
             }),
             inst(InstKind::Jump {
@@ -733,7 +757,7 @@ mod tests {
             }),
             inst(InstKind::ContextProject {
                 dst: v4,
-                id: id2,
+                ctx: id2,
                 
             }),
             inst(InstKind::Jump {
@@ -747,7 +771,7 @@ mod tests {
             }),
             inst(InstKind::ContextProject {
                 dst: v5,
-                id: id3,
+                ctx: id3,
                 
             }),
             inst(InstKind::Jump {
@@ -795,9 +819,9 @@ mod tests {
         let b = i.intern("B");
         let d = i.intern("D"); // not in enum
 
-        let id0 = ContextId::alloc();
-        let id1 = ContextId::alloc();
-        let id2 = ContextId::alloc();
+        let id0 = alloc_qref();
+        let id1 = alloc_qref();
+        let id2 = alloc_qref();
 
         let mut vf = LocalFactory::<ValueId>::new();
         let v0 = vf.next();
@@ -819,7 +843,7 @@ mod tests {
                 // %0 = ContextLoad "val"
                 inst(InstKind::ContextProject {
                     dst: v0,
-                    id: id0,
+                    ctx: id0,
                     
                 }),
                 // %1 = TestVariant(%0, "D")  -- D not in {A,B,C} -> always false
@@ -843,7 +867,7 @@ mod tests {
                 }),
                 inst(InstKind::ContextProject {
                     dst: v2,
-                    id: id1,
+                    ctx: id1,
                     
                 }),
                 inst(InstKind::Jump {
@@ -858,7 +882,7 @@ mod tests {
                 }),
                 inst(InstKind::ContextProject {
                     dst: v3,
-                    id: id2,
+                    ctx: id2,
                     
                 }),
                 inst(InstKind::Jump {
@@ -888,9 +912,9 @@ mod tests {
         let i = Interner::new();
         let only = i.intern("Only");
 
-        let id0 = ContextId::alloc();
-        let id1 = ContextId::alloc();
-        let id2 = ContextId::alloc();
+        let id0 = alloc_qref();
+        let id1 = alloc_qref();
+        let id2 = alloc_qref();
 
         let mut vf = LocalFactory::<ValueId>::new();
         let v0 = vf.next();
@@ -911,7 +935,7 @@ mod tests {
             vec![
                 inst(InstKind::ContextProject {
                     dst: v0,
-                    id: id0,
+                    ctx: id0,
                     
                 }),
                 inst(InstKind::TestVariant {
@@ -933,7 +957,7 @@ mod tests {
                 }),
                 inst(InstKind::ContextProject {
                     dst: v2,
-                    id: id1,
+                    ctx: id1,
                     
                 }),
                 inst(InstKind::Return(v2)),
@@ -944,7 +968,7 @@ mod tests {
                 }),
                 inst(InstKind::ContextProject {
                     dst: v3,
-                    id: id2,
+                    ctx: id2,
                     
                 }),
                 inst(InstKind::Return(v3)),
@@ -972,10 +996,10 @@ mod tests {
         let b = i.intern("B");
         let c = i.intern("C");
 
-        let id0 = ContextId::alloc();
-        let id1 = ContextId::alloc();
-        let id2 = ContextId::alloc();
-        let id3 = ContextId::alloc();
+        let id0 = alloc_qref();
+        let id1 = alloc_qref();
+        let id2 = alloc_qref();
+        let id3 = alloc_qref();
 
         let mut vf = LocalFactory::<ValueId>::new();
         let v0 = vf.next();
@@ -998,7 +1022,7 @@ mod tests {
             vec![
                 inst(InstKind::ContextProject {
                     dst: v0,
-                    id: id0,
+                    ctx: id0,
                     
                 }),
                 // TestVariant A
@@ -1022,7 +1046,7 @@ mod tests {
                 }),
                 inst(InstKind::ContextProject {
                     dst: v2,
-                    id: id1,
+                    ctx: id1,
                     
                 }),
                 inst(InstKind::Jump {
@@ -1055,7 +1079,7 @@ mod tests {
                 }),
                 inst(InstKind::ContextProject {
                     dst: v4,
-                    id: id2,
+                    ctx: id2,
                     
                 }),
                 inst(InstKind::Jump {
@@ -1070,7 +1094,7 @@ mod tests {
                 }),
                 inst(InstKind::ContextProject {
                     dst: v5,
-                    id: id3,
+                    ctx: id3,
                     
                 }),
                 inst(InstKind::Jump {
@@ -1107,10 +1131,10 @@ mod tests {
         let b = i.intern("B");
         let c = i.intern("C"); // not in enum
 
-        let id0 = ContextId::alloc();
-        let id1 = ContextId::alloc();
-        let id2 = ContextId::alloc();
-        let id3 = ContextId::alloc();
+        let id0 = alloc_qref();
+        let id1 = alloc_qref();
+        let id2 = alloc_qref();
+        let id3 = alloc_qref();
 
         let mut vf = LocalFactory::<ValueId>::new();
         let v0 = vf.next();
@@ -1133,7 +1157,7 @@ mod tests {
             vec![
                 inst(InstKind::ContextProject {
                     dst: v0,
-                    id: id0,
+                    ctx: id0,
                     
                 }),
                 // Test A
@@ -1157,7 +1181,7 @@ mod tests {
                 }),
                 inst(InstKind::ContextProject {
                     dst: v2,
-                    id: id1,
+                    ctx: id1,
                     
                 }),
                 inst(InstKind::Jump {
@@ -1190,7 +1214,7 @@ mod tests {
                 }),
                 inst(InstKind::ContextProject {
                     dst: v4,
-                    id: id2,
+                    ctx: id2,
                     
                 }),
                 inst(InstKind::Jump {
@@ -1205,7 +1229,7 @@ mod tests {
                 }),
                 inst(InstKind::ContextProject {
                     dst: v5,
-                    id: id3,
+                    ctx: id3,
                     
                 }),
                 inst(InstKind::Jump {
@@ -1247,10 +1271,10 @@ mod tests {
         let a = i.intern("A");
         let b = i.intern("B");
 
-        let id0 = ContextId::alloc();
-        let id1 = ContextId::alloc();
-        let id2 = ContextId::alloc();
-        let id10 = ContextId::alloc();
+        let id0 = alloc_qref();
+        let id1 = alloc_qref();
+        let id2 = alloc_qref();
+        let id10 = alloc_qref();
 
         let mut vf = LocalFactory::<ValueId>::new();
         let v_pre = vf.next();
@@ -1274,12 +1298,12 @@ mod tests {
                 // Eager load before any branch
                 inst(InstKind::ContextProject {
                     dst: v_pre,
-                    id: id10,
+                    ctx: id10,
                     
                 }),
                 inst(InstKind::ContextProject {
                     dst: v0,
-                    id: id0,
+                    ctx: id0,
                     
                 }),
                 inst(InstKind::TestVariant {
@@ -1301,7 +1325,7 @@ mod tests {
                 }),
                 inst(InstKind::ContextProject {
                     dst: v2,
-                    id: id1,
+                    ctx: id1,
                     
                 }),
                 inst(InstKind::Return(v2)),
@@ -1312,7 +1336,7 @@ mod tests {
                 }),
                 inst(InstKind::ContextProject {
                     dst: v3,
-                    id: id2,
+                    ctx: id2,
                     
                 }),
                 inst(InstKind::Return(v3)),
@@ -1340,10 +1364,10 @@ mod tests {
         let a = i.intern("A");
         let b = i.intern("B");
 
-        let id0 = ContextId::alloc();
-        let id1 = ContextId::alloc();
-        let id2 = ContextId::alloc();
-        let id3 = ContextId::alloc();
+        let id0 = alloc_qref();
+        let id1 = alloc_qref();
+        let id2 = alloc_qref();
+        let id3 = alloc_qref();
 
         let mut vf = LocalFactory::<ValueId>::new();
         let v0 = vf.next();
@@ -1366,7 +1390,7 @@ mod tests {
                 // Entry: load scrutinee then jump to first test
                 inst(InstKind::ContextProject {
                     dst: v0,
-                    id: id0,
+                    ctx: id0,
                     
                 }),
                 inst(InstKind::Jump {
@@ -1399,7 +1423,7 @@ mod tests {
                 }),
                 inst(InstKind::ContextProject {
                     dst: v2,
-                    id: id1,
+                    ctx: id1,
                     
                 }),
                 inst(InstKind::Jump {
@@ -1414,7 +1438,7 @@ mod tests {
                 }),
                 inst(InstKind::ContextProject {
                     dst: v3,
-                    id: id2,
+                    ctx: id2,
                     
                 }),
                 inst(InstKind::Jump {
@@ -1429,7 +1453,7 @@ mod tests {
                 }),
                 inst(InstKind::ContextProject {
                     dst: v4,
-                    id: id3,
+                    ctx: id3,
                     
                 }),
                 inst(InstKind::Return(v4)),
@@ -1463,11 +1487,11 @@ mod tests {
         let a = i.intern("A");
         let b = i.intern("B");
 
-        let id0 = ContextId::alloc();
-        let id1 = ContextId::alloc();
-        let id2 = ContextId::alloc();
-        let id3 = ContextId::alloc();
-        let id4 = ContextId::alloc();
+        let id0 = alloc_qref();
+        let id1 = alloc_qref();
+        let id2 = alloc_qref();
+        let id3 = alloc_qref();
+        let id4 = alloc_qref();
 
         let mut vf = LocalFactory::<ValueId>::new();
         let v0 = vf.next();
@@ -1492,7 +1516,7 @@ mod tests {
                 // Entry: unknown branch -> the match is only conditionally reachable
                 inst(InstKind::ContextProject {
                     dst: v0,
-                    id: id0,
+                    ctx: id0,
                     
                 }),
                 inst(InstKind::TestLiteral {
@@ -1515,7 +1539,7 @@ mod tests {
                 }),
                 inst(InstKind::ContextProject {
                     dst: v10,
-                    id: id1,
+                    ctx: id1,
                     
                 }),
                 inst(InstKind::TestVariant {
@@ -1538,7 +1562,7 @@ mod tests {
                 }),
                 inst(InstKind::ContextProject {
                     dst: v12,
-                    id: id2,
+                    ctx: id2,
                     
                 }),
                 inst(InstKind::Jump {
@@ -1553,7 +1577,7 @@ mod tests {
                 }),
                 inst(InstKind::ContextProject {
                     dst: v13,
-                    id: id3,
+                    ctx: id3,
                     
                 }),
                 inst(InstKind::Jump {
@@ -1568,7 +1592,7 @@ mod tests {
                 }),
                 inst(InstKind::ContextProject {
                     dst: v14,
-                    id: id4,
+                    ctx: id4,
                     
                 }),
                 inst(InstKind::Jump {
@@ -1611,10 +1635,10 @@ mod tests {
         let ooc = i.intern("OOC");
         let normal = i.intern("Normal");
 
-        let id0 = ContextId::alloc();
-        let id1 = ContextId::alloc();
-        let id2 = ContextId::alloc();
-        let id3 = ContextId::alloc();
+        let id0 = alloc_qref();
+        let id1 = alloc_qref();
+        let id2 = alloc_qref();
+        let id3 = alloc_qref();
 
         let mut vf = LocalFactory::<ValueId>::new();
         let v0 = vf.next();
@@ -1637,7 +1661,7 @@ mod tests {
                 // %0 = ContextLoad "Output"
                 inst(InstKind::ContextProject {
                     dst: v0,
-                    id: id0,
+                    ctx: id0,
                     
                 }),
                 // Test Normal
@@ -1661,7 +1685,7 @@ mod tests {
                 }),
                 inst(InstKind::ContextProject {
                     dst: v2,
-                    id: id1,
+                    ctx: id1,
                     
                 }),
                 inst(InstKind::Jump {
@@ -1676,7 +1700,7 @@ mod tests {
                 }),
                 inst(InstKind::ContextProject {
                     dst: v3,
-                    id: id2,
+                    ctx: id2,
                     
                 }),
                 inst(InstKind::Jump {
@@ -1691,7 +1715,7 @@ mod tests {
                 }),
                 inst(InstKind::ContextProject {
                     dst: v4,
-                    id: id3,
+                    ctx: id3,
                     
                 }),
             ],
@@ -1726,11 +1750,11 @@ mod tests {
     /// known context value.
     #[test]
     fn tuple_destructure_multi_arm() {
-        let id0 = ContextId::alloc();
-        let id1 = ContextId::alloc();
-        let id2 = ContextId::alloc();
-        let id3 = ContextId::alloc();
-        let id4 = ContextId::alloc();
+        let id0 = alloc_qref();
+        let id1 = alloc_qref();
+        let id2 = alloc_qref();
+        let id3 = alloc_qref();
+        let id4 = alloc_qref();
         let mut vf = LocalFactory::<ValueId>::new();
         let v0 = vf.next();
         let v1 = vf.next();
@@ -1745,12 +1769,12 @@ mod tests {
             // Pack two known context values into a tuple
             inst(InstKind::ContextProject {
                 dst: v0,
-                id: id0,
+                ctx: id0,
                 
             }),
             inst(InstKind::ContextProject {
                 dst: v1,
-                id: id1,
+                ctx: id1,
                 
             }),
             inst(InstKind::MakeTuple {
@@ -1784,7 +1808,7 @@ mod tests {
             }),
             inst(InstKind::ContextProject {
                 dst: v10,
-                id: id2,
+                ctx: id2,
                 
             }),
             inst(InstKind::Jump {
@@ -1817,7 +1841,7 @@ mod tests {
             }),
             inst(InstKind::ContextProject {
                 dst: v11,
-                id: id3,
+                ctx: id3,
                 
             }),
             inst(InstKind::Jump {
@@ -1832,7 +1856,7 @@ mod tests {
             }),
             inst(InstKind::ContextProject {
                 dst: v12,
-                id: id4,
+                ctx: id4,
                 
             }),
             inst(InstKind::Jump {
@@ -1865,10 +1889,10 @@ mod tests {
     /// second context value and uses it for range testing.
     #[test]
     fn tuple_destructure_second_element_range() {
-        let id0 = ContextId::alloc();
-        let id1 = ContextId::alloc();
-        let id2 = ContextId::alloc();
-        let id3 = ContextId::alloc();
+        let id0 = alloc_qref();
+        let id1 = alloc_qref();
+        let id2 = alloc_qref();
+        let id3 = alloc_qref();
         let mut vf = LocalFactory::<ValueId>::new();
         let v0 = vf.next();
         let v1 = vf.next();
@@ -1880,12 +1904,12 @@ mod tests {
         let module = make_module(vec![
             inst(InstKind::ContextProject {
                 dst: v0,
-                id: id0,
+                ctx: id0,
                 
             }),
             inst(InstKind::ContextProject {
                 dst: v1,
-                id: id1,
+                ctx: id1,
                 
             }),
             inst(InstKind::MakeTuple {
@@ -1920,7 +1944,7 @@ mod tests {
             }),
             inst(InstKind::ContextProject {
                 dst: v5,
-                id: id2,
+                ctx: id2,
                 
             }),
             inst(InstKind::Return(v5)),
@@ -1932,7 +1956,7 @@ mod tests {
             }),
             inst(InstKind::ContextProject {
                 dst: v6,
-                id: id3,
+                ctx: id3,
                 
             }),
             inst(InstKind::Return(v6)),

@@ -14,7 +14,74 @@ use std::collections::BTreeMap;
 use acvus_utils::Interner;
 use serde::{Deserialize, Serialize};
 
-use crate::ty::{Effect, Origin, Ty};
+use crate::ty::{Effect, EffectSet, Origin, Ty};
+use crate::graph::QualifiedRef;
+
+// ── Serializable Effect (mirrors ty::Effect without Astr) ────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SerEffect {
+    Resolved(SerEffectSet),
+    Var(u32),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SerEffectSet {
+    pub reads: Vec<SerQualifiedRef>,
+    pub writes: Vec<SerQualifiedRef>,
+    pub io: bool,
+    pub self_modifying: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SerQualifiedRef {
+    pub namespace: Option<String>,
+    pub name: String,
+}
+
+impl Effect {
+    pub fn to_ser(&self, interner: &Interner) -> SerEffect {
+        match self {
+            Effect::Resolved(set) => SerEffect::Resolved(SerEffectSet {
+                reads: set.reads.iter().map(|r| qref_to_ser(r, interner)).collect(),
+                writes: set.writes.iter().map(|r| qref_to_ser(r, interner)).collect(),
+                io: set.io,
+                self_modifying: set.self_modifying,
+            }),
+            Effect::Var(v) => SerEffect::Var(*v),
+        }
+    }
+}
+
+impl SerEffect {
+    pub fn to_effect(&self, interner: &Interner) -> Effect {
+        match self {
+            SerEffect::Resolved(set) => Effect::Resolved(EffectSet {
+                reads: set.reads.iter().map(|r| ser_to_qref(r, interner)).collect(),
+                writes: set.writes.iter().map(|r| ser_to_qref(r, interner)).collect(),
+                io: set.io,
+                self_modifying: set.self_modifying,
+            }),
+            SerEffect::Var(v) => Effect::Var(*v),
+        }
+    }
+}
+
+fn qref_to_ser(r: &QualifiedRef, interner: &Interner) -> SerQualifiedRef {
+    SerQualifiedRef {
+        namespace: r.namespace.map(|ns| interner.resolve(ns).to_string()),
+        name: interner.resolve(r.name).to_string(),
+    }
+}
+
+fn ser_to_qref(r: &SerQualifiedRef, interner: &Interner) -> QualifiedRef {
+    QualifiedRef {
+        namespace: r.namespace.as_ref().map(|ns| interner.intern(ns)),
+        name: interner.intern(&r.name),
+    }
+}
 
 /// Serializable mirror of [`Ty`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -50,7 +117,7 @@ pub enum SerTy {
     Fn {
         params: Vec<SerTy>,
         ret: Box<SerTy>,
-        effect: Effect,
+        effect: SerEffect,
     },
     Opaque {
         name: std::string::String,
@@ -64,12 +131,12 @@ pub enum SerTy {
     },
     Iterator {
         elem: Box<SerTy>,
-        effect: Effect,
+        effect: SerEffect,
     },
     Sequence {
         elem: Box<SerTy>,
         origin: Origin,
-        effect: Effect,
+        effect: SerEffect,
     },
     Deque {
         elem: Box<SerTy>,
@@ -109,7 +176,7 @@ impl Ty {
             } => SerTy::Fn {
                 params: params.iter().map(|p| p.ty.to_ser(interner)).collect(),
                 ret: Box::new(ret.to_ser(interner)),
-                effect: effect.clone(),
+                effect: effect.to_ser(interner),
             },
             Ty::Opaque(name) => SerTy::Opaque { name: name.clone() },
             Ty::Option(inner) => SerTy::Option {
@@ -129,12 +196,12 @@ impl Ty {
             },
             Ty::Iterator(elem, effect) => SerTy::Iterator {
                 elem: Box::new(elem.to_ser(interner)),
-                effect: effect.clone(),
+                effect: effect.to_ser(interner),
             },
             Ty::Sequence(elem, origin, effect) => SerTy::Sequence {
                 elem: Box::new(elem.to_ser(interner)),
                 origin: *origin,
-                effect: effect.clone(),
+                effect: effect.to_ser(interner),
             },
             Ty::Deque(elem, origin) => SerTy::Deque {
                 elem: Box::new(elem.to_ser(interner)),
@@ -180,7 +247,7 @@ impl SerTy {
                     .collect(),
                 ret: Box::new(ret.to_ty(interner)),
                 captures: vec![],
-                effect: effect.clone(),
+                effect: effect.to_effect(interner),
             },
             SerTy::Opaque { name } => Ty::Opaque(name.clone()),
             SerTy::Option { inner } => Ty::Option(Box::new(inner.to_ty(interner))),
@@ -197,13 +264,13 @@ impl SerTy {
                     .collect(),
             },
             SerTy::Iterator { elem, effect } => {
-                Ty::Iterator(Box::new(elem.to_ty(interner)), effect.clone())
+                Ty::Iterator(Box::new(elem.to_ty(interner)), effect.to_effect(interner))
             }
             SerTy::Sequence {
                 elem,
                 origin,
                 effect,
-            } => Ty::Sequence(Box::new(elem.to_ty(interner)), *origin, effect.clone()),
+            } => Ty::Sequence(Box::new(elem.to_ty(interner)), *origin, effect.to_effect(interner)),
             SerTy::Deque { elem, origin } => Ty::Deque(Box::new(elem.to_ty(interner)), *origin),
         }
     }

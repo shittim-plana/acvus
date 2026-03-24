@@ -32,7 +32,7 @@ pub struct FunctionMeta {
     pub ty: Ty,
     /// Named parameters (free_params from source zipped with signature types).
     pub params: Vec<Param>,
-    /// Transitive effect set (reads/writes with ContextId).
+    /// Transitive effect set (reads/writes with QualifiedRef).
     /// Includes both direct access and access through callees.
     pub effect: EffectSet,
 }
@@ -751,30 +751,30 @@ pub fn infer(
 
     // ── STEP 4: Compute transitive effects ─────────────────────────
     //
-    // Build name→ContextId mapping, convert direct accesses (Astr) to ContextId,
+    // Build name→QualifiedRef mapping, convert direct accesses (Astr) to QualifiedRef,
     // then propagate through call graph in SCC order (fixpoint within each SCC).
 
-    let name_to_ctx_id: FxHashMap<Astr, ContextId> =
-        graph.contexts.iter().map(|c| (c.name, c.id)).collect();
+    let name_to_qref: FxHashMap<Astr, QualifiedRef> =
+        graph.contexts.iter().map(|c| (c.name, c.qualified_ref())).collect();
 
-    // Convert direct accesses: Astr → ContextId and store in function meta.
+    // Convert direct accesses: Astr → QualifiedRef and store in function meta.
     // Also union parameter effects (over-approximation: any effectful param contributes).
     for &fid in &local_ids {
-        let reads: BTreeSet<ContextId> = fn_direct_reads
+        let reads: BTreeSet<QualifiedRef> = fn_direct_reads
             .get(&fid)
             .map(|names| {
                 names
                     .iter()
-                    .filter_map(|n| name_to_ctx_id.get(n).copied())
+                    .filter_map(|n| name_to_qref.get(n).copied())
                     .collect()
             })
             .unwrap_or_default();
-        let writes: BTreeSet<ContextId> = fn_direct_writes
+        let writes: BTreeSet<QualifiedRef> = fn_direct_writes
             .get(&fid)
             .map(|names| {
                 names
                     .iter()
-                    .filter_map(|n| name_to_ctx_id.get(n).copied())
+                    .filter_map(|n| name_to_qref.get(n).copied())
                     .collect()
             })
             .unwrap_or_default();
@@ -875,7 +875,6 @@ mod tests {
         let contexts = ctx
             .iter()
             .map(|(name, ty)| Context {
-                id: ContextId::alloc(),
                 name: interner.intern(name),
                 namespace: None,
                 constraint: Constraint::Exact(ty.clone()),
@@ -1027,7 +1026,6 @@ mod tests {
         let contexts = ctx
             .iter()
             .map(|(name, ty)| Context {
-                id: ContextId::alloc(),
                 name: interner.intern(name),
                 namespace: None,
                 constraint: Constraint::Exact(ty.clone()),
@@ -1054,18 +1052,8 @@ mod tests {
 
         let fid = ids[0].1;
         let effect = &result.functions[&fid].effect;
-        let ctx_x = graph
-            .contexts
-            .iter()
-            .find(|c| c.name == i.intern("x"))
-            .unwrap()
-            .id;
-        let ctx_y = graph
-            .contexts
-            .iter()
-            .find(|c| c.name == i.intern("y"))
-            .unwrap()
-            .id;
+        let ctx_x = QualifiedRef::root(i.intern("x"));
+        let ctx_y = QualifiedRef::root(i.intern("y"));
         assert!(effect.reads.contains(&ctx_x), "should have @x in reads");
         assert!(effect.reads.contains(&ctx_y), "should have @y in reads");
         assert!(effect.writes.is_empty(), "read-only should have no writes");
@@ -1084,12 +1072,7 @@ mod tests {
 
         let fid = ids[0].1;
         let effect = &result.functions[&fid].effect;
-        let ctx_x = graph
-            .contexts
-            .iter()
-            .find(|c| c.name == i.intern("x"))
-            .unwrap()
-            .id;
+        let ctx_x = QualifiedRef::root(i.intern("x"));
         assert!(effect.writes.contains(&ctx_x), "should have @x in writes");
         assert!(
             effect.reads.contains(&ctx_x),
@@ -1120,12 +1103,7 @@ mod tests {
         let ext = extract::extract(&i, &graph);
         let result = infer(&i, &graph, &ext);
 
-        let ctx_x = graph
-            .contexts
-            .iter()
-            .find(|c| c.name == i.intern("x"))
-            .unwrap()
-            .id;
+        let ctx_x = QualifiedRef::root(i.intern("x"));
 
         // get_x directly reads @x
         let get_x_effect = &result.functions[&ids[0].1].effect;
@@ -1154,12 +1132,7 @@ mod tests {
         let ext = extract::extract(&i, &graph);
         let result = infer(&i, &graph, &ext);
 
-        let ctx_x = graph
-            .contexts
-            .iter()
-            .find(|c| c.name == i.intern("x"))
-            .unwrap()
-            .id;
+        let ctx_x = QualifiedRef::root(i.intern("x"));
         // top → mid → read_x → @x. All should have @x in reads.
         for (_, fid) in &ids {
             let effect = &result.functions[fid].effect;
@@ -1185,12 +1158,7 @@ mod tests {
         let ext = extract::extract(&i, &graph);
         let result = infer(&i, &graph, &ext);
 
-        let ctx_x = graph
-            .contexts
-            .iter()
-            .find(|c| c.name == i.intern("x"))
-            .unwrap()
-            .id;
+        let ctx_x = QualifiedRef::root(i.intern("x"));
         // main calls pure_fn (not read_x) → should NOT have @x
         let main_effect = &result.functions[&ids[2].1].effect;
         assert!(
@@ -1216,18 +1184,8 @@ mod tests {
         let ext = extract::extract(&i, &graph);
         let result = infer(&i, &graph, &ext);
 
-        let ctx_x = graph
-            .contexts
-            .iter()
-            .find(|c| c.name == i.intern("x"))
-            .unwrap()
-            .id;
-        let ctx_y = graph
-            .contexts
-            .iter()
-            .find(|c| c.name == i.intern("y"))
-            .unwrap()
-            .id;
+        let ctx_x = QualifiedRef::root(i.intern("x"));
+        let ctx_y = QualifiedRef::root(i.intern("y"));
 
         // a and b are in the same SCC.
         // After fixpoint: both should have reads = {@x, @y}.
@@ -1259,12 +1217,7 @@ mod tests {
         let ext = extract::extract(&i, &graph);
         let result = infer(&i, &graph, &ext);
 
-        let ctx_x = graph
-            .contexts
-            .iter()
-            .find(|c| c.name == i.intern("x"))
-            .unwrap()
-            .id;
+        let ctx_x = QualifiedRef::root(i.intern("x"));
 
         // writer writes @x → caller should transitively inherit
         let caller_effect = &result.functions[&ids[1].1].effect;
@@ -1278,7 +1231,7 @@ mod tests {
     fn effect_param_effectful_iterator_propagates() {
         // Function takes an effectful iterator param → function is effectful.
         let i = Interner::new();
-        let ctx_x = ContextId::alloc();
+        let ctx_x = QualifiedRef::root(i.intern("effect_x"));
         let iter_effect = Effect::Resolved(EffectSet {
             reads: [ctx_x].into_iter().collect(),
             ..Default::default()
@@ -1330,7 +1283,7 @@ mod tests {
     fn effect_param_effectful_fn_propagates() {
         // Function takes a Fn param with effect → function inherits it.
         let i = Interner::new();
-        let ctx_y = ContextId::alloc();
+        let ctx_y = QualifiedRef::root(i.intern("effect_y"));
         let fn_effect = Effect::Resolved(EffectSet {
             writes: [ctx_y].into_iter().collect(),
             ..Default::default()
@@ -1364,7 +1317,7 @@ mod tests {
         // Two separate functions: one reads @a, one takes effectful param.
         // Caller calls both → transitive union = reads {@a} ∪ writes {@b}.
         let i = Interner::new();
-        let ctx_b = ContextId::alloc();
+        let ctx_b = QualifiedRef::root(i.intern("effect_b"));
         let fn_effect = Effect::Resolved(EffectSet {
             writes: [ctx_b].into_iter().collect(),
             ..Default::default()
@@ -1391,12 +1344,7 @@ mod tests {
         let ext = extract::extract(&i, &graph);
         let result = infer(&i, &graph, &ext);
 
-        let ctx_a = graph
-            .contexts
-            .iter()
-            .find(|c| c.name == i.intern("a"))
-            .unwrap()
-            .id;
+        let ctx_a = QualifiedRef::root(i.intern("a"));
         let caller_effect = &result.functions[&ids[2].1].effect;
         assert!(
             caller_effect.reads.contains(&ctx_a),
@@ -1412,8 +1360,8 @@ mod tests {
     fn effect_multiple_effectful_params_union() {
         // Function takes two effectful Fn params via two separate functions.
         let i = Interner::new();
-        let ctx_x = ContextId::alloc();
-        let ctx_y = ContextId::alloc();
+        let ctx_x = QualifiedRef::root(i.intern("effect_x"));
+        let ctx_y = QualifiedRef::root(i.intern("effect_y"));
         let (graph, ids) = make_multi_graph(
             &i,
             &[

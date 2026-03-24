@@ -8,7 +8,7 @@ use acvus_ast::{
 use acvus_utils::{Astr, Freeze, Interner};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::graph::{ContextId, FunctionId};
+use crate::graph::{FunctionId, QualifiedRef};
 use crate::hints::HintTable;
 use crate::ir::{Callee, CastKind, Inst, InstKind, Label, MirBody, MirModule, ValOrigin, ValueId};
 use crate::ty::{Effect, Ty};
@@ -31,8 +31,8 @@ pub struct Lowerer<'a> {
     closure_label_count: u32,
     /// Hint table.
     hints: HintTable,
-    /// Context name → (ContextId, Ty).
-    context_ids: Freeze<FxHashMap<Astr, (ContextId, Ty)>>,
+    /// Context name → (QualifiedRef, Ty).
+    context_ids: Freeze<FxHashMap<Astr, (QualifiedRef, Ty)>>,
     /// Function name → (FunctionId, Ty).
     function_ids: Freeze<FxHashMap<Astr, (FunctionId, Ty)>>,
     /// ValueIds that are projections (not yet materialized values).
@@ -118,7 +118,7 @@ impl<'a> Lowerer<'a> {
         interner: &'a Interner,
         type_map: TypeMap,
         coercion_map: CoercionMap,
-        context_ids: Freeze<FxHashMap<Astr, (ContextId, Ty)>>,
+        context_ids: Freeze<FxHashMap<Astr, (QualifiedRef, Ty)>>,
         function_ids: Freeze<FxHashMap<Astr, (FunctionId, Ty)>>,
     ) -> Self {
         let coercion_lookup: FxHashMap<Span, CastKind> = coercion_map.into_iter().collect();
@@ -151,14 +151,14 @@ impl<'a> Lowerer<'a> {
             .collect();
         entries.sort_by_key(|(name, _, _)| self.interner.resolve(*name).to_string());
 
-        for (name, id, ty) in entries {
+        for (name, qref, ty) in entries {
             let proj = self.alloc_typed(span);
             self.set_origin(proj, ValOrigin::Context(name));
             self.emit_inst(
                 span,
                 InstKind::ContextProject {
                     dst: proj,
-                    id,
+                    ctx: qref,
                 },
             );
             self.mark_projection(proj);
@@ -390,10 +390,10 @@ impl<'a> Lowerer<'a> {
         (module, self.hints)
     }
 
-    fn context_id(&self, name: Astr) -> ContextId {
+    fn context_ref(&self, name: Astr) -> QualifiedRef {
         self.context_ids
             .get(&name)
-            .map(|(id, _)| *id)
+            .map(|(qref, _)| *qref)
             .unwrap_or_else(|| panic!("unknown context @{}", self.interner.resolve(name)))
     }
 
@@ -773,14 +773,14 @@ impl<'a> Lowerer<'a> {
                 span,
             } => match ref_kind {
                 RefKind::Context => {
-                    let ctx_id = self.context_id(*name);
+                    let ctx_id = self.context_ref(*name);
                     let dst = self.alloc_typed(*span);
                     self.set_origin(dst, ValOrigin::Context(*name));
                     self.emit_inst(
                         *span,
                         InstKind::ContextProject {
                             dst,
-                            id: ctx_id,
+                            ctx: ctx_id,
                         },
                     );
                     self.mark_projection(dst);
@@ -1116,13 +1116,13 @@ impl<'a> Lowerer<'a> {
 
     fn lower_context_store(&mut self, name: Astr, value_expr: &Expr, span: Span) -> ValueId {
         let val = self.lower_expr(value_expr);
-        let ctx_id = self.context_id(name);
+        let ctx_id = self.context_ref(name);
         let proj = self.alloc_typed(span);
         self.emit_inst(
             span,
             InstKind::ContextProject {
                 dst: proj,
-                id: ctx_id,
+                ctx: ctx_id,
             },
         );
         self.emit_inst(
@@ -1244,13 +1244,13 @@ impl<'a> Lowerer<'a> {
                     self.emit_inst(*pat_span, InstKind::VarStore { name: *name, src });
                 }
                 RefKind::Context => {
-                    let ctx_id = self.context_id(*name);
+                    let ctx_id = self.context_ref(*name);
                     let proj = self.alloc_typed(*pat_span);
                     self.emit_inst(
                         *pat_span,
                         InstKind::ContextProject {
                             dst: proj,
-                            id: ctx_id,
+                            ctx: ctx_id,
                         },
                     );
                     self.emit_inst(
@@ -1984,7 +1984,7 @@ impl<'a> Lowerer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{graph::ContextId, ty::TySubst, typeck::TypeChecker};
+    use crate::{ty::TySubst, typeck::TypeChecker};
 
     fn lower(interner: &Interner, source: &str) -> MirModule {
         lower_with(interner, source, &FxHashMap::default())

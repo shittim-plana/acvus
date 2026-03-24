@@ -51,11 +51,9 @@ pub struct IncrementalGraph {
 
     // ── Source data ──
     functions: FxHashMap<FunctionId, Function>,
-    contexts: FxHashMap<ContextId, Context>,
+    contexts: FxHashMap<QualifiedRef, Context>,
     /// (namespace, name) → FunctionId. namespace=None means root.
     name_to_fn: FxHashMap<(Option<NamespaceId>, Astr), FunctionId>,
-    /// (namespace, name) → ContextId. namespace=None means root.
-    name_to_ctx: FxHashMap<(Option<NamespaceId>, Astr), ContextId>,
 
     // ── Phase 0: Extract cache ──
     extract_cache: FxHashMap<FunctionId, ExtractEntry>,
@@ -85,7 +83,6 @@ impl IncrementalGraph {
             functions: FxHashMap::default(),
             contexts: FxHashMap::default(),
             name_to_fn: FxHashMap::default(),
-            name_to_ctx: FxHashMap::default(),
             extract_cache: FxHashMap::default(),
             call_edges: FxHashMap::default(),
             reverse_edges: FxHashMap::default(),
@@ -115,12 +112,12 @@ impl IncrementalGraph {
             for fid in fn_ids {
                 self.remove_function(fid);
             }
-            let ctx_ids: Vec<ContextId> = self.contexts.values()
-                .filter(|c| c.namespace == Some(id))
-                .map(|c| c.id)
+            let ctx_refs: Vec<QualifiedRef> = self.contexts.iter()
+                .filter(|(_, c)| c.namespace == Some(id))
+                .map(|(qref, _)| *qref)
                 .collect();
-            for cid in ctx_ids {
-                self.remove_context(cid);
+            for qref in ctx_refs {
+                self.remove_context(qref);
             }
         }
     }
@@ -150,18 +147,15 @@ impl IncrementalGraph {
     }
 
     pub fn add_context(&mut self, ctx: Context) {
-        let key = (ctx.namespace, ctx.name);
-        self.name_to_ctx.insert(key, ctx.id);
-        self.contexts.insert(ctx.id, ctx);
+        let qref = ctx.qualified_ref();
+        self.contexts.insert(qref, ctx);
         // Context change can affect all infer/resolve — full rebuild.
         self.invalidate_all_infer();
         self.run_infer_and_resolve();
     }
 
-    pub fn remove_context(&mut self, id: ContextId) {
-        if let Some(ctx) = self.contexts.remove(&id) {
-            let key = (ctx.namespace, ctx.name);
-            self.name_to_ctx.remove(&key);
+    pub fn remove_context(&mut self, qref: QualifiedRef) {
+        if self.contexts.remove(&qref).is_some() {
             self.invalidate_all_infer();
             self.run_infer_and_resolve();
         }
@@ -271,23 +265,26 @@ impl IncrementalGraph {
         }
     }
 
-    /// Resolve a context name.
+    /// Resolve a context name to its QualifiedRef.
     /// - `qualifier = None` → unqualified, root only.
     /// - `qualifier = Some(ns_name)` → qualified, specific namespace only.
-    pub fn resolve_ctx(&self, qualifier: Option<Astr>, name: Astr) -> Option<ContextId> {
-        match qualifier {
-            None => self.name_to_ctx.get(&(None, name)).copied(),
-            Some(ns_name) => {
-                let ns_id = self.name_to_ns.get(&ns_name)?;
-                self.name_to_ctx.get(&(Some(*ns_id), name)).copied()
-            }
+    pub fn resolve_ctx(&self, qualifier: Option<Astr>, name: Astr) -> Option<QualifiedRef> {
+        let qref = match qualifier {
+            None => QualifiedRef::root(name),
+            Some(ns_name) => QualifiedRef::qualified(ns_name, name),
+        };
+        if self.contexts.contains_key(&qref) {
+            Some(qref)
+        } else {
+            None
         }
     }
 
     /// All contexts visible from a namespace (own namespace + root).
     /// Used by LSP for completions.
     pub fn visible_contexts(&self, ns: Option<NamespaceId>) -> Vec<(Option<NamespaceId>, Astr, &Context)> {
-        self.contexts.values()
+        self.contexts.iter()
+            .map(|(_, c)| c)
             .filter(|c| c.namespace.is_none() || c.namespace == ns)
             .map(|c| (c.namespace, c.name, c))
             .collect()
@@ -574,9 +571,9 @@ impl IncrementalGraph {
     fn propagate_effects(&mut self) {
         // TODO: namespace-aware context resolution once AST supports @ns:name.
         // For now, only root contexts are resolved by name.
-        let name_to_ctx_id: FxHashMap<Astr, ContextId> = self.contexts.values()
-            .filter(|c| c.namespace.is_none())
-            .map(|c| (c.name, c.id))
+        let known_ctx_names: FxHashSet<Astr> = self.contexts.iter()
+            .filter(|(qref, _)| qref.namespace.is_none())
+            .map(|(qref, _)| qref.name)
             .collect();
 
         // Collect direct reads/writes from extract cache.
@@ -590,17 +587,19 @@ impl IncrementalGraph {
                 let Some(extract_entry) = self.extract_cache.get(&fid) else {
                     continue;
                 };
-                let reads: std::collections::BTreeSet<ContextId> = extract_entry
+                let reads: std::collections::BTreeSet<QualifiedRef> = extract_entry
                     .refs
                     .context_reads
                     .iter()
-                    .filter_map(|r| name_to_ctx_id.get(&r.name).copied())
+                    .filter(|r| known_ctx_names.contains(&r.name))
+                    .copied()
                     .collect();
-                let writes: std::collections::BTreeSet<ContextId> = extract_entry
+                let writes: std::collections::BTreeSet<QualifiedRef> = extract_entry
                     .refs
                     .context_writes
                     .iter()
-                    .filter_map(|r| name_to_ctx_id.get(&r.name).copied())
+                    .filter(|r| known_ctx_names.contains(&r.name))
+                    .copied()
                     .collect();
                 if let Some(meta) = scc_result.fn_metas.get_mut(&fid) {
                     meta.effect = EffectSet {

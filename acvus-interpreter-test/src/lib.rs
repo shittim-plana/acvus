@@ -17,7 +17,7 @@ use rustc_hash::FxHashMap;
 struct CompileResult {
     entry_id: FunctionId,
     modules: FxHashMap<FunctionId, Executable>,
-    context_names: FxHashMap<ContextId, Astr>,
+    context_names: FxHashMap<QualifiedRef, Astr>,
     builtin_ids: FxHashMap<Astr, FunctionId>,
 }
 
@@ -38,7 +38,6 @@ fn compile_source(
     let contexts: Vec<Context> = context_types
         .iter()
         .map(|(name, ty)| Context {
-            id: ContextId::alloc(),
             name: *name,
             namespace: None,
             constraint: Constraint::Exact(ty.clone()),
@@ -88,9 +87,9 @@ fn compile_source(
         .collect();
 
     // Build context id → name mapping.
-    let context_names: FxHashMap<ContextId, Astr> = graph.contexts
+    let context_names: FxHashMap<QualifiedRef, Astr> = graph.contexts
         .iter()
-        .map(|ctx| (ctx.id, ctx.name))
+        .map(|ctx| (ctx.qualified_ref(), ctx.name))
         .collect();
 
     // Build builtin name → id mapping from the same graph functions.

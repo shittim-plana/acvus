@@ -189,14 +189,14 @@ fn write_body(
 ) -> fmt::Result {
     let mut vn = ValNormalizer::new();
 
-    // Build ContextId → name mapping from ContextProject instructions + debug info.
-    let mut ctx_id_to_name: FxHashMap<crate::graph::ContextId, String> = FxHashMap::default();
+    // Build QualifiedRef → name mapping from ContextProject instructions + debug info.
+    let mut ctx_ref_to_name: FxHashMap<crate::graph::QualifiedRef, String> = FxHashMap::default();
     for inst in &body.insts {
-        if let InstKind::ContextProject { dst, id, .. } = &inst.kind
+        if let InstKind::ContextProject { dst, ctx: qref, .. } = &inst.kind
             && let Some(crate::ir::ValOrigin::Context(name)) = body.debug.get(*dst)
         {
-            ctx_id_to_name
-                .entry(*id)
+            ctx_ref_to_name
+                .entry(*qref)
                 .or_insert_with(|| ctx.interner.resolve(*name).to_string());
         }
     }
@@ -248,8 +248,8 @@ fn write_body(
         match &inst.kind {
             // Constants -- all skipped above, unreachable here.
             InstKind::Const { .. } => unreachable!(),
-            InstKind::ContextProject { dst, id, .. } => {
-                let name = ctx_id_to_name.get(id).map(|s| s.as_str()).unwrap_or("?");
+            InstKind::ContextProject { dst, ctx: qref, .. } => {
+                let name = ctx_ref_to_name.get(qref).map(|s| s.as_str()).unwrap_or("?");
                 writeln!(f, "{} = context_project @{}", vn.fmt_val(*dst), name)?
             }
             InstKind::ContextLoad { dst, src } => writeln!(
@@ -343,8 +343,8 @@ fn write_body(
                 } else {
                     let bindings: Vec<String> = context_uses
                         .iter()
-                        .map(|(ctx, val)| {
-                            let name = ctx_id_to_name.get(ctx).map(|s| s.as_str()).unwrap_or("?");
+                        .map(|(qref, val)| {
+                            let name = ctx_ref_to_name.get(qref).map(|s| s.as_str()).unwrap_or("?");
                             format!("@{}={}", name, vn.fmt_val(*val))
                         })
                         .collect();
@@ -368,8 +368,8 @@ fn write_body(
                 } else {
                     let bindings: Vec<String> = context_defs
                         .iter()
-                        .map(|(ctx, val)| {
-                            let name = ctx_id_to_name.get(ctx).map(|s| s.as_str()).unwrap_or("?");
+                        .map(|(qref, val)| {
+                            let name = ctx_ref_to_name.get(qref).map(|s| s.as_str()).unwrap_or("?");
                             format!("@{}={}", name, vn.fmt_val(*val))
                         })
                         .collect();

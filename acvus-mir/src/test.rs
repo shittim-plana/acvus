@@ -24,7 +24,6 @@ fn make_graph(
     let contexts = ctx
         .iter()
         .map(|(name, ty)| Context {
-            id: ContextId::alloc(),
             name: interner.intern(name),
             namespace: None,
             constraint: Constraint::Exact(ty.clone()),

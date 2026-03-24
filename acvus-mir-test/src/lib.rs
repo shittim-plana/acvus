@@ -25,7 +25,6 @@ pub fn compile_to_ir_with(
         .map(|(name, ty)| (interner.resolve(*name), ty.clone()))
         .collect();
     let contexts: Vec<Context> = ctx.iter().map(|(name, ty)| Context {
-        id: ContextId::alloc(),
         name: interner.intern(name),
         namespace: None,
         constraint: Constraint::Exact(ty.clone()),
@@ -106,7 +105,6 @@ pub fn compile_script_ir(
 ) -> Result<String, String> {
     let contexts: Vec<Context> = context.iter()
         .map(|(name, ty)| Context {
-            id: ContextId::alloc(),
             name: *name,
             namespace: None,
             constraint: Constraint::Exact(ty.clone()),

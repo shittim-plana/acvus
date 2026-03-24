@@ -34,7 +34,6 @@ async fn run_ext(
     let contexts: Vec<Context> = context_types
         .iter()
         .map(|(name, ty)| Context {
-            id: ContextId::alloc(),
             name: *name,
             namespace: None,
             constraint: Constraint::Exact(ty.clone()),
@@ -100,9 +99,9 @@ async fn run_ext(
     }
 
     // Execute.
-    let context_names: FxHashMap<ContextId, Astr> = graph.contexts
+    let context_names: FxHashMap<QualifiedRef, Astr> = graph.contexts
         .iter()
-        .map(|ctx| (ctx.id, ctx.name))
+        .map(|ctx| (ctx.qualified_ref(), ctx.name))
         .collect();
     let snapshot: HashMap<String, Value> = context
         .into_iter()

@@ -1,4 +1,4 @@
-use crate::graph::ContextId;
+use crate::graph::QualifiedRef;
 use crate::ir::{InstKind, ValueId};
 use crate::ty::Ty;
 use acvus_ast::{BinOp, UnaryOp};
@@ -11,7 +11,7 @@ use smallvec::SmallVec;
 
 pub struct ValueDomainTransfer<'a> {
     pub val_types: &'a FxHashMap<ValueId, Ty>,
-    pub known_context: &'a FxHashMap<ContextId, KnownValue>,
+    pub known_context: &'a FxHashMap<QualifiedRef, KnownValue>,
 }
 
 impl<'a> TransferFunction<AbstractValue> for ValueDomainTransfer<'a> {
@@ -21,8 +21,8 @@ impl<'a> TransferFunction<AbstractValue> for ValueDomainTransfer<'a> {
                 state.set(*dst, AbstractValue::from_literal(value));
             }
 
-            InstKind::ContextProject { dst, id, .. } => {
-                let val = if let Some(kv) = self.known_context.get(id) {
+            InstKind::ContextProject { dst, ctx, .. } => {
+                let val = if let Some(kv) = self.known_context.get(ctx) {
                     AbstractValue::from_known_value(kv)
                 } else {
                     AbstractValue::Top

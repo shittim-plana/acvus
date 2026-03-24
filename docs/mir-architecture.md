@@ -1,354 +1,234 @@
-# acvus-mir Architecture
+# acvus MIR Architecture
 
-## Overview
+## What is this?
 
-MIR (Mid-level Intermediate Representation) is the type system and compilation backbone.
-It takes AST input and produces typed, optimized IR modules ready for interpretation.
+acvus is not a general-purpose programming language. It is not trying to replace Rust, C, Java, or any systems/application language. It is a **script and template language** — the kind you embed in a larger system to let users write business logic, data transformations, and LLM orchestration without touching the host codebase.
 
-```
-AST (acvus-ast)
-  |
-  v
-TypeChecker (typeck.rs)  ──→  TypeResolution<Unchecked>
-  |                                    |
-  |                          check_completeness()
-  |                                    |
-  v                                    v
-Lowerer (lower.rs)  ←──  TypeResolution<Checked>
-  |
-  v
-MirModule (ir.rs)
-  |
-  ├── Optimizer (optimize/)
-  ├── Validator (validate/)
-  └── Analysis (analysis/)
-```
+The difference is that acvus takes this role seriously. Instead of a loosely-typed interpreter with string-based extension points (like most embedded scripting), it has a full compiler backend with type inference, effect tracking, and SSA-based IR. The goal is simple: **scripts and templates should be safe, fast, and pleasant to write** — with the same rigor that systems languages apply to systems code.
 
-## Modules
+A single expression like `@users | filter(active) | map(name) | join(", ")` compiles to the same typed, optimized IR whether it appears inside `{{ }}` template interpolation or as a standalone script. The MIR knows not just *what* your code computes, but *which external state it reads and writes*, enabling automatic parallelization, incremental recompilation, and portable execution.
 
-### Core Pipeline
+---
 
-#### `ty.rs` — Type System
-- `Ty` enum: Int, Float, String, Bool, List, Deque, Sequence, Iterator, Object, Fn, ...
-- `TySubst`: unification engine (substitution-based)
-  - `unify(a, b, Polarity)`: Invariant | Covariant | Contravariant
-  - `try_coerce(sub, sup)`: subtype coercion (Deque <= List <= Iterator, Deque <= Sequence <= Iterator)
-  - `resolve(ty)`: walk binding chain to concrete type
-- `Effect`: Pure | Effectful | Var
-- `Origin`: value provenance tracking
+## Design Principles
 
-#### `typeck.rs` — Type Checker
+**One IR, multiple surfaces.** Template and script share the same type system, the same compiler pipeline, the same IR. No special-casing.
 
-Input: AST + ContextTypeRegistry + optional hint + TySubst.
-Output: `TypeResolution<Unchecked>` → `check_completeness()` → `TypeResolution<Checked>`.
+**Effects are first-class.** Every function's effect footprint (which contexts it reads, writes, whether it does IO) is tracked at the type level. This isn't an annotation — it's inferred from code and propagated transitively through call chains.
 
-**Phantom state markers:**
-- `TypeResolution<Unchecked>`: vars may be unresolved (SCC not yet complete)
-- `TypeResolution<Checked>`: all vars resolved, safe for lowering
+**No opaque IDs where names suffice.** Contexts are identified by qualified names (`@namespace:name`), not opaque integer IDs. This makes the IR deterministic, serializable, and human-readable without a symbol table.
 
-**Resolution contents:**
-- `type_map: TypeMap` — Span → Ty for every expression
-- `builtin_map: BuiltinMap` — Span → BuiltinId for resolved builtins
-- `coercion_map: CoercionMap` — Span → CastKind for implicit coercions
-- `tail_ty: Ty` — the result type of the entire script/template
+**Plugin-extensible type system.** External functions register their types alongside their handlers. Adding an ext function expands the set of valid programs — the type system grows with the ecosystem.
 
-**`check_completeness(unchecked, subst) → Checked`:**
-- Re-resolves entire type_map with final subst state
-- Rejects any remaining `Ty::Var` (AmbiguousType error)
-- Required because SCC peer units may resolve vars AFTER this unit's typecheck
+**Use first, define later.** Most things in acvus are inferred from usage, not declared upfront. Write `@data | map(f) | collect` and the compiler works *backwards* — `@data` must be iterable, `f` must return something, the result is a list of that something. Context types, function parameter types, effect footprints, even generic constraints are all discovered by analyzing how values are used, then propagated outward to the environment. The host system provides concrete types for contexts; the compiler checks that they satisfy the constraints the code imposed. This inverts the traditional "define type, then use" flow — users write code freely, and the system figures out what the environment must provide.
 
-**Shared TySubst:** multiple units typecheck in the same subst (for SCC).
-Type information flows between units via shared vars.
+---
 
-**`unify_covariant(value_ty, expected_ty, span)`:**
-- Single entry point for covariant unification in typechecker
-- Calls `subst.unify(val, exp, Covariant)`
-- On success: checks if coercion needed → records in coercion_map
-- `CastKind::between(resolved_val, resolved_exp)` determines if IR cast instruction needed
-
-**Analysis mode:** `analysis_mode = true` → unknown `@context` refs produce fresh vars
-instead of errors. Allows partial type inference for LSP/incremental.
-
-#### `ty.rs` — Type System + Unification
-
-**Polarity-based subtyping (non-standard HM extension):**
-
-Standard Hindley-Milner has no subtyping. We extend it with polarity:
+## The Pipeline
 
 ```
-Polarity::Invariant    — a = b (standard HM unification)
-Polarity::Covariant    — a ≤ b (a is subtype, coercion allowed)
-Polarity::Contravariant — b ≤ a (reversed, for function params)
+source → extract → infer → resolve → lower → SSA → validate → MirModule
 ```
 
-**Where each polarity is used:**
+Each phase has a single responsibility and a clear contract with the next:
 
-| Context | Polarity | Reason |
-|---------|----------|--------|
-| Generic inner types (List\<T\>, Deque\<T\>) | Invariant | `List<Int> ≠ List<Float>` — no variance |
-| Function arguments at call site | Covariant | `f(deque)` where `f: (List) → ...` — deque ≤ list |
-| Function param types in signature | Contravariant | `(List) → T` ≤ `(Deque) → T` — contravariant input |
-| Function return types | Covariant | `... → Deque` ≤ `... → List` — covariant output |
-| Hint unification (expected_tail) | Covariant | actual ≤ expected |
+**Extract** parses source and discovers what external state (contexts) the code references, distinguishing reads from writes by tracing projection chains through the IR.
 
-**Coercion lattice (try_coerce):**
+**Infer** is where "use first, define later" happens. The code references contexts (`@data`, `@config`) that may not have known types yet. Instead of erroring, the inferencer assigns type variables and propagates constraints from usage. If `@data | map(f)` appears, the system concludes `@data` must be iterable. If `@config.threshold + 1` appears, `@config` must have an integer `threshold` field. These constraints flow outward — the host system must eventually provide types that satisfy them. Inter-function inference uses Tarjan's SCC algorithm so mutually recursive functions are solved simultaneously.
 
-```
-         Iterator<T, E>
-        /              \
-  List<T>          Sequence<T, O, E>
-        \              /
-         Deque<T, O>
-```
+**Resolve** finalizes all types with no remaining variables. Every expression has a concrete type. Every effect is resolved. This is the point of no return — if types don't work out, errors are reported here.
 
-- `Deque ≤ List` (drop origin)
-- `Deque ≤ Sequence` (origin preserved, effect = Pure)
-- `Deque ≤ Iterator` (drop origin, effect = Pure)
-- `List ≤ Iterator` (effect = Pure)
-- `Sequence ≤ Iterator` (drop origin, effect preserved)
+**Lower** translates the typed AST to MIR instructions in SSA form. Context variables (which can be mutated across branches and loops) are promoted to SSA via a Cranelift-style mem2reg pass that inserts PHI nodes at merge points.
 
-**All coercion rules:** inner types unified **invariant**. Only the outer
-constructor changes. This prevents `List<Int>` from coercing to `Iterator<String>`.
+**Validate** runs two passes: type checking (operand types match instruction contracts) and move checking (move-only values like IO handles are consumed exactly once).
 
-**Effect lattice:** `Pure ≤ Effectful`. Effect variance follows polarity.
+---
 
-**Origin:** value provenance. `Origin::Var` = unresolved, `Origin::Concrete(n)` = resolved.
-Used to track which Deque/Sequence came from where (for storage tracking).
+## Type System Highlights
 
-**`lub_or_err` (least upper bound):**
-When same-constructor types have mismatched effects/origins:
-- Invariant polarity → type error (no silent coercion)
-- Non-invariant → compute LUB, rebind leaf var to LUB
+### Structural Types, No Declarations
 
-**Key design decision: generics are invariant, only outer constructors coerce.**
-This is a deliberate trade-off:
-- Simpler than full covariant generics (no variance annotations)
-- Sound: `List<Int>` doesn't implicitly become `Iterator<String>`
-- Coercion only at constructor boundary (List→Iterator), not at element level
+Objects are structurally typed. `{ name: "Alice", age: 30 }` has type `{ name: String, age: Int }`. A function that accesses `.name` accepts any object with a `name` field — width subtyping, inferred automatically.
 
-#### `lower.rs` — MIR Lowerer
-- Input: AST + TypeResolution<Checked> + name_to_id mapping
-- Output: MirModule (instructions + closures + metadata)
-- Converts AST nodes → IR instructions using type info from resolution
-- `ContextLoad { id: Id }`: emits Id-based context references (not name-based)
-- `ExternCall { id: Id }`: emits Id-based extern function calls
+Enums are open — writing `Color::Red` and `Color::Blue` in different places unifies into `Enum { Color: { Red, Blue } }`. No upfront declaration needed.
 
-#### `ir.rs` — IR Definition
-- `MirModule`: main body + closures + debug info
-- `MirBody`: instructions + value types + labels
-- `InstKind`: Yield, ContextLoad, ExternCall, BuiltinCall, MakeDeque, MakeObject, ...
-- All context references use `Id` (not Astr)
+### Constraint-Based Generics Without Traits
 
-### Graph Engine (`graph/`)
-
-Domain-free compilation graph. Knows nothing about orchestration concepts
-(body, bind, assert, strategy, persistency, etc.).
-
-#### `graph/types.rs` — Graph Types
-- `Id`: unified identifier (replaces ContextId + UnitId)
-- `Unit`: unified compilation unit
-  - `body: Option<UnitBody>` — Some = compilable, None = extern (runtime provides)
-  - `inputs: Vec<(Id, Ty)>` — type constraints on consumed units
-  - `output_ty: Option<Ty>` — declared output (None = inferred)
-  - `output_binding: Option<Id>` — ScopeLocal binding
-- `Scope`: groups units, declares bindings (ScopeLocal, Derived)
-- `CompilationGraph`: units + scopes + externals + id_table
-
-#### `graph/resolve.rs` — Graph Resolution Engine
-- `CompilationGraph::resolve()` → `ResolvedGraph` (Phase 0 → Phase 1)
-- `CompilationGraph::compile()` → `CompiledGraph` (Phase 0 → Phase 2)
-- Internally:
-  1. Build dependency graph from scope bindings (Derived = DAG edge, ScopeLocal = SCC)
-  2. Tarjan SCC detection
-  3. Topo-order processing: per-SCC typecheck with shared TySubst
-  4. check_completeness per unit
-  5. Output: per-unit TypeResolution + resolved types + unit outputs
-
-Key invariants:
-- SCC membership: only units that participate in ScopeLocal (reference or output_binding)
-- ScopeLocal allocation: only when participant units are in current SCC
-- unit_output after SCC: uses tail_ty (not pre-registered var) to prevent coercion leak
-- ExternDecl output: uses declared output_ty (not var)
-
-### Analysis (`analysis/`)
-
-All analyses run on compiled MirModule. Pure functions, no mutation.
-
-#### `analysis/domain.rs` — Abstract Value Domain
-
-Semilattice-based abstract domain for dataflow analysis.
-
-**`SemiLattice` trait:**
-- `bottom()` → initial state (no information)
-- `join_mut(&mut self, other)` → least upper bound. Returns true if changed.
-
-**`AbstractValue` — 3-level lattice:**
-```
-Top (unknown — all values possible)
- |
-Finite(FiniteSet) — known set of possible values
- |
-Bottom (unreachable — no values)
-```
-
-**`FiniteSet` variants:**
-- `Intervals(SmallVec<[Interval; 4]>)` — integer ranges, e.g., {[1,3], [7,7]}
-- `Bools(SmallVec<[bool; 2]>)` — {true}, {false}, {true, false}
-- `Strings(SmallVec<[Astr; 4]>)` — known string values
-- `Variants(SmallVec<[(Astr, Box<AbstractValue>); 4]>)` — enum variant + payload
-- `Literals(SmallVec<[Literal; 4]>)` — mixed literal set
-- `Tuple(Vec<AbstractValue>)` — per-element abstract value
-
-**Widening:** set exceeds `MAX_SET_SIZE` (16) → graduate to Top.
-Integer intervals: merge closest pairs until within limit (graduated widening).
-
-**`BooleanDomain`:** `as_definite_bool() -> Option<bool>` — used for branch pruning.
-If abstract value is exactly {true} or {false}, the branch is determined.
-
-#### `analysis/cfg.rs` — Control Flow Graph
-- `Cfg::build(body)` → basic blocks + edges
-- `BasicBlock`: instruction range, terminator (Jump/Branch/Return/Unreachable)
-- Predecessors/successors computed at build time
-- Foundation for all dataflow analyses
-
-#### `analysis/dataflow.rs` — Generic Dataflow Framework
-- `forward_analysis<D: SemiLattice>(cfg, transfer_fn) → Vec<D>` — per-block state
-- Worklist algorithm with semilattice join at merge points
-- Converges when no block state changes (monotonicity guaranteed by semilattice)
-- `BooleanDomain` trait for branch pruning integration
-
-#### `analysis/value_transfer.rs` — Value Transfer Functions
-- Per-instruction abstract interpretation: how does each instruction transform abstract state?
-- `ContextLoad { id }` → abstract value for context variable (from known_context map)
-- `Literal(v)` → `AbstractValue::from_literal(v)` (point value in domain)
-- `BinOp/UnaryOp` → abstract arithmetic (interval arithmetic for Int, etc.)
-- `VarLoad/VarStore` → variable tracking in abstract state
-
-#### `analysis/reachable_context.rs` — Context Key Reachability
-- **Purpose:** given known values, which context keys are actually needed at runtime?
-- **Dead branch pruning:** if a branch condition is determined (AbstractValue = definite Bool),
-  context keys in the dead branch are excluded from the "needed" set.
-- `reachable_context_keys(module, known, val_def) → FxHashSet<Id>` — all needed keys
-- `partition_context_keys(module, known, val_def) → { eager, lazy }` — eagerly vs conditionally needed
-- Used by Resolver for dependency scheduling: eager deps are spawned immediately,
-  lazy deps are spawned only when actually requested via NeedContext.
-
-#### `analysis/val_def.rs` — Value Definition Map
-- `ValDefMapAnalysis.run(module) → ValDefMap`
-- Maps each ValueId → the instruction index that defined it
-- Used by reachable_context for tracking which values are context-dependent
-
-#### `analysis/var_dirty.rs` — Variable Dirtiness
-- Tracks which `$variables` are modified on which control flow paths
-- Forward dataflow: `VarStore` marks dirty, merge = union
-- Used for detecting side effects in match arms, iterations
-
-### Validation (`validate/`)
-
-Post-lowering verification. Catches lowerer bugs and ensures IR invariants.
-Entry point: `validate(module) -> Vec<ValidationError>`.
-
-#### `validate/type_check.rs` — Type Consistency Verification
-
-Walks every instruction, checks val_types consistency.
-
-**Invariants checked:**
-- Every ValueId has a type entry in val_types
-- Operand types match instruction expectations (BinOp, UnaryOp, etc.)
-- Constructor types match (MakeDeque elements, MakeObject fields, etc.)
-- Function call arity matches signature
-- Cast is the ONLY instruction allowed to change a value's type
-
-**Type matching rules (invariant variance):**
-- `Ty::Error` / `Ty::Var` / `Ty::Infer` → match anything (poison/unresolved escape)
-- Primitives: exact match
-- Containers: recursive invariant match on inner types
-- Origins: `Origin::Var` matches anything, concrete must be equal
-- Effects: `Effect::Var` matches anything, Pure ≤ Effectful (subtype)
-- Enums: same name is sufficient (variants unified elsewhere)
-
-#### `validate/move_check.rs` — Move Semantics (Linear Ownership)
-
-Forward dataflow analysis over CFG. Detects use-after-move.
-
-**Move-only types:**
-- `Iterator<T, Effectful>` — effectful iterator is consumed on use
-- `Sequence<T, O, Effectful>` — effectful sequence
-- `Opaque` — unknown internals, always move-only
-- Containers with move-only elements — transitive
-- `Fn` with move-only captures → FnOnce (transitive)
-
-**Copyable types:**
-- All primitives (Int, Float, String, Bool, Unit, Range, Byte)
-- `Iterator<T, Pure>`, `Sequence<T, O, Pure>`
-- `List<T>`, `Deque<T, O>`, `Option<T>` (if inner is copyable)
-
-**Dataflow:**
-- Domain: per-ValueId state = Alive | Moved(inst_index)
-- Join: `Alive ⊔ Moved = Moved` (conservative — if moved on any path, treat as moved)
-- `VarStore` revives a variable (re-assignable)
-- `VarLoad` of move-only type consumes it
-- `Ty::Error` / `Ty::Var` / `Effect::Var` → skip (analysis mode)
-
-**Key design: `is_move_only(ty) -> Option<bool>`**
-- `Some(true)` → move-only, track usage
-- `Some(false)` → copyable, no tracking needed
-- `None` → unresolved (analysis mode), skip entirely
-
-### Other
-
-#### `builtins.rs` — Builtin Function Registry
-- Type signatures for all builtins (map, filter, chain, append, etc.)
-- Coercion lattice: Deque <= Sequence <= Iterator
-
-#### `context_registry.rs` — Context Type Registry
-- `ContextTypeRegistry`: maps context names → types (for TypeChecker)
-- `PartialContextTypeRegistry`: pre-compilation registry (system, user, extern tiers)
-- Being simplified: graph engine builds registries internally
-
-#### `pass.rs` — Analysis Pass Trait
-- `AnalysisPass::run(module, input) → output`
-- Uniform interface for all analyses
-
-#### `hints.rs` — Hint Table
-- Stores type hints for LSP (hover, completion)
-
-#### `printer.rs` — IR Pretty Printer
-- Debug output for MirModule
-
-#### `ser_ty.rs` — Type Serialization
-- Ty → serde-compatible format (for WASM/frontend)
-
-## Dependencies
+A function's parameter constraints are inferred from how the parameter is used:
 
 ```
-acvus-ast (parsing)
-  ↓
-acvus-mir
-  ├── ty.rs (no deps)
-  ├── typeck.rs (depends: ty, context_registry, error)
-  ├── lower.rs (depends: ty, typeck, ir, graph::Id)
-  ├── ir.rs (depends: graph::Id)
-  ├── graph/ (depends: ty, typeck, lower, context_registry)
-  ├── analysis/ (depends: ir, ty)
-  ├── validate/ (depends: ir, ty)
-  ├── builtins.rs (depends: ty)
-  └── context_registry.rs (depends: ty)
+fn process(x) { x | to_string | length }
 ```
 
-## Key Design Decisions
+The compiler infers: `x` must support `to_string` (constraining it to `{ Int, Float, String, Bool, ... }`) and the result must support `length`. No generic syntax, no trait bounds, no `where` clauses.
 
-1. **Unified Id**: single ID space for all entities (units, context vars, scope locals).
-   No separate ContextId/UnitId. Eliminates Derived bindings complexity.
+When two constrained types unify, their constraint sets are **intersected**. This is sound and complete for the closed builtin set, and extends naturally when plugins register new functions.
 
-2. **Unified Unit**: CompilationUnit and ExternDecl merged into `Unit`.
-   `body: Some` = compilable, `body: None` = extern. Same type constraints system.
+### Origin Tracking for Deques
 
-3. **Domain-free graph engine**: knows nothing about orchestration concepts.
-   SCC/DAG structure derived purely from Scope bindings and Id references.
+Deques carry an *origin* tag that prevents accidentally mixing data from different sources. `append(@history, item)` preserves the origin — you can't accidentally `extend` one deque with another's data without explicit coercion. This is tracked at the type level and enforced at compile time.
 
-4. **Coercion safety**: unit outputs use `checked.tail_ty` (not pre-registered var)
-   to prevent coercion leak across SCC units.
+### Six Explicit Coercions
 
-5. **ScopeLocal allocation**: only when participant units are in the current SCC.
-   Prevents premature allocation in unrelated SCCs sharing the same scope.
+Subtype conversions are never implicit in the IR. The type checker identifies where coercion is needed and the lowerer inserts explicit `Cast` instructions: `Deque→List`, `List→Iterator`, `Deque→Iterator`, `Deque→Sequence`, `Sequence→Iterator`, `Range→Iterator`. Every conversion is visible and auditable.
+
+---
+
+## Effect System
+
+Every function has an `EffectSet`:
+
+```
+reads:          which contexts are read
+writes:         which contexts are written
+io:             whether opaque IO occurs
+self_modifying: whether internal state changes (e.g., iterator cursor advance)
+```
+
+Effects **propagate transitively** — if `f` calls `g` which reads `@users`, then `f` also reads `@users`. This is computed automatically during inference.
+
+**Why this matters:**
+
+1. **Automatic parallelization.** Two functions that read different contexts and write nothing can execute in parallel. The rescheduler (planned) uses effect analysis to find independent IO operations and convert sequential code to `spawn`/`eval` pairs.
+
+2. **Incremental recompilation.** When source changes, the compiler checks if the function's *type and effect signature* changed. If not, downstream dependents don't need recompilation (early cutoff).
+
+3. **Scheduling.** The orchestration layer uses effects to determine execution order. Read-read is safe to parallelize. Write-read must be serialized. This is decided at compile time, not runtime.
+
+4. **Move semantics.** An effectful iterator is move-only — you can't clone it because advancing the cursor is a side effect. The move checker enforces this statically.
+
+---
+
+## SSA Form for Mutable Context
+
+Context variables (`@name`) can be mutated in branches and loops:
+
+```
+x in @items {
+    @sum = @sum + x;
+    @product = @product * x;
+};
+```
+
+The MIR uses a projection model (similar to LLVM's alloca + mem2reg):
+
+1. `ContextProject` creates a reference to a context slot
+2. `ContextStore` writes through the reference
+3. The SSA pass promotes these to PHI nodes at loop headers and branch merge points
+4. After SSA, context mutations become pure value flow — no mutable state in the IR
+
+This means the MIR is genuinely functional after SSA — all "mutation" is expressed as new values flowing through block parameters.
+
+---
+
+## Concurrency Model
+
+```
+Spawn { dst, callee, args, context_uses }   // Pure: schedule work, get Handle
+Eval  { dst, src, context_defs }            // Effectful: force Handle, get result
+```
+
+`Spawn` is pure — it creates a `Handle<T, E>` without executing anything. `Eval` is where effects actually happen. This separation means:
+
+- Multiple spawns can be issued before any eval (pipelining)
+- The runtime decides whether to execute sequentially or in parallel
+- Handles are move-only — they must be evaluated exactly once (enforced by move checker)
+- **Deadlock is impossible** — the effect system ensures no circular dependencies between spawned computations
+
+---
+
+## Iterator System
+
+Iterators are lazy and SSA-clean:
+
+```
+IterStep { dst, iter_src, iter_dst, done, done_args }
+```
+
+One instruction pulls an element, produces the rest iterator as a new value (SSA rebinding), and branches to `done` if exhausted. This is a proper CFG terminator with two successors — the SSA pass handles it like any other branch.
+
+Effectful iterators (e.g., from regex `find_all`) carry `self_modifying` in their effect, making them move-only. Pure iterators (from list conversion) are freely copyable.
+
+The `pmap` builtin marks chunks for parallel execution. On native targets with LLVM, pure `pmap` over scalars could theoretically compile to SIMD.
+
+---
+
+## Incremental Compilation
+
+The pipeline is split into four phases (extract → infer → resolve → lower) not because it's architecturally elegant, but because **the LSP needs to cut into the middle**. When a user edits a script in their editor, the system re-runs only the phases that are invalidated — not the entire compilation. This is the primary reason for the phase separation.
+
+The `IncrementalGraph` manages caching at each phase boundary:
+
+- **Extract cache**: keyed by source hash. Same source = skip re-parsing.
+- **Infer cache**: per-SCC. If a function's inferred type didn't change, don't re-infer its callers (**early cutoff**).
+- **Resolve cache**: per-function. Invalid only when infer results change.
+
+On source edit: re-extract the changed function → check if its call edges changed → if SCC structure unchanged, only re-infer the affected SCC and propagate dirty marks forward. Most edits touch one SCC, so recompilation is O(changed) not O(total).
+
+The LSP is a thin wrapper over `IncrementalGraph` — it maps document IDs to functions and delegates everything else. **LSP diagnostics and build errors are identical because they run the exact same pipeline, the exact same code, the exact same `IncrementalGraph`.** There is no separate "LSP mode" or "analysis mode" that could diverge from the real compiler.
+
+---
+
+## Plugin System (ExternFn)
+
+External functions are registered with their type signature, effect classification, and runtime handler in a single declaration:
+
+```rust
+ExternFn::build("format_date")
+    .params(vec![opaque_ty(), Ty::String])
+    .ret(Ty::String)
+    .pure()
+    .sync_handler(|args, _| { /* implementation */ })
+```
+
+This is simultaneously:
+- A **type declaration** (the compiler knows the signature)
+- An **effect declaration** (`.pure()` / `.io()`)
+- A **runtime handler** (the interpreter knows how to call it)
+
+Adding a plugin **extends the type system**. A new function that accepts `Ty::Param` with constraints expands the set of valid generic programs. The type checker doesn't need to be modified — it just sees a wider function environment.
+
+---
+
+## Validation
+
+Two complementary passes ensure MIR soundness:
+
+**Type checking** validates every instruction's operands match expected types. A `BinOp(+)` with `String` left and `Int` right is caught here, not at runtime.
+
+**Move checking** tracks liveness of move-only values. `Handle<T, E>` must be consumed by exactly one `Eval`. Using it twice, or not at all, is a compile-time error. This extends transitively — a closure capturing a move-only value becomes move-only itself (FnOnce semantics).
+
+---
+
+## Analysis Infrastructure
+
+The MIR ships with a generic dataflow framework (forward analysis with semilattice + transfer functions) and an abstract value domain supporting:
+
+- **Interval analysis** for integers (with graduated widening)
+- **Constant propagation** for all scalar types
+- **Branch elimination** when conditions are statically determined
+- **Variant tracking** for enum tag refinement after pattern matching
+
+These analyses power the **reachable context analysis**, which classifies each context load as *eager* (always needed), *lazy* (conditionally needed), or *pruned* (dead code). This informs the runtime about which contexts to prefetch.
+
+---
+
+## What This Enables
+
+**Write sequentially, execute in parallel.** Users write straightforward sequential code. The effect system identifies independent operations. The rescheduler (planned) automatically introduces parallelism where safe.
+
+**One source, multiple targets.** The same MIR can be interpreted (development), compiled to wasm (browser), or lowered to native (production). Full SSA with alias tracking means LLVM-quality optimization is theoretically achievable.
+
+**Portable computation.** Since all mutable state is explicit (contexts) and effects are tracked, a computation can be serialized mid-execution and resumed on a different machine. Context snapshot + MirModule = portable.
+
+**Type-safe plugin ecosystem.** External functions participate in type inference and effect tracking on equal footing with builtins. The type system grows with the ecosystem, not against it.
+
+---
+
+## Key Invariants
+
+1. **Types are complete.** No unresolved type variables survive past resolve. Every value in lowered MIR has a concrete type.
+2. **Effects are sound.** If a function is marked pure, it truly has no side effects. The system never over-promises.
+3. **Moves are checked.** Move-only values are consumed exactly once. Use-after-move is a compile error.
+4. **Output is deterministic.** Same source always produces the same MIR, regardless of hash map ordering or global state.
+5. **Single source of truth.** Value types live in `val_types`, not duplicated in instruction fields. Context identity is the qualified name, not an opaque ID.

@@ -5,7 +5,7 @@ use acvus_interpreter::{
     ContextOverlay, Executable, Interpreter, InterpreterContext,
     SequentialExecutor, Value,
 };
-use acvus_mir::graph::{ContextId, FunctionId};
+use acvus_mir::graph::{QualifiedRef, FunctionId};
 use acvus_mir::ir::*;
 use acvus_mir::ty::Ty;
 use acvus_utils::{Interner, LocalFactory};
@@ -122,8 +122,8 @@ async fn spawn_eval_context_defs() {
 
     let entry_id = FunctionId::alloc();
     let callee_id = FunctionId::alloc();
-    let ctx_id = ContextId::alloc();
     let ctx_name = interner.intern("counter");
+    let ctx_id = QualifiedRef::root(ctx_name);
 
     // ── Callee: writes 99 to context "counter", returns 0 ──
     let callee_module = {
@@ -131,7 +131,7 @@ async fn spawn_eval_context_defs() {
         let vids = alloc_n(&mut f, 3);
         // v0=project(ctx), v1=const(99), v2=const(0) for return
         let insts = vec![
-            inst(InstKind::ContextProject { dst: vids[0], id: ctx_id }),
+            inst(InstKind::ContextProject { dst: vids[0], ctx: ctx_id }),
             inst(InstKind::Const { dst: vids[1], value: acvus_ast::Literal::Int(99) }),
             inst(InstKind::ContextStore { dst: vids[0], value: vids[1] }),
             inst(InstKind::Const { dst: vids[2], value: acvus_ast::Literal::Int(0) }),

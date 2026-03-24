@@ -6,12 +6,12 @@ use acvus_utils::{Astr, Interner};
 use rustc_hash::FxHashMap;
 use rustc_hash::FxHashSet;
 
-use crate::graph::{ContextId, FunctionId};
+use crate::graph::{FunctionId, QualifiedRef};
 use crate::ty::{Effect, Ty};
 
 acvus_utils::declare_local_id!(pub ValueId);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Label(pub u32);
 
 #[derive(Debug, Clone)]
@@ -100,7 +100,7 @@ pub enum InstKind {
     /// `ty` is the context's root type (like alloca's type in LLVM).
     ContextProject {
         dst: ValueId,
-        id: ContextId,
+        ctx: QualifiedRef,
     },
     /// Materialize a projection into a value (copy). Severs the store connection.
     /// `src` must be a projection (from ContextProject or FieldAccess on a projection).
@@ -162,7 +162,7 @@ pub enum InstKind {
         dst: ValueId,
         callee: Callee,
         args: Vec<ValueId>,
-        context_uses: Vec<(ContextId, ValueId)>,
+        context_uses: Vec<(QualifiedRef, ValueId)>,
     },
     /// Evaluate (force) a Handle, consuming it. This is where effects actually occur.
     /// `src` must be a Handle<T, E>. `dst` receives T. Effect E happens here.
@@ -170,7 +170,7 @@ pub enum InstKind {
     Eval {
         dst: ValueId,
         src: ValueId,
-        context_defs: Vec<(ContextId, ValueId)>,
+        context_defs: Vec<(QualifiedRef, ValueId)>,
     },
 
     // Composite constructors
@@ -414,18 +414,18 @@ pub struct MirModule {
 }
 
 impl MirModule {
-    /// Extract all context keys (ContextProject ids) referenced by this module.
-    pub fn extract_context_keys(&self) -> FxHashSet<ContextId> {
+    /// Extract all context keys (ContextProject refs) referenced by this module.
+    pub fn extract_context_keys(&self) -> FxHashSet<QualifiedRef> {
         let mut keys = FxHashSet::default();
         for inst in &self.main.insts {
-            if let InstKind::ContextProject { id, .. } = &inst.kind {
-                keys.insert(*id);
+            if let InstKind::ContextProject { ctx, .. } = &inst.kind {
+                keys.insert(*ctx);
             }
         }
         for closure in self.closures.values() {
             for inst in &closure.insts {
-                if let InstKind::ContextProject { id, .. } = &inst.kind {
-                    keys.insert(*id);
+                if let InstKind::ContextProject { ctx, .. } = &inst.kind {
+                    keys.insert(*ctx);
                 }
             }
         }

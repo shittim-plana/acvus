@@ -6,10 +6,11 @@
 //! Write-back model: branch-internal ContextStores are removed;
 //! a single write-back ContextStore is inserted after each merge block.
 
+use std::collections::{BTreeMap, BTreeSet};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::analysis::cfg::{BlockIdx, Cfg, Terminator};
-use crate::graph::ContextId;
+use crate::graph::QualifiedRef;
 use crate::ir::{Callee, Inst, InstKind, Label, MirBody, ValueId};
 use crate::ssa::{ENTRY_BLOCK, SSABuilder};
 use crate::ty::Ty;
@@ -45,10 +46,10 @@ pub fn run(body: &mut MirBody) {
 /// Also eliminates the initial entry load if the context is never read
 /// before it's written (dead initial load).
 fn forward_context_values(body: &mut MirBody) {
-    // Map: projection ValueId → ContextId.
-    let mut val_to_ctx: FxHashMap<ValueId, ContextId> = FxHashMap::default();
+    // Map: projection ValueId → QualifiedRef.
+    let mut val_to_ctx: FxHashMap<ValueId, QualifiedRef> = FxHashMap::default();
     // Current known value per context (from entry load or store).
-    let mut current_val: FxHashMap<ContextId, ValueId> = FxHashMap::default();
+    let mut current_val: FxHashMap<QualifiedRef, ValueId> = FxHashMap::default();
     // ValueId substitutions: old → new.
     let mut subst: FxHashMap<ValueId, ValueId> = FxHashMap::default();
     // Instructions to remove (dead loads + their preceding projects).
@@ -56,8 +57,8 @@ fn forward_context_values(body: &mut MirBody) {
 
     for (i, inst) in body.insts.iter().enumerate() {
         match &inst.kind {
-            InstKind::ContextProject { dst, id, .. } => {
-                val_to_ctx.insert(*dst, *id);
+            InstKind::ContextProject { dst, ctx, .. } => {
+                val_to_ctx.insert(*dst, *ctx);
             }
             InstKind::ContextLoad { dst, src } => {
                 let src_resolved = subst.get(src).copied().unwrap_or(*src);
@@ -212,7 +213,7 @@ fn apply_subst(kind: &mut InstKind, subst: &FxHashMap<ValueId, ValueId>) {
 
 // ── Step 0: Ensure initial loads ────────────────────────────────────
 
-/// Scan the MIR for all ContextIds referenced by ContextProject.
+/// Scan the MIR for all QualifiedRefs referenced by ContextProject.
 /// For any context that doesn't have a ContextLoad in the entry region
 /// (before the first BlockLabel), insert ContextProject + ContextLoad.
 fn ensure_initial_loads(body: &mut MirBody) {
@@ -223,20 +224,20 @@ fn ensure_initial_loads(body: &mut MirBody) {
         .position(|i| matches!(&i.kind, InstKind::BlockLabel { .. }))
         .unwrap_or(body.insts.len());
 
-    // Collect all referenced ContextIds and which ones already have loads in entry.
-    let mut all_ctx_ids: FxHashSet<ContextId> = FxHashSet::default();
-    let mut ctx_types: FxHashMap<ContextId, Ty> = FxHashMap::default();
-    let mut entry_loaded: FxHashSet<ContextId> = FxHashSet::default();
-    let mut val_to_ctx: FxHashMap<ValueId, ContextId> = FxHashMap::default();
+    // Collect all referenced QualifiedRefs and which ones already have loads in entry.
+    let mut all_ctx_ids: FxHashSet<QualifiedRef> = FxHashSet::default();
+    let mut ctx_types: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
+    let mut entry_loaded: FxHashSet<QualifiedRef> = FxHashSet::default();
+    let mut val_to_ctx: FxHashMap<ValueId, QualifiedRef> = FxHashMap::default();
 
     for (i, inst) in body.insts.iter().enumerate() {
         match &inst.kind {
-            InstKind::ContextProject { dst, id } => {
-                all_ctx_ids.insert(*id);
+            InstKind::ContextProject { dst, ctx } => {
+                all_ctx_ids.insert(*ctx);
                 if let Some(ty) = body.val_types.get(dst) {
-                    ctx_types.entry(*id).or_insert_with(|| ty.clone());
+                    ctx_types.entry(*ctx).or_insert_with(|| ty.clone());
                 }
-                val_to_ctx.insert(*dst, *id);
+                val_to_ctx.insert(*dst, *ctx);
             }
             InstKind::ContextLoad { src, .. } if i < first_label_pos => {
                 if let Some(&ctx_id) = val_to_ctx.get(src) {
@@ -255,14 +256,14 @@ fn ensure_initial_loads(body: &mut MirBody) {
     // Insert initial loads for contexts that don't have one.
     // Collect missing contexts in order of first appearance (deterministic).
     let mut seen = FxHashSet::default();
-    let mut missing: Vec<ContextId> = Vec::new();
+    let mut missing: Vec<QualifiedRef> = Vec::new();
     for inst in body.insts.iter() {
-        if let InstKind::ContextProject { id, .. } = &inst.kind
-            && all_ctx_ids.contains(id)
-            && !entry_loaded.contains(id)
-            && seen.insert(*id)
+        if let InstKind::ContextProject { ctx, .. } = &inst.kind
+            && all_ctx_ids.contains(ctx)
+            && !entry_loaded.contains(ctx)
+            && seen.insert(*ctx)
         {
-            missing.push(*id);
+            missing.push(*ctx);
         }
     }
     if missing.is_empty() {
@@ -288,7 +289,7 @@ fn ensure_initial_loads(body: &mut MirBody) {
             span,
             kind: InstKind::ContextProject {
                 dst: proj,
-                id: ctx_id,
+                ctx: ctx_id,
             },
         });
         let val = body.val_factory.next();
@@ -312,25 +313,25 @@ fn ensure_initial_loads(body: &mut MirBody) {
 #[derive(Debug, Default)]
 struct BlockContextOps {
     /// (inst_index, ctx_id, value)
-    stores: Vec<(usize, ContextId, ValueId)>,
+    stores: Vec<(usize, QualifiedRef, ValueId)>,
 }
 
 /// Aggregated context info.
 struct ContextInfo {
-    written_contexts: FxHashSet<ContextId>,
+    written_contexts: FxHashSet<QualifiedRef>,
     block_ops: FxHashMap<BlockIdx, BlockContextOps>,
     /// ctx → initial loaded value (from entry region ContextLoad).
-    entry_defs: FxHashMap<ContextId, ValueId>,
+    entry_defs: BTreeMap<QualifiedRef, ValueId>,
     /// ctx → root type (from ContextProject instructions).
-    ctx_types: FxHashMap<ContextId, Ty>,
+    ctx_types: FxHashMap<QualifiedRef, Ty>,
 }
 
 fn collect_context_info(cfg: &Cfg, insts: &[Inst], val_types: &FxHashMap<ValueId, Ty>) -> ContextInfo {
-    let mut val_to_ctx: FxHashMap<ValueId, ContextId> = FxHashMap::default();
+    let mut val_to_ctx: FxHashMap<ValueId, QualifiedRef> = FxHashMap::default();
     let mut written_contexts = FxHashSet::default();
     let mut block_ops: FxHashMap<BlockIdx, BlockContextOps> = FxHashMap::default();
-    let mut entry_defs: FxHashMap<ContextId, ValueId> = FxHashMap::default();
-    let mut ctx_types: FxHashMap<ContextId, Ty> = FxHashMap::default();
+    let mut entry_defs: BTreeMap<QualifiedRef, ValueId> = BTreeMap::default();
+    let mut ctx_types: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
 
     for (bi, block) in cfg.blocks.iter().enumerate() {
         let ops = block_ops.entry(BlockIdx(bi)).or_default();
@@ -338,10 +339,10 @@ fn collect_context_info(cfg: &Cfg, insts: &[Inst], val_types: &FxHashMap<ValueId
         for &inst_i in &block.inst_indices {
             let inst = &insts[inst_i];
             match &inst.kind {
-                InstKind::ContextProject { dst, id } => {
-                    val_to_ctx.insert(*dst, *id);
+                InstKind::ContextProject { dst, ctx } => {
+                    val_to_ctx.insert(*dst, *ctx);
                     if let Some(ty) = val_types.get(dst) {
-                        ctx_types.entry(*id).or_insert_with(|| ty.clone());
+                        ctx_types.entry(*ctx).or_insert_with(|| ty.clone());
                     }
                 }
                 InstKind::ContextLoad { dst, src } => {
@@ -395,7 +396,7 @@ fn run_ssa_builder(
     };
 
     // Detect loop headers (backedge target: succ index <= current index).
-    let mut loop_headers: FxHashSet<BlockIdx> = FxHashSet::default();
+    let mut loop_headers: BTreeSet<BlockIdx> = BTreeSet::default();
     for (bi, _) in cfg.blocks.iter().enumerate() {
         for succ in cfg.successors(BlockIdx(bi)) {
             if succ.0 <= bi {
@@ -416,6 +417,7 @@ fn run_ssa_builder(
     ssa.seal_block(ENTRY_BLOCK, &mut || val_factory.next());
 
     // Define initial values in entry block (guaranteed by Step 0).
+    // BTreeMap iteration is deterministic by QualifiedRef ordering.
     for (&ctx_id, &val) in &ctx_info.entry_defs {
         ssa.define(ENTRY_BLOCK, ctx_id, val);
     }
@@ -463,16 +465,16 @@ fn patch_instructions(
     ctx_info: &ContextInfo,
 ) {
     // PHI lookup tables.
-    let mut block_phis: FxHashMap<Label, Vec<&crate::ssa::PhiInsertion>> = FxHashMap::default();
+    let mut block_phis: BTreeMap<Label, Vec<&crate::ssa::PhiInsertion>> = BTreeMap::default();
     for phi in phi_insertions {
         block_phis.entry(phi.block).or_default().push(phi);
     }
-    // Sort PHIs by ContextId for deterministic block param ordering.
+    // Sort PHIs by QualifiedRef for deterministic block param ordering.
     for phis in block_phis.values_mut() {
         phis.sort_by_key(|p| p.context);
     }
 
-    // Build jump args in the same ContextId-sorted order as block_phis.
+    // Build jump args in the same QualifiedRef-sorted order as block_phis.
     let mut jump_extra_args: FxHashMap<(Label, Label), Vec<ValueId>> = FxHashMap::default();
     for (&label, phis) in &block_phis {
         for phi in phis {
@@ -486,7 +488,7 @@ fn patch_instructions(
     }
 
     // Identify ContextStores to remove (in branches superseded by PHI write-back).
-    let phi_contexts: FxHashSet<ContextId> = phi_insertions.iter().map(|p| p.context).collect();
+    let phi_contexts: FxHashSet<QualifiedRef> = phi_insertions.iter().map(|p| p.context).collect();
     let merge_labels: FxHashSet<Label> = block_phis.keys().copied().collect();
     let mut remove_indices: FxHashSet<usize> = FxHashSet::default();
 
@@ -554,7 +556,7 @@ fn patch_instructions(
                             span,
                             kind: InstKind::ContextProject {
                                 dst: proj,
-                                id: phi.context,
+                                ctx: phi.context,
                             },
                         });
                         new_insts.push(Inst {

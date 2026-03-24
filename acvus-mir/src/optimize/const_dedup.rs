@@ -117,7 +117,7 @@ fn remap_uses(kind: &mut InstKind, remap: &FxHashMap<ValueId, ValueId>) {
         | InstKind::Nop
         | InstKind::Poison { .. } => {}
 
-        // ContextProject has no ValueId uses (id is a ContextId, not a ValueId).
+        // ContextProject has no ValueId uses (ctx is a QualifiedRef, not a ValueId).
         InstKind::ContextProject { .. } => {}
 
         // Single use

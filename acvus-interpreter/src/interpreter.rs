@@ -167,7 +167,7 @@ enum ApplyResult {
 }
 
 use crate::journal::{ContextOverlay, ContextWrite, EntryMut, EntryRef};
-use acvus_mir::graph::ContextId;
+use acvus_mir::graph::QualifiedRef;
 
 // ── Interpreter ──────────────────────────────────────────────────────
 
@@ -200,7 +200,7 @@ impl Executable {
 pub struct InterpreterContext {
     pub interner: Interner,
     pub functions: Freeze<FxHashMap<FunctionId, Executable>>,
-    pub context_names: Freeze<FxHashMap<ContextId, Astr>>,
+    pub context_names: Freeze<FxHashMap<QualifiedRef, Astr>>,
     pub executor: Arc<dyn crate::executor::Executor>,
 }
 
@@ -218,7 +218,7 @@ impl InterpreterContext {
         }
     }
 
-    pub fn with_context_names(mut self, context_names: FxHashMap<ContextId, Astr>) -> Self {
+    pub fn with_context_names(mut self, context_names: FxHashMap<QualifiedRef, Astr>) -> Self {
         self.context_names = Freeze::new(context_names);
         self
     }
@@ -305,7 +305,7 @@ impl Interpreter {
         for (reg, val) in param_regs.iter().zip(args.iter()) {
             frame.set(*reg, val.clone());
         }
-        let mut projection_map: FxHashMap<ValueId, ContextId> = FxHashMap::default();
+        let mut projection_map: FxHashMap<ValueId, QualifiedRef> = FxHashMap::default();
         self.run_loop(
             &insts,
             &closures,
@@ -323,7 +323,7 @@ impl Interpreter {
         insts: &'s [Inst],
         closures: &'s FxHashMap<Label, Arc<MirBody>>,
         frame: &'s mut Frame,
-        projection_map: &'s mut FxHashMap<ValueId, ContextId>,
+        projection_map: &'s mut FxHashMap<ValueId, QualifiedRef>,
         val_types: &'s FxHashMap<ValueId, Ty>,
     ) -> BoxFuture<'s, Result<Value, RuntimeError>> {
         Box::pin(self.run_loop_inner(insts, closures, frame, projection_map, val_types))
@@ -334,7 +334,7 @@ impl Interpreter {
         insts: &[Inst],
         closures: &FxHashMap<Label, Arc<MirBody>>,
         frame: &mut Frame,
-        projection_map: &mut FxHashMap<ValueId, ContextId>,
+        projection_map: &mut FxHashMap<ValueId, QualifiedRef>,
         val_types: &FxHashMap<ValueId, Ty>,
     ) -> Result<Value, RuntimeError> {
         let mut pc = 0;
@@ -358,7 +358,7 @@ impl Interpreter {
         closures: &FxHashMap<Label, Arc<MirBody>>,
         pc: usize,
         frame: &mut Frame,
-        projection_map: &mut FxHashMap<ValueId, ContextId>,
+        projection_map: &mut FxHashMap<ValueId, QualifiedRef>,
         val_types: &FxHashMap<ValueId, Ty>,
     ) -> Result<Flow, RuntimeError> {
         match &insts[pc].kind {
@@ -387,8 +387,8 @@ impl Interpreter {
             }
 
             // ── Context ───────────────────────────────────────
-            InstKind::ContextProject { dst, id, .. } => {
-                projection_map.insert(*dst, *id);
+            InstKind::ContextProject { dst, ctx, .. } => {
+                projection_map.insert(*dst, *ctx);
                 frame.set(*dst, Value::Unit);
             }
             InstKind::ContextLoad { dst, src } => {

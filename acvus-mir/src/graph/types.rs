@@ -13,7 +13,6 @@ use crate::ty::Ty;
 
 // ── Identifiers ─────────────────────────────────────────────────────
 
-acvus_utils::declare_id!(pub ContextId);
 acvus_utils::declare_id!(pub FunctionId);
 acvus_utils::declare_id!(pub VersionId);
 acvus_utils::declare_id!(pub ScopeId);
@@ -45,7 +44,7 @@ pub enum Constraint {
     /// Type derived from a function's output type.
     DerivedFnOutput(FunctionId, TypeTransform),
     /// Type derived from a context's type.
-    DerivedContext(ContextId, TypeTransform),
+    DerivedContext(QualifiedRef, TypeTransform),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,9 +79,9 @@ pub enum DependencyHint {
     /// Depends on another function's output.
     Function(FunctionId, Ty),
     /// Reads a context value.
-    ContextRead(ContextId, Ty),
+    ContextRead(QualifiedRef, Ty),
     /// Writes a context value.
-    ContextWrite(ContextId, Ty),
+    ContextWrite(QualifiedRef, Ty),
 }
 
 #[derive(Debug, Clone)]
@@ -105,16 +104,51 @@ pub struct Function {
     pub constraint: FnConstraint,
 }
 
+// ── Qualified reference (replaces ContextId) ────────────────────────
+
+/// A namespace-qualified reference. Used as the identity for contexts
+/// and for qualified function/context access in the IR.
+///
+/// - `QualifiedRef::root(name)` → unqualified (root namespace)
+/// - `QualifiedRef::qualified(ns, name)` → specific namespace
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct QualifiedRef {
+    /// Namespace name. `None` = root.
+    pub namespace: Option<Astr>,
+    /// Context or function name.
+    pub name: Astr,
+}
+
+impl QualifiedRef {
+    pub fn root(name: Astr) -> Self {
+        Self { namespace: None, name }
+    }
+
+    pub fn qualified(namespace: Astr, name: Astr) -> Self {
+        Self { namespace: Some(namespace), name }
+    }
+}
+
 // ── Context ──────────────────────────────────────────────────────────
 
 /// A loadable value in the graph. Injected externally or derived from a function.
+/// Identity = QualifiedRef (namespace + name). No separate ContextId.
 #[derive(Debug, Clone)]
 pub struct Context {
-    pub id: ContextId,
     pub name: Astr,
     /// Namespace this context belongs to. `None` = root (global).
     pub namespace: Option<NamespaceId>,
     pub constraint: Constraint,
+}
+
+impl Context {
+    /// The qualified reference that uniquely identifies this context.
+    pub fn qualified_ref(&self) -> QualifiedRef {
+        // Note: namespace here is NamespaceId, but QualifiedRef uses Astr.
+        // The graph must resolve NamespaceId → Astr for this.
+        // For root contexts (namespace=None), this is straightforward.
+        QualifiedRef { namespace: None, name: self.name }
+    }
 }
 
 // ── Namespace ────────────────────────────────────────────────────────

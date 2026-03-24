@@ -89,7 +89,7 @@ fn extra_dsts(kind: &InstKind) -> Vec<ValueId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::ContextId;
+    use crate::graph::QualifiedRef;
     use crate::ir::{Inst, MirBody};
     use crate::ty::Ty;
     use acvus_ast::Span;
@@ -119,14 +119,15 @@ mod tests {
 
     #[test]
     fn context_project_mapped() {
-        let id0 = ContextId::alloc();
+        let i = Interner::new();
+        let id0 = QualifiedRef::root(i.intern("x"));
         let mut vf = LocalFactory::<ValueId>::new();
         let v0 = vf.next();
         let v1 = vf.next();
         let module = make_module(vec![
             inst(InstKind::ContextProject {
                 dst: v0,
-                id: id0
+                ctx: id0
             }),
             inst(InstKind::ContextLoad { dst: v1, src: v0 }),
         ]);

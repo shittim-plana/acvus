@@ -2,7 +2,7 @@ use crate::ir::{Inst, InstKind, Label, ValueId};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BlockIdx(pub usize);
 
 #[derive(Debug, Clone)]

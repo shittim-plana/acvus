@@ -35,6 +35,24 @@ impl PartialEq for Astr {
 
 impl Eq for Astr {}
 
+impl PartialOrd for Astr {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Astr {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        assert!(
+            self.interner_id == other.interner_id,
+            "Comparing Astr values from different interners ({} != {})",
+            self.interner_id,
+            other.interner_id
+        );
+        self.id.cmp(&other.id)
+    }
+}
+
 impl Hash for Astr {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.interner_id.hash(state);

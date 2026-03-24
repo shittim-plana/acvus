@@ -15,14 +15,13 @@ fn compile_analysis(
 ) -> Result<(acvus_mir::ir::MirModule, acvus_mir::hints::HintTable), Vec<acvus_mir::error::MirError>> {
     use acvus_mir::graph::{extract, resolve, lower as graph_lower};
     use acvus_mir::graph::{CompilationGraph, Function, FunctionId, FnKind, SourceCode, SourceKind,
-                           FnConstraint, Constraint, Context, ContextId};
+                           FnConstraint, Constraint, Context};
     use acvus_mir::ty::Param;
     use acvus_utils::Freeze;
     use rustc_hash::FxHashSet;
 
     // Build contexts from declared types.
     let mut contexts: Vec<Context> = ctx.iter().map(|(name, ty)| Context {
-        id: ContextId::alloc(),
         name: interner.intern(name),
         namespace: None,
         constraint: Constraint::Exact(ty.clone()),
@@ -35,7 +34,6 @@ fn compile_analysis(
     for name in acvus_ast::extract_template_context_refs(&template) {
         if !declared.contains(&name) {
             contexts.push(Context {
-                id: ContextId::alloc(),
                 name,
                 namespace: None,
                 constraint: Constraint::Inferred,
@@ -1830,7 +1828,7 @@ fn pruned_context_keys_in_dead_catch_all() {
     use acvus_mir::AnalysisPass;
     use acvus_mir::analysis::val_def::ValDefMapAnalysis;
     use acvus_mir::analysis::reachable_context::{partition_context_keys, KnownValue};
-    use acvus_mir::graph::ContextId;
+    use acvus_mir::graph::QualifiedRef;
     use acvus_mir::ir::InstKind;
 
     let i = Interner::new();
@@ -1840,17 +1838,17 @@ fn pruned_context_keys_in_dead_catch_all() {
     let ir = acvus_mir::printer::dump_with(&i, &module);
     eprintln!("=== PRUNED TEST IR ===\n{ir}\n=== END ===");
 
-    // Build name→ContextId lookup from the compiled module's ContextLoad instructions + debug info.
-    let mut name_to_ctx_id: FxHashMap<&str, ContextId> = FxHashMap::default();
+    // Build name→QualifiedRef lookup from the compiled module's ContextProject instructions + debug info.
+    let mut name_to_qref: FxHashMap<&str, QualifiedRef> = FxHashMap::default();
     for inst in &module.main.insts {
-        if let InstKind::ContextProject { dst, id, .. } = &inst.kind {
+        if let InstKind::ContextProject { dst, ctx, .. } = &inst.kind {
             if let Some(acvus_mir::ir::ValOrigin::Context(name)) = module.main.debug.val_origins.get(dst) {
-                name_to_ctx_id.insert(i.resolve(*name), *id);
+                name_to_qref.insert(i.resolve(*name), *ctx);
             }
         }
     }
-    let impersonation_id = name_to_ctx_id["Impersonation"];
-    let pov_id = name_to_ctx_id["Pov"];
+    let impersonation_id = name_to_qref["Impersonation"];
+    let pov_id = name_to_qref["Pov"];
 
     let val_def = ValDefMapAnalysis.run(&module, ());
     let mut known = FxHashMap::default();

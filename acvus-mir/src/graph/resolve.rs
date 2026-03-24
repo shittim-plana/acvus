@@ -31,7 +31,7 @@ pub struct ResolvedGraph {
     /// Resolved output types for all functions.
     fn_types: FxHashMap<FunctionId, Ty>,
     /// Resolved types for all contexts.
-    context_types: FxHashMap<ContextId, Ty>,
+    context_types: FxHashMap<QualifiedRef, Ty>,
     /// Errors encountered during resolution.
     errors: Vec<ResolveError>,
 }
@@ -51,8 +51,8 @@ impl ResolvedGraph {
         self.fn_types.get(&id)
     }
 
-    pub fn context_type(&self, id: ContextId) -> Option<&Ty> {
-        self.context_types.get(&id)
+    pub fn context_type(&self, qref: &QualifiedRef) -> Option<&Ty> {
+        self.context_types.get(qref)
     }
 
     pub fn errors(&self) -> &[ResolveError] {
@@ -292,7 +292,7 @@ pub fn resolve(
     }
 
     // 5. Resolve context types through substitution.
-    let resolved_context_types: FxHashMap<ContextId, Ty> = graph
+    let resolved_context_types: FxHashMap<QualifiedRef, Ty> = graph
         .contexts
         .iter()
         .map(|ctx| {
@@ -300,7 +300,7 @@ pub fn resolve(
                 .get(&ctx.name)
                 .map(|t| subst.resolve(t))
                 .unwrap_or_else(Ty::error);
-            (ctx.id, ty)
+            (ctx.qualified_ref(), ty)
         })
         .collect();
 
@@ -329,7 +329,6 @@ mod tests {
         let contexts = ctx
             .iter()
             .map(|(name, ty)| Context {
-                id: ContextId::alloc(),
                 name: interner.intern(name),
                 namespace: None,
                 constraint: Constraint::Exact(ty.clone()),
@@ -466,8 +465,8 @@ mod tests {
         let inf = crate::graph::infer::infer(&i, &graph, &ext);
         let result = resolve(&i, &graph, &ext, &inf, &FxHashMap::default());
 
-        let ctx_id = graph.contexts[0].id;
-        assert_eq!(*result.context_type(ctx_id).unwrap(), Ty::Int);
+        let ctx_ref = graph.contexts[0].qualified_ref();
+        assert_eq!(*result.context_type(&ctx_ref).unwrap(), Ty::Int);
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -492,7 +491,6 @@ mod tests {
         let contexts: Vec<Context> = ctx
             .iter()
             .map(|(name, ty)| Context {
-                id: ContextId::alloc(),
                 name: interner.intern(name),
                 namespace: None,
                 constraint: Constraint::Exact(ty.clone()),
@@ -556,7 +554,6 @@ mod tests {
         let contexts: Vec<Context> = ctx
             .iter()
             .map(|(name, ty)| Context {
-                id: ContextId::alloc(),
                 name: interner.intern(name),
                 namespace: None,
                 constraint: Constraint::Exact(ty.clone()),

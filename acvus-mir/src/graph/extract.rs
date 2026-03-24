@@ -17,29 +17,6 @@ use super::types::*;
 
 // ── Phase 0 output ──────────────────────────────────────────────────
 
-/// A reference to a context or function, optionally namespace-qualified.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct QualifiedRef {
-    pub namespace: Option<Astr>,
-    pub name: Astr,
-}
-
-impl QualifiedRef {
-    pub fn root(name: Astr) -> Self {
-        Self {
-            namespace: None,
-            name,
-        }
-    }
-
-    pub fn qualified(namespace: Astr, name: Astr) -> Self {
-        Self {
-            namespace: Some(namespace),
-            name,
-        }
-    }
-}
-
 /// Extracted information from a single function.
 #[derive(Debug, Clone)]
 pub struct FnRefs {
@@ -88,14 +65,14 @@ pub fn extract_one(interner: &Interner, func: &Function) -> Option<(FnRefs, Pars
         }
     };
 
-    // Step 2: Build temp name→(id, ty) mapping for skeleton MIR.
-    let name_to_id: FxHashMap<Astr, (ContextId, crate::ty::Ty)> = context_names
+    // Step 2: Build temp name→(QualifiedRef, ty) mapping for skeleton MIR.
+    let name_to_id: FxHashMap<Astr, (QualifiedRef, crate::ty::Ty)> = context_names
         .iter()
-        .map(|&name| (name, (ContextId::alloc(), crate::ty::Ty::error())))
+        .map(|&name| (name, (QualifiedRef::root(name), crate::ty::Ty::error())))
         .collect();
-    let id_to_name: FxHashMap<ContextId, Astr> = name_to_id
+    let qref_to_name: FxHashMap<QualifiedRef, Astr> = name_to_id
         .iter()
-        .map(|(&name, &(id, _))| (id, name))
+        .map(|(&name, &(qref, _))| (qref, name))
         .collect();
 
     // Step 3: Build skeleton MIR (empty type maps).
@@ -112,7 +89,7 @@ pub fn extract_one(interner: &Interner, func: &Function) -> Option<(FnRefs, Pars
     };
 
     // Step 4: Run val_def analysis and trace write chains.
-    let refs = analyze_refs(&module, &id_to_name);
+    let refs = analyze_refs(&module, &qref_to_name);
 
     Some((refs, parsed_source))
 }
@@ -137,7 +114,7 @@ pub fn extract(interner: &Interner, graph: &CompilationGraph) -> ExtractResult {
 // ── IR analysis ─────────────────────────────────────────────────────
 
 /// Analyze skeleton MIR to extract reads and writes with projection chain tracing.
-fn analyze_refs(module: &MirModule, id_to_name: &FxHashMap<ContextId, Astr>) -> FnRefs {
+fn analyze_refs(module: &MirModule, qref_to_name: &FxHashMap<QualifiedRef, Astr>) -> FnRefs {
     let val_def = ValDefMapAnalysis.run(module, ());
     let insts = &module.main.insts;
 
@@ -147,17 +124,17 @@ fn analyze_refs(module: &MirModule, id_to_name: &FxHashMap<ContextId, Astr>) -> 
     for inst in insts {
         match &inst.kind {
             // Every ContextProject is a read.
-            InstKind::ContextProject { id, .. } => {
-                if let Some(&name) = id_to_name.get(id) {
-                    reads.insert(QualifiedRef::root(name));
+            InstKind::ContextProject { ctx, .. } => {
+                if qref_to_name.contains_key(ctx) {
+                    reads.insert(*ctx);
                 }
             }
             // ContextStore: trace dst back through projection chain to find root context.
             InstKind::ContextStore { dst, .. } => {
-                if let Some(root_id) = trace_projection_root(*dst, &val_def, insts)
-                    && let Some(&name) = id_to_name.get(&root_id)
+                if let Some(root_ref) = trace_projection_root(*dst, &val_def, insts)
+                    && qref_to_name.contains_key(&root_ref)
                 {
-                    writes.insert(QualifiedRef::root(name));
+                    writes.insert(root_ref);
                 }
             }
             _ => {}
@@ -178,17 +155,17 @@ fn analyze_refs(module: &MirModule, id_to_name: &FxHashMap<ContextId, Astr>) -> 
 
         for inst in closure_insts {
             match &inst.kind {
-                InstKind::ContextProject { id, .. } => {
-                    if let Some(&name) = id_to_name.get(id) {
-                        reads.insert(QualifiedRef::root(name));
+                InstKind::ContextProject { ctx, .. } => {
+                    if qref_to_name.contains_key(ctx) {
+                        reads.insert(*ctx);
                     }
                 }
                 InstKind::ContextStore { dst, .. } => {
-                    if let Some(root_id) =
+                    if let Some(root_ref) =
                         trace_projection_root(*dst, &closure_val_def, closure_insts)
-                        && let Some(&name) = id_to_name.get(&root_id)
+                        && qref_to_name.contains_key(&root_ref)
                     {
-                        writes.insert(QualifiedRef::root(name));
+                        writes.insert(root_ref);
                     }
                 }
                 _ => {}
@@ -212,14 +189,14 @@ fn trace_projection_root(
     val: crate::ir::ValueId,
     val_def: &ValDefMap,
     insts: &[crate::ir::Inst],
-) -> Option<ContextId> {
+) -> Option<QualifiedRef> {
     let mut current = val;
     // Limit iterations to prevent infinite loops on malformed IR.
     for _ in 0..64 {
         let inst_idx = val_def.0.get(&current)?;
         let inst = insts.get(*inst_idx)?;
         match &inst.kind {
-            InstKind::ContextProject { id, .. } => return Some(*id),
+            InstKind::ContextProject { ctx, .. } => return Some(*ctx),
             InstKind::FieldGet { object, .. } => {
                 current = *object;
             }
@@ -244,7 +221,6 @@ mod tests {
         let contexts: Vec<Context> = ctx_names
             .iter()
             .map(|&name| Context {
-                id: ContextId::alloc(),
                 name: interner.intern(name),
                 namespace: None,
                 constraint: Constraint::Exact(crate::ty::Ty::Int),

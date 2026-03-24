@@ -4,7 +4,7 @@ use std::fmt;
 use acvus_utils::{Astr, Interner};
 use rustc_hash::FxHashMap;
 
-use crate::graph::types::ContextId;
+use crate::graph::types::QualifiedRef;
 
 /// A named, typed function parameter.
 #[derive(Debug, Clone, PartialEq)]
@@ -138,10 +138,10 @@ pub enum Purity {
 /// and whether opaque IO is involved.
 ///
 /// Pure = all fields empty/false. No separate variant needed.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct EffectSet {
-    pub reads: BTreeSet<ContextId>,
-    pub writes: BTreeSet<ContextId>,
+    pub reads: BTreeSet<QualifiedRef>,
+    pub writes: BTreeSet<QualifiedRef>,
     pub io: bool,
     /// Value is consumed/mutated on use (e.g. Iterator cursor advance).
     /// Propagates through combinators: map(self_mod_iter, f) → self_mod.
@@ -191,7 +191,7 @@ impl fmt::Display for EffectSet {
 ///
 /// `Resolved(EffectSet)` contains concrete effect information.
 /// `Var(u32)` is an unresolved effect variable for polymorphism in HOF signatures.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Effect {
     Resolved(EffectSet),
     Var(u32),
@@ -203,7 +203,7 @@ impl Effect {
         Effect::Resolved(EffectSet::default())
     }
 
-    /// Opaque IO effect (e.g. context access without known ContextId).
+    /// Opaque IO effect (e.g. context access without known QualifiedRef).
     pub fn io() -> Self {
         Effect::Resolved(EffectSet {
             io: true,
@@ -5430,14 +5430,11 @@ mod tests {
 
     mod effect_set_tests {
         use super::*;
-        use crate::graph::types::ContextId;
+        use acvus_utils::Interner;
+        use crate::graph::types::QualifiedRef;
 
-        fn ctx(n: usize) -> ContextId {
-            // Use alloc() to create unique ContextIds for tests.
-            // We call it n times in sequence — the exact id value doesn't matter,
-            // only that different calls produce different ids.
-            let _ = n; // suppress unused warning
-            ContextId::alloc()
+        fn ctx(interner: &Interner, n: usize) -> QualifiedRef {
+            QualifiedRef::root(interner.intern(&format!("ctx_{n}")))
         }
 
         #[test]
@@ -5457,7 +5454,8 @@ mod tests {
 
         #[test]
         fn reads_only_is_not_pure() {
-            let c = ctx(0);
+            let i = Interner::new();
+            let c = ctx(&i, 0);
             let s = EffectSet {
                 reads: [c].into_iter().collect(),
                 ..Default::default()
@@ -5467,7 +5465,8 @@ mod tests {
 
         #[test]
         fn writes_only_is_not_pure() {
-            let c = ctx(0);
+            let i = Interner::new();
+            let c = ctx(&i, 0);
             let s = EffectSet {
                 writes: [c].into_iter().collect(),
                 ..Default::default()
@@ -5484,8 +5483,9 @@ mod tests {
 
         #[test]
         fn union_reads_disjoint() {
-            let c1 = ctx(0);
-            let c2 = ctx(1);
+            let i = Interner::new();
+            let c1 = ctx(&i, 0);
+            let c2 = ctx(&i, 1);
             let a = EffectSet {
                 reads: [c1].into_iter().collect(),
                 ..Default::default()
@@ -5503,7 +5503,8 @@ mod tests {
 
         #[test]
         fn union_reads_overlap() {
-            let c = ctx(0);
+            let i = Interner::new();
+            let c = ctx(&i, 0);
             let a = EffectSet {
                 reads: [c].into_iter().collect(),
                 ..Default::default()
@@ -5519,8 +5520,9 @@ mod tests {
 
         #[test]
         fn union_reads_writes_independent() {
-            let c1 = ctx(0);
-            let c2 = ctx(1);
+            let i = Interner::new();
+            let c1 = ctx(&i, 0);
+            let c2 = ctx(&i, 1);
             let a = EffectSet {
                 reads: [c1].into_iter().collect(),
                 ..Default::default()
@@ -5587,8 +5589,9 @@ mod tests {
 
         #[test]
         fn effect_union_resolved_resolved() {
-            let c1 = ctx(0);
-            let c2 = ctx(1);
+            let i = Interner::new();
+            let c1 = ctx(&i, 0);
+            let c2 = ctx(&i, 1);
             let a = Effect::Resolved(EffectSet {
                 reads: [c1].into_iter().collect(),
                 ..Default::default()
@@ -5716,8 +5719,9 @@ mod tests {
 
         #[test]
         fn effect_with_specific_contexts() {
-            let c1 = ctx(0);
-            let c2 = ctx(1);
+            let i = Interner::new();
+            let c1 = ctx(&i, 0);
+            let c2 = ctx(&i, 1);
             let e = Effect::Resolved(EffectSet {
                 reads: [c1].into_iter().collect(),
                 writes: [c2].into_iter().collect(),
@@ -5738,8 +5742,9 @@ mod tests {
 
         #[test]
         fn unify_var_with_context_effect() {
+            let i = Interner::new();
             let mut s = TySubst::new();
-            let c = ctx(0);
+            let c = ctx(&i, 0);
             let var = s.fresh_effect_var();
             let effect = Effect::Resolved(EffectSet {
                 reads: [c].into_iter().collect(),
@@ -5769,8 +5774,9 @@ mod tests {
 
         #[test]
         fn display_reads_writes() {
-            let c1 = ctx(0);
-            let c2 = ctx(1);
+            let i = Interner::new();
+            let c1 = ctx(&i, 0);
+            let c2 = ctx(&i, 1);
             let e = Effect::Resolved(EffectSet {
                 reads: [c1].into_iter().collect(),
                 writes: [c2].into_iter().collect(),
