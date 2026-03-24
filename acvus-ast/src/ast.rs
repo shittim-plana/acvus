@@ -16,6 +16,20 @@ pub enum Stmt {
     Bind { name: Astr, expr: Expr, span: Span },
     ContextStore { name: Astr, expr: Expr, span: Span },
     Expr(Expr),
+    /// Match-bind (if-let): `pattern = source { body };`
+    MatchBind {
+        pattern: Pattern,
+        source: Expr,
+        body: Vec<Stmt>,
+        span: Span,
+    },
+    /// Iteration (for): `pattern : source { body };`
+    Iterate {
+        pattern: Pattern,
+        source: Expr,
+        body: Vec<Stmt>,
+        span: Span,
+    },
 }
 
 /// A parsed template.
@@ -373,20 +387,34 @@ pub enum Literal {
 /// Extract all `@name` context references from a Script AST.
 pub fn extract_script_context_refs(script: &Script) -> rustc_hash::FxHashSet<Astr> {
     let mut refs = rustc_hash::FxHashSet::default();
-    for stmt in &script.stmts {
-        match stmt {
-            Stmt::Bind { expr, .. } => walk_expr(expr, &mut refs),
-            Stmt::ContextStore { name, expr, .. } => {
-                refs.insert(*name);
-                walk_expr(expr, &mut refs);
-            }
-            Stmt::Expr(expr) => walk_expr(expr, &mut refs),
-        }
-    }
+    walk_stmts(&script.stmts, &mut refs);
     if let Some(tail) = &script.tail {
         walk_expr(tail, &mut refs);
     }
     refs
+}
+
+fn walk_stmts(stmts: &[Stmt], refs: &mut rustc_hash::FxHashSet<Astr>) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Bind { expr, .. } => walk_expr(expr, refs),
+            Stmt::ContextStore { name, expr, .. } => {
+                refs.insert(*name);
+                walk_expr(expr, refs);
+            }
+            Stmt::Expr(expr) => walk_expr(expr, refs),
+            Stmt::MatchBind { pattern, source, body, .. } => {
+                walk_pattern(pattern, refs);
+                walk_expr(source, refs);
+                walk_stmts(body, refs);
+            }
+            Stmt::Iterate { pattern, source, body, .. } => {
+                walk_pattern(pattern, refs);
+                walk_expr(source, refs);
+                walk_stmts(body, refs);
+            }
+        }
+    }
 }
 
 /// Extract all `@name` context references from a Template AST.
@@ -494,16 +522,7 @@ fn walk_expr(expr: &Expr, refs: &mut rustc_hash::FxHashSet<Astr>) {
             }
         }
         Expr::Block { stmts, tail, .. } => {
-            for stmt in stmts {
-                match stmt {
-                    Stmt::Bind { expr, .. } => walk_expr(expr, refs),
-                    Stmt::ContextStore { name, expr, .. } => {
-                        refs.insert(*name);
-                        walk_expr(expr, refs);
-                    }
-                    Stmt::Expr(expr) => walk_expr(expr, refs),
-                }
-            }
+            walk_stmts(stmts, refs);
             walk_expr(tail, refs);
         }
     }

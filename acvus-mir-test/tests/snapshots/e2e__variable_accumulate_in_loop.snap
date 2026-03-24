@@ -6,50 +6,53 @@ expression: ir
   T0 = ""
 
 === main ===
-     2 │   var_store $sum = 0 (r1)
-     4 │   r3 = T0 + T0
-     5 │   r4 = context_project @items
-     6 │   r5 = context_load r4
-     7 │   r6 = cast ListToIterator r5
-     9 │   jump L0(r6, T0)
-    10 │ L0(r8: Iterator<Int>, r9: String):
-    11 │   iter_step r10, r11 = r8 else L1(r9)
-    13 │   r13 = var_load $sum
-    14 │   r14 = r13 + r10
-    15 │   var_store $sum = r14
-    17 │   r16 = T0 + T0
-    18 │   r17 = r9 + r16
-    19 │   jump L0(r11, r17)
-    20 │ L1(r18: String):
-    21 │   jump L2(r18)
-    22 │ L2(r19: String):
-    23 │   r20 = r3 + r19
-    24 │   r21 = var_load $sum
-    25 │   r22 = poison
-    26 │   r23 = r20 + r22
-    27 │   return r23
+     0 │   r0 = context_project @items
+     1 │   r1 = context_load r0
+     4 │   var_store $sum = 0 (r2)
+     6 │   r3 = T0 + T0
+     7 │   r4 = cast ListToIterator r1
+     9 │   jump L0(r4, T0)
+    10 │ L0(r5: Iterator<Int>, r6: String):
+    11 │   iter_step r7, r8 = r5 else L1(r6)
+    12 │ L3:
+    14 │   r9 = var_load $sum
+    15 │   r10 = r9 + r7
+    16 │   var_store $sum = r10
+    18 │   r11 = T0 + T0
+    19 │   r12 = r6 + r11
+    20 │   jump L0(r8, r12)
+    21 │ L1(r13: String):
+    22 │   jump L2(r13)
+    23 │ L2(r14: String):
+    24 │   r15 = r3 + r14
+    25 │   r16 = var_load $sum
+    26 │   r17 = poison
+    27 │   r18 = r15 + r17
+    28 │   return r18
 
-    ; r0 (v0) : String
-    ; r1 (v1) : Int
-    ; r2 (v2) : String
-    ; r3 (v3) : String
-    ; r4 (@items) : List<Int>
-    ; r5 (v5) : List<Int>
-    ; r6 (v6) : Iterator<Int>
-    ; r7 (v7) : String
-    ; r8 (v8) : Iterator<Int>
-    ; r9 (v9) : String
-    ; r10 (x) : Int
-    ; r11 (v11) : Iterator<Int>
-    ; r12 (v12) : String
-    ; r13 ($sum) : Int
-    ; r14 (v14) : Int
-    ; r15 (v15) : String
-    ; r16 (v16) : String
-    ; r17 (v17) : String
-    ; r18 (v18) : String
-    ; r19 (v19) : String
-    ; r20 (v20) : String
-    ; r21 ($sum) : Int
-    ; r22 (to_string(...)) : String
-    ; r23 (v23) : String
+    ; r0 (@items) : <error>
+    ; r1 (v1) : List<Int>
+    ; r19 (v2) : String
+    ; r2 (v3) : Int
+    ; r20 (v4) : String
+    ; r3 (v5) : String
+    ; r21 (@items) : List<Int>
+    ; r22 (v7) : List<Int>
+    ; r4 (v8) : Iterator<Int>
+    ; r23 (v9) : String
+    ; r5 (v10) : Iterator<Int>
+    ; r6 (v11) : String
+    ; r7 (x) : Int
+    ; r8 (v13) : Iterator<Int>
+    ; r24 (v14) : String
+    ; r9 ($sum) : Int
+    ; r10 (v16) : Int
+    ; r25 (v17) : String
+    ; r11 (v18) : String
+    ; r12 (v19) : String
+    ; r13 (v20) : String
+    ; r14 (v21) : String
+    ; r15 (v22) : String
+    ; r16 ($sum) : Int
+    ; r17 (to_string(...)) : String
+    ; r18 (v25) : String

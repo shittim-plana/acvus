@@ -18,6 +18,11 @@ pub enum Terminator {
         else_label: Label,
         else_args: Vec<ValueId>,
     },
+    /// IterStep: fallthrough if element available, jump to `done` if exhausted.
+    IterStep {
+        done: Label,
+        done_args: Vec<ValueId>,
+    },
     Return,
     Fallthrough,
 }
@@ -101,6 +106,19 @@ impl Cfg {
                         merge_of: current_merge_of.take(),
                     });
                 }
+                InstKind::IterStep { done, done_args, .. } => {
+                    inst_indices.push(i);
+                    blocks.push(BasicBlock {
+                        label: label.take(),
+                        params: std::mem::take(&mut params),
+                        inst_indices: std::mem::take(&mut inst_indices),
+                        terminator: Terminator::IterStep {
+                            done: *done,
+                            done_args: done_args.clone(),
+                        },
+                        merge_of: current_merge_of.take(),
+                    });
+                }
                 InstKind::Return(_) => {
                     blocks.push(BasicBlock {
                         label: label.take(),
@@ -168,6 +186,16 @@ impl Cfg {
                     succs.push(bi);
                 }
                 if let Some(&bi) = self.label_to_block.get(else_label) {
+                    succs.push(bi);
+                }
+            }
+            Terminator::IterStep { done, .. } => {
+                // Fallthrough (element available) + done branch (exhausted).
+                let next = idx.0 + 1;
+                if next < self.blocks.len() {
+                    succs.push(BlockIdx(next));
+                }
+                if let Some(&bi) = self.label_to_block.get(done) {
                     succs.push(bi);
                 }
             }

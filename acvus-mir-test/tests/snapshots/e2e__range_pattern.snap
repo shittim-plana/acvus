@@ -9,40 +9,42 @@ expression: ir
   T3 = "adult"
 
 === main ===
-     1 │   r1 = context_project @age
-     2 │   r2 = context_load r1
+     0 │   r0 = context_project @age
+     1 │   r1 = context_load r0
      3 │ L2:
-     4 │   r3 = test r2 in 0..10
-     5 │   jump_if r3 then L4 else L3
+     4 │   r2 = test r1 in 0..10
+     5 │   jump_if r2 then L4 else L3
      6 │ L4:
-     9 │   r6 = T0 + T1
-    10 │   jump L0(r6)
+     9 │   r3 = T0 + T1
+    10 │   jump L0(r3)
     11 │ L3:
-    12 │   r7 = test r2 in 10..=19
-    13 │   jump_if r7 then L5 else L1
+    12 │   r4 = test r1 in 10..=19
+    13 │   jump_if r4 then L5 else L1
     14 │ L5:
-    17 │   r10 = T0 + T2
-    18 │   jump L0(r10)
+    17 │   r5 = T0 + T2
+    18 │   jump L0(r5)
     19 │ L1:
-    22 │   r13 = T0 + T3
-    23 │   jump L0(r13)
-    24 │ L0(r14: String):  ; merge_of L2
-    25 │   r15 = T0 + r14
-    26 │   return r15
+    22 │   r6 = T0 + T3
+    23 │   jump L0(r6)
+    24 │ L0(r7: String):  ; merge_of L2
+    25 │   r8 = T0 + r7
+    26 │   return r8
 
-    ; r0 (v0) : String
-    ; r1 (@age) : Int
-    ; r2 (v2) : Int
-    ; r3 (v3) : Bool
-    ; r4 (v4) : String
-    ; r5 (v5) : String
-    ; r6 (v6) : String
-    ; r7 (v7) : Bool
-    ; r8 (v8) : String
-    ; r9 (v9) : String
-    ; r10 (v10) : String
-    ; r11 (v11) : String
-    ; r12 (v12) : String
-    ; r13 (v13) : String
-    ; r14 (v14) : String
-    ; r15 (v15) : String
+    ; r0 (@age) : <error>
+    ; r1 (v1) : Int
+    ; r9 (v2) : String
+    ; r10 (@age) : Int
+    ; r11 (v4) : Int
+    ; r2 (v5) : Bool
+    ; r12 (v6) : String
+    ; r13 (v7) : String
+    ; r3 (v8) : String
+    ; r4 (v9) : Bool
+    ; r14 (v10) : String
+    ; r15 (v11) : String
+    ; r5 (v12) : String
+    ; r16 (v13) : String
+    ; r17 (v14) : String
+    ; r6 (v15) : String
+    ; r7 (v16) : String
+    ; r8 (v17) : String

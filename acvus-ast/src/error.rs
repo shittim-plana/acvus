@@ -46,6 +46,9 @@ pub enum ParseErrorKind {
     // Pattern conversion errors
     InvalidPattern(String),
     RefutablePattern,
+
+    // Script errors
+    InvalidAssignTarget,
 }
 
 impl fmt::Display for ParseErrorKind {
@@ -72,6 +75,10 @@ impl fmt::Display for ParseErrorKind {
             ParseErrorKind::RefutablePattern => write!(
                 f,
                 "refutable pattern not allowed in `in` binding; use `=` for pattern matching"
+            ),
+            ParseErrorKind::InvalidAssignTarget => write!(
+                f,
+                "invalid assignment target: expected identifier or @context"
             ),
         }
     }

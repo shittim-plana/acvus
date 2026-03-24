@@ -95,18 +95,27 @@ fn build_call_graph(
     edges
 }
 
+fn collect_value_refs_stmts(stmts: &[acvus_ast::Stmt], refs: &mut Vec<Astr>) {
+    use acvus_ast::*;
+    for stmt in stmts {
+        match stmt {
+            Stmt::Bind { expr, .. } | Stmt::ContextStore { expr, .. } => {
+                collect_value_refs_expr(expr, refs);
+            }
+            Stmt::Expr(expr) => collect_value_refs_expr(expr, refs),
+            Stmt::MatchBind { source, body, .. } | Stmt::Iterate { source, body, .. } => {
+                collect_value_refs_expr(source, refs);
+                collect_value_refs_stmts(body, refs);
+            }
+        }
+    }
+}
+
 /// Collect all RefKind::Value identifiers from a script AST.
 fn collect_value_refs_script(script: &acvus_ast::Script) -> Vec<Astr> {
     use acvus_ast::*;
     let mut refs = Vec::new();
-    for stmt in &script.stmts {
-        match stmt {
-            Stmt::Bind { expr, .. } | Stmt::ContextStore { expr, .. } => {
-                collect_value_refs_expr(expr, &mut refs);
-            }
-            Stmt::Expr(expr) => collect_value_refs_expr(expr, &mut refs),
-        }
-    }
+    collect_value_refs_stmts(&script.stmts, &mut refs);
     if let Some(tail) = &script.tail {
         collect_value_refs_expr(tail, &mut refs);
     }
@@ -182,14 +191,7 @@ fn collect_value_refs_expr(expr: &acvus_ast::Expr, refs: &mut Vec<Astr>) {
         Expr::Variant { payload: Some(inner), .. } => collect_value_refs_expr(inner, refs),
         Expr::Variant { payload: None, .. } => {}
         Expr::Block { stmts, tail, .. } => {
-            for stmt in stmts {
-                match stmt {
-                    Stmt::Bind { expr, .. } | Stmt::ContextStore { expr, .. } => {
-                        collect_value_refs_expr(expr, refs);
-                    }
-                    Stmt::Expr(e) => collect_value_refs_expr(e, refs),
-                }
-            }
+            collect_value_refs_stmts(stmts, refs);
             collect_value_refs_expr(tail, refs);
         }
     }

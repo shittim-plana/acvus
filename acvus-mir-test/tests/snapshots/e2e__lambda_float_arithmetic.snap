@@ -6,35 +6,37 @@ expression: ir
   T0 = ""
 
 === main ===
-     1 │   r1 = context_project @vals
-     2 │   r2 = context_load r1
-     3 │   r3 = poison
-     4 │   r4 = closure L0 []
-     5 │   r5 = poison
-     6 │   r6 = poison
-     8 │   r8 = T0 + T0
-     9 │   r9 = poison
-    10 │   r10 = poison
-    11 │   r11 = r8 + r10
-    12 │   return r11
+     0 │   r0 = context_project @vals
+     1 │   r1 = context_load r0
+     3 │   r2 = poison
+     4 │   r3 = closure L0 []
+     5 │   r4 = poison
+     6 │   r5 = poison
+     8 │   r6 = T0 + T0
+     9 │   r7 = poison
+    10 │   r8 = poison
+    11 │   r9 = r6 + r8
+    12 │   return r9
 
-    ; r0 (v0) : String
-    ; r1 (@vals) : List<Float>
-    ; r2 (v2) : List<Float>
-    ; r3 (iter(...)) : Iterator<Float>
-    ; r4 (v4) : Fn(Float) -> Float
-    ; r5 (map(...)) : Iterator<Float>
-    ; r6 (collect(...)) : List<Float>
-    ; r7 (v7) : String
-    ; r8 (v8) : String
-    ; r9 (len(...)) : Int
-    ; r10 (to_string(...)) : String
-    ; r11 (v11) : String
+    ; r0 (@vals) : <error>
+    ; r1 (v1) : List<Float>
+    ; r10 (v2) : String
+    ; r11 (@vals) : List<Float>
+    ; r12 (v4) : List<Float>
+    ; r2 (iter(...)) : Iterator<Float>
+    ; r3 (v6) : Fn(Float) -> Float
+    ; r4 (map(...)) : Iterator<Float>
+    ; r5 (collect(...)) : List<Float>
+    ; r13 (v9) : String
+    ; r6 (v10) : String
+    ; r7 (len(...)) : Int
+    ; r8 (to_string(...)) : String
+    ; r9 (v13) : String
 
 === closure L0 (ValueId(0)) ===
-     1 │   r2 = r0 * 2.0 (r1)
-     2 │   return r2
+     1 │   r0 = r1 * 2.0 (r2)
+     2 │   return r0
 
-    ; r0 (v0) : Float
-    ; r1 (v1) : Float
-    ; r2 (v2) : Float
+    ; r1 (v0) : Float
+    ; r2 (v1) : Float
+    ; r0 (v2) : Float

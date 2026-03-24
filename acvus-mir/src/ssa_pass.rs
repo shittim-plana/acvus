@@ -16,9 +16,6 @@ use crate::ty::Ty;
 
 /// Run the SSA context pass on a MirBody.
 pub fn run(body: &mut MirBody) {
-    // Step 0: Ensure initial loads for all referenced contexts.
-    ensure_initial_loads(body);
-
     // Step 1: Build CFG + collect context ops.
     let cfg = Cfg::build(&body.insts);
     if cfg.blocks.is_empty() {
@@ -213,7 +210,16 @@ fn ensure_initial_loads(body: &mut MirBody) {
     }
 
     // Insert initial loads for contexts that don't have one.
-    let missing: Vec<ContextId> = all_ctx_ids.difference(&entry_loaded).copied().collect();
+    // Collect missing contexts in order of first appearance (deterministic).
+    let mut seen = FxHashSet::default();
+    let mut missing: Vec<ContextId> = Vec::new();
+    for inst in body.insts.iter() {
+        if let InstKind::ContextProject { id, .. } = &inst.kind {
+            if all_ctx_ids.contains(id) && !entry_loaded.contains(id) && seen.insert(*id) {
+                missing.push(*id);
+            }
+        }
+    }
     if missing.is_empty() {
         return;
     }
@@ -439,6 +445,7 @@ fn patch_instructions(
                 else_label,
                 ..
             } => merge_labels.contains(then_label) || merge_labels.contains(else_label),
+            Terminator::IterStep { done, .. } => merge_labels.contains(done),
             _ => false,
         };
         if jumps_to_merge {

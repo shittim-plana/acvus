@@ -6,53 +6,55 @@ expression: ir
   T0 = ""
 
 === main ===
-     1 │   r1 = context_project @data
-     2 │   r2 = context_load r1
+     0 │   r0 = context_project @data
+     1 │   r1 = context_load r0
      3 │ L2:
-     5 │   r4 = r2.0
-     7 │   r6 = r4.0
-     9 │   r8 = true (r5) && true (r7)
-    10 │   r9 = r4.1
-    12 │   r11 = r8 && true (r10)
-    13 │   r12 = true (r3) && r11
-    14 │   r13 = r2.1
-    16 │   r15 = r12 && true (r14)
-    17 │   jump_if r15 then L3 else L1
+     5 │   r2 = r1.0
+     7 │   r3 = r2.0
+     9 │   r4 = true (r5) && true (r6)
+    10 │   r7 = r2.1
+    12 │   r8 = r4 && true (r9)
+    13 │   r10 = true (r11) && r8
+    14 │   r12 = r1.1
+    16 │   r13 = r10 && true (r14)
+    17 │   jump_if r13 then L3 else L1
     18 │ L3:
-    19 │   r16 = r2.0
-    20 │   r17 = r16.0
-    21 │   r18 = r16.1
-    22 │   r19 = r2.1
-    24 │   r21 = T0 + r19
-    25 │   jump L0(r21)
+    19 │   r15 = r1.0
+    20 │   r16 = r15.0
+    21 │   r17 = r15.1
+    22 │   r18 = r1.1
+    24 │   r19 = T0 + r18
+    25 │   jump L0(r19)
     26 │ L1:
     28 │   jump L0(T0)
-    29 │ L0(r23: String):  ; merge_of L2
-    30 │   r24 = T0 + r23
-    31 │   return r24
+    29 │ L0(r20: String):  ; merge_of L2
+    30 │   r21 = T0 + r20
+    31 │   return r21
 
-    ; r0 (v0) : String
-    ; r1 (@data) : ((Int, Int), String)
-    ; r2 (v2) : ((Int, Int), String)
-    ; r3 (v3) : Bool
-    ; r4 (v4) : (Int, Int)
-    ; r5 (v5) : Bool
-    ; r6 (v6) : Int
-    ; r7 (v7) : Bool
-    ; r8 (v8) : Bool
-    ; r9 (v9) : Int
-    ; r10 (v10) : Bool
-    ; r11 (v11) : Bool
-    ; r12 (v12) : Bool
-    ; r13 (v13) : String
-    ; r14 (v14) : Bool
-    ; r15 (v15) : Bool
-    ; r16 (v16) : (Int, Int)
-    ; r17 (a) : Int
-    ; r18 (b) : Int
-    ; r19 (label) : String
-    ; r20 (v20) : String
-    ; r21 (v21) : String
-    ; r22 (v22) : String
-    ; r23 (v23) : String
-    ; r24 (v24) : String
+    ; r0 (@data) : <error>
+    ; r1 (v1) : ((Int, Int), String)
+    ; r22 (v2) : String
+    ; r23 (@data) : ((Int, Int), String)
+    ; r24 (v4) : ((Int, Int), String)
+    ; r11 (v5) : Bool
+    ; r2 (v6) : (Int, Int)
+    ; r5 (v7) : Bool
+    ; r3 (v8) : Int
+    ; r6 (v9) : Bool
+    ; r4 (v10) : Bool
+    ; r7 (v11) : Int
+    ; r9 (v12) : Bool
+    ; r8 (v13) : Bool
+    ; r10 (v14) : Bool
+    ; r12 (v15) : String
+    ; r14 (v16) : Bool
+    ; r13 (v17) : Bool
+    ; r15 (v18) : (Int, Int)
+    ; r16 (a) : Int
+    ; r17 (b) : Int
+    ; r18 (label) : String
+    ; r25 (v22) : String
+    ; r19 (v23) : String
+    ; r26 (v24) : String
+    ; r20 (v25) : String
+    ; r21 (v26) : String

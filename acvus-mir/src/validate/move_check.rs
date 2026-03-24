@@ -280,6 +280,30 @@ fn check_body(scope: &str, body: &MirBody, errors: &mut Vec<ValidationError>) {
                     }
                 }
             }
+            Terminator::IterStep { done, done_args } => {
+                // Fallthrough.
+                let next = idx.0 + 1;
+                if next < n {
+                    if propagate_state(&block_exit[idx.0], &mut block_entry[next]) {
+                        worklist.push_back(BlockIdx(next));
+                    }
+                }
+                // Done branch.
+                if let Some(&target_idx) = cfg.label_to_block.get(done) {
+                    propagate_args(
+                        scope,
+                        &block_exit[idx.0],
+                        done_args,
+                        &cfg.blocks[target_idx.0].params,
+                        &body.val_types,
+                        &body.insts,
+                        errors,
+                    );
+                    if propagate_state(&block_exit[idx.0], &mut block_entry[target_idx.0]) {
+                        worklist.push_back(target_idx);
+                    }
+                }
+            }
             Terminator::Fallthrough => {
                 let next = idx.0 + 1;
                 if next < n {

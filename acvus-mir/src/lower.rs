@@ -142,50 +142,195 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Emit ContextProject + ContextLoad for all known contexts at entry.
+    /// This is the alloca equivalent — SSA pass will promote these to PHI form.
+    /// Order is deterministic (sorted by context name).
+    fn emit_entry_context_loads(&mut self, span: Span) {
+        let mut entries: Vec<_> = self.context_ids.iter()
+            .map(|(&name, &(id, ref ty))| (name, id, ty.clone()))
+            .collect();
+        entries.sort_by_key(|(name, _, _)| self.interner.resolve(*name).to_string());
+
+        for (name, id, ty) in entries {
+            let proj = self.alloc_typed(span);
+            self.set_origin(proj, ValOrigin::Context(name));
+            self.emit_inst(span, InstKind::ContextProject { dst: proj, id, ty: ty.clone() });
+            self.mark_projection(proj);
+            let val = self.alloc_val();
+            self.set_val_type(val, ty);
+            self.emit_inst(span, InstKind::ContextLoad { dst: val, src: proj });
+        }
+    }
+
     pub fn lower_template(mut self, template: &Template) -> (MirModule, HintTable) {
+        self.emit_entry_context_loads(template.span);
         let result = self.lower_nodes(&template.body, template.span);
         self.emit_inst(template.span, InstKind::Return(result));
         self.build_module()
     }
 
     pub fn lower_script(mut self, script: &Script) -> (MirModule, HintTable) {
+        self.emit_entry_context_loads(script.span);
         for stmt in &script.stmts {
-            match stmt {
-                Stmt::Bind { name, expr, .. } => {
-                    let val = self.lower_expr(expr);
-                    self.scopes.last_mut().unwrap().insert(*name, val);
-                }
-                Stmt::ContextStore { name, expr, span } => {
-                    let val = self.lower_expr(expr);
-                    let ctx_id = self.context_id(*name);
-                    let ctx_ty = self.context_ty(*name);
-                    let proj = self.alloc_typed(*span);
-                    self.emit_inst(
-                        *span,
-                        InstKind::ContextProject {
-                            dst: proj,
-                            id: ctx_id,
-                            ty: ctx_ty,
-                        },
-                    );
-                    self.emit_inst(
-                        *span,
-                        InstKind::ContextStore {
-                            dst: proj,
-                            value: val,
-                        },
-                    );
-                }
-                Stmt::Expr(expr) => {
-                    self.lower_expr(expr);
-                }
-            }
+            self.lower_stmt(stmt);
         }
         if let Some(tail) = &script.tail {
             let val = self.lower_expr(tail);
             self.emit_inst(script.span, InstKind::Return(val));
         }
         self.build_module()
+    }
+
+    fn lower_stmt(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Bind { name, expr, .. } => {
+                let val = self.lower_expr(expr);
+                self.scopes.last_mut().unwrap().insert(*name, val);
+            }
+            Stmt::ContextStore { name, expr, span } => {
+                self.lower_context_store(*name, expr, *span);
+            }
+            Stmt::Expr(expr) => {
+                self.lower_expr(expr);
+            }
+            Stmt::MatchBind { pattern, source, body, span } => {
+                self.lower_stmt_match_bind(pattern, source, body, *span);
+            }
+            Stmt::Iterate { pattern, source, body, span } => {
+                self.lower_stmt_iterate(pattern, source, body, *span);
+            }
+        }
+    }
+
+    /// Lower a match-bind statement: `pattern = source { body; };`
+    ///
+    /// Single arm, no catch-all, no value produced.
+    /// If the pattern is irrefutable (binding), skip the test.
+    fn lower_stmt_match_bind(
+        &mut self,
+        pattern: &Pattern,
+        source: &Expr,
+        body: &[Stmt],
+        span: Span,
+    ) {
+        let source_reg = self.lower_expr(source);
+
+        let is_irrefutable = matches!(pattern, Pattern::Binding { .. });
+
+        if is_irrefutable {
+            // No branching needed — just bind and execute body.
+            self.push_scope();
+            self.lower_pattern_bind(pattern, source_reg, span);
+            for s in body {
+                self.lower_stmt(s);
+            }
+            self.pop_scope();
+        } else {
+            // Refutable: test → branch → bind + body → merge.
+            let body_label = self.alloc_label();
+            let end_label = self.alloc_label();
+
+            let matched = self.lower_pattern_test(pattern, source_reg, span);
+            self.emit_inst(
+                span,
+                InstKind::JumpIf {
+                    cond: matched,
+                    then_label: body_label,
+                    then_args: vec![],
+                    else_label: end_label,
+                    else_args: vec![],
+                },
+            );
+
+            self.emit_label(span, body_label);
+            self.push_scope();
+            self.lower_pattern_bind(pattern, source_reg, span);
+            for s in body {
+                self.lower_stmt(s);
+            }
+            self.pop_scope();
+            self.emit_inst(span, InstKind::Jump { label: end_label, args: vec![] });
+
+            self.emit_label(span, end_label);
+        }
+    }
+
+    /// Lower an iterate statement: `pattern in source { body; };`
+    ///
+    /// No string accumulation — just executes body for each element.
+    fn lower_stmt_iterate(
+        &mut self,
+        pattern: &Pattern,
+        source: &Expr,
+        body: &[Stmt],
+        span: Span,
+    ) {
+        let source_raw = self.lower_expr(source);
+        let source_reg = self.materialize(source_raw, span);
+
+        let elem_ty = self.iterable_elem_type(source_reg);
+        let iter_ty = Ty::Iterator(Box::new(elem_ty.clone()), Effect::pure());
+        let cast_kind = match self.body.val_types.get(&source_reg) {
+            Some(Ty::Deque(..)) => CastKind::DequeToIterator,
+            Some(Ty::List(_)) => CastKind::ListToIterator,
+            Some(Ty::Range) => CastKind::RangeToIterator,
+            _ => CastKind::DequeToIterator,
+        };
+
+        let cast_dst = self.alloc_val();
+        self.set_val_type(cast_dst, iter_ty.clone());
+        self.emit_inst(span, InstKind::Cast { dst: cast_dst, src: source_reg, kind: cast_kind });
+
+        let loop_label = self.alloc_label();
+        let end_label = self.alloc_label();
+
+        // Jump to loop with initial iterator.
+        self.emit_inst(span, InstKind::Jump { label: loop_label, args: vec![cast_dst] });
+
+        // Loop header — receives iterator as block param.
+        let iter_param = self.alloc_val();
+        self.set_val_type(iter_param, iter_ty.clone());
+        self.emit_inst(
+            span,
+            InstKind::BlockLabel { label: loop_label, params: vec![iter_param], merge_of: None },
+        );
+
+        // Pull one element — jumps to end if exhausted.
+        let value_reg = self.alloc_val();
+        self.set_val_type(value_reg, elem_ty);
+        let rest_iter = self.alloc_val();
+        self.set_val_type(rest_iter, iter_ty);
+        self.emit_inst(
+            span,
+            InstKind::IterStep {
+                dst: value_reg,
+                iter_src: iter_param,
+                iter_dst: rest_iter,
+                done: end_label,
+                done_args: vec![],
+            },
+        );
+
+        // Explicit body label after IterStep (IterStep is a terminator in CFG).
+        let body_label = self.alloc_label();
+        self.emit_label(span, body_label);
+
+        // Bind pattern + execute body.
+        self.push_scope();
+        self.lower_pattern_bind(pattern, value_reg, span);
+        for s in body {
+            self.lower_stmt(s);
+        }
+        self.pop_scope();
+
+        // Jump back to loop.
+        self.emit_inst(span, InstKind::Jump { label: loop_label, args: vec![rest_iter] });
+
+        // End block.
+        self.emit_inst(
+            span,
+            InstKind::BlockLabel { label: end_label, params: vec![], merge_of: None },
+        );
     }
 
     fn build_module(self) -> (MirModule, HintTable) {
@@ -899,18 +1044,7 @@ impl<'a> Lowerer<'a> {
             Expr::Block { stmts, tail, .. } => {
                 self.push_scope();
                 for stmt in stmts {
-                    match stmt {
-                        Stmt::Bind { name, expr, .. } => {
-                            let val = self.lower_expr(expr);
-                            self.scopes.last_mut().unwrap().insert(*name, val);
-                        }
-                        Stmt::ContextStore { name, expr, span } => {
-                            self.lower_context_store(*name, expr, *span);
-                        }
-                        Stmt::Expr(expr) => {
-                            self.lower_expr(expr);
-                        }
-                    }
+                    self.lower_stmt(stmt);
                 }
                 let val = self.lower_expr(tail);
                 self.pop_scope();
@@ -1268,6 +1402,10 @@ impl<'a> Lowerer<'a> {
                 done_args: vec![acc_param],
             },
         );
+
+        // Explicit body label after IterStep (IterStep is a terminator in CFG).
+        let body_label = self.alloc_label();
+        self.emit_label(ib.span, body_label);
 
         // Bind pattern (irrefutable — no test needed).
         self.push_scope();
@@ -1668,6 +1806,31 @@ impl<'a> Lowerer<'a> {
         free
     }
 
+    fn collect_free_vars_stmts(
+        &self,
+        stmts: &[Stmt],
+        bound: &mut FxHashSet<Astr>,
+        free: &mut Vec<Astr>,
+        seen: &mut FxHashSet<Astr>,
+    ) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Bind { name, expr, .. } => {
+                    self.collect_free_vars(expr, bound, free, seen);
+                    bound.insert(*name);
+                }
+                Stmt::ContextStore { expr, .. } | Stmt::Expr(expr) => {
+                    self.collect_free_vars(expr, bound, free, seen);
+                }
+                Stmt::MatchBind { source, body, .. } | Stmt::Iterate { source, body, .. } => {
+                    self.collect_free_vars(source, bound, free, seen);
+                    let mut inner = bound.clone();
+                    self.collect_free_vars_stmts(body, &mut inner, free, seen);
+                }
+            }
+        }
+    }
+
     fn collect_free_vars(
         &self,
         expr: &Expr,
@@ -1759,20 +1922,7 @@ impl<'a> Lowerer<'a> {
             Expr::Variant { payload: None, .. } => {}
             Expr::Block { stmts, tail, .. } => {
                 let mut inner_bound = bound.clone();
-                for stmt in stmts {
-                    match stmt {
-                        Stmt::Bind { name, expr, .. } => {
-                            self.collect_free_vars(expr, &inner_bound, free, seen);
-                            inner_bound.insert(*name);
-                        }
-                        Stmt::ContextStore { expr, .. } => {
-                            self.collect_free_vars(expr, &inner_bound, free, seen);
-                        }
-                        Stmt::Expr(e) => {
-                            self.collect_free_vars(e, &inner_bound, free, seen);
-                        }
-                    }
-                }
+                self.collect_free_vars_stmts(stmts, &mut inner_bound, free, seen);
                 self.collect_free_vars(tail, &inner_bound, free, seen);
             }
         }

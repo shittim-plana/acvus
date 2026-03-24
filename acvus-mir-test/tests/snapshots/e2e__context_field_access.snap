@@ -6,14 +6,16 @@ expression: ir
   T0 = ""
 
 === main ===
-     1 │   r1 = context_project @user
-     2 │   r2 = context_load r1
-     3 │   r3 = r2.name
-     4 │   r4 = T0 + r3
-     5 │   return r4
+     0 │   r0 = context_project @user
+     1 │   r1 = context_load r0
+     3 │   r2 = r1.name
+     4 │   r3 = T0 + r2
+     5 │   return r3
 
-    ; r0 (v0) : String
-    ; r1 (@user) : {age: Int, email: String, name: String}
-    ; r2 (v2) : {age: Int, email: String, name: String}
-    ; r3 (name) : String
-    ; r4 (v4) : String
+    ; r0 (@user) : <error>
+    ; r1 (v1) : {age: Int, email: String, name: String}
+    ; r4 (v2) : String
+    ; r5 (@user) : {age: Int, email: String, name: String}
+    ; r6 (v4) : {age: Int, email: String, name: String}
+    ; r2 (name) : String
+    ; r3 (v6) : String

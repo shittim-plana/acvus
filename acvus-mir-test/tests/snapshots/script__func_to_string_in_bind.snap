@@ -1,0 +1,15 @@
+---
+source: acvus-mir-test/tests/script.rs
+expression: ir
+---
+=== main ===
+     0 │   r0 = context_project @val
+     1 │   r1 = context_load r0
+     2 │   r2 = poison
+     3 │   return r2
+
+    ; r0 (@val) : String
+    ; r1 (v1) : Int
+    ; r3 (@val) : Int
+    ; r4 (v3) : Int
+    ; r2 (to_string(...)) : String

@@ -146,6 +146,28 @@ where
                     }
                 }
             }
+            Terminator::IterStep { done, done_args } => {
+                // Fallthrough (element available).
+                let next = idx.0 + 1;
+                if next < n {
+                    let changed = block_entry[next].join_from(&block_exit[idx.0]);
+                    if changed {
+                        worklist.push_back(BlockIdx(next));
+                    }
+                }
+                // Done branch (exhausted).
+                if let Some(&target_idx) = cfg.label_to_block.get(done) {
+                    let changed = propagate_to_successor(
+                        &block_exit[idx.0],
+                        &cfg.blocks[target_idx.0].params,
+                        done_args,
+                        &mut block_entry[target_idx.0],
+                    );
+                    if changed {
+                        worklist.push_back(target_idx);
+                    }
+                }
+            }
             Terminator::Fallthrough => {
                 let next = idx.0 + 1;
                 if next < n {

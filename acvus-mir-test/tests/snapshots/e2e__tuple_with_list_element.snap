@@ -6,64 +6,67 @@ expression: ir
   T0 = ""
 
 === main ===
-     1 │   r1 = context_project @data
-     2 │   r2 = context_load r1
+     0 │   r0 = context_project @data
+     1 │   r1 = context_load r0
      3 │ L2:
-     5 │   r4 = r2.0
-     7 │   r6 = true (r3) && true (r5)
-     8 │   r7 = r2.1
-    10 │   r9 = r6 && true (r8)
-    11 │   jump_if r9 then L3 else L1
+     5 │   r2 = r1.0
+     7 │   r3 = true (r4) && true (r5)
+     8 │   r6 = r1.1
+    10 │   r7 = r3 && true (r8)
+    11 │   jump_if r7 then L3 else L1
     12 │ L3:
-    13 │   r10 = r2.0
-    14 │   r11 = r2.1
-    16 │   r13 = T0 + r10
-    17 │   r14 = cast ListToIterator r11
-    19 │   jump L4(r14, T0)
-    20 │ L4(r16: Iterator<Int>, r17: String):
-    21 │   iter_step r18, r19 = r16 else L5(r17)
-    23 │   r21 = poison
-    24 │   r22 = T0 + r21
-    25 │   r23 = r17 + r22
-    26 │   jump L4(r19, r23)
-    27 │ L5(r24: String):
-    28 │   jump L6(r24)
-    29 │ L6(r25: String):
-    30 │   r26 = r13 + r25
-    31 │   jump L0(r26)
-    32 │ L1:
-    34 │   jump L0(T0)
-    35 │ L0(r28: String):  ; merge_of L2
-    36 │   r29 = T0 + r28
-    37 │   return r29
+    13 │   r9 = r1.0
+    14 │   r10 = r1.1
+    16 │   r11 = T0 + r9
+    17 │   r12 = cast ListToIterator r10
+    19 │   jump L4(r12, T0)
+    20 │ L4(r13: Iterator<Int>, r14: String):
+    21 │   iter_step r15, r16 = r13 else L5(r14)
+    22 │ L7:
+    24 │   r17 = poison
+    25 │   r18 = T0 + r17
+    26 │   r19 = r14 + r18
+    27 │   jump L4(r16, r19)
+    28 │ L5(r20: String):
+    29 │   jump L6(r20)
+    30 │ L6(r21: String):
+    31 │   r22 = r11 + r21
+    32 │   jump L0(r22)
+    33 │ L1:
+    35 │   jump L0(T0)
+    36 │ L0(r23: String):  ; merge_of L2
+    37 │   r24 = T0 + r23
+    38 │   return r24
 
-    ; r0 (v0) : String
-    ; r1 (@data) : (String, List<Int>)
-    ; r2 (v2) : (String, List<Int>)
-    ; r3 (v3) : Bool
-    ; r4 (v4) : String
-    ; r5 (v5) : Bool
-    ; r6 (v6) : Bool
-    ; r7 (v7) : List<Int>
-    ; r8 (v8) : Bool
-    ; r9 (v9) : Bool
-    ; r10 (label) : String
-    ; r11 (items) : List<Int>
-    ; r12 (v12) : String
-    ; r13 (v13) : String
-    ; r14 (v14) : Iterator<Int>
-    ; r15 (v15) : String
-    ; r16 (v16) : Iterator<Int>
-    ; r17 (v17) : String
-    ; r18 (x) : Int
-    ; r19 (v19) : Iterator<Int>
-    ; r20 (v20) : String
-    ; r21 (to_string(...)) : String
-    ; r22 (v22) : String
-    ; r23 (v23) : String
-    ; r24 (v24) : String
-    ; r25 (v25) : String
-    ; r26 (v26) : String
-    ; r27 (v27) : String
-    ; r28 (v28) : String
-    ; r29 (v29) : String
+    ; r0 (@data) : <error>
+    ; r1 (v1) : (String, List<Int>)
+    ; r25 (v2) : String
+    ; r26 (@data) : (String, List<Int>)
+    ; r27 (v4) : (String, List<Int>)
+    ; r4 (v5) : Bool
+    ; r2 (v6) : String
+    ; r5 (v7) : Bool
+    ; r3 (v8) : Bool
+    ; r6 (v9) : List<Int>
+    ; r8 (v10) : Bool
+    ; r7 (v11) : Bool
+    ; r9 (label) : String
+    ; r10 (items) : List<Int>
+    ; r28 (v14) : String
+    ; r11 (v15) : String
+    ; r12 (v16) : Iterator<Int>
+    ; r29 (v17) : String
+    ; r13 (v18) : Iterator<Int>
+    ; r14 (v19) : String
+    ; r15 (x) : Int
+    ; r16 (v21) : Iterator<Int>
+    ; r30 (v22) : String
+    ; r17 (to_string(...)) : String
+    ; r18 (v24) : String
+    ; r19 (v25) : String
+    ; r20 (v26) : String
+    ; r21 (v27) : String
+    ; r22 (v28) : String
+    ; r31 (v29) : String
+    ; r23 (v30) : String
+    ; r24 (v31) : String

@@ -6,38 +6,44 @@ expression: ir
   T0 = ""
 
 === main ===
-     1 │   r1 = context_project @items
-     2 │   r2 = context_load r1
-     3 │   r3 = poison
-     4 │   r4 = closure L0 []
-     5 │   r5 = poison
-     6 │   r6 = poison
-     8 │   r8 = T0 + T0
-     9 │   r9 = poison
-    10 │   r10 = poison
-    11 │   r11 = r8 + r10
-    12 │   return r11
+     0 │   r0 = context_project @items
+     1 │   r1 = context_load r0
+     2 │   r2 = context_project @threshold
+     3 │   r3 = context_load r2
+     5 │   r4 = poison
+     6 │   r5 = closure L0 []
+     7 │   r6 = poison
+     8 │   r7 = poison
+    10 │   r8 = T0 + T0
+    11 │   r9 = poison
+    12 │   r10 = poison
+    13 │   r11 = r8 + r10
+    14 │   return r11
 
-    ; r0 (v0) : String
-    ; r1 (@items) : List<Int>
-    ; r2 (v2) : List<Int>
-    ; r3 (iter(...)) : Iterator<Int>
-    ; r4 (v4) : Fn!(Int) -> Bool
-    ; r5 (filter(...)) : Iterator!<Int>
-    ; r6 (collect(...)) : List<Int>
-    ; r7 (v7) : String
-    ; r8 (v8) : String
+    ; r0 (@items) : <error>
+    ; r1 (v1) : List<Int>
+    ; r2 (@threshold) : <error>
+    ; r3 (v3) : Int
+    ; r12 (v4) : String
+    ; r13 (@items) : List<Int>
+    ; r14 (v6) : List<Int>
+    ; r4 (iter(...)) : Iterator<Int>
+    ; r5 (v8) : Fn!(Int) -> Bool
+    ; r6 (filter(...)) : Iterator!<Int>
+    ; r7 (collect(...)) : List<Int>
+    ; r15 (v11) : String
+    ; r8 (v12) : String
     ; r9 (len(...)) : Int
     ; r10 (to_string(...)) : String
-    ; r11 (v11) : String
+    ; r11 (v15) : String
 
 === closure L0 (ValueId(0)) ===
-     0 │   r1 = context_project @threshold
-     1 │   r2 = context_load r1
-     2 │   r3 = r0 > r2
-     3 │   return r3
+     0 │   r0 = context_project @threshold
+     1 │   r1 = context_load r0
+     2 │   r2 = r3 > r1
+     3 │   return r2
 
-    ; r0 (v0) : Int
-    ; r1 (@threshold) : Int
-    ; r2 (v2) : Int
-    ; r3 (v3) : Bool
+    ; r3 (v0) : Int
+    ; r0 (@threshold) : Int
+    ; r1 (v2) : Int
+    ; r2 (v3) : Bool

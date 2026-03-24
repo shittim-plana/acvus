@@ -5,6 +5,7 @@ use crate::span::Span;
 use crate::token::Token;
 use crate::error::{ParseError, ParseErrorKind};
 use crate::tag_content::{TagContent, ListElem, expr_to_lambda, build_list};
+use crate::parser::expr_to_pattern;
 
 grammar(interner: &Interner);
 
@@ -65,16 +66,42 @@ extern {
 // ── Script rule ───────────────────────────────────────────────────────
 
 pub Script: Script = {
-    <l:@L> <stmts:(<Stmt> ";")*> <tail:Expr?> <r:@R> =>
+    <l:@L> <stmts:ScriptStmt*> <tail:Expr?> <r:@R> =>
         Script { stmts, tail: tail.map(Box::new), span: Span::new(l, r) }
 };
 
-Stmt: Stmt = {
-    <l:@L> <name:"ident"> "=" <e:Expr> <r:@R> =>
-        Stmt::Bind { name, expr: e, span: Span::new(l, r) },
-    <l:@L> <name:"@ref"> "=" <e:Expr> <r:@R> =>
-        Stmt::ContextStore { name, expr: e, span: Span::new(l, r) },
-    <e:Expr> =>
+ScriptStmt: Stmt = {
+    // match-bind (if-let): pattern = source { body };
+    <l:@L> <lhs:Expr> "=" <rhs:Expr> "{" <body:ScriptStmt*> "}" ";" <r:@R> =>?
+        Ok(Stmt::MatchBind {
+            pattern: expr_to_pattern(&lhs)?,
+            source: rhs,
+            body,
+            span: Span::new(l, r),
+        }),
+    // iterate (for): pattern in source { body };
+    <l:@L> <lhs:Expr> "in" <rhs:Expr> "{" <body:ScriptStmt*> "}" ";" <r:@R> =>?
+        Ok(Stmt::Iterate {
+            pattern: expr_to_pattern(&lhs)?,
+            source: rhs,
+            body,
+            span: Span::new(l, r),
+        }),
+    // bind / context-store: lhs = rhs;
+    <l:@L> <lhs:Expr> "=" <rhs:Expr> ";" <r:@R> =>? {
+        let span = Span::new(l, r);
+        match &lhs {
+            Expr::Ident { name, ref_kind: RefKind::Value, .. } =>
+                Ok(Stmt::Bind { name: *name, expr: rhs, span }),
+            Expr::Ident { name, ref_kind: RefKind::Context, .. } =>
+                Ok(Stmt::ContextStore { name: *name, expr: rhs, span }),
+            _ => Err(lalrpop_util::ParseError::User {
+                error: ParseError { kind: ParseErrorKind::InvalidAssignTarget, span },
+            }),
+        }
+    },
+    // expression statement
+    <e:Expr> ";" =>
         Stmt::Expr(e),
 };
 
@@ -250,7 +277,7 @@ PrimaryExpr: Expr = {
         build_list(items, Span::new(l, r)),
 
     // Block expression with statements: { stmt; stmt; expr }
-    <l:@L> "{" <stmts:(<Stmt> ";")+> <tail:Expr> "}" <r:@R> =>
+    <l:@L> "{" <stmts:ScriptStmt+> <tail:Expr> "}" <r:@R> =>
         Expr::Block { stmts, tail: Box::new(tail), span: Span::new(l, r) },
     // Block expression with single expression: { expr }
     <l:@L> "{" <tail:Expr> "}" <r:@R> =>

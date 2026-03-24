@@ -7,19 +7,21 @@ expression: ir
   T1 = "outer"
 
 === main ===
-     3 │   r3 = T0 + T0
-     4 │   r4 = context_project @name
-     5 │   r5 = context_load r4
-     7 │   r7 = r3 + T0
-     8 │   r8 = r7 + r5
-     9 │   return r8
+     0 │   r0 = context_project @name
+     1 │   r1 = context_load r0
+     5 │   r2 = T0 + T0
+     7 │   r3 = r2 + T0
+     8 │   r4 = r3 + r1
+     9 │   return r4
 
-    ; r0 (v0) : String
+    ; r0 (@name) : <error>
     ; r1 (v1) : String
-    ; r2 (v2) : String
-    ; r3 (v3) : String
-    ; r4 (@name) : String
-    ; r5 (v5) : String
-    ; r6 (v6) : String
-    ; r7 (v7) : String
-    ; r8 (v8) : String
+    ; r5 (v2) : String
+    ; r6 (v3) : String
+    ; r7 (v4) : String
+    ; r2 (v5) : String
+    ; r8 (@name) : String
+    ; r9 (v7) : String
+    ; r10 (v8) : String
+    ; r3 (v9) : String
+    ; r4 (v10) : String

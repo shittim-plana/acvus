@@ -1,0 +1,73 @@
+---
+source: acvus-mir-test/tests/script.rs
+expression: ir
+---
+=== main ===
+     0 │   r0 = context_project @a
+     1 │   r1 = context_load r0
+     2 │   r2 = context_project @b
+     3 │   r3 = context_load r2
+     4 │   r4 = context_project @sum
+     5 │   r5 = context_load r4
+     6 │   r6 = cast ListToIterator r1
+     7 │   jump L0(r6, r5)
+     8 │ L0(r7: Iterator<Int>, r8: Int):
+     9 │   r9 = context_project @sum
+    10 │   ctx_store r9 = r8
+    11 │   iter_step r10, r11 = r7 else L1()
+    12 │ L2:
+    13 │   r12 = context_project @sum
+    14 │   r13 = context_load r12
+    15 │   r14 = r13 + r10
+    16 │   jump L0(r11, r14)
+    17 │ L1:
+    18 │   r15 = context_project @b
+    19 │   r16 = context_load r15
+    20 │   r17 = cast ListToIterator r16
+    21 │   jump L3(r17, r8)
+    22 │ L3(r18: Iterator<Int>, r19: Int):
+    23 │   r20 = context_project @sum
+    24 │   ctx_store r20 = r19
+    25 │   iter_step r21, r22 = r18 else L4()
+    26 │ L5:
+    27 │   r23 = context_project @sum
+    28 │   r24 = context_load r23
+    29 │   r25 = r24 + r21
+    30 │   jump L3(r22, r25)
+    31 │ L4:
+    32 │   r26 = context_project @sum
+    33 │   r27 = context_load r26
+    34 │   return r27
+
+    ; r0 (@a) : <error>
+    ; r1 (v1) : List<Int>
+    ; r2 (@b) : <error>
+    ; r3 (v3) : List<Int>
+    ; r4 (@sum) : <error>
+    ; r5 (v5) : Int
+    ; r28 (@a) : List<Int>
+    ; r29 (v7) : List<Int>
+    ; r6 (v8) : Iterator<Int>
+    ; r7 (v9) : Iterator<Int>
+    ; r10 (x) : Int
+    ; r11 (v11) : Iterator<Int>
+    ; r12 (@sum) : Int
+    ; r13 (v13) : Int
+    ; r14 (v14) : Int
+    ; r30 (v15) : Int
+    ; r15 (@b) : List<Int>
+    ; r16 (v17) : List<Int>
+    ; r17 (v18) : Iterator<Int>
+    ; r18 (v19) : Iterator<Int>
+    ; r21 (y) : Int
+    ; r22 (v21) : Iterator<Int>
+    ; r23 (@sum) : Int
+    ; r24 (v23) : Int
+    ; r25 (v24) : Int
+    ; r31 (v25) : Int
+    ; r26 (@sum) : Int
+    ; r27 (v27) : Int
+    ; r8 (v28) : Int
+    ; r19 (v29) : Int
+    ; r9 (v30) : Int
+    ; r20 (v31) : Int

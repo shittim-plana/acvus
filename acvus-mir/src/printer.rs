@@ -6,7 +6,54 @@ use rustc_hash::FxHashMap;
 
 use crate::ir::{Callee, InstKind, Label, MirBody, MirModule, ValueId};
 
-fn fmt_val(r: ValueId) -> String {
+/// Normalizes ValueIds to sequential order of first appearance.
+struct ValNormalizer {
+    map: FxHashMap<ValueId, usize>,
+}
+
+impl ValNormalizer {
+    fn new() -> Self {
+        Self { map: FxHashMap::default() }
+    }
+
+    fn get(&mut self, v: ValueId) -> usize {
+        let len = self.map.len();
+        *self.map.entry(v).or_insert(len)
+    }
+
+    fn fmt_val(&mut self, r: ValueId) -> String {
+        format!("r{}", self.get(r))
+    }
+
+    fn fmt_use(
+        &mut self,
+        r: ValueId,
+        consts: &FxHashMap<ValueId, &Literal>,
+        texts: &FxHashMap<ValueId, usize>,
+    ) -> String {
+        if let Some(tidx) = texts.get(&r) {
+            return format!("T{tidx}");
+        }
+        match consts.get(&r) {
+            Some(lit) => format!("{} ({})", fmt_literal(lit), self.fmt_val(r)),
+            None => self.fmt_val(r),
+        }
+    }
+
+    fn fmt_uses(
+        &mut self,
+        regs: &[ValueId],
+        consts: &FxHashMap<ValueId, &Literal>,
+        texts: &FxHashMap<ValueId, usize>,
+    ) -> String {
+        regs.iter()
+            .map(|r| self.fmt_use(*r, consts, texts))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn fmt_val_raw(r: ValueId) -> String {
     use acvus_utils::LocalIdOps;
     format!("r{}", r.to_raw())
 }
@@ -106,30 +153,6 @@ fn collect_fn_ids_from_body(
     }
 }
 
-fn fmt_use(
-    r: ValueId,
-    consts: &FxHashMap<ValueId, &Literal>,
-    texts: &FxHashMap<ValueId, usize>,
-) -> String {
-    if let Some(tidx) = texts.get(&r) {
-        return format!("T{tidx}");
-    }
-    match consts.get(&r) {
-        Some(lit) => format!("{} ({})", fmt_literal(lit), fmt_val(r)),
-        None => fmt_val(r),
-    }
-}
-
-fn fmt_uses(
-    regs: &[ValueId],
-    consts: &FxHashMap<ValueId, &Literal>,
-    texts: &FxHashMap<ValueId, usize>,
-) -> String {
-    regs.iter()
-        .map(|r| fmt_use(*r, consts, texts))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
 
 /// Collect unique String/List literals from a body and register them into the text table.
 fn collect_texts_from_body(
@@ -157,6 +180,8 @@ fn write_body(
     indent: &str,
     ctx: &PrintCtx<'_>,
 ) -> fmt::Result {
+    let mut vn = ValNormalizer::new();
+
     // Build ContextId → name mapping from ContextProject instructions + debug info.
     let mut ctx_id_to_name: FxHashMap<crate::graph::ContextId, String> = FxHashMap::default();
     for inst in &body.insts {
@@ -218,31 +243,31 @@ fn write_body(
             InstKind::Const { .. } => unreachable!(),
             InstKind::ContextProject { dst, id, .. } => {
                 let name = ctx_id_to_name.get(id).map(|s| s.as_str()).unwrap_or("?");
-                writeln!(f, "{} = context_project @{}", fmt_val(*dst), name)?
+                writeln!(f, "{} = context_project @{}", vn.fmt_val(*dst), name)?
             }
             InstKind::ContextLoad { dst, src } => writeln!(
                 f,
                 "{} = context_load {}",
-                fmt_val(*dst),
-                fmt_use(*src, &consts, &texts)
+                vn.fmt_val(*dst),
+                vn.fmt_use(*src, &consts, &texts)
             )?,
             InstKind::VarLoad { dst, name } => writeln!(
                 f,
                 "{} = var_load ${}",
-                fmt_val(*dst),
+                vn.fmt_val(*dst),
                 ctx.interner.resolve(*name)
             )?,
             InstKind::VarStore { name, src } => writeln!(
                 f,
                 "var_store ${} = {}",
                 ctx.interner.resolve(*name),
-                fmt_use(*src, &consts, &texts)
+                vn.fmt_use(*src, &consts, &texts)
             )?,
             InstKind::ContextStore { dst, value } => writeln!(
                 f,
                 "ctx_store {} = {}",
-                fmt_use(*dst, &consts, &texts),
-                fmt_use(*value, &consts, &texts)
+                vn.fmt_use(*dst, &consts, &texts),
+                vn.fmt_use(*value, &consts, &texts)
             )?,
 
             // Arithmetic / logic
@@ -254,23 +279,23 @@ fn write_body(
             } => writeln!(
                 f,
                 "{} = {} {} {}",
-                fmt_val(*dst),
-                fmt_use(*left, &consts, &texts),
+                vn.fmt_val(*dst),
+                vn.fmt_use(*left, &consts, &texts),
                 fmt_binop(*op),
-                fmt_use(*right, &consts, &texts)
+                vn.fmt_use(*right, &consts, &texts)
             )?,
             InstKind::UnaryOp { dst, op, operand } => writeln!(
                 f,
                 "{} = {}{}",
-                fmt_val(*dst),
+                vn.fmt_val(*dst),
                 fmt_unaryop(*op),
-                fmt_use(*operand, &consts, &texts)
+                vn.fmt_use(*operand, &consts, &texts)
             )?,
             InstKind::FieldGet { dst, object, field } => writeln!(
                 f,
                 "{} = {}.{}",
-                fmt_val(*dst),
-                fmt_use(*object, &consts, &texts),
+                vn.fmt_val(*dst),
+                vn.fmt_use(*object, &consts, &texts),
                 ctx.interner.resolve(*field),
             )?,
 
@@ -278,20 +303,20 @@ fn write_body(
             InstKind::LoadFunction { dst, id } => writeln!(
                 f,
                 "{} = load_function {}",
-                fmt_val(*dst),
+                vn.fmt_val(*dst),
                 ctx.fmt_fn_id(*id),
             )?,
             InstKind::FunctionCall { dst, callee, args } => {
                 let callee_str = match callee {
                     Callee::Direct(id) => ctx.fmt_fn_id(*id),
-                    Callee::Indirect(val) => fmt_use(*val, &consts, &texts),
+                    Callee::Indirect(val) => vn.fmt_use(*val, &consts, &texts),
                 };
                 writeln!(
                     f,
                     "{} = call {}({})",
-                    fmt_val(*dst),
+                    vn.fmt_val(*dst),
                     callee_str,
-                    fmt_uses(args, &consts, &texts)
+                    vn.fmt_uses(args, &consts, &texts)
                 )?
             }
 
@@ -299,7 +324,7 @@ fn write_body(
             InstKind::Spawn { dst, callee, args, context_uses } => {
                 let callee_str = match callee {
                     Callee::Direct(id) => ctx.fmt_fn_id(*id),
-                    Callee::Indirect(val) => fmt_use(*val, &consts, &texts),
+                    Callee::Indirect(val) => vn.fmt_use(*val, &consts, &texts),
                 };
                 let ctx_str = if context_uses.is_empty() {
                     String::new()
@@ -308,7 +333,7 @@ fn write_body(
                         .iter()
                         .map(|(ctx, val)| {
                             let name = ctx_id_to_name.get(ctx).map(|s| s.as_str()).unwrap_or("?");
-                            format!("@{}={}", name, fmt_val(*val))
+                            format!("@{}={}", name, vn.fmt_val(*val))
                         })
                         .collect();
                     format!(" use({})", bindings.join(", "))
@@ -316,9 +341,9 @@ fn write_body(
                 writeln!(
                     f,
                     "{} = spawn {}({}){ctx_str}",
-                    fmt_val(*dst),
+                    vn.fmt_val(*dst),
                     callee_str,
-                    fmt_uses(args, &consts, &texts)
+                    vn.fmt_uses(args, &consts, &texts)
                 )?
             }
             InstKind::Eval { dst, src, context_defs } => {
@@ -329,7 +354,7 @@ fn write_body(
                         .iter()
                         .map(|(ctx, val)| {
                             let name = ctx_id_to_name.get(ctx).map(|s| s.as_str()).unwrap_or("?");
-                            format!("@{}={}", name, fmt_val(*val))
+                            format!("@{}={}", name, vn.fmt_val(*val))
                         })
                         .collect();
                     format!(" def({})", bindings.join(", "))
@@ -337,8 +362,8 @@ fn write_body(
                 writeln!(
                     f,
                     "{} = eval {}{ctx_str}",
-                    fmt_val(*dst),
-                    fmt_use(*src, &consts, &texts)
+                    vn.fmt_val(*dst),
+                    vn.fmt_use(*src, &consts, &texts)
                 )?
             }
 
@@ -346,8 +371,8 @@ fn write_body(
             InstKind::MakeDeque { dst, elements } => writeln!(
                 f,
                 "{} = list [{}]",
-                fmt_val(*dst),
-                fmt_uses(elements, &consts, &texts)
+                vn.fmt_val(*dst),
+                vn.fmt_uses(elements, &consts, &texts)
             )?,
             InstKind::MakeObject { dst, fields } => {
                 let fields_str: String = fields
@@ -356,24 +381,24 @@ fn write_body(
                         format!(
                             "{}: {}",
                             ctx.interner.resolve(*k),
-                            fmt_use(*r, &consts, &texts)
+                            vn.fmt_use(*r, &consts, &texts)
                         )
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
-                writeln!(f, "{} = object {{{fields_str}}}", fmt_val(*dst))?
+                writeln!(f, "{} = object {{{fields_str}}}", vn.fmt_val(*dst))?
             }
             InstKind::MakeTuple { dst, elements } => writeln!(
                 f,
                 "{} = tuple ({})",
-                fmt_val(*dst),
-                fmt_uses(elements, &consts, &texts)
+                vn.fmt_val(*dst),
+                vn.fmt_uses(elements, &consts, &texts)
             )?,
             InstKind::TupleIndex { dst, tuple, index } => writeln!(
                 f,
                 "{} = {}.{index}",
-                fmt_val(*dst),
-                fmt_use(*tuple, &consts, &texts)
+                vn.fmt_val(*dst),
+                vn.fmt_use(*tuple, &consts, &texts)
             )?,
             InstKind::MakeRange {
                 dst,
@@ -383,18 +408,18 @@ fn write_body(
             } => writeln!(
                 f,
                 "{} = range {}{}{}",
-                fmt_val(*dst),
-                fmt_use(*start, &consts, &texts),
+                vn.fmt_val(*dst),
+                vn.fmt_use(*start, &consts, &texts),
                 fmt_range_kind(*kind),
-                fmt_use(*end, &consts, &texts)
+                vn.fmt_use(*end, &consts, &texts)
             )?,
 
             // Pattern matching
             InstKind::TestLiteral { dst, src, value } => writeln!(
                 f,
                 "{} = test {} == {}",
-                fmt_val(*dst),
-                fmt_use(*src, &consts, &texts),
+                vn.fmt_val(*dst),
+                vn.fmt_use(*src, &consts, &texts),
                 fmt_literal(value)
             )?,
             InstKind::TestListLen {
@@ -407,15 +432,15 @@ fn write_body(
                 writeln!(
                     f,
                     "{} = test len({}) {op} {min_len}",
-                    fmt_val(*dst),
-                    fmt_use(*src, &consts, &texts)
+                    vn.fmt_val(*dst),
+                    vn.fmt_use(*src, &consts, &texts)
                 )?
             }
             InstKind::TestObjectKey { dst, src, key } => writeln!(
                 f,
                 "{} = test has_key({}, \"{}\")",
-                fmt_val(*dst),
-                fmt_use(*src, &consts, &texts),
+                vn.fmt_val(*dst),
+                vn.fmt_use(*src, &consts, &texts),
                 ctx.interner.resolve(*key),
             )?,
             InstKind::TestRange {
@@ -427,22 +452,22 @@ fn write_body(
             } => writeln!(
                 f,
                 "{} = test {} in {start}{}{end}",
-                fmt_val(*dst),
-                fmt_use(*src, &consts, &texts),
+                vn.fmt_val(*dst),
+                vn.fmt_use(*src, &consts, &texts),
                 fmt_range_kind(*kind)
             )?,
             InstKind::ListIndex { dst, list, index } => writeln!(
                 f,
                 "{} = {}[{index}]",
-                fmt_val(*dst),
-                fmt_use(*list, &consts, &texts)
+                vn.fmt_val(*dst),
+                vn.fmt_use(*list, &consts, &texts)
             )?,
             InstKind::ListGet { dst, list, index } => writeln!(
                 f,
                 "{} = {}[{}]",
-                fmt_val(*dst),
-                fmt_use(*list, &consts, &texts),
-                fmt_use(*index, &consts, &texts)
+                vn.fmt_val(*dst),
+                vn.fmt_use(*list, &consts, &texts),
+                vn.fmt_use(*index, &consts, &texts)
             )?,
             InstKind::ListSlice {
                 dst,
@@ -452,14 +477,14 @@ fn write_body(
             } => writeln!(
                 f,
                 "{} = {}[{skip_head}..-{skip_tail}]",
-                fmt_val(*dst),
-                fmt_use(*list, &consts, &texts)
+                vn.fmt_val(*dst),
+                vn.fmt_use(*list, &consts, &texts)
             )?,
             InstKind::ObjectGet { dst, object, key } => writeln!(
                 f,
                 "{} = {}.{}",
-                fmt_val(*dst),
-                fmt_use(*object, &consts, &texts),
+                vn.fmt_val(*dst),
+                vn.fmt_use(*object, &consts, &texts),
                 ctx.interner.resolve(*key),
             )?,
 
@@ -470,11 +495,11 @@ fn write_body(
                     Some(p) => writeln!(
                         f,
                         "{} = variant {}({})",
-                        fmt_val(*dst),
+                        vn.fmt_val(*dst),
                         name,
-                        fmt_use(*p, &consts, &texts)
+                        vn.fmt_use(*p, &consts, &texts)
                     )?,
-                    None => writeln!(f, "{} = variant {}", fmt_val(*dst), name)?,
+                    None => writeln!(f, "{} = variant {}", vn.fmt_val(*dst), name)?,
                 }
             }
             InstKind::TestVariant { dst, src, tag } => {
@@ -482,16 +507,16 @@ fn write_body(
                 writeln!(
                     f,
                     "{} = test {} is {}",
-                    fmt_val(*dst),
-                    fmt_use(*src, &consts, &texts),
+                    vn.fmt_val(*dst),
+                    vn.fmt_use(*src, &consts, &texts),
                     name,
                 )?
             }
             InstKind::UnwrapVariant { dst, src } => writeln!(
                 f,
                 "{} = unwrap {}",
-                fmt_val(*dst),
-                fmt_use(*src, &consts, &texts)
+                vn.fmt_val(*dst),
+                vn.fmt_use(*src, &consts, &texts)
             )?,
 
             // Closures
@@ -502,20 +527,20 @@ fn write_body(
             } => writeln!(
                 f,
                 "{} = closure {} [{}]",
-                fmt_val(*dst),
+                vn.fmt_val(*dst),
                 fmt_label(*body),
-                fmt_uses(captures, &consts, &texts)
+                vn.fmt_uses(captures, &consts, &texts)
             )?,
 
             // Iteration
             InstKind::IterStep { dst, iter_src, iter_dst, done, done_args } => writeln!(
                 f,
                 "iter_step {}, {} = {} else {}({})",
-                fmt_val(*dst),
-                fmt_val(*iter_dst),
-                fmt_use(*iter_src, &consts, &texts),
+                vn.fmt_val(*dst),
+                vn.fmt_val(*iter_dst),
+                vn.fmt_use(*iter_src, &consts, &texts),
                 fmt_label(*done),
-                fmt_uses(done_args, &consts, &texts)
+                vn.fmt_uses(done_args, &consts, &texts)
             )?,
 
             // Control flow
@@ -539,7 +564,7 @@ fn write_body(
                                 .get(v)
                                 .map(|t| format!("{}", t.display(ctx.interner)))
                                 .unwrap_or_else(|| "?".into());
-                            format!("{}: {ty}", fmt_val(*v))
+                            format!("{}: {ty}", vn.fmt_val(*v))
                         })
                         .collect::<Vec<_>>()
                         .join(", ");
@@ -554,7 +579,7 @@ fn write_body(
                         f,
                         "jump {}({})",
                         fmt_label(*label),
-                        fmt_uses(args, &consts, &texts)
+                        vn.fmt_uses(args, &consts, &texts)
                     )?
                 }
             }
@@ -571,7 +596,7 @@ fn write_body(
                     format!(
                         "{}({})",
                         fmt_label(*then_label),
-                        fmt_uses(then_args, &consts, &texts)
+                        vn.fmt_uses(then_args, &consts, &texts)
                     )
                 };
                 let else_str = if else_args.is_empty() {
@@ -580,27 +605,27 @@ fn write_body(
                     format!(
                         "{}({})",
                         fmt_label(*else_label),
-                        fmt_uses(else_args, &consts, &texts)
+                        vn.fmt_uses(else_args, &consts, &texts)
                     )
                 };
                 writeln!(
                     f,
                     "jump_if {} then {} else {}",
-                    fmt_use(*cond, &consts, &texts),
+                    vn.fmt_use(*cond, &consts, &texts),
                     then_str,
                     else_str
                 )?
             }
-            InstKind::Return(r) => writeln!(f, "return {}", fmt_use(*r, &consts, &texts))?,
+            InstKind::Return(r) => writeln!(f, "return {}", vn.fmt_use(*r, &consts, &texts))?,
             InstKind::Nop => writeln!(f, "nop")?,
             InstKind::Cast { dst, src, kind } => writeln!(
                 f,
                 "{} = cast {:?} {}",
-                fmt_val(*dst),
+                vn.fmt_val(*dst),
                 kind,
-                fmt_use(*src, &consts, &texts)
+                vn.fmt_use(*src, &consts, &texts)
             )?,
-            InstKind::Poison { dst } => writeln!(f, "{} = poison", fmt_val(*dst))?,
+            InstKind::Poison { dst } => writeln!(f, "{} = poison", vn.fmt_val(*dst))?,
         }
     }
 
@@ -614,7 +639,7 @@ fn write_body(
             writeln!(
                 f,
                 "{indent}  ; {} ({origin}) : {}",
-                fmt_val(*val),
+                vn.fmt_val(*val),
                 ty.display(ctx.interner),
             )?;
         }

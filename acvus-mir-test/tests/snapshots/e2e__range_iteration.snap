@@ -6,35 +6,36 @@ expression: ir
   T0 = ""
 
 === main ===
-     3 │   r3 = range 0 (r1)..3 (r2)
-     4 │   r4 = cast RangeToIterator r3
-     6 │   jump L0(r4, T0)
-     7 │ L0(r6: Iterator<Int>, r7: String):
-     8 │   iter_step r8, r9 = r6 else L1(r7)
-    10 │   r11 = poison
-    11 │   r12 = T0 + r11
-    12 │   r13 = r7 + r12
-    13 │   jump L0(r9, r13)
-    14 │ L1(r14: String):
-    15 │   jump L2(r14)
-    16 │ L2(r15: String):
-    17 │   r16 = T0 + r15
-    18 │   return r16
+     3 │   r0 = range 0 (r1)..3 (r2)
+     4 │   r3 = cast RangeToIterator r0
+     6 │   jump L0(r3, T0)
+     7 │ L0(r4: Iterator<Int>, r5: String):
+     8 │   iter_step r6, r7 = r4 else L1(r5)
+     9 │ L3:
+    11 │   r8 = poison
+    12 │   r9 = T0 + r8
+    13 │   r10 = r5 + r9
+    14 │   jump L0(r7, r10)
+    15 │ L1(r11: String):
+    16 │   jump L2(r11)
+    17 │ L2(r12: String):
+    18 │   r13 = T0 + r12
+    19 │   return r13
 
-    ; r0 (v0) : String
+    ; r14 (v0) : String
     ; r1 (v1) : Int
     ; r2 (v2) : Int
-    ; r3 (v3) : Range
-    ; r4 (v4) : Iterator<Int>
-    ; r5 (v5) : String
-    ; r6 (v6) : Iterator<Int>
-    ; r7 (v7) : String
-    ; r8 (x) : Int
-    ; r9 (v9) : Iterator<Int>
-    ; r10 (v10) : String
-    ; r11 (to_string(...)) : String
-    ; r12 (v12) : String
-    ; r13 (v13) : String
-    ; r14 (v14) : String
-    ; r15 (v15) : String
-    ; r16 (v16) : String
+    ; r0 (v3) : Range
+    ; r3 (v4) : Iterator<Int>
+    ; r15 (v5) : String
+    ; r4 (v6) : Iterator<Int>
+    ; r5 (v7) : String
+    ; r6 (x) : Int
+    ; r7 (v9) : Iterator<Int>
+    ; r16 (v10) : String
+    ; r8 (to_string(...)) : String
+    ; r9 (v12) : String
+    ; r10 (v13) : String
+    ; r11 (v14) : String
+    ; r12 (v15) : String
+    ; r13 (v16) : String

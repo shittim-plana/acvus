@@ -6,7 +6,7 @@ use acvus_ast::Literal;
 use acvus_utils::Astr;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::analysis::cfg::Cfg;
+use crate::analysis::cfg::{Cfg, Terminator};
 use crate::analysis::dataflow::{BooleanDomain, DataflowState, forward_analysis};
 use crate::analysis::domain::AbstractValue;
 use crate::analysis::val_def::ValDefMap;
@@ -186,10 +186,10 @@ fn compute_reach(
         }
 
         match &block.terminator {
-            crate::analysis::cfg::Terminator::Jump { target, .. } => {
+            Terminator::Jump { target, .. } => {
                 enqueue_reach(*target, block_reach, cfg, &mut reach, &mut queue);
             }
-            crate::analysis::cfg::Terminator::JumpIf {
+            Terminator::JumpIf {
                 cond,
                 then_label,
                 else_label,
@@ -209,14 +209,24 @@ fn compute_reach(
                     }
                 }
             }
-            crate::analysis::cfg::Terminator::Fallthrough => {
+            Terminator::IterStep { done, .. } => {
+                // Fallthrough.
+                let next = idx + 1;
+                if next < n && block_reach > reach[next] {
+                    reach[next] = block_reach;
+                    queue.push_back(next);
+                }
+                // Done branch.
+                enqueue_reach(*done, block_reach, cfg, &mut reach, &mut queue);
+            }
+            Terminator::Fallthrough => {
                 let next = idx + 1;
                 if next < n && block_reach > reach[next] {
                     reach[next] = block_reach;
                     queue.push_back(next);
                 }
             }
-            crate::analysis::cfg::Terminator::Return => {}
+            Terminator::Return => {}
         }
     }
 

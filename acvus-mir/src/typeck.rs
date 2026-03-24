@@ -255,38 +255,7 @@ impl<'a, 's> TypeChecker<'a, 's> {
         expected_tail: Option<&Ty>,
     ) -> Result<TypeResolution<Unchecked>, Vec<MirError>> {
         for stmt in &script.stmts {
-            match stmt {
-                acvus_ast::Stmt::Bind { name, expr, span } => {
-                    let ty = self.check_expr(false, expr);
-                    self.define_var(*name, ty.clone());
-                    self.record(*span, ty);
-                }
-                acvus_ast::Stmt::ContextStore { name, expr, span } => {
-                    let ty = self.check_expr(false, expr);
-                    // Writing external state is effectful.
-                    self.body_writes.insert(*name);
-                    self.propagate_call_effect(Effect::io());
-                    // Unify with the declared context type.
-                    let ctx_ty = self
-                        .env.contexts
-                        .get(name)
-                        .cloned()
-                        .unwrap_or_else(|| self.subst.fresh_param());
-                    if self.subst.unify(&ty, &ctx_ty, Polarity::Invariant).is_err() {
-                        self.error(
-                            MirErrorKind::UnificationFailure {
-                                expected: ctx_ty,
-                                got: ty.clone(),
-                            },
-                            *span,
-                        );
-                    }
-                    self.record(*span, ty);
-                }
-                acvus_ast::Stmt::Expr(expr) => {
-                    self.check_expr(false, expr);
-                }
-            }
+            self.check_stmt(stmt);
         }
         let tail_ty = if let Some(tail) = &script.tail {
             let ty = self.check_expr(false, tail);
@@ -503,6 +472,72 @@ impl<'a, 's> TypeChecker<'a, 's> {
             }
             Node::MatchBlock(mb) => self.check_match_block(mb),
             Node::IterBlock(ib) => self.check_iter_block(ib),
+        }
+    }
+
+    /// Type-check a single script statement.
+    fn check_stmt(&mut self, stmt: &acvus_ast::Stmt) {
+        match stmt {
+            acvus_ast::Stmt::Bind { name, expr, span } => {
+                let ty = self.check_expr(false, expr);
+                self.define_var(*name, ty.clone());
+                self.record(*span, ty);
+            }
+            acvus_ast::Stmt::ContextStore { name, expr, span } => {
+                let ty = self.check_expr(false, expr);
+                self.body_writes.insert(*name);
+                self.propagate_call_effect(Effect::io());
+                let ctx_ty = self
+                    .env.contexts
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| self.subst.fresh_param());
+                if self.subst.unify(&ty, &ctx_ty, Polarity::Invariant).is_err() {
+                    self.error(
+                        MirErrorKind::UnificationFailure {
+                            expected: ctx_ty,
+                            got: ty.clone(),
+                        },
+                        *span,
+                    );
+                }
+                self.record(*span, ty);
+            }
+            acvus_ast::Stmt::Expr(expr) => {
+                self.check_expr(false, expr);
+            }
+            acvus_ast::Stmt::MatchBind { pattern, source, body, span } => {
+                let source_ty = self.check_expr(false, source);
+                let resolved_source = self.subst.resolve(&source_ty);
+                self.push_scope();
+                self.check_pattern(pattern, &resolved_source, *span);
+                for s in body {
+                    self.check_stmt(s);
+                }
+                self.pop_scope();
+            }
+            acvus_ast::Stmt::Iterate { pattern, source, body, span } => {
+                let source_ty = self.check_expr(false, source);
+                let resolved = self.subst.resolve(&source_ty);
+                let elem_ty = match &resolved {
+                    Ty::List(inner) | Ty::Deque(inner, _) => inner.as_ref().clone(),
+                    Ty::Range => Ty::Int,
+                    Ty::Error(_) => Ty::error(),
+                    _ => {
+                        self.error(
+                            MirErrorKind::SourceNotIterable { actual: resolved },
+                            *span,
+                        );
+                        return;
+                    }
+                };
+                self.push_scope();
+                self.check_pattern(pattern, &elem_ty, *span);
+                for s in body {
+                    self.check_stmt(s);
+                }
+                self.pop_scope();
+            }
         }
     }
 
@@ -1154,21 +1189,7 @@ impl<'a, 's> TypeChecker<'a, 's> {
             Expr::Block { stmts, tail, span } => {
                 self.push_scope();
                 for stmt in stmts {
-                    match stmt {
-                        acvus_ast::Stmt::Bind { name, expr, span } => {
-                            let ty = self.check_expr(false, expr);
-                            self.define_var(*name, ty.clone());
-                            self.record(*span, ty);
-                        }
-                        acvus_ast::Stmt::ContextStore { name, expr, span } => {
-                            let ty = self.check_expr(false, expr);
-                            self.define_var(*name, ty.clone());
-                            self.record(*span, ty);
-                        }
-                        acvus_ast::Stmt::Expr(expr) => {
-                            self.check_expr(false, expr);
-                        }
-                    }
+                    self.check_stmt(stmt);
                 }
                 let ty = self.check_expr(false, tail);
                 self.pop_scope();
