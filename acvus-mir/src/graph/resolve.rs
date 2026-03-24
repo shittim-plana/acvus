@@ -169,11 +169,12 @@ pub fn resolve(
     //    Phase 2 requires all contexts to be known (from graph + Phase 1 infer).
     //    Undeclared contexts are errors.
     for (&fn_id, fn_ref) in &extract.fn_refs {
-        for &name in fn_ref
+        for r in fn_ref
             .context_reads
             .iter()
             .chain(fn_ref.context_writes.iter())
         {
+            let name = r.name;
             if !context_types.contains_key(&name) {
                 errors.push(ResolveError {
                     fn_id,

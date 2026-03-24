@@ -392,7 +392,8 @@ pub fn infer_scc(
         let mut ctx_types: FxHashMap<Astr, Ty> = FxHashMap::default();
         let mut unknown_vars: FxHashMap<Astr, Ty> = FxHashMap::default();
 
-        for &name in &fn_ref.context_reads {
+        for r in &fn_ref.context_reads {
+            let name = r.name;
             if let Some(ty) = known_ctx.get(&name) {
                 ctx_types.insert(name, ty.clone());
             } else {
@@ -607,7 +608,8 @@ pub fn infer(
             let mut ctx_types: FxHashMap<Astr, Ty> = FxHashMap::default();
             let mut unknown_vars: FxHashMap<Astr, Ty> = FxHashMap::default();
 
-            for &name in &fn_ref.context_reads {
+            for r in &fn_ref.context_reads {
+                let name = r.name;
                 if let Some(ty) = known_ctx.get(&name) {
                     ctx_types.insert(name, ty.clone());
                 } else {

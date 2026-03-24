@@ -131,7 +131,7 @@ async fn spawn_eval_context_defs() {
         let vids = alloc_n(&mut f, 3);
         // v0=project(ctx), v1=const(99), v2=const(0) for return
         let insts = vec![
-            inst(InstKind::ContextProject { dst: vids[0], id: ctx_id, ty: Ty::Int }),
+            inst(InstKind::ContextProject { dst: vids[0], id: ctx_id }),
             inst(InstKind::Const { dst: vids[1], value: acvus_ast::Literal::Int(99) }),
             inst(InstKind::ContextStore { dst: vids[0], value: vids[1] }),
             inst(InstKind::Const { dst: vids[2], value: acvus_ast::Literal::Int(0) }),

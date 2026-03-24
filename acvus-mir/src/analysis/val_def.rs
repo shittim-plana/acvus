@@ -126,8 +126,7 @@ mod tests {
         let module = make_module(vec![
             inst(InstKind::ContextProject {
                 dst: v0,
-                id: id0,
-                ty: Ty::error(),
+                id: id0
             }),
             inst(InstKind::ContextLoad { dst: v1, src: v0 }),
         ]);

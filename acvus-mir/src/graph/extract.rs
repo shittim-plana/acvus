@@ -17,13 +17,36 @@ use super::types::*;
 
 // ── Phase 0 output ──────────────────────────────────────────────────
 
+/// A reference to a context or function, optionally namespace-qualified.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct QualifiedRef {
+    pub namespace: Option<Astr>,
+    pub name: Astr,
+}
+
+impl QualifiedRef {
+    pub fn root(name: Astr) -> Self {
+        Self {
+            namespace: None,
+            name,
+        }
+    }
+
+    pub fn qualified(namespace: Astr, name: Astr) -> Self {
+        Self {
+            namespace: Some(namespace),
+            name,
+        }
+    }
+}
+
 /// Extracted information from a single function.
 #[derive(Debug, Clone)]
 pub struct FnRefs {
     /// Context names this function reads.
-    pub context_reads: FxHashSet<Astr>,
+    pub context_reads: FxHashSet<QualifiedRef>,
     /// Context names this function writes to (traced through projection chains).
-    pub context_writes: FxHashSet<Astr>,
+    pub context_writes: FxHashSet<QualifiedRef>,
 }
 
 /// Phase 0 output: extracted references for all functions.
@@ -126,7 +149,7 @@ fn analyze_refs(module: &MirModule, id_to_name: &FxHashMap<ContextId, Astr>) -> 
             // Every ContextProject is a read.
             InstKind::ContextProject { id, .. } => {
                 if let Some(&name) = id_to_name.get(id) {
-                    reads.insert(name);
+                    reads.insert(QualifiedRef::root(name));
                 }
             }
             // ContextStore: trace dst back through projection chain to find root context.
@@ -134,7 +157,7 @@ fn analyze_refs(module: &MirModule, id_to_name: &FxHashMap<ContextId, Astr>) -> 
                 if let Some(root_id) = trace_projection_root(*dst, &val_def, insts)
                     && let Some(&name) = id_to_name.get(&root_id)
                 {
-                    writes.insert(name);
+                    writes.insert(QualifiedRef::root(name));
                 }
             }
             _ => {}
@@ -157,7 +180,7 @@ fn analyze_refs(module: &MirModule, id_to_name: &FxHashMap<ContextId, Astr>) -> 
             match &inst.kind {
                 InstKind::ContextProject { id, .. } => {
                     if let Some(&name) = id_to_name.get(id) {
-                        reads.insert(name);
+                        reads.insert(QualifiedRef::root(name));
                     }
                 }
                 InstKind::ContextStore { dst, .. } => {
@@ -165,7 +188,7 @@ fn analyze_refs(module: &MirModule, id_to_name: &FxHashMap<ContextId, Astr>) -> 
                         trace_projection_root(*dst, &closure_val_def, closure_insts)
                         && let Some(&name) = id_to_name.get(&root_id)
                     {
-                        writes.insert(name);
+                        writes.insert(QualifiedRef::root(name));
                     }
                 }
                 _ => {}
@@ -257,7 +280,7 @@ mod tests {
         let result = extract(&i, &graph);
         let refs = &result.fn_refs[&uid];
         assert!(
-            refs.context_reads.contains(&i.intern("x")),
+            refs.context_reads.contains(&QualifiedRef::root(i.intern("x"))),
             "should detect @x read"
         );
     }
@@ -268,8 +291,8 @@ mod tests {
         let (graph, uid) = make_graph(&i, "@a + @b", &["a", "b"]);
         let result = extract(&i, &graph);
         let refs = &result.fn_refs[&uid];
-        assert!(refs.context_reads.contains(&i.intern("a")));
-        assert!(refs.context_reads.contains(&i.intern("b")));
+        assert!(refs.context_reads.contains(&QualifiedRef::root(i.intern("a"))));
+        assert!(refs.context_reads.contains(&QualifiedRef::root(i.intern("b"))));
     }
 
     // -- Completeness: direct writes detected --
@@ -281,7 +304,7 @@ mod tests {
         let result = extract(&i, &graph);
         let refs = &result.fn_refs[&uid];
         assert!(
-            refs.context_writes.contains(&i.intern("x")),
+            refs.context_writes.contains(&QualifiedRef::root(i.intern("x"))),
             "should detect @x write"
         );
     }
@@ -297,9 +320,9 @@ mod tests {
         let (graph, uid) = make_graph(&i, "@x = @x + 1; @x", &["x"]);
         let result = extract(&i, &graph);
         let refs = &result.fn_refs[&uid];
-        assert!(refs.context_writes.contains(&i.intern("x")));
+        assert!(refs.context_writes.contains(&QualifiedRef::root(i.intern("x"))));
         // @x is also read (in @x + 1).
-        assert!(refs.context_reads.contains(&i.intern("x")));
+        assert!(refs.context_reads.contains(&QualifiedRef::root(i.intern("x"))));
     }
 
     // -- Soundness: no false writes --
@@ -310,7 +333,7 @@ mod tests {
         let (graph, uid) = make_graph(&i, "@x + 1", &["x"]);
         let result = extract(&i, &graph);
         let refs = &result.fn_refs[&uid];
-        assert!(refs.context_reads.contains(&i.intern("x")));
+        assert!(refs.context_reads.contains(&QualifiedRef::root(i.intern("x"))));
         assert!(
             refs.context_writes.is_empty(),
             "read-only should have no writes"
@@ -336,11 +359,11 @@ mod tests {
         let result = extract(&i, &graph);
         let refs = &result.fn_refs[&uid];
         assert!(
-            refs.context_writes.contains(&i.intern("x")),
+            refs.context_writes.contains(&QualifiedRef::root(i.intern("x"))),
             "@x should be written"
         );
         assert!(
-            !refs.context_writes.contains(&i.intern("y")),
+            !refs.context_writes.contains(&QualifiedRef::root(i.intern("y"))),
             "@y should NOT be written"
         );
     }

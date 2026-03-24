@@ -300,12 +300,12 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v0,
                 id: id0,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::ContextProject {
                 dst: v1,
                 id: id1,
-                ty: Ty::error(),
+                
             }),
         ]);
         let val_def = build_val_def(&module);
@@ -325,12 +325,12 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v0,
                 id: id0,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::ContextProject {
                 dst: v1,
                 id: id1,
-                ty: Ty::error(),
+                
             }),
         ]);
         let val_def = build_val_def(&module);
@@ -355,7 +355,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v0,
                 id: id0,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::TestLiteral {
                 dst: v1,
@@ -377,7 +377,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v2,
                 id: id1,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::Return(v2)),
             inst(InstKind::BlockLabel {
@@ -388,7 +388,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v3,
                 id: id2,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::Return(v3)),
         ]);
@@ -418,7 +418,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v0,
                 id: id0,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::TestLiteral {
                 dst: v1,
@@ -440,7 +440,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v2,
                 id: id1,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::Return(v2)),
             inst(InstKind::BlockLabel {
@@ -451,7 +451,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v3,
                 id: id2,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::Return(v3)),
         ]);
@@ -480,7 +480,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v0,
                 id: id0,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::TestLiteral {
                 dst: v1,
@@ -502,7 +502,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v2,
                 id: id1,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::Return(v2)),
             inst(InstKind::BlockLabel {
@@ -513,7 +513,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v3,
                 id: id2,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::Return(v3)),
         ]);
@@ -542,7 +542,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v0,
                 id: id0,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::TestLiteral {
                 dst: v1,
@@ -564,7 +564,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v2,
                 id: id1,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::Jump {
                 label: Label(0),
@@ -578,7 +578,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v3,
                 id: id2,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::Jump {
                 label: Label(0),
@@ -615,7 +615,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v0,
                 id: id0,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::TestRange {
                 dst: v1,
@@ -639,7 +639,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v2,
                 id: id1,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::Return(v2)),
             inst(InstKind::BlockLabel {
@@ -650,7 +650,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v3,
                 id: id2,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::Return(v3)),
         ]);
@@ -681,7 +681,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v0,
                 id: id0,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::TestLiteral {
                 dst: v1,
@@ -703,7 +703,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v2,
                 id: id1,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::Jump {
                 label: Label(99),
@@ -734,7 +734,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v4,
                 id: id2,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::Jump {
                 label: Label(99),
@@ -748,7 +748,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v5,
                 id: id3,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::Jump {
                 label: Label(99),
@@ -820,7 +820,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v0,
                     id: id0,
-                    ty: Ty::error(),
+                    
                 }),
                 // %1 = TestVariant(%0, "D")  -- D not in {A,B,C} -> always false
                 inst(InstKind::TestVariant {
@@ -844,7 +844,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v2,
                     id: id1,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -859,7 +859,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v3,
                     id: id2,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -912,7 +912,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v0,
                     id: id0,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::TestVariant {
                     dst: v1,
@@ -934,7 +934,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v2,
                     id: id1,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::Return(v2)),
                 inst(InstKind::BlockLabel {
@@ -945,7 +945,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v3,
                     id: id2,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::Return(v3)),
             ],
@@ -999,7 +999,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v0,
                     id: id0,
-                    ty: Ty::error(),
+                    
                 }),
                 // TestVariant A
                 inst(InstKind::TestVariant {
@@ -1023,7 +1023,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v2,
                     id: id1,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1056,7 +1056,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v4,
                     id: id2,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1071,7 +1071,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v5,
                     id: id3,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1134,7 +1134,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v0,
                     id: id0,
-                    ty: Ty::error(),
+                    
                 }),
                 // Test A
                 inst(InstKind::TestVariant {
@@ -1158,7 +1158,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v2,
                     id: id1,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1191,7 +1191,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v4,
                     id: id2,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1206,7 +1206,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v5,
                     id: id3,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1275,12 +1275,12 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v_pre,
                     id: id10,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::ContextProject {
                     dst: v0,
                     id: id0,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::TestVariant {
                     dst: v1,
@@ -1302,7 +1302,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v2,
                     id: id1,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::Return(v2)),
                 inst(InstKind::BlockLabel {
@@ -1313,7 +1313,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v3,
                     id: id2,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::Return(v3)),
             ],
@@ -1367,7 +1367,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v0,
                     id: id0,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::Jump {
                     label: Label(1),
@@ -1400,7 +1400,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v2,
                     id: id1,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1415,7 +1415,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v3,
                     id: id2,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1430,7 +1430,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v4,
                     id: id3,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::Return(v4)),
             ],
@@ -1493,7 +1493,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v0,
                     id: id0,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::TestLiteral {
                     dst: v1,
@@ -1516,7 +1516,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v10,
                     id: id1,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::TestVariant {
                     dst: v11,
@@ -1539,7 +1539,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v12,
                     id: id2,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1554,7 +1554,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v13,
                     id: id3,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1569,7 +1569,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v14,
                     id: id4,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::Jump {
                     label: Label(50),
@@ -1638,7 +1638,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v0,
                     id: id0,
-                    ty: Ty::error(),
+                    
                 }),
                 // Test Normal
                 inst(InstKind::TestVariant {
@@ -1662,7 +1662,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v2,
                     id: id1,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1677,7 +1677,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v3,
                     id: id2,
-                    ty: Ty::error(),
+                    
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1692,7 +1692,7 @@ mod tests {
                 inst(InstKind::ContextProject {
                     dst: v4,
                     id: id3,
-                    ty: Ty::error(),
+                    
                 }),
             ],
             val_types,
@@ -1746,12 +1746,12 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v0,
                 id: id0,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::ContextProject {
                 dst: v1,
                 id: id1,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::MakeTuple {
                 dst: v2,
@@ -1785,7 +1785,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v10,
                 id: id2,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::Jump {
                 label: Label(99),
@@ -1818,7 +1818,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v11,
                 id: id3,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::Jump {
                 label: Label(99),
@@ -1833,7 +1833,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v12,
                 id: id4,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::Jump {
                 label: Label(99),
@@ -1881,12 +1881,12 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v0,
                 id: id0,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::ContextProject {
                 dst: v1,
                 id: id1,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::MakeTuple {
                 dst: v2,
@@ -1921,7 +1921,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v5,
                 id: id2,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::Return(v5)),
             // high arm -> live
@@ -1933,7 +1933,7 @@ mod tests {
             inst(InstKind::ContextProject {
                 dst: v6,
                 id: id3,
-                ty: Ty::error(),
+                
             }),
             inst(InstKind::Return(v6)),
         ]);

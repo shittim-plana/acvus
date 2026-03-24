@@ -21,7 +21,7 @@ pub fn run(body: &mut MirBody) {
     if cfg.blocks.is_empty() {
         return;
     }
-    let ctx_info = collect_context_info(&cfg, &body.insts);
+    let ctx_info = collect_context_info(&cfg, &body.insts, &body.val_types);
 
     // Step 2: Run SSABuilder + patch PHIs (only if there are writes + merge points).
     if !ctx_info.written_contexts.is_empty() {
@@ -231,9 +231,11 @@ fn ensure_initial_loads(body: &mut MirBody) {
 
     for (i, inst) in body.insts.iter().enumerate() {
         match &inst.kind {
-            InstKind::ContextProject { dst, id, ty } => {
+            InstKind::ContextProject { dst, id } => {
                 all_ctx_ids.insert(*id);
-                ctx_types.entry(*id).or_insert_with(|| ty.clone());
+                if let Some(ty) = body.val_types.get(dst) {
+                    ctx_types.entry(*id).or_insert_with(|| ty.clone());
+                }
                 val_to_ctx.insert(*dst, *id);
             }
             InstKind::ContextLoad { src, .. } if i < first_label_pos => {
@@ -287,7 +289,6 @@ fn ensure_initial_loads(body: &mut MirBody) {
             kind: InstKind::ContextProject {
                 dst: proj,
                 id: ctx_id,
-                ty: ty.clone(),
             },
         });
         let val = body.val_factory.next();
@@ -324,7 +325,7 @@ struct ContextInfo {
     ctx_types: FxHashMap<ContextId, Ty>,
 }
 
-fn collect_context_info(cfg: &Cfg, insts: &[Inst]) -> ContextInfo {
+fn collect_context_info(cfg: &Cfg, insts: &[Inst], val_types: &FxHashMap<ValueId, Ty>) -> ContextInfo {
     let mut val_to_ctx: FxHashMap<ValueId, ContextId> = FxHashMap::default();
     let mut written_contexts = FxHashSet::default();
     let mut block_ops: FxHashMap<BlockIdx, BlockContextOps> = FxHashMap::default();
@@ -337,9 +338,11 @@ fn collect_context_info(cfg: &Cfg, insts: &[Inst]) -> ContextInfo {
         for &inst_i in &block.inst_indices {
             let inst = &insts[inst_i];
             match &inst.kind {
-                InstKind::ContextProject { dst, id, ty } => {
+                InstKind::ContextProject { dst, id } => {
                     val_to_ctx.insert(*dst, *id);
-                    ctx_types.entry(*id).or_insert_with(|| ty.clone());
+                    if let Some(ty) = val_types.get(dst) {
+                        ctx_types.entry(*id).or_insert_with(|| ty.clone());
+                    }
                 }
                 InstKind::ContextLoad { dst, src } => {
                     if let Some(&ctx_id) = val_to_ctx.get(src) {
@@ -469,13 +472,16 @@ fn patch_instructions(
         phis.sort_by_key(|p| p.context);
     }
 
+    // Build jump args in the same ContextId-sorted order as block_phis.
     let mut jump_extra_args: FxHashMap<(Label, Label), Vec<ValueId>> = FxHashMap::default();
-    for phi in phi_insertions {
-        for &(pred, val) in &phi.incoming {
-            jump_extra_args
-                .entry((pred, phi.block))
-                .or_default()
-                .push(val);
+    for (&label, phis) in &block_phis {
+        for phi in phis {
+            for &(pred, val) in &phi.incoming {
+                jump_extra_args
+                    .entry((pred, label))
+                    .or_default()
+                    .push(val);
+            }
         }
     }
 
@@ -549,7 +555,6 @@ fn patch_instructions(
                             kind: InstKind::ContextProject {
                                 dst: proj,
                                 id: phi.context,
-                                ty,
                             },
                         });
                         new_insts.push(Inst {

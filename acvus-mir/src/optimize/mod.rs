@@ -1,4 +1,5 @@
 pub mod const_dedup;
+pub mod reg_color;
 
 use crate::ir::MirModule;
 

@@ -8,7 +8,7 @@ expression: ir
      4 │   r2 = range 0 (r3)..10 (r4)
      5 │   r5 = cast RangeToIterator r2
      6 │   jump L0(r5, r1)
-     7 │ L0(r6: Iterator<Int>, r7: Int):
+     7 │ L0(r6: Iterator<Int>, r7: <error>):
      8 │   r8 = context_project @sum
      9 │   ctx_store r8 = r7
     10 │   iter_step r9, r10 = r6 else L1()
@@ -29,8 +29,8 @@ expression: ir
     ; r4 (v3) : Int
     ; r5 (v5) : Iterator<Int>
     ; r6 (v6) : Iterator<Int>
-    ; r7 (v15) : Int
-    ; r8 (v16) : Int
+    ; r7 (v15) : <error>
+    ; r8 (v16) : <error>
     ; r9 (x) : Int
     ; r10 (v8) : Iterator<Int>
     ; r11 (@sum) : Int

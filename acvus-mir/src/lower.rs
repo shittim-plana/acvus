@@ -159,7 +159,6 @@ impl<'a> Lowerer<'a> {
                 InstKind::ContextProject {
                     dst: proj,
                     id,
-                    ty: ty.clone(),
                 },
             );
             self.mark_projection(proj);
@@ -775,7 +774,6 @@ impl<'a> Lowerer<'a> {
             } => match ref_kind {
                 RefKind::Context => {
                     let ctx_id = self.context_id(*name);
-                    let ctx_ty = self.context_ty(*name);
                     let dst = self.alloc_typed(*span);
                     self.set_origin(dst, ValOrigin::Context(*name));
                     self.emit_inst(
@@ -783,7 +781,6 @@ impl<'a> Lowerer<'a> {
                         InstKind::ContextProject {
                             dst,
                             id: ctx_id,
-                            ty: ctx_ty,
                         },
                     );
                     self.mark_projection(dst);
@@ -1120,14 +1117,12 @@ impl<'a> Lowerer<'a> {
     fn lower_context_store(&mut self, name: Astr, value_expr: &Expr, span: Span) -> ValueId {
         let val = self.lower_expr(value_expr);
         let ctx_id = self.context_id(name);
-        let ctx_ty = self.context_ty(name);
         let proj = self.alloc_typed(span);
         self.emit_inst(
             span,
             InstKind::ContextProject {
                 dst: proj,
                 id: ctx_id,
-                ty: ctx_ty,
             },
         );
         self.emit_inst(
@@ -1250,14 +1245,12 @@ impl<'a> Lowerer<'a> {
                 }
                 RefKind::Context => {
                     let ctx_id = self.context_id(*name);
-                    let ctx_ty = self.context_ty(*name);
                     let proj = self.alloc_typed(*pat_span);
                     self.emit_inst(
                         *pat_span,
                         InstKind::ContextProject {
                             dst: proj,
                             id: ctx_id,
-                            ty: ctx_ty,
                         },
                     );
                     self.emit_inst(

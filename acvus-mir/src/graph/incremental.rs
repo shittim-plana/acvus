@@ -594,13 +594,13 @@ impl IncrementalGraph {
                     .refs
                     .context_reads
                     .iter()
-                    .filter_map(|n| name_to_ctx_id.get(n).copied())
+                    .filter_map(|r| name_to_ctx_id.get(&r.name).copied())
                     .collect();
                 let writes: std::collections::BTreeSet<ContextId> = extract_entry
                     .refs
                     .context_writes
                     .iter()
-                    .filter_map(|n| name_to_ctx_id.get(n).copied())
+                    .filter_map(|r| name_to_ctx_id.get(&r.name).copied())
                     .collect();
                 if let Some(meta) = scc_result.fn_metas.get_mut(&fid) {
                     meta.effect = EffectSet {

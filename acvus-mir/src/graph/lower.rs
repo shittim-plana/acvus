@@ -80,13 +80,14 @@ pub fn lower(
                 .context_reads
                 .iter()
                 .chain(refs.context_writes.iter())
-                .filter_map(|&name| {
+                .map(|r| {
+                    let name = r.name;
                     let id = name_to_ctx_id
                         .get(&name)
                         .copied()
                         .unwrap_or_else(ContextId::alloc);
                     let ty = resolved.context_type(id).cloned().unwrap_or(Ty::error());
-                    Some((name, (id, ty)))
+                    (name, (id, ty))
                 })
                 .collect(),
             None => FxHashMap::default(),

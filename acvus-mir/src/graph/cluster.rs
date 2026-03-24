@@ -61,8 +61,8 @@ pub fn cluster(graph: &CompilationGraph, extract: &ExtractResult) -> ClusterResu
     // 1. Determine mutable contexts: any context written by at least one function.
     let mut mutable_contexts = FxHashSet::default();
     for fn_ref in extract.fn_refs.values() {
-        for &name in &fn_ref.context_writes {
-            mutable_contexts.insert(name);
+        for r in &fn_ref.context_writes {
+            mutable_contexts.insert(r.name);
         }
     }
 
@@ -80,8 +80,8 @@ pub fn cluster(graph: &CompilationGraph, extract: &ExtractResult) -> ClusterResu
                 continue;
             };
 
-            let is_write = fn_ref.context_writes.contains(&ctx_name);
-            let is_read = fn_ref.context_reads.contains(&ctx_name);
+            let is_write = fn_ref.context_writes.iter().any(|r| r.name == ctx_name);
+            let is_read = fn_ref.context_reads.iter().any(|r| r.name == ctx_name);
 
             if is_write {
                 // Writer also reads (read-modify-write pattern).

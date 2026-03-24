@@ -101,7 +101,6 @@ pub enum InstKind {
     ContextProject {
         dst: ValueId,
         id: ContextId,
-        ty: Ty,
     },
     /// Materialize a projection into a value (copy). Severs the store connection.
     /// `src` must be a projection (from ContextProject or FieldAccess on a projection).
@@ -431,5 +430,15 @@ impl MirModule {
             }
         }
         keys
+    }
+}
+
+#[cfg(test)]
+mod size_check {
+    use super::*;
+    #[test]
+    fn inst_size() {
+        eprintln!("InstKind: {} bytes", std::mem::size_of::<InstKind>());
+        eprintln!("Inst: {} bytes", std::mem::size_of::<Inst>());
     }
 }
