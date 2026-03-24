@@ -210,3 +210,77 @@ impl Cfg {
         succs
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test::compile_script;
+    use crate::ty::Ty;
+    use acvus_utils::Interner;
+
+    #[test]
+    fn iter_step_is_terminator() {
+        // IterStep must split the block — the block containing IterStep should
+        // have an IterStep terminator, not Fallthrough.
+        let i = Interner::new();
+        let (module, _) = compile_script(
+            &i,
+            "x in @items { @sum = @sum + x; }; @sum",
+            &[("items", Ty::List(Box::new(Ty::Int))), ("sum", Ty::Int)],
+        )
+        .unwrap();
+        let cfg = Cfg::build(&module.main.insts);
+        let has_iter_term = cfg.blocks.iter().any(|b| matches!(b.terminator, Terminator::IterStep { .. }));
+        assert!(has_iter_term, "IterStep should be a CFG terminator");
+    }
+
+    #[test]
+    fn iter_step_done_branch_has_predecessor() {
+        // The done-label of IterStep must appear as a successor, so it has a predecessor.
+        let i = Interner::new();
+        let (module, _) = compile_script(
+            &i,
+            "x in @items { @sum = @sum + x; }; @sum",
+            &[("items", Ty::List(Box::new(Ty::Int))), ("sum", Ty::Int)],
+        )
+        .unwrap();
+        let cfg = Cfg::build(&module.main.insts);
+        let preds = cfg.predecessors();
+        // Every block with a label should have at least one predecessor (except entry).
+        for (bi, block) in cfg.blocks.iter().enumerate() {
+            if bi == 0 { continue; }
+            if block.label.is_some() {
+                assert!(
+                    preds.get(&BlockIdx(bi)).map_or(false, |p| !p.is_empty()),
+                    "block {} ({:?}) has no predecessors", bi, block.label
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn nested_loop_all_blocks_have_predecessors() {
+        // Regression: nested loops must have predecessors for all labeled blocks.
+        let i = Interner::new();
+        let (module, _) = compile_script(
+            &i,
+            "row in @matrix { x in row { @sum = @sum + x; }; }; @sum",
+            &[
+                ("matrix", Ty::List(Box::new(Ty::List(Box::new(Ty::Int))))),
+                ("sum", Ty::Int),
+            ],
+        )
+        .unwrap();
+        let cfg = Cfg::build(&module.main.insts);
+        let preds = cfg.predecessors();
+        for (bi, block) in cfg.blocks.iter().enumerate() {
+            if bi == 0 { continue; }
+            if block.label.is_some() {
+                assert!(
+                    preds.get(&BlockIdx(bi)).map_or(false, |p| !p.is_empty()),
+                    "nested loop: block {} ({:?}) has no predecessors", bi, block.label
+                );
+            }
+        }
+    }
+}

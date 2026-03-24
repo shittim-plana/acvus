@@ -154,6 +154,7 @@ pub fn lower(
 mod tests {
     use super::*;
     use crate::graph::{extract, resolve};
+    use crate::ir::InstKind;
     use Ty;
     use acvus_utils::Interner;
 
@@ -233,6 +234,84 @@ mod tests {
         let result = lower(&i, &graph, &ext, &res);
 
         assert!(!result.has_errors(), "errors: {:?}", result.errors);
+    }
+
+    // -- Script: match-bind and iterate --
+
+    #[test]
+    fn lower_script_irrefutable_match_bind() {
+        let i = Interner::new();
+        let graph = make_graph_with_ctx(&i, "x = @data { @out = x + 1; }; @out", &[("data", Ty::Int), ("out", Ty::Int)]);
+        let ext = extract::extract(&i, &graph);
+        let inf = crate::graph::infer::infer(&i, &graph, &ext);
+        let res = resolve::resolve(&i, &graph, &ext, &inf, &FxHashMap::default());
+        let result = lower(&i, &graph, &ext, &res);
+        assert!(!result.has_errors(), "errors: {:?}", result.errors);
+        let module = result.module(first_fn_id(&graph)).unwrap();
+        // Irrefutable match-bind should NOT generate JumpIf.
+        assert!(
+            !module.main.insts.iter().any(|i| matches!(i.kind, InstKind::JumpIf { .. })),
+            "irrefutable match-bind should not generate JumpIf"
+        );
+    }
+
+    #[test]
+    fn lower_script_refutable_match_bind() {
+        let i = Interner::new();
+        let graph = make_graph_with_ctx(&i, "42 = @val { @out = 1; }; @out", &[("val", Ty::Int), ("out", Ty::Int)]);
+        let ext = extract::extract(&i, &graph);
+        let inf = crate::graph::infer::infer(&i, &graph, &ext);
+        let res = resolve::resolve(&i, &graph, &ext, &inf, &FxHashMap::default());
+        let result = lower(&i, &graph, &ext, &res);
+        assert!(!result.has_errors(), "errors: {:?}", result.errors);
+        let module = result.module(first_fn_id(&graph)).unwrap();
+        // Refutable match-bind MUST generate JumpIf.
+        assert!(
+            module.main.insts.iter().any(|i| matches!(i.kind, InstKind::JumpIf { .. })),
+            "refutable match-bind should generate JumpIf"
+        );
+    }
+
+    #[test]
+    fn lower_script_iterate() {
+        let i = Interner::new();
+        let graph = make_graph_with_ctx(
+            &i,
+            "x in @items { @sum = @sum + x; }; @sum",
+            &[("items", Ty::List(Box::new(Ty::Int))), ("sum", Ty::Int)],
+        );
+        let ext = extract::extract(&i, &graph);
+        let inf = crate::graph::infer::infer(&i, &graph, &ext);
+        let res = resolve::resolve(&i, &graph, &ext, &inf, &FxHashMap::default());
+        let result = lower(&i, &graph, &ext, &res);
+        assert!(!result.has_errors(), "errors: {:?}", result.errors);
+        let module = result.module(first_fn_id(&graph)).unwrap();
+        // Iterate must generate IterStep.
+        assert!(
+            module.main.insts.iter().any(|i| matches!(i.kind, InstKind::IterStep { .. })),
+            "iterate should generate IterStep"
+        );
+    }
+
+    #[test]
+    fn lower_script_nested_iterate() {
+        let i = Interner::new();
+        let graph = make_graph_with_ctx(
+            &i,
+            "row in @matrix { x in row { @sum = @sum + x; }; }; @sum",
+            &[("matrix", Ty::List(Box::new(Ty::List(Box::new(Ty::Int))))), ("sum", Ty::Int)],
+        );
+        let ext = extract::extract(&i, &graph);
+        let inf = crate::graph::infer::infer(&i, &graph, &ext);
+        let res = resolve::resolve(&i, &graph, &ext, &inf, &FxHashMap::default());
+        let result = lower(&i, &graph, &ext, &res);
+        assert!(!result.has_errors(), "errors: {:?}", result.errors);
+        let module = result.module(first_fn_id(&graph)).unwrap();
+        // Nested iterate: two IterStep instructions.
+        let iter_count = module.main.insts.iter()
+            .filter(|i| matches!(i.kind, InstKind::IterStep { .. }))
+            .count();
+        assert_eq!(iter_count, 2, "nested iterate should have 2 IterStep");
     }
 
     // -- Soundness: type errors don't produce modules --

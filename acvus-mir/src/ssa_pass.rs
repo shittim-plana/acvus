@@ -661,4 +661,88 @@ mod tests {
         run(&mut module.main);
         assert_eq!(count_context_stores(&module.main), stores_before);
     }
+
+    // ── Script regression: entry loads + nested loops ──
+
+    #[test]
+    fn script_entry_loads_all_contexts() {
+        // All contexts must have ContextProject + ContextLoad in entry (before first BlockLabel).
+        let i = Interner::new();
+        let (module, _) = compile_script(
+            &i,
+            "x in @items { @sum = @sum + x; }; @sum",
+            &[("items", Ty::List(Box::new(Ty::Int))), ("sum", Ty::Int)],
+        )
+        .unwrap();
+
+        let first_label = module.main.insts.iter()
+            .position(|i| matches!(i.kind, InstKind::BlockLabel { .. }))
+            .unwrap_or(module.main.insts.len());
+        let entry_projects: Vec<_> = module.main.insts[..first_label].iter()
+            .filter(|i| matches!(i.kind, InstKind::ContextProject { .. }))
+            .collect();
+        let entry_loads: Vec<_> = module.main.insts[..first_label].iter()
+            .filter(|i| matches!(i.kind, InstKind::ContextLoad { .. }))
+            .collect();
+        // Both @items and @sum should have entry loads.
+        assert!(entry_projects.len() >= 2, "expected entry ContextProject for all contexts");
+        assert!(entry_loads.len() >= 2, "expected entry ContextLoad for all contexts");
+    }
+
+    #[test]
+    fn script_nested_loop_phi() {
+        // Nested loop must not panic in SSA pass (regression: IterStep CFG terminator).
+        let i = Interner::new();
+        let (module, _) = compile_script(
+            &i,
+            "row in @matrix { x in row { @sum = @sum + x; }; }; @sum",
+            &[
+                ("matrix", Ty::List(Box::new(Ty::List(Box::new(Ty::Int))))),
+                ("sum", Ty::Int),
+            ],
+        )
+        .unwrap();
+        // Must have PHI for @sum (written in inner loop).
+        assert!(
+            count_phi_blocks(&module.main) >= 1,
+            "nested loop should produce PHI for @sum"
+        );
+    }
+
+    #[test]
+    fn script_loop_with_branch_phi() {
+        // Loop body with conditional context write — needs PHI.
+        let i = Interner::new();
+        let (module, _) = compile_script(
+            &i,
+            "x in @items { 0 = x { @count = @count + 1; }; }; @count",
+            &[
+                ("items", Ty::List(Box::new(Ty::Int))),
+                ("count", Ty::Int),
+            ],
+        )
+        .unwrap();
+        assert!(
+            count_phi_blocks(&module.main) >= 1,
+            "loop + branch should produce PHI"
+        );
+    }
+
+    #[test]
+    fn script_sequential_loops_no_panic() {
+        // Two sequential loops writing same context must not panic.
+        let i = Interner::new();
+        let (module, _) = compile_script(
+            &i,
+            "x in @a { @sum = @sum + x; }; y in @b { @sum = @sum + y; }; @sum",
+            &[
+                ("a", Ty::List(Box::new(Ty::Int))),
+                ("b", Ty::List(Box::new(Ty::Int))),
+                ("sum", Ty::Int),
+            ],
+        )
+        .unwrap();
+        // Both loops write @sum — SSA pass must handle this.
+        assert!(count_context_stores(&module.main) >= 1);
+    }
 }
