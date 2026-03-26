@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use acvus_interpreter::{Defs, ExternFn, ExternRegistry, RuntimeError, Uses, Value};
 use acvus_mir::ty::Ty;
-use acvus_utils::{Astr, Interner};
-use rust_decimal::Decimal;
+use acvus_utils::Interner;
 use rustc_hash::FxHashMap;
 
+use crate::extract::{obj_get_decimal, obj_get_str, obj_get_u32, split_system, values_to_messages};
 use crate::http::{Fetch, HttpRequest, RequestError};
 use crate::message::{Content, ContentItem, Message, ModelResponse, ToolCall, Usage};
 
@@ -105,81 +105,6 @@ fn parse_response(json: serde_json::Value) -> Result<(ModelResponse, Usage), Req
 
 // ── Value extraction helpers ────────────────────────────────────────
 
-fn obj_get_str(obj: &FxHashMap<Astr, Value>, key: Astr) -> Option<String> {
-    match obj.get(&key)? {
-        Value::String(s) => Some(s.to_string()),
-        _ => None,
-    }
-}
-
-fn obj_get_decimal(obj: &FxHashMap<Astr, Value>, key: Astr) -> Option<Decimal> {
-    match obj.get(&key)? {
-        Value::Float(f) => Decimal::try_from(*f).ok(),
-        Value::Int(i) => Some(Decimal::from(*i)),
-        _ => None,
-    }
-}
-
-fn obj_get_u32(obj: &FxHashMap<Astr, Value>, key: Astr) -> Option<u32> {
-    match obj.get(&key)? {
-        Value::Int(i) => u32::try_from(*i).ok(),
-        _ => None,
-    }
-}
-
-/// Convert a Value::List of Objects (role/content) into Vec<Message>.
-fn values_to_messages(list: &[Value], interner: &Interner) -> Result<Vec<Message>, RuntimeError> {
-    let role_key = interner.intern("role");
-    let content_key = interner.intern("content");
-
-    let mut messages = Vec::with_capacity(list.len());
-    for item in list {
-        let obj = match item {
-            Value::Object(o) => o,
-            other => {
-                return Err(RuntimeError::fetch(format!(
-                    "anthropic: expected Object in messages list, got {:?}",
-                    other.kind()
-                )));
-            }
-        };
-
-        let role = obj_get_str(obj, role_key).ok_or_else(|| {
-            RuntimeError::fetch("anthropic: missing 'role' field in message")
-        })?;
-        let content_str = obj_get_str(obj, content_key).ok_or_else(|| {
-            RuntimeError::fetch("anthropic: missing 'content' field in message")
-        })?;
-
-        messages.push(Message::Content {
-            role,
-            content: Content::Text(content_str),
-        });
-    }
-    Ok(messages)
-}
-
-/// Split the first system-role message out of the list.
-/// Anthropic API takes system as a separate top-level field.
-fn split_system(messages: &[Message]) -> (Option<String>, Vec<&Message>) {
-    let mut system = None;
-    let mut rest = Vec::new();
-    for m in messages {
-        if let Message::Content {
-            role,
-            content: Content::Text(text),
-        } = m
-        {
-            if role == "system" && system.is_none() {
-                system = Some(text.clone());
-                continue;
-            }
-        }
-        rest.push(m);
-    }
-    (system, rest)
-}
-
 /// Convert a ModelResponse into a Value (List of Objects with role/content/content_type).
 fn response_to_value(resp: &ModelResponse, interner: &Interner) -> Value {
     let role_key = interner.intern("role");
@@ -270,7 +195,8 @@ pub fn anthropic_registry<F: Fetch + Send + Sync + 'static>(fetch: Arc<F>) -> Ex
                                 )));
                             }
                         };
-                        let messages = values_to_messages(messages_list, &interner)?;
+                        let messages =
+                            values_to_messages(messages_list, &interner, "anthropic")?;
 
                         // Split system message (first "system" role -> system param)
                         let (system, rest) = split_system(&messages);

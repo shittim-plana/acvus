@@ -1,13 +1,14 @@
 mod schema;
 
-use crate::http::{Fetch, HttpRequest, RequestError};
-use crate::message::*;
+use std::sync::Arc;
+
 use acvus_interpreter::{Defs, ExternFn, ExternRegistry, RuntimeError, Uses, Value};
 use acvus_mir::ty::Ty;
-use acvus_utils::{Astr, Interner};
-use rust_decimal::Decimal;
-use rustc_hash::FxHashMap;
-use std::sync::Arc;
+use acvus_utils::Interner;
+
+use crate::extract::{obj_get_decimal, obj_get_str, obj_get_u32, split_system, values_to_messages};
+use crate::http::{Fetch, HttpRequest, RequestError};
+use crate::message::*;
 
 // ── Message conversion ──────────────────────────────────────────────
 
@@ -117,76 +118,6 @@ fn parse_response(json: serde_json::Value) -> Result<(ModelResponse, Usage), Req
 
 // ── Value helpers ───────────────────────────────────────────────────
 
-fn obj_get_str(obj: &FxHashMap<Astr, Value>, key: Astr) -> Option<String> {
-    match obj.get(&key)? {
-        Value::String(s) => Some(s.to_string()),
-        _ => None,
-    }
-}
-
-/// Extract messages from `Value::List` of objects with role/content fields.
-fn extract_messages(messages: &Value, interner: &Interner) -> Result<Vec<Message>, RuntimeError> {
-    let role_key = interner.intern("role");
-    let content_key = interner.intern("content");
-
-    let list = match messages {
-        Value::List(l) => l.as_slice(),
-        other => {
-            return Err(RuntimeError::fetch(format!(
-                "google_llm: expected List for messages, got {:?}",
-                other.kind()
-            )));
-        }
-    };
-
-    let mut result = Vec::with_capacity(list.len());
-    for item in list {
-        let obj = match item {
-            Value::Object(o) => o,
-            other => {
-                return Err(RuntimeError::fetch(format!(
-                    "google_llm: expected Object in messages list, got {:?}",
-                    other.kind()
-                )));
-            }
-        };
-
-        let role = obj_get_str(obj, role_key).ok_or_else(|| {
-            RuntimeError::fetch("google_llm: missing 'role' field in message")
-        })?;
-        let content_str = obj_get_str(obj, content_key).ok_or_else(|| {
-            RuntimeError::fetch("google_llm: missing 'content' field in message")
-        })?;
-
-        result.push(Message::Content {
-            role,
-            content: Content::Text(content_str),
-        });
-    }
-    Ok(result)
-}
-
-/// Split the first system-role message out of the list.
-/// Gemini API takes system as a separate `system_instruction` field.
-fn split_system(messages: &[Message]) -> (Option<String>, Vec<&Message>) {
-    let mut system = None;
-    let mut rest = Vec::new();
-    for m in messages {
-        if let Message::Content {
-            role,
-            content: Content::Text(text),
-        } = m
-        {
-            if role == "system" && system.is_none() {
-                system = Some(text.clone());
-                continue;
-            }
-        }
-        rest.push(m);
-    }
-    (system, rest)
-}
-
 /// Build the response `Value::Object` from a `ModelResponse`.
 fn response_to_value(resp: &ModelResponse, interner: &Interner) -> Value {
     let role_key = interner.intern("role");
@@ -231,23 +162,6 @@ fn response_to_value(resp: &ModelResponse, interner: &Interner) -> Value {
             .into_iter()
             .collect(),
         ),
-    }
-}
-
-/// Extract an optional `Decimal` from a config object field.
-fn obj_get_decimal(obj: &FxHashMap<acvus_utils::Astr, Value>, key: acvus_utils::Astr) -> Option<Decimal> {
-    match obj.get(&key)? {
-        Value::Float(f) => Decimal::try_from(*f).ok(),
-        Value::Int(i) => Some(Decimal::from(*i)),
-        _ => None,
-    }
-}
-
-/// Extract an optional `u32` from a config object field.
-fn obj_get_u32(obj: &FxHashMap<acvus_utils::Astr, Value>, key: acvus_utils::Astr) -> Option<u32> {
-    match obj.get(&key)? {
-        Value::Int(i) => u32::try_from(*i).ok(),
-        _ => None,
     }
 }
 
@@ -319,7 +233,17 @@ pub fn google_registry<F: Fetch + Send + Sync + 'static>(fetch: Arc<F>) -> Exter
                       Uses(()): Uses<()>| {
                     let fetch = Arc::clone(&fetch);
                     async move {
-                        let msgs = extract_messages(&messages, &interner)?;
+                        let messages_list = match &messages {
+                            Value::List(l) => l.as_slice(),
+                            other => {
+                                return Err(RuntimeError::fetch(format!(
+                                    "google_llm: expected List for messages, got {:?}",
+                                    other.kind()
+                                )));
+                            }
+                        };
+                        let msgs =
+                            values_to_messages(messages_list, &interner, "google_llm")?;
                         let (system, rest) = split_system(&msgs);
 
                         let config_obj = match &config {

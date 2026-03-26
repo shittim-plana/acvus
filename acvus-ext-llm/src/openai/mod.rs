@@ -7,9 +7,9 @@ use std::sync::Arc;
 use acvus_interpreter::{Defs, ExternFn, ExternRegistry, RuntimeError, Uses, Value};
 use acvus_mir::ty::Ty;
 use acvus_utils::{Astr, Interner};
-use rust_decimal::Decimal;
 use rustc_hash::FxHashMap;
 
+use crate::extract::{obj_get_decimal, obj_get_str, obj_get_u32, values_to_messages};
 use crate::http::{Fetch, HttpRequest, RequestError};
 use crate::message::{Content, ContentItem, Message, ModelResponse, ToolCall, Usage};
 
@@ -117,31 +117,6 @@ fn parse_response(json: serde_json::Value) -> Result<(ModelResponse, Usage), Req
 
 // ── Value extraction helpers ────────────────────────────────────────
 
-/// Extract a string field from a Value::Object.
-fn obj_get_str(obj: &FxHashMap<Astr, Value>, key: Astr) -> Option<String> {
-    match obj.get(&key)? {
-        Value::String(s) => Some(s.to_string()),
-        _ => None,
-    }
-}
-
-/// Extract an optional Decimal field from a Value::Object.
-fn obj_get_decimal(obj: &FxHashMap<Astr, Value>, key: Astr) -> Option<Decimal> {
-    match obj.get(&key)? {
-        Value::Float(f) => Decimal::try_from(*f).ok(),
-        Value::Int(i) => Some(Decimal::from(*i)),
-        _ => None,
-    }
-}
-
-/// Extract an optional u32 field from a Value::Object.
-fn obj_get_u32(obj: &FxHashMap<Astr, Value>, key: Astr) -> Option<u32> {
-    match obj.get(&key)? {
-        Value::Int(i) => u32::try_from(*i).ok(),
-        _ => None,
-    }
-}
-
 fn usage_to_value(usage: &Usage, input_tokens_key: Astr, output_tokens_key: Astr) -> Value {
     let input = match usage.input_tokens {
         Some(n) => Value::Int(n as i64),
@@ -157,37 +132,6 @@ fn usage_to_value(usage: &Usage, input_tokens_key: Astr, output_tokens_key: Astr
     ]))
 }
 
-/// Convert a Value::List of Objects (role/content) into Vec<Message>.
-fn values_to_messages(list: &[Value], interner: &Interner) -> Result<Vec<Message>, RuntimeError> {
-    let role_key = interner.intern("role");
-    let content_key = interner.intern("content");
-
-    let mut messages = Vec::with_capacity(list.len());
-    for item in list {
-        let obj = match item {
-            Value::Object(o) => o,
-            other => {
-                return Err(RuntimeError::fetch(format!(
-                    "openai: expected Object in messages list, got {:?}",
-                    other.kind()
-                )));
-            }
-        };
-
-        let role = obj_get_str(obj, role_key).ok_or_else(|| {
-            RuntimeError::fetch("openai: missing 'role' field in message")
-        })?;
-        let content_str = obj_get_str(obj, content_key).ok_or_else(|| {
-            RuntimeError::fetch("openai: missing 'content' field in message")
-        })?;
-
-        messages.push(Message::Content {
-            role,
-            content: Content::Text(content_str),
-        });
-    }
-    Ok(messages)
-}
 
 /// Convert a ModelResponse + Usage into a Value::Object.
 fn response_to_value(
@@ -272,14 +216,38 @@ pub fn openai_registry<F: Fetch + Send + Sync + 'static>(fetch: Arc<F>) -> Exter
 
         let fetch = Arc::clone(&fetch);
 
+        let input_msg_ty = Ty::Object(
+            [
+                (interner.intern("role"), Ty::String),
+                (interner.intern("content"), Ty::String),
+            ]
+            .into_iter()
+            .collect(),
+        );
+
+        let config_ty = Ty::Object(
+            [
+                (interner.intern("endpoint"), Ty::String),
+                (interner.intern("api_key"), Ty::String),
+                (interner.intern("model"), Ty::String),
+            ]
+            .into_iter()
+            .collect(),
+        );
+
+        let msg_elem_ty = Ty::Object(
+            [
+                (interner.intern("role"), Ty::String),
+                (interner.intern("content"), Ty::String),
+                (interner.intern("content_type"), Ty::String),
+            ]
+            .into_iter()
+            .collect(),
+        );
+
         vec![ExternFn::build("openai_chat")
-            .params(vec![
-                // messages: List (typed as String for now — runtime uses Value)
-                Ty::String,
-                // config: Object (typed as String for now — runtime uses Value)
-                Ty::String,
-            ])
-            .ret(Ty::String)
+            .params(vec![Ty::List(Box::new(input_msg_ty)), config_ty])
+            .ret(Ty::List(Box::new(msg_elem_ty)))
             .io()
             .handler_async(move |interner: Interner,
                                   (messages_val, config_val): (Value, Value),
@@ -296,7 +264,8 @@ pub fn openai_registry<F: Fetch + Send + Sync + 'static>(fetch: Arc<F>) -> Exter
                             )));
                         }
                     };
-                    let messages = values_to_messages(messages_list, &interner)?;
+                    let messages =
+                        values_to_messages(messages_list, &interner, "openai_chat")?;
 
                     // Extract config from Value::Object
                     let config_obj = match &config_val {

@@ -1,5 +1,6 @@
 pub mod http;
 pub mod message;
+pub mod extract;
 
 pub mod openai;
 pub mod anthropic;
