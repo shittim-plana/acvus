@@ -36,7 +36,7 @@ struct ResolveEntry {
 /// Information about a context/param that must be injected externally.
 #[derive(Debug, Clone)]
 pub struct ContextInfo {
-    pub name: Astr,
+    pub name: QualifiedRef,
     pub ty: Ty,
 }
 
@@ -801,7 +801,7 @@ impl IncrementalGraph {
             functions.extend(scc_result.fn_metas.clone());
         }
 
-        let mut all_map: FxHashMap<Astr, Ty> = FxHashMap::default();
+        let mut all_map: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
         for params in fn_params.values() {
             for param in params {
                 all_map

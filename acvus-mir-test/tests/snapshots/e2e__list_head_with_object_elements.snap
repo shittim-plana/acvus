@@ -24,13 +24,13 @@ expression: ir
     17 │   r8 = r1[0]
     19 │   r9 = r8.name
     20 │   r10 = T0 + r9
-    21 │   jump L0(r10)
+    21 │   jump L0(r10, r8)
     22 │ L1:
     25 │   r11 = T0 + T1
-    26 │   jump L0(r11)
-    27 │ L0(r12: String):  ; merge_of L2
-    28 │   r13 = T0 + r12
-    29 │   return r13
+    26 │   jump L0(r11, r12)
+    27 │ L0(r13: String, r14: {name: String}):  ; merge_of L2
+    28 │   r15 = T0 + r13
+    29 │   return r15
 
     ; r0 (@users) : <error>
     ; r1 (v1) : List<{name: String}>
@@ -42,13 +42,16 @@ expression: ir
     ; r7 (v9) : Bool
     ; r8 (first) : {name: String}
     ; r9 (name) : String
-    ; r10 (v14) : String
-    ; r11 (v17) : String
-    ; r12 (v18) : String
+    ; r10 (v15) : String
+    ; r11 (v18) : String
+    ; r12 (v21) : {name: String}
     ; r13 (v19) : String
-    ; r14 (@users) : List<{name: String}>
-    ; r15 (v12) : String
-    ; r16 (v4) : List<{name: String}>
-    ; r17 (v15) : String
-    ; r18 (v2) : String
-    ; r19 (v16) : String
+    ; r14 (v23) : {name: String}
+    ; r15 (v20) : String
+    ; r16 (@users) : List<{name: String}>
+    ; r17 (v17) : String
+    ; r18 (v4) : List<{name: String}>
+    ; r19 (first) : {name: String}
+    ; r20 (v2) : String
+    ; r21 (v12) : String
+    ; r22 (v16) : String

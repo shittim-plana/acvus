@@ -766,7 +766,7 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(tokens.len(), 1);
-        assert!(matches!(&tokens[0].1, Token::VarRef(s) if interner.resolve(*s) == "global"));
+        assert!(matches!(&tokens[0].1, Token::ParamRef(s) if interner.resolve(*s) == "global"));
     }
 
     #[test]

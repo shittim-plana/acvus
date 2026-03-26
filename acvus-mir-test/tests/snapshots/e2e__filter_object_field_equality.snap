@@ -27,11 +27,13 @@ expression: ir
     ; r6 (v10) : String
     ; r7 (len(...)) : Int
     ; r8 (to_string(...)) : String
-    ; r9 (v13) : String
-    ; r10 (@users) : List<{active: Bool, name: String}>
-    ; r11 (v2) : String
+    ; r9 (v14) : String
+    ; r10 (x) : List<{active: Bool, name: String}>
+    ; r11 (@users) : List<{active: Bool, name: String}>
     ; r12 (v9) : String
     ; r13 (v4) : List<{active: Bool, name: String}>
+    ; r14 (v15) : List<{active: Bool, name: String}>
+    ; r15 (v2) : String
 
 === closure L0 (ValueId(0)) ===
      0 │   r0 = r1.active
@@ -39,3 +41,5 @@ expression: ir
 
     ; r0 (active) : Bool
     ; r1 (v0) : {active: Bool, name: String}
+    ; r2 (v3) : {active: Bool, name: String}
+    ; r3 (u) : {active: Bool, name: String}

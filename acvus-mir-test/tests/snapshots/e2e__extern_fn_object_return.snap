@@ -20,8 +20,10 @@ expression: ir
     ; r3 (v3) : Int
     ; r4 (v8) : String
     ; r5 (name) : String
-    ; r6 (v10) : String
+    ; r6 (v11) : String
     ; r7 (v7) : String
     ; r8 (v6) : Fn(Int) -> {age: Int, name: String}
     ; r9 (v2) : String
-    ; r10 (@get_user) : Fn(Int) -> {age: Int, name: String}
+    ; r10 (u) : {age: Int, name: String}
+    ; r11 (@get_user) : Fn(Int) -> {age: Int, name: String}
+    ; r12 (v12) : {age: Int, name: String}

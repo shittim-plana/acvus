@@ -6,11 +6,12 @@ expression: ir
   T0 = ""
 
 === main ===
-     2 │   var_store $count = 42 (r0)
+     2 │   var_store count = 42 (r0)
      4 │   r1 = T0 + T0
      5 │   return r1
 
     ; r0 (v1) : Int
     ; r1 (v3) : String
     ; r2 (v0) : String
-    ; r3 (v2) : String
+    ; r3 (v4) : Int
+    ; r4 (v2) : String

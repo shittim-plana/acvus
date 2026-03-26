@@ -436,7 +436,7 @@ impl SequenceChain {
     pub fn has_ops(&self) -> bool {
         !self.ops.is_empty()
     }
-    pub fn origin_checksum(&self) -> u64 {
+    pub fn origin_checksum(&self) -> acvus_utils::DequeChecksum {
         self.origin.checksum()
     }
 

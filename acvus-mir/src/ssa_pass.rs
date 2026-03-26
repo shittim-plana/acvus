@@ -1,18 +1,20 @@
-//! SSA Context Pass (mem2reg for context variables)
+//! SSA Pass (mem2reg for context and local variables)
 //!
-//! Promotes ContextProject/ContextLoad/ContextStore to SSA form.
+//! Promotes ContextProject/ContextLoad/ContextStore and VarStore/VarLoad/ParamLoad to SSA form.
 //! Self-contained: inserts initial loads, computes PHIs, patches instructions.
 //!
-//! Write-back model: branch-internal ContextStores are removed;
+//! Write-back model (context only): branch-internal ContextStores are removed;
 //! a single write-back ContextStore is inserted after each merge block.
+//! Local variables do NOT need write-back — they exist only in SSA form.
 
+use acvus_utils::Astr;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::analysis::cfg::{BlockIdx, Cfg, Terminator};
 use crate::graph::{FunctionId, QualifiedRef};
 use crate::ir::{Callee, Inst, InstKind, Label, MirBody, ValueId};
-use crate::ssa::{ENTRY_BLOCK, SSABuilder};
+use crate::ssa::{ENTRY_BLOCK, SSABuilder, SsaVar};
 use crate::ty::{Effect, Ty};
 
 /// Run the SSA context pass on a MirBody.
@@ -21,24 +23,42 @@ use crate::ty::{Effect, Ty};
 /// (which contexts a function reads/writes). Used to populate
 /// `context_uses`/`context_defs` on FunctionCall/Spawn instructions.
 pub fn run(body: &mut MirBody, fn_types: &FxHashMap<FunctionId, Ty>) {
-    // Step 1: Build CFG + collect context ops.
+    // Step 1: Build CFG + collect context + local variable ops.
     let cfg = Cfg::build(&body.insts);
     if cfg.blocks.is_empty() {
         return;
     }
-    let ctx_info = collect_context_info(&cfg, &body.insts, &body.val_types);
+    let ssa_info = collect_ssa_info(&cfg, &body.insts, &body.val_types);
 
     // Step 2: Run SSABuilder + patch PHIs (only if there are writes + merge points).
-    if !ctx_info.written_contexts.is_empty() {
+    let var_subst = if !ssa_info.written_contexts.is_empty() || !ssa_info.written_vars.is_empty() {
         let preds = cfg.predecessors();
-        let phi_insertions = run_ssa_builder(&cfg, &preds, &ctx_info, &mut body.val_factory);
+        let (phi_insertions, var_subst) =
+            run_ssa_builder(&cfg, &preds, &ssa_info, &mut body.val_factory, &mut body.val_types);
         if !phi_insertions.is_empty() {
-            patch_instructions(body, &cfg, &phi_insertions, &ctx_info);
+            patch_instructions(body, &cfg, &phi_insertions, &ssa_info);
         }
-    }
+        var_subst
+    } else {
+        FxHashMap::default()
+    };
 
     // Step 3: Forward context values — eliminate redundant loads + populate call context bindings.
-    forward_context_values(body, fn_types);
+    let fwd_subst = forward_context_values(body, fn_types);
+
+    // Step 4: Apply VarLoad/ParamLoad substitutions and remove var instructions.
+    // Chain var_subst through forward's subst: if var_subst maps r10→r5 and
+    // forward maps r5→r3, the effective mapping is r10→r3.
+    if !var_subst.is_empty() {
+        let chained: FxHashMap<ValueId, ValueId> = var_subst
+            .into_iter()
+            .map(|(from, to)| {
+                let final_target = fwd_subst.get(&to).copied().unwrap_or(to);
+                (from, final_target)
+            })
+            .collect();
+        apply_var_subst(body, &chained);
+    }
 }
 
 /// Store-load forwarding for context variables.
@@ -49,7 +69,7 @@ pub fn run(body: &mut MirBody, fn_types: &FxHashMap<FunctionId, Ty>) {
 ///
 /// Also eliminates the initial entry load if the context is never read
 /// before it's written (dead initial load).
-fn forward_context_values(body: &mut MirBody, fn_types: &FxHashMap<FunctionId, Ty>) {
+fn forward_context_values(body: &mut MirBody, fn_types: &FxHashMap<FunctionId, Ty>) -> FxHashMap<ValueId, ValueId> {
     // Map: projection ValueId → QualifiedRef.
     let mut val_to_ctx: FxHashMap<ValueId, QualifiedRef> = FxHashMap::default();
     // Current known value per context (from entry load or store).
@@ -139,7 +159,7 @@ fn forward_context_values(body: &mut MirBody, fn_types: &FxHashMap<FunctionId, T
     }
 
     if remove.is_empty() && subst.is_empty() && call_patches.is_empty() {
-        return;
+        return subst;
     }
 
     // Apply call patches (context_uses/context_defs population).
@@ -168,6 +188,8 @@ fn forward_context_values(body: &mut MirBody, fn_types: &FxHashMap<FunctionId, T
             inst
         })
         .collect();
+
+    subst
 }
 
 /// Extract reads/writes QualifiedRefs from a function's type effect.
@@ -204,6 +226,7 @@ fn apply_subst(kind: &mut InstKind, subst: &FxHashMap<ValueId, ValueId>) {
             s(value);
         }
         InstKind::VarLoad { .. } => {}
+        InstKind::ParamLoad { .. } => {}
         InstKind::VarStore { src, .. } => s(src),
         InstKind::BinOp { left, right, .. } => {
             s(left);
@@ -296,35 +319,57 @@ fn apply_subst(kind: &mut InstKind, subst: &FxHashMap<ValueId, ValueId>) {
     }
 }
 
-// ── Step 1: Context info collection ─────────────────────────────────
+// ── Step 1: SSA info collection ──────────────────────────────────────
 
-/// Per-block context operations.
-#[derive(Debug, Default)]
-struct BlockContextOps {
-    /// (inst_index, ctx_id, value)
-    stores: Vec<(usize, QualifiedRef, ValueId)>,
+/// A single SSA-relevant operation, recorded in instruction order.
+#[derive(Debug, Clone)]
+enum SsaOp {
+    CtxStore { inst_idx: usize, ctx: QualifiedRef, value: ValueId },
+    VarStore { inst_idx: usize, name: Astr, value: ValueId },
+    VarLoad { dst: ValueId, name: Astr },
+    ParamLoad { dst: ValueId, name: Astr },
 }
 
-/// Aggregated context info.
-struct ContextInfo {
-    written_contexts: FxHashSet<QualifiedRef>,
-    block_ops: FxHashMap<BlockIdx, BlockContextOps>,
-    /// ctx → initial loaded value (from entry region ContextLoad).
-    entry_defs: BTreeMap<QualifiedRef, ValueId>,
+/// Per-block operations in instruction order.
+#[derive(Debug, Default)]
+struct BlockOps {
+    ops: Vec<SsaOp>,
+}
+
+/// Aggregated SSA info for both context and local variables.
+struct SsaInfo {
+    // ── Context fields ──
+    written_contexts: BTreeSet<QualifiedRef>,
     /// ctx → root type (from ContextProject instructions).
     ctx_types: FxHashMap<QualifiedRef, Ty>,
+    /// ctx → initial loaded value (from entry region ContextLoad).
+    entry_ctx_defs: BTreeMap<QualifiedRef, ValueId>,
+
+    // ── Local variable fields ──
+    written_vars: BTreeSet<Astr>,
+    /// var name → type (from VarStore src types).
+    var_types: FxHashMap<Astr, Ty>,
+    /// param name → initial loaded value (from entry region ParamLoad).
+    entry_param_defs: BTreeMap<Astr, ValueId>,
+
+    // ── Block ops (instruction-ordered) ──
+    block_ops: FxHashMap<BlockIdx, BlockOps>,
 }
 
-fn collect_context_info(
+fn collect_ssa_info(
     cfg: &Cfg,
     insts: &[Inst],
     val_types: &FxHashMap<ValueId, Ty>,
-) -> ContextInfo {
+) -> SsaInfo {
     let mut val_to_ctx: FxHashMap<ValueId, QualifiedRef> = FxHashMap::default();
-    let mut written_contexts = FxHashSet::default();
-    let mut block_ops: FxHashMap<BlockIdx, BlockContextOps> = FxHashMap::default();
-    let mut entry_defs: BTreeMap<QualifiedRef, ValueId> = BTreeMap::default();
+    let mut written_contexts = BTreeSet::default();
+    let mut block_ops: FxHashMap<BlockIdx, BlockOps> = FxHashMap::default();
+    let mut entry_ctx_defs: BTreeMap<QualifiedRef, ValueId> = BTreeMap::default();
     let mut ctx_types: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
+
+    let mut written_vars: BTreeSet<Astr> = BTreeSet::default();
+    let mut var_types: FxHashMap<Astr, Ty> = FxHashMap::default();
+    let mut entry_param_defs: BTreeMap<Astr, ValueId> = BTreeMap::default();
 
     for (bi, block) in cfg.blocks.iter().enumerate() {
         let ops = block_ops.entry(BlockIdx(bi)).or_default();
@@ -342,13 +387,13 @@ fn collect_context_info(
                     if let Some(&ctx_id) = val_to_ctx.get(src) {
                         // Entry block loads = initial definitions.
                         if bi == 0 {
-                            entry_defs.entry(ctx_id).or_insert(*dst);
+                            entry_ctx_defs.entry(ctx_id).or_insert(*dst);
                         }
                     }
                 }
                 InstKind::ContextStore { dst, value } => {
                     if let Some(&ctx_id) = val_to_ctx.get(dst) {
-                        ops.stores.push((inst_i, ctx_id, *value));
+                        ops.ops.push(SsaOp::CtxStore { inst_idx: inst_i, ctx: ctx_id, value: *value });
                         written_contexts.insert(ctx_id);
                     }
                 }
@@ -357,16 +402,35 @@ fn collect_context_info(
                         val_to_ctx.insert(*dst, ctx_id);
                     }
                 }
+                InstKind::VarStore { name, src } => {
+                    ops.ops.push(SsaOp::VarStore { inst_idx: inst_i, name: *name, value: *src });
+                    written_vars.insert(*name);
+                    if let Some(ty) = val_types.get(src) {
+                        var_types.entry(*name).or_insert_with(|| ty.clone());
+                    }
+                }
+                InstKind::VarLoad { dst, name } => {
+                    ops.ops.push(SsaOp::VarLoad { dst: *dst, name: *name });
+                }
+                InstKind::ParamLoad { dst, name } => {
+                    if bi == 0 {
+                        entry_param_defs.entry(*name).or_insert(*dst);
+                    }
+                    ops.ops.push(SsaOp::ParamLoad { dst: *dst, name: *name });
+                }
                 _ => {}
             }
         }
     }
 
-    ContextInfo {
+    SsaInfo {
         written_contexts,
-        block_ops,
-        entry_defs,
         ctx_types,
+        entry_ctx_defs,
+        written_vars,
+        var_types,
+        entry_param_defs,
+        block_ops,
     }
 }
 
@@ -375,9 +439,10 @@ fn collect_context_info(
 fn run_ssa_builder(
     cfg: &Cfg,
     preds: &FxHashMap<BlockIdx, smallvec::SmallVec<[BlockIdx; 2]>>,
-    ctx_info: &ContextInfo,
+    ssa_info: &SsaInfo,
     val_factory: &mut acvus_utils::LocalFactory<ValueId>,
-) -> Vec<crate::ssa::PhiInsertion> {
+    val_types: &mut FxHashMap<ValueId, Ty>,
+) -> (Vec<crate::ssa::PhiInsertion>, FxHashMap<ValueId, ValueId>) {
     let mut ssa = SSABuilder::new();
 
     let block_label = |bi: BlockIdx| -> Label {
@@ -409,20 +474,48 @@ fn run_ssa_builder(
     // Seal entry block.
     ssa.seal_block(ENTRY_BLOCK, &mut || val_factory.next());
 
-    // Define initial values in entry block (guaranteed by Step 0).
-    // BTreeMap iteration is deterministic by QualifiedRef ordering.
-    for (&ctx_id, &val) in &ctx_info.entry_defs {
-        ssa.define(ENTRY_BLOCK, ctx_id, val);
+    // Define initial values in entry block.
+    // Context entry defs (from ContextLoad in entry region).
+    for (&ctx_id, &val) in &ssa_info.entry_ctx_defs {
+        ssa.define(ENTRY_BLOCK, SsaVar::Context(ctx_id), val);
+    }
+    // Param entry defs (from ParamLoad in entry region).
+    for (name, &val) in &ssa_info.entry_param_defs {
+        ssa.define(ENTRY_BLOCK, SsaVar::Local(*name), val);
+    }
+    // Written vars without entry defs need a bottom/poison definition
+    // so the SSA builder can resolve use_var at merge points.
+    // These are variables first defined inside a block (e.g., loop iterator bindings).
+    for &name in &ssa_info.written_vars {
+        if !ssa_info.entry_param_defs.contains_key(&name) {
+            let poison = val_factory.next();
+            if let Some(ty) = ssa_info.var_types.get(&name) {
+                val_types.insert(poison, ty.clone());
+            }
+            ssa.define(ENTRY_BLOCK, SsaVar::Local(name), poison);
+        }
     }
 
-    // Process blocks: define writes, seal non-loop-headers.
+    // Process blocks: define stores in instruction order.
+    // VarLoad/ParamLoad substitutions are deferred until all blocks are sealed,
+    // because use_var on an unsealed block returns a pending phi placeholder
+    // that may be resolved to a different value after sealing.
     for (bi, _) in cfg.blocks.iter().enumerate() {
         let block_idx = BlockIdx(bi);
         let label = block_label(block_idx);
 
-        if let Some(ops) = ctx_info.block_ops.get(&block_idx) {
-            for &(_, ctx_id, value) in &ops.stores {
-                ssa.define(label, ctx_id, value);
+        if let Some(ops) = ssa_info.block_ops.get(&block_idx) {
+            for op in &ops.ops {
+                match op {
+                    SsaOp::CtxStore { ctx, value, .. } => {
+                        ssa.define(label, SsaVar::Context(*ctx), *value);
+                    }
+                    SsaOp::VarStore { name, value, .. } => {
+                        ssa.define(label, SsaVar::Local(*name), *value);
+                    }
+                    // VarLoad/ParamLoad — deferred, see below.
+                    SsaOp::VarLoad { .. } | SsaOp::ParamLoad { .. } => {}
+                }
             }
         }
 
@@ -436,17 +529,57 @@ fn run_ssa_builder(
         ssa.seal_block(block_label(header), &mut || val_factory.next());
     }
 
-    // Trigger PHIs at merge points.
-    for (block_idx, block_preds) in preds {
-        if block_preds.len() > 1 {
+    // Trigger PHIs at merge points (sorted for deterministic ValueId allocation).
+    let mut merge_blocks: Vec<_> = preds.iter().filter(|(_, p)| p.len() > 1).collect();
+    merge_blocks.sort_by_key(|(idx, _)| *idx);
+    for (block_idx, _) in merge_blocks {
+        {
             let label = block_label(*block_idx);
-            for &ctx_id in &ctx_info.written_contexts {
-                let _ = ssa.use_var(label, ctx_id, &mut || val_factory.next());
+            for &ctx_id in &ssa_info.written_contexts {
+                let _ = ssa.use_var(label, SsaVar::Context(ctx_id), &mut || val_factory.next());
+            }
+            for &name in &ssa_info.written_vars {
+                let _ = ssa.use_var(label, SsaVar::Local(name), &mut || val_factory.next());
             }
         }
     }
 
-    ssa.finish()
+    // Build var_subst: resolve VarLoad/ParamLoad to SSA values.
+    // Two mechanisms:
+    //   1. Intra-block: VarStore in same block before VarLoad → direct forwarding.
+    //   2. Inter-block: use_var on sealed SSA builder → predecessor lookup.
+    let mut var_subst: FxHashMap<ValueId, ValueId> = FxHashMap::default();
+    for (bi, _) in cfg.blocks.iter().enumerate() {
+        let block_idx = BlockIdx(bi);
+        let label = block_label(block_idx);
+        // Track last VarStore value per name within this block.
+        let mut intra_block: FxHashMap<Astr, ValueId> = FxHashMap::default();
+
+        if let Some(ops) = ssa_info.block_ops.get(&block_idx) {
+            for op in &ops.ops {
+                match op {
+                    SsaOp::VarStore { name, value, .. } => {
+                        intra_block.insert(*name, *value);
+                    }
+                    SsaOp::VarLoad { dst, name } | SsaOp::ParamLoad { dst, name } => {
+                        let ssa_val = if let Some(&local_val) = intra_block.get(name) {
+                            // Same block — forward from preceding VarStore.
+                            local_val
+                        } else {
+                            // Cross-block — ask SSA builder (all blocks sealed).
+                            ssa.use_var(label, SsaVar::Local(*name), &mut || val_factory.next())
+                        };
+                        if ssa_val != *dst {
+                            var_subst.insert(*dst, ssa_val);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    (ssa.finish(), var_subst)
 }
 
 // ── Step 3: Patch instructions ──────────────────────────────────────
@@ -455,19 +588,19 @@ fn patch_instructions(
     body: &mut MirBody,
     cfg: &Cfg,
     phi_insertions: &[crate::ssa::PhiInsertion],
-    ctx_info: &ContextInfo,
+    ssa_info: &SsaInfo,
 ) {
     // PHI lookup tables.
     let mut block_phis: BTreeMap<Label, Vec<&crate::ssa::PhiInsertion>> = BTreeMap::default();
     for phi in phi_insertions {
         block_phis.entry(phi.block).or_default().push(phi);
     }
-    // Sort PHIs by QualifiedRef for deterministic block param ordering.
+    // Sort PHIs by SsaVar for deterministic block param ordering.
     for phis in block_phis.values_mut() {
-        phis.sort_by_key(|p| p.context);
+        phis.sort_by_key(|p| p.var);
     }
 
-    // Build jump args in the same QualifiedRef-sorted order as block_phis.
+    // Build jump args in the same SsaVar-sorted order as block_phis.
     let mut jump_extra_args: FxHashMap<(Label, Label), Vec<ValueId>> = FxHashMap::default();
     for (&label, phis) in &block_phis {
         for phi in phis {
@@ -478,7 +611,13 @@ fn patch_instructions(
     }
 
     // Identify ContextStores to remove (in branches superseded by PHI write-back).
-    let phi_contexts: FxHashSet<QualifiedRef> = phi_insertions.iter().map(|p| p.context).collect();
+    let phi_contexts: FxHashSet<QualifiedRef> = phi_insertions
+        .iter()
+        .filter_map(|p| match p.var {
+            SsaVar::Context(ctx) => Some(ctx),
+            SsaVar::Local(_) => None,
+        })
+        .collect();
     let merge_labels: FxHashSet<Label> = block_phis.keys().copied().collect();
     let mut remove_indices: FxHashSet<usize> = FxHashSet::default();
 
@@ -493,15 +632,22 @@ fn patch_instructions(
             Terminator::IterStep { done, .. } => merge_labels.contains(done),
             _ => false,
         };
-        if jumps_to_merge && let Some(ops) = ctx_info.block_ops.get(&BlockIdx(bi)) {
-            for &(inst_i, ctx_id, _) in &ops.stores {
-                if phi_contexts.contains(&ctx_id) {
-                    remove_indices.insert(inst_i);
-                    // Remove preceding ContextProject if it exists.
-                    if inst_i > 0
-                        && matches!(body.insts[inst_i - 1].kind, InstKind::ContextProject { .. })
-                    {
-                        remove_indices.insert(inst_i - 1);
+        if jumps_to_merge {
+            if let Some(ops) = ssa_info.block_ops.get(&BlockIdx(bi)) {
+                for op in &ops.ops {
+                    if let SsaOp::CtxStore { inst_idx, ctx, .. } = op {
+                        if phi_contexts.contains(ctx) {
+                            remove_indices.insert(*inst_idx);
+                            // Remove preceding ContextProject if it exists.
+                            if *inst_idx > 0
+                                && matches!(
+                                    body.insts[*inst_idx - 1].kind,
+                                    InstKind::ContextProject { .. }
+                                )
+                            {
+                                remove_indices.insert(*inst_idx - 1);
+                            }
+                        }
                     }
                 }
             }
@@ -530,12 +676,23 @@ fn patch_instructions(
                 let span = inst.span;
                 new_insts.push(inst);
 
-                // Write-back ContextStores for PHI values.
+                // Write-back ContextStores for context PHI values.
+                // Local variable PHIs do NOT need write-back.
                 if let Some(phis) = phis_here {
                     for phi in phis {
-                        let ty = ctx_info
+                        let ctx = match phi.var {
+                            SsaVar::Context(ctx) => ctx,
+                            SsaVar::Local(name) => {
+                                // For local PHIs, just set the type on the result value.
+                                if let Some(ty) = ssa_info.var_types.get(&name) {
+                                    body.val_types.insert(phi.result, ty.clone());
+                                }
+                                continue;
+                            }
+                        };
+                        let ty = ssa_info
                             .ctx_types
-                            .get(&phi.context)
+                            .get(&ctx)
                             .expect("missing ty for context in PHI write-back")
                             .clone();
                         // Set type for PHI result value.
@@ -544,10 +701,7 @@ fn patch_instructions(
                         body.val_types.insert(proj, ty.clone());
                         new_insts.push(Inst {
                             span,
-                            kind: InstKind::ContextProject {
-                                dst: proj,
-                                ctx: phi.context,
-                            },
+                            kind: InstKind::ContextProject { dst: proj, ctx },
                         });
                         new_insts.push(Inst {
                             span,
@@ -585,6 +739,23 @@ fn patch_instructions(
     }
 
     body.insts = new_insts;
+}
+
+// ── Step 4: Apply var substitutions + remove VarLoad/VarStore/ParamLoad ──
+
+fn apply_var_subst(body: &mut MirBody, var_subst: &FxHashMap<ValueId, ValueId>) {
+    // Apply substitutions to all instruction operands.
+    for inst in &mut body.insts {
+        apply_subst(&mut inst.kind, var_subst);
+    }
+
+    // Remove VarLoad/VarStore/ParamLoad instructions (now dead).
+    body.insts.retain(|inst| {
+        !matches!(
+            inst.kind,
+            InstKind::VarLoad { .. } | InstKind::VarStore { .. } | InstKind::ParamLoad { .. }
+        )
+    });
 }
 
 // ── Tests ───────────────────────────────────────────────────────────

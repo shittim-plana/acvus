@@ -20,12 +20,12 @@ expression: ir
     15 │   r11 = r1.name
     16 │   r12 = r1.age
     18 │   r13 = T0 + r11
-    19 │   jump L0(r13)
+    19 │   jump L0(r13, r11, r12)
     20 │ L1:
-    22 │   jump L0(T0)
-    23 │ L0(r14: String):  ; merge_of L2
-    24 │   r15 = T0 + r14
-    25 │   return r15
+    22 │   jump L0(T0, r14, r15)
+    23 │ L0(r16: String, r17: String, r18: Int):  ; merge_of L2
+    24 │   r19 = T0 + r16
+    25 │   return r19
 
     ; r0 (@user) : <error>
     ; r1 (v1) : {age: Int, email: String, name: String}
@@ -40,11 +40,16 @@ expression: ir
     ; r10 (v12) : Bool
     ; r11 (name) : String
     ; r12 (age) : Int
-    ; r13 (v17) : String
-    ; r14 (v19) : String
-    ; r15 (v20) : String
-    ; r16 (@user) : {age: Int, email: String, name: String}
-    ; r17 (v4) : {age: Int, email: String, name: String}
-    ; r18 (v18) : String
-    ; r19 (v2) : String
-    ; r20 (v16) : String
+    ; r13 (v18) : String
+    ; r14 (v22) : String
+    ; r15 (v23) : Int
+    ; r16 (v20) : String
+    ; r17 (v24) : String
+    ; r18 (v25) : Int
+    ; r19 (v21) : String
+    ; r20 (@user) : {age: Int, email: String, name: String}
+    ; r21 (name) : String
+    ; r22 (v4) : {age: Int, email: String, name: String}
+    ; r23 (v2) : String
+    ; r24 (v16) : String
+    ; r25 (v19) : String

@@ -27,11 +27,13 @@ expression: ir
     ; r6 (v10) : String
     ; r7 (len(...)) : Int
     ; r8 (to_string(...)) : String
-    ; r9 (v13) : String
-    ; r10 (@users) : List<{age: Int, name: String}>
-    ; r11 (v2) : String
+    ; r9 (v14) : String
+    ; r10 (x) : List<(String, Int)>
+    ; r11 (@users) : List<{age: Int, name: String}>
     ; r12 (v9) : String
     ; r13 (v4) : List<{age: Int, name: String}>
+    ; r14 (v15) : List<(String, Int)>
+    ; r15 (v2) : String
 
 === closure L0 (ValueId(0)) ===
      0 │   r0 = r1.name
@@ -42,4 +44,7 @@ expression: ir
     ; r0 (name) : String
     ; r1 (v0) : {age: Int, name: String}
     ; r2 (age) : Int
-    ; r3 (v3) : (String, Int)
+    ; r3 (v5) : (String, Int)
+    ; r4 (u) : {age: Int, name: String}
+    ; r5 (u) : {age: Int, name: String}
+    ; r6 (v6) : {age: Int, name: String}

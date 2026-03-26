@@ -9,7 +9,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::error::{MirError, MirErrorKind};
 use crate::ir::CastKind;
-use crate::ty::{Effect, Param, Polarity, Purity, Ty, TySubst, TypeEnv};
+use crate::ty::{Effect, Param, Polarity, Materiality, Ty, TySubst, TypeEnv};
 use crate::variant::VariantPayload;
 
 /// Maps each AST Span to its inferred type.
@@ -49,9 +49,8 @@ pub struct TypeResolution<S = Checked> {
     pub body_reads: FxHashSet<Astr>,
     /// Context names directly written by this function body (shallow — no transitive).
     pub body_writes: FxHashSet<Astr>,
-    /// Free parameters inferred during analysis-mode typecheck.
-    /// Empty in non-analysis mode.
-    pub inferred_params: Vec<(Astr, Ty)>,
+    /// Extern parameters ($name) discovered during typecheck.
+    pub extern_params: Vec<(Astr, Ty)>,
     _marker: PhantomData<S>,
 }
 
@@ -63,7 +62,7 @@ impl<S> TypeResolution<S> {
         body_effect: Effect,
         body_reads: FxHashSet<Astr>,
         body_writes: FxHashSet<Astr>,
-        inferred_params: Vec<(Astr, Ty)>,
+        extern_params: Vec<(Astr, Ty)>,
     ) -> Self {
         Self {
             type_map,
@@ -72,7 +71,7 @@ impl<S> TypeResolution<S> {
             body_effect,
             body_reads,
             body_writes,
-            inferred_params,
+            extern_params,
             _marker: PhantomData,
         }
     }
@@ -111,7 +110,7 @@ pub fn check_completeness(
         resolution.body_effect,
         resolution.body_reads,
         resolution.body_writes,
-        resolution.inferred_params,
+        resolution.extern_params,
     ))
 }
 
@@ -128,8 +127,8 @@ pub struct TypeChecker<'a, 's> {
     env: &'a TypeEnv,
     /// Stack of scopes: each scope maps variable names to types.
     scopes: Vec<FxHashMap<Astr, Ty>>,
-    /// Variable types (`$name`, inferred at first assignment).
-    variable_types: FxHashMap<Astr, Ty>,
+    /// Extern parameter types (`$name`, inferred at first use).
+    param_types: FxHashMap<Astr, Ty>,
     /// Unification state (borrowed — may be shared across compilations).
     subst: &'s mut TySubst,
     /// Cached fresh Params for `Ty::Param` context entries.
@@ -161,10 +160,8 @@ pub struct TypeChecker<'a, 's> {
     body_writes: FxHashSet<Astr>,
     /// In analysis mode: free parameters discovered during typecheck.
     /// These are `RefKind::Value` identifiers that were undefined — treated as
-    /// implicit function parameters. Ordered by first occurrence.
-    inferred_params: Vec<(Astr, Ty)>,
     /// Declared parameter types from Signature, consumed in order as
-    /// free params are discovered during analysis mode.
+    /// $params are discovered during analysis mode.
     declared_param_types: Vec<Ty>,
     /// Next index into declared_param_types.
     next_declared_param: usize,
@@ -176,7 +173,7 @@ impl<'a, 's> TypeChecker<'a, 's> {
             interner,
             scopes: vec![FxHashMap::default()],
             env,
-            variable_types: FxHashMap::default(),
+            param_types: FxHashMap::default(),
             subst,
             infer_vars: FxHashMap::default(),
             type_map: TypeMap::default(),
@@ -188,7 +185,6 @@ impl<'a, 's> TypeChecker<'a, 's> {
             body_effect: Effect::pure(),
             body_reads: FxHashSet::default(),
             body_writes: FxHashSet::default(),
-            inferred_params: Vec::new(),
             declared_param_types: Vec::new(),
             next_declared_param: 0,
         }
@@ -198,7 +194,7 @@ impl<'a, 's> TypeChecker<'a, 's> {
     /// Called before typecheck to inject parameter names+types from Signature.
     pub fn with_params(mut self, params: &[Param]) -> Self {
         for param in params {
-            self.define_var(param.name, param.ty.clone());
+            self.param_types.insert(param.name, param.ty.clone());
         }
         self
     }
@@ -232,6 +228,10 @@ impl<'a, 's> TypeChecker<'a, 's> {
             .iter()
             .map(|(span, ty)| (*span, self.subst.resolve(ty)))
             .collect();
+        let extern_params: Vec<(Astr, Ty)> = self.param_types
+            .iter()
+            .map(|(name, ty)| (*name, self.subst.resolve(ty)))
+            .collect();
         Ok(TypeResolution::new(
             resolved,
             self.coercion_map,
@@ -239,7 +239,7 @@ impl<'a, 's> TypeChecker<'a, 's> {
             self.body_effect,
             self.body_reads,
             self.body_writes,
-            self.inferred_params,
+            extern_params,
         ))
     }
 
@@ -280,6 +280,10 @@ impl<'a, 's> TypeChecker<'a, 's> {
             .iter()
             .map(|(span, ty)| (*span, self.subst.resolve(ty)))
             .collect();
+        let extern_params: Vec<(Astr, Ty)> = self.param_types
+            .iter()
+            .map(|(name, ty)| (*name, self.subst.resolve(ty)))
+            .collect();
         Ok(TypeResolution::new(
             resolved,
             self.coercion_map,
@@ -287,7 +291,7 @@ impl<'a, 's> TypeChecker<'a, 's> {
             self.body_effect,
             self.body_reads,
             self.body_writes,
-            self.inferred_params,
+            extern_params,
         ))
     }
 
@@ -694,7 +698,7 @@ impl<'a, 's> TypeChecker<'a, 's> {
                         self.body_reads.insert(*name);
                         self.propagate_call_effect(Effect::io());
                         if !allow_non_pure
-                            && ty.purity() == Purity::Unpure
+                            && ty.purity() == Materiality::Ephemeral
                             && !ty.is_error()
                             && !ty.is_param()
                         {
@@ -710,47 +714,45 @@ impl<'a, 's> TypeChecker<'a, 's> {
                             ty
                         }
                     }
-                    RefKind::Variable => match self.variable_types.get(name) {
+                    RefKind::ExternParam => match self.param_types.get(name) {
                         Some(ty) => ty.clone(),
                         None => {
-                            self.error(
-                                MirErrorKind::UndefinedVariable(format!(
-                                    "${}",
-                                    self.interner.resolve(*name)
-                                )),
-                                *span,
-                            );
-                            Ty::error()
+                            if self.analysis_mode {
+                                // In analysis mode, unknown $params are inferred.
+                                // Use declared type from Signature if available.
+                                let ty = if self.next_declared_param < self.declared_param_types.len() {
+                                    let t = self.declared_param_types[self.next_declared_param].clone();
+                                    self.next_declared_param += 1;
+                                    t
+                                } else {
+                                    self.subst.fresh_param()
+                                };
+                                self.param_types.insert(*name, ty.clone());
+                                ty
+                            } else {
+                                self.error(
+                                    MirErrorKind::UndefinedVariable(format!(
+                                        "${}",
+                                        self.interner.resolve(*name)
+                                    )),
+                                    *span,
+                                );
+                                Ty::error()
+                            }
                         }
                     },
                     RefKind::Value => match self.lookup_var(*name) {
                         Some(ty) => ty,
                         None => {
-                            if self.analysis_mode {
-                                // In analysis mode, undefined values are implicit
-                                // function parameters. Use declared type from Signature
-                                // if available, otherwise fresh Param.
-                                let ty =
-                                    if self.next_declared_param < self.declared_param_types.len() {
-                                        let t = self.declared_param_types[self.next_declared_param]
-                                            .clone();
-                                        self.next_declared_param += 1;
-                                        t
-                                    } else {
-                                        self.subst.fresh_param()
-                                    };
-                                self.define_var(*name, ty.clone());
-                                self.inferred_params.push((*name, ty.clone()));
-                                ty
-                            } else {
-                                self.error(
-                                    MirErrorKind::UndefinedVariable(
-                                        self.interner.resolve(*name).to_string(),
-                                    ),
-                                    *span,
-                                );
-                                Ty::error()
-                            }
+                            // Undefined local variable — always an error.
+                            // Use $name for extern params, @name for context.
+                            self.error(
+                                MirErrorKind::UndefinedVariable(
+                                    self.interner.resolve(*name).to_string(),
+                                ),
+                                *span,
+                            );
+                            Ty::error()
                         }
                     },
                 };
@@ -1410,24 +1412,13 @@ impl<'a, 's> TypeChecker<'a, 's> {
                         );
                     }
                 }
-                RefKind::Variable => {
-                    let Some(existing_ty) = self.variable_types.get(name).cloned() else {
-                        self.variable_types.insert(*name, source_resolved);
-                        return;
-                    };
-                    if self
-                        .subst
-                        .unify(&source_resolved, &existing_ty, Polarity::Invariant)
-                        .is_err()
-                    {
-                        self.error(
-                            MirErrorKind::PatternTypeMismatch {
-                                pattern_ty: existing_ty,
-                                source_ty: source_resolved,
-                            },
-                            span,
-                        );
-                    }
+                RefKind::ExternParam => {
+                    self.error(
+                        MirErrorKind::ExternParamAssign(
+                            self.interner.resolve(*name).to_string(),
+                        ),
+                        span,
+                    );
                 }
                 RefKind::Value => {
                     self.define_var(*name, source_resolved);
@@ -1857,9 +1848,10 @@ mod tests {
     }
 
     #[test]
-    fn var_write() {
+    fn extern_param_write_rejected() {
         let src = "{{ $count = 42 }}";
-        assert!(check(src).is_ok());
+        let errs = check(src).unwrap_err();
+        assert!(errs.iter().any(|e| matches!(&e.kind, MirErrorKind::ExternParamAssign(_))));
     }
 
     #[test]

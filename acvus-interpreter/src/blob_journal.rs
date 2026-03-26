@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use acvus_mir::ty::Effect;
-use acvus_utils::{Interner, OwnedDequeDiff, TrackedDeque};
+use acvus_utils::{DequeChecksum, Interner, OwnedDequeDiff, TrackedDeque};
 use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
@@ -53,7 +53,10 @@ enum SerValue {
     List(Vec<SerValue>),
     Object(Vec<(String, SerValue)>),
     Tuple(Vec<SerValue>),
-    Deque(Vec<SerValue>),
+    Deque {
+        items: Vec<SerValue>,
+        checksum: DequeChecksum,
+    },
     Variant {
         tag: String,
         payload: Option<Box<SerValue>>,
@@ -96,12 +99,13 @@ impl SerValue {
                     .map(|v| SerValue::from_value(v, interner))
                     .collect(),
             ),
-            Value::Deque(d) => SerValue::Deque(
-                d.as_slice()
+            Value::Deque(d) => SerValue::Deque {
+                items: d.as_slice()
                     .iter()
                     .map(|v| SerValue::from_value(v, interner))
                     .collect(),
-            ),
+                checksum: d.checksum(),
+            },
             Value::Variant { tag, payload } => SerValue::Variant {
                 tag: interner.resolve(*tag).to_string(),
                 payload: payload
@@ -114,14 +118,15 @@ impl SerValue {
                 inclusive: r.inclusive,
             },
             Value::Sequence(sc) => {
-                // Serialize the origin deque items.
-                SerValue::Deque(
-                    sc.origin()
+                // Serialize the origin deque items + checksum.
+                SerValue::Deque {
+                    items: sc.origin()
                         .as_slice()
                         .iter()
                         .map(|v| SerValue::from_value(v, interner))
                         .collect(),
-                )
+                    checksum: sc.origin().checksum(),
+                }
             }
             // Empty, Fn, Iterator, Handle, Opaque — not storable.
             other => panic!("SerValue::from_value: unstorable value {other:?}"),
@@ -149,9 +154,10 @@ impl SerValue {
             SerValue::Tuple(elems) => {
                 Value::tuple(elems.into_iter().map(|v| v.to_value(interner)).collect())
             }
-            SerValue::Deque(items) => {
-                let deque = TrackedDeque::from_vec(
+            SerValue::Deque { items, checksum } => {
+                let deque = TrackedDeque::from_vec_with_checksum(
                     items.into_iter().map(|v| v.to_value(interner)).collect(),
+                    checksum,
                 );
                 Value::deque(deque)
             }
@@ -553,18 +559,19 @@ impl<S: BlobStore> BlobStoreJournal<S> {
                     state.insert(k, v);
                 }
 
-                // Apply sequence diffs.
+                // Apply sequence diffs with checksum preservation.
                 for (k, diff) in sequences {
-                    let prev_items = state
-                        .get(&k)
-                        .map(|v| match v {
-                            Value::Sequence(sc) => sc.origin().as_slice().to_vec(),
-                            Value::Deque(d) => d.as_slice().to_vec(),
-                            _ => Vec::new(),
-                        })
-                        .unwrap_or_default();
-                    let new_items = diff.apply(prev_items);
-                    let new_deque = TrackedDeque::from_vec(new_items);
+                    let (prev_items, prev_checksum) = match state.get(&k) {
+                        Some(Value::Sequence(sc)) => (sc.origin().as_slice().to_vec(), sc.origin().checksum()),
+                        Some(Value::Deque(d)) => (d.as_slice().to_vec(), d.checksum()),
+                        _ => {
+                            // No existing sequence — apply diff to empty, use fresh deque for checksum.
+                            let fresh = TrackedDeque::<Value>::new();
+                            (Vec::new(), fresh.checksum())
+                        }
+                    };
+                    let (new_items, new_checksum) = diff.apply_with_checksum(prev_items, prev_checksum);
+                    let new_deque = TrackedDeque::from_vec_with_checksum(new_items, new_checksum);
                     let sc = SequenceChain::from_stored(new_deque, Effect::pure());
                     state.insert(k, Value::sequence(sc));
                 }
@@ -753,6 +760,18 @@ impl<S: BlobStore> EntryRef for BlobEntryRef<'_, S> {
     }
 }
 
+impl<S: BlobStore> BlobEntryMut<'_, S> {
+    /// UUID of the current node.
+    pub fn uuid(&self) -> Uuid {
+        self.journal.tree.nodes[self.idx].uuid
+    }
+
+    /// Depth of the current node.
+    pub fn depth(&self) -> usize {
+        self.journal.tree.nodes[self.idx].depth
+    }
+}
+
 impl<S: BlobStore> EntryRef for BlobEntryMut<'_, S> {
     fn get(&self, key: &str) -> Option<&Value> {
         let hot = self.journal.hot.as_ref().unwrap();
@@ -798,7 +817,10 @@ impl<S: BlobStore> EntryMut for BlobEntryMut<'_, S> {
         let origin = match existing_val {
             Value::Sequence(sc) => sc.origin().clone(),
             Value::Deque(d) => {
-                let mut td = TrackedDeque::from_vec(d.as_slice().to_vec());
+                let mut td = TrackedDeque::from_vec_with_checksum(
+                    d.as_slice().to_vec(),
+                    d.checksum(),
+                );
                 td.checkpoint();
                 td
             }
@@ -948,5 +970,839 @@ impl<S: BlobStore> Journal for BlobStoreJournal<S> {
 
     fn contains(&self, id: Uuid) -> bool {
         self.tree.uuid_to_idx.contains_key(&id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::blob::MemBlobStore;
+
+    fn new_journal() -> (BlobStoreJournal<MemBlobStore>, Uuid) {
+        futures::executor::block_on(
+            BlobStoreJournal::with_snapshot_interval(MemBlobStore::new(), Interner::new(), 1),
+        )
+        .unwrap()
+    }
+
+    fn new_journal_with_interner(interner: Interner) -> (BlobStoreJournal<MemBlobStore>, Uuid) {
+        futures::executor::block_on(
+            BlobStoreJournal::with_snapshot_interval(MemBlobStore::new(), interner, 1),
+        )
+        .unwrap()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  Cluster 1: Basic CRUD
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn apply_and_get() {
+        let (mut j, root) = new_journal();
+        let mut e = j.entry_mut(root).next();
+        e.apply_field("x", &[], Value::string("hello"));
+        assert_eq!(*e.get("x").unwrap(), Value::string("hello"));
+        assert!(e.get("y").is_none());
+    }
+
+    #[test]
+    fn overwrite() {
+        let interner = Interner::new();
+        let (mut j, root) = new_journal_with_interner(interner.clone());
+        let mut e = j.entry_mut(root).next();
+        e.apply_field("x", &[], Value::string("first"));
+        e.apply_field(
+            "x",
+            &[],
+            Value::object(FxHashMap::from_iter([(
+                interner.intern("v"),
+                Value::Int(2),
+            )])),
+        );
+        match e.get("x").unwrap() {
+            Value::Object(_) => {} // OK — replaced with object
+            other => panic!("expected Object, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sequence_stores_as_sequence() {
+        let (mut j, root) = new_journal();
+        let mut e = j.entry_mut(root).next();
+        let deque = TrackedDeque::from_vec(vec![Value::Int(1), Value::Int(2)]);
+        e.apply_diff("q", deque);
+        match e.get("q").unwrap() {
+            Value::Sequence(sc) => {
+                assert_eq!(sc.origin().as_slice(), &[Value::Int(1), Value::Int(2)]);
+            }
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_prefers_current_turn() {
+        let (mut j, root) = new_journal();
+        let mut e = j.entry_mut(root).next();
+        e.apply_field("x", &[], Value::Int(1));
+        e.apply_field("x", &[], Value::Int(2));
+        assert_eq!(*e.get("x").unwrap(), Value::Int(2));
+    }
+
+    #[test]
+    fn multiple_keys_independent() {
+        let (mut j, root) = new_journal();
+        let mut e = j.entry_mut(root).next();
+        e.apply_field("a", &[], Value::Int(1));
+        e.apply_field("b", &[], Value::string("hello"));
+        e.apply_field("c", &[], Value::Bool(true));
+        assert_eq!(*e.get("a").unwrap(), Value::Int(1));
+        assert_eq!(*e.get("b").unwrap(), Value::string("hello"));
+        assert_eq!(*e.get("c").unwrap(), Value::Bool(true));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  Cluster 2: Tree structure (next/fork)
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn next_inherits_parent_state() {
+        let (mut j, root) = new_journal();
+        {
+            let mut e = j.entry_mut(root).next();
+            e.apply_field("x", &[], Value::Int(1));
+            e.apply_field("y", &[], Value::Int(2));
+        }
+        // Read back from root's child — need to find its uuid.
+        // Use entry_ref on root to verify root is unchanged (depth 0, no data).
+        let root_ref = j.entry_ref(root);
+        assert!(root_ref.get("x").is_none()); // root has no data
+    }
+
+    #[test]
+    fn next_child_sees_parent_values() {
+        let (mut j, root) = new_journal();
+
+        // Turn 1: write to child of root.
+        let mut e1 = j.entry_mut(root).next();
+        e1.apply_field("x", &[], Value::Int(1));
+        e1.apply_field("y", &[], Value::Int(2));
+        let n1 = e1.uuid();
+        drop(e1);
+
+        // Turn 2: child of n1.
+        let mut e2 = j.entry_mut(n1).next();
+        // Child sees parent's values.
+        assert_eq!(*e2.get("x").unwrap(), Value::Int(1));
+        assert_eq!(*e2.get("y").unwrap(), Value::Int(2));
+        // Modify child.
+        e2.apply_field("x", &[], Value::Int(99));
+        assert_eq!(*e2.get("x").unwrap(), Value::Int(99));
+        let n2 = e2.uuid();
+        drop(e2);
+
+        // Parent unchanged.
+        let e1_ref = j.entry_ref(n1);
+        assert_eq!(*e1_ref.get("x").unwrap(), Value::Int(1));
+
+        // Child has override.
+        let e2_ref = j.entry_ref(n2);
+        assert_eq!(*e2_ref.get("x").unwrap(), Value::Int(99));
+    }
+
+    #[test]
+    fn fork_sees_parent_state() {
+        let (mut j, root) = new_journal();
+
+        // Turn 1.
+        let mut e1 = j.entry_mut(root).next();
+        e1.apply_field("x", &[], Value::Int(1));
+        let n1 = e1.uuid();
+        drop(e1);
+
+        // Turn 2.
+        let mut e2 = j.entry_mut(n1).next();
+        e2.apply_field("x", &[], Value::Int(2));
+        let n2 = e2.uuid();
+        drop(e2);
+
+        // Fork from n2 → sibling of n2 (child of n1).
+        let e3 = j.entry_mut(n2).fork();
+        // Sees n1's state (x=1), not n2's (x=2).
+        assert_eq!(*e3.get("x").unwrap(), Value::Int(1));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  Cluster 3: Persistence (snapshot/flush/open)
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn flush_and_open_round_trip() {
+        let interner = Interner::new();
+        let (mut j, root) = new_journal_with_interner(interner.clone());
+
+        // Write some data.
+        let mut e = j.entry_mut(root).next();
+        e.apply_field("x", &[], Value::Int(42));
+        e.apply_field("msg", &[], Value::string("hello"));
+        let n1 = e.uuid();
+        drop(e);
+
+        // Flush.
+        futures::executor::block_on(j.flush_tree()).unwrap();
+
+        // Open from same store.
+        let store = std::mem::replace(j.store_mut(), MemBlobStore::new());
+        let j2 = futures::executor::block_on(
+            BlobStoreJournal::open_with_snapshot_interval(store, interner, 1),
+        )
+        .unwrap()
+        .expect("journal should exist");
+
+        // Verify data survived.
+        let e = j2.entry_ref(n1);
+        assert_eq!(*e.get("x").unwrap(), Value::Int(42));
+        assert_eq!(*e.get("msg").unwrap(), Value::string("hello"));
+    }
+
+    #[test]
+    fn sequence_survives_persist_as_deque() {
+        let interner = Interner::new();
+        let (mut j, root) = new_journal_with_interner(interner.clone());
+
+        // Write a sequence.
+        let mut e = j.entry_mut(root).next();
+        let deque = TrackedDeque::from_vec(vec![Value::Int(10), Value::Int(20), Value::Int(30)]);
+        e.apply_diff("seq", deque);
+        let n1 = e.uuid();
+        drop(e);
+
+        // Flush + reopen.
+        futures::executor::block_on(j.flush_tree()).unwrap();
+        let store = std::mem::replace(j.store_mut(), MemBlobStore::new());
+        let j2 = futures::executor::block_on(
+            BlobStoreJournal::open_with_snapshot_interval(store, interner, 1),
+        )
+        .unwrap()
+        .expect("journal should exist");
+
+        // Sequence (self-modifying) is stored as Deque (Purity::Pure).
+        // Only Purity::Pure values can be persisted to context.
+        let e = j2.entry_ref(n1);
+        match e.get("seq").unwrap() {
+            Value::Deque(d) => {
+                assert_eq!(
+                    d.as_slice(),
+                    &[Value::Int(10), Value::Int(20), Value::Int(30)]
+                );
+            }
+            other => panic!("expected Deque (persisted from Sequence), got {other:?}"),
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  Cluster 4: Snapshot interval
+    // ═══════════════════════════════════════════════════════════════════
+
+    fn new_journal_interval(interval: usize) -> (BlobStoreJournal<MemBlobStore>, Uuid) {
+        futures::executor::block_on(BlobStoreJournal::with_snapshot_interval(
+            MemBlobStore::new(),
+            Interner::new(),
+            interval,
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn interval_only_snapshots_at_boundaries() {
+        // Interval=4: snapshots at depth 0, 4, 8, ...
+        let (mut j, root) = new_journal_interval(4);
+
+        let mut cursor = root;
+        let mut uuids = vec![root];
+        for i in 1..=8 {
+            let mut e = j.entry_mut(cursor).next();
+            let uuid = e.uuid();
+            uuids.push(uuid);
+            e.apply_field(&format!("k{i}"), &[], Value::Int(i as i64));
+            cursor = uuid;
+            drop(e);
+        }
+        // Force persist of last node.
+        {
+            let e = j.entry_mut(cursor).next();
+            uuids.push(e.uuid());
+        }
+
+        // depth 0 (root): snapshot. depth 1,2,3: no. depth 4: snapshot. etc.
+        for (i, &uuid) in uuids.iter().enumerate() {
+            let Some(&idx) = j.tree.uuid_to_idx.get(&uuid) else {
+                continue;
+            };
+            let has_snap = j.tree.nodes[idx].snapshot_hash.is_some();
+            let expected = i % 4 == 0;
+            assert_eq!(
+                has_snap, expected,
+                "depth {i}: expected snapshot={expected}, got {has_snap}"
+            );
+        }
+    }
+
+    #[test]
+    fn interval_reconstruction_correct() {
+        // Interval=4: intermediate nodes have diffs only.
+        let (mut j, root) = new_journal_interval(4);
+
+        let mut cursor = root;
+        for i in 1..=7 {
+            let mut e = j.entry_mut(cursor).next();
+            cursor = e.uuid();
+            e.apply_field(&format!("k{i}"), &[], Value::Int(i as i64));
+            drop(e);
+        }
+
+        // depth 7: no snapshot, must reconstruct from depth 4 + diffs at 5,6,7.
+        let e = j.entry_ref(cursor);
+        for i in 1..=7 {
+            assert_eq!(
+                *e.get(&format!("k{i}")).unwrap(),
+                Value::Int(i as i64),
+                "missing k{i} at depth 7"
+            );
+        }
+    }
+
+    #[test]
+    fn interval_fork_reconstructs_parent() {
+        // Interval=4: fork from depth 3 → parent at depth 2 has no snapshot.
+        let (mut j, root) = new_journal_interval(4);
+
+        let mut cursor = root;
+        for i in 1..=3 {
+            let mut e = j.entry_mut(cursor).next();
+            cursor = e.uuid();
+            e.apply_field(&format!("k{i}"), &[], Value::Int(i as i64));
+            drop(e);
+        }
+
+        // Fork from depth 3 → sibling at depth 3, parent at depth 2 (no snapshot).
+        let forked = j.entry_mut(cursor).fork();
+        assert_eq!(forked.depth(), 3);
+        assert_eq!(*forked.get("k1").unwrap(), Value::Int(1));
+        assert_eq!(*forked.get("k2").unwrap(), Value::Int(2));
+        assert!(forked.get("k3").is_none());
+    }
+
+    #[test]
+    fn interval_deep_chain_no_data_loss() {
+        // Interval=128 (default), 200 turns.
+        let (mut j, root) = futures::executor::block_on(
+            BlobStoreJournal::new(MemBlobStore::new(), Interner::new()),
+        )
+        .unwrap();
+
+        let mut cursor = root;
+        for i in 1..=200 {
+            let mut e = j.entry_mut(cursor).next();
+            cursor = e.uuid();
+            e.apply_field(&format!("k{i}"), &[], Value::Int(i as i64));
+            drop(e);
+        }
+
+        // Leaf at depth 200 sees all values.
+        let e = j.entry_ref(cursor);
+        for i in 1..=200 {
+            assert_eq!(
+                *e.get(&format!("k{i}")).unwrap(),
+                Value::Int(i as i64),
+                "missing k{i} at depth 200"
+            );
+        }
+
+        // Count snapshots: should be at depths 0, 128 = 2 snapshots only.
+        let snap_count = j
+            .tree
+            .nodes
+            .iter()
+            .filter(|n| j.tree.uuid_to_idx.contains_key(&n.uuid))
+            .filter(|n| n.snapshot_hash.is_some())
+            .count();
+        assert_eq!(
+            snap_count, 2,
+            "only root and depth-128 should have snapshots"
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  SpyBlobStore — tracks blob sizes for size verification tests
+    // ═══════════════════════════════════════════════════════════════════
+
+    struct SpyBlobStore {
+        inner: MemBlobStore,
+        put_log: Vec<(BlobHash, usize)>,
+    }
+
+    impl SpyBlobStore {
+        fn new() -> Self {
+            Self {
+                inner: MemBlobStore::new(),
+                put_log: Vec::new(),
+            }
+        }
+
+        fn size_of(&self, hash: &BlobHash) -> Option<usize> {
+            self.put_log
+                .iter()
+                .find(|(h, _)| h == hash)
+                .map(|(_, s)| *s)
+        }
+    }
+
+    impl BlobStore for SpyBlobStore {
+        async fn put(&mut self, data: Vec<u8>) -> BlobHash {
+            let len = data.len();
+            let hash = self.inner.put(data).await;
+            self.put_log.push((hash, len));
+            hash
+        }
+
+        async fn get(&self, hash: &BlobHash) -> Option<Vec<u8>> {
+            self.inner.get(hash).await
+        }
+
+        async fn remove(&mut self, hash: &BlobHash) {
+            self.inner.remove(hash).await;
+        }
+
+        async fn ref_get(&self, name: &str) -> Option<BlobHash> {
+            self.inner.ref_get(name).await
+        }
+
+        async fn ref_cas(
+            &mut self,
+            name: &str,
+            expected: Option<BlobHash>,
+            new: BlobHash,
+        ) -> Result<(), Option<BlobHash>> {
+            self.inner.ref_cas(name, expected, new).await
+        }
+
+        async fn ref_remove(&mut self, name: &str) {
+            self.inner.ref_remove(name).await;
+        }
+
+        async fn batch_put(&mut self, blobs: Vec<Vec<u8>>) -> Vec<BlobHash> {
+            let mut hashes = Vec::with_capacity(blobs.len());
+            for data in blobs {
+                hashes.push(self.put(data).await);
+            }
+            hashes
+        }
+
+        async fn batch_get(&self, hashes: &[BlobHash]) -> Vec<Option<Vec<u8>>> {
+            self.inner.batch_get(hashes).await
+        }
+
+        async fn batch_remove(&mut self, hashes: Vec<BlobHash>) {
+            self.inner.batch_remove(hashes).await;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  Cluster 7: Size verification — diff must be O(change), not O(state)
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Append 1 item to a 1000-item sequence.
+    /// Diff blob must be much smaller than snapshot.
+    #[test]
+    fn size_append_one_to_large_sequence() {
+        let (mut j, root) = futures::executor::block_on(
+            BlobStoreJournal::with_snapshot_interval(SpyBlobStore::new(), Interner::new(), 1),
+        )
+        .unwrap();
+
+        // Turn 1: initial 1000-item sequence.
+        let mut e = j.entry_mut(root).next();
+        let n1 = e.uuid();
+        let items: Vec<Value> = (0..1000).map(|i| Value::Int(i)).collect();
+        let deque = TrackedDeque::from_vec(items);
+        e.apply_diff("big", deque);
+        drop(e);
+
+        // Turn 2: append 1 item.
+        let mut e = j.entry_mut(n1).next();
+        let n2 = e.uuid();
+        let existing = match e.get("big").unwrap() {
+            Value::Sequence(sc) => sc.origin().clone(),
+            other => panic!("expected Sequence, got {other:?}"),
+        };
+        let mut working = existing;
+        working.checkpoint();
+        working.push(Value::Int(9999));
+        e.apply_diff("big", working);
+        drop(e);
+
+        // Persist n2 by advancing.
+        let _ = j.entry_mut(n2).next();
+
+        let n2_idx = j.tree.uuid_to_idx[&n2];
+        let n2_diff_hash = j.tree.nodes[n2_idx]
+            .diff_hash
+            .expect("n2 should have a diff blob");
+        let n1_idx = j.tree.uuid_to_idx[&n1];
+        let n1_snap_hash = j.tree.nodes[n1_idx]
+            .snapshot_hash
+            .expect("n1 should have a snapshot (interval=1)");
+
+        let n2_diff_size = j.store.size_of(&n2_diff_hash).unwrap();
+        let n1_snap_size = j.store.size_of(&n1_snap_hash).unwrap();
+
+        assert!(
+            n2_diff_size < n1_snap_size / 5,
+            "diff blob ({n2_diff_size} bytes) should be much smaller than \
+             snapshot ({n1_snap_size} bytes) — full state may have leaked into diff"
+        );
+    }
+
+    /// Consume from front of a large sequence (no push).
+    /// Diff is {consumed: 1, pushed: []} — near-zero payload.
+    #[test]
+    fn size_consume_only_from_large_sequence() {
+        let (mut j, root) = futures::executor::block_on(
+            BlobStoreJournal::with_snapshot_interval(SpyBlobStore::new(), Interner::new(), 1),
+        )
+        .unwrap();
+
+        // Turn 1: initial 500-item sequence.
+        let mut e = j.entry_mut(root).next();
+        let n1 = e.uuid();
+        let items: Vec<Value> = (0..500).map(|i| Value::Int(i)).collect();
+        let deque = TrackedDeque::from_vec(items);
+        e.apply_diff("q", deque);
+        drop(e);
+
+        // Turn 2: consume 1, push nothing.
+        let mut e = j.entry_mut(n1).next();
+        let n2 = e.uuid();
+        let existing = match e.get("q").unwrap() {
+            Value::Sequence(sc) => sc.origin().clone(),
+            other => panic!("expected Sequence, got {other:?}"),
+        };
+        let mut working = existing;
+        working.checkpoint();
+        working.consume(1);
+        e.apply_diff("q", working);
+        drop(e);
+
+        // Persist.
+        let _ = j.entry_mut(n2).next();
+
+        let n2_idx = j.tree.uuid_to_idx[&n2];
+        let n2_diff_hash = j.tree.nodes[n2_idx]
+            .diff_hash
+            .expect("n2 should have a diff blob");
+        let n1_idx = j.tree.uuid_to_idx[&n1];
+        let n1_snap_hash = j.tree.nodes[n1_idx]
+            .snapshot_hash
+            .expect("n1 should have a snapshot");
+
+        let n2_diff_size = j.store.size_of(&n2_diff_hash).unwrap();
+        let n1_snap_size = j.store.size_of(&n1_snap_hash).unwrap();
+
+        assert!(
+            n2_diff_size < n1_snap_size / 5,
+            "consume-only diff ({n2_diff_size} bytes) should be tiny vs \
+             snapshot ({n1_snap_size} bytes)"
+        );
+    }
+
+    /// Many turns of small changes on a large sequence.
+    /// Each diff blob must stay small — no O(n²) accumulation.
+    #[test]
+    fn size_diff_stays_small_across_many_turns() {
+        let (mut j, root) = futures::executor::block_on(
+            BlobStoreJournal::with_snapshot_interval(SpyBlobStore::new(), Interner::new(), 1),
+        )
+        .unwrap();
+
+        // Turn 1: initial 500-item sequence.
+        let mut e = j.entry_mut(root).next();
+        let mut cursor = e.uuid();
+        let items: Vec<Value> = (0..500).map(|i| Value::Int(i)).collect();
+        let deque = TrackedDeque::from_vec(items);
+        e.apply_diff("q", deque);
+        drop(e);
+
+        let n1_idx = j.tree.uuid_to_idx[&cursor];
+        // Force persist to get snapshot size reference.
+        let mut e = j.entry_mut(cursor).next();
+        cursor = e.uuid();
+        // Just read, no change this turn.
+        drop(e);
+
+        let snap_size = j
+            .store
+            .size_of(&j.tree.nodes[n1_idx].snapshot_hash.unwrap())
+            .unwrap();
+
+        // Turns 3..12: append 1 item each.
+        for i in 0..10 {
+            let mut e = j.entry_mut(cursor).next();
+            let new_cursor = e.uuid();
+            let existing = match e.get("q").unwrap() {
+                Value::Sequence(sc) => sc.origin().clone(),
+                other => panic!("expected Sequence, got {other:?}"),
+            };
+            let mut working = existing;
+            working.checkpoint();
+            working.push(Value::Int(5000 + i));
+            e.apply_diff("q", working);
+            cursor = new_cursor;
+            drop(e);
+
+            // Persist.
+            let next_e = j.entry_mut(cursor).next();
+            let next_cursor = next_e.uuid();
+            drop(next_e);
+
+            // Check diff size.
+            let idx = j.tree.uuid_to_idx[&cursor];
+            if let Some(diff_hash) = j.tree.nodes[idx].diff_hash {
+                let diff_size = j.store.size_of(&diff_hash).unwrap();
+                assert!(
+                    diff_size < snap_size / 3,
+                    "turn {i}: diff ({diff_size} bytes) should be much smaller than \
+                     snapshot ({snap_size} bytes)"
+                );
+            }
+            cursor = next_cursor;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  Cluster 8: Roundtrip — flush → reopen → values must be exact
+    // ═══════════════════════════════════════════════════════════════════
+
+    fn get_deque_items(val: &Value) -> Vec<Value> {
+        match val {
+            Value::Sequence(sc) => sc.origin().as_slice().to_vec(),
+            Value::Deque(d) => d.as_slice().to_vec(),
+            other => panic!("expected Sequence or Deque, got {other:?}"),
+        }
+    }
+
+    fn seq_working(e: &BlobEntryMut<'_, impl BlobStore>, key: &str) -> TrackedDeque<Value> {
+        let existing = match e.get(key).unwrap() {
+            Value::Sequence(sc) => sc.origin().clone(),
+            Value::Deque(d) => {
+                // After persist+reload, Sequence becomes Deque. Preserve checksum.
+                TrackedDeque::from_vec_with_checksum(d.as_slice().to_vec(), d.checksum())
+            }
+            other => panic!("expected Sequence or Deque for '{key}', got {other:?}"),
+        };
+        let mut working = existing;
+        working.checkpoint();
+        working
+    }
+
+    #[test]
+    fn roundtrip_multi_turn_consume_and_push() {
+        let interner = Interner::new();
+        let (mut j, root) = futures::executor::block_on(
+            BlobStoreJournal::with_snapshot_interval(MemBlobStore::new(), interner.clone(), 1),
+        )
+        .unwrap();
+
+        // Turn 1: [1, 2, 3]
+        let mut e = j.entry_mut(root).next();
+        let n1 = e.uuid();
+        let deque = TrackedDeque::from_vec(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        e.apply_diff("seq", deque);
+        drop(e);
+
+        // Turn 2: consume 1, push 4 → [2, 3, 4]
+        let mut e = j.entry_mut(n1).next();
+        let n2 = e.uuid();
+        let mut working = seq_working(&e, "seq");
+        working.consume(1);
+        working.push(Value::Int(4));
+        e.apply_diff("seq", working);
+        drop(e);
+
+        // Turn 3: push 5, 6 → [2, 3, 4, 5, 6]
+        let mut e = j.entry_mut(n2).next();
+        let n3 = e.uuid();
+        let mut working = seq_working(&e, "seq");
+        working.push(Value::Int(5));
+        working.push(Value::Int(6));
+        e.apply_diff("seq", working);
+        drop(e);
+
+        // Flush + reopen.
+        futures::executor::block_on(j.flush_tree()).unwrap();
+        let store = std::mem::replace(j.store_mut(), MemBlobStore::new());
+        let j2 = futures::executor::block_on(
+            BlobStoreJournal::open_with_snapshot_interval(store, interner, 1),
+        )
+        .unwrap()
+        .expect("journal should exist");
+
+        assert_eq!(
+            get_deque_items(j2.entry_ref(n1).get("seq").unwrap()),
+            vec![Value::Int(1), Value::Int(2), Value::Int(3)]
+        );
+        assert_eq!(
+            get_deque_items(j2.entry_ref(n2).get("seq").unwrap()),
+            vec![Value::Int(2), Value::Int(3), Value::Int(4)]
+        );
+        assert_eq!(
+            get_deque_items(j2.entry_ref(n3).get("seq").unwrap()),
+            vec![Value::Int(2), Value::Int(3), Value::Int(4), Value::Int(5), Value::Int(6)]
+        );
+    }
+
+    #[test]
+    fn roundtrip_fork_independent_branches() {
+        let interner = Interner::new();
+        let (mut j, root) = futures::executor::block_on(
+            BlobStoreJournal::with_snapshot_interval(MemBlobStore::new(), interner.clone(), 1),
+        )
+        .unwrap();
+
+        // Turn 1: [1]
+        let mut e = j.entry_mut(root).next();
+        let n1 = e.uuid();
+        let deque = TrackedDeque::from_vec(vec![Value::Int(1)]);
+        e.apply_diff("seq", deque);
+        drop(e);
+
+        // Branch A: push 100 → [1, 100]
+        let mut ea = j.entry_mut(n1).next();
+        let branch_a = ea.uuid();
+        let mut working = seq_working(&ea, "seq");
+        working.push(Value::Int(100));
+        ea.apply_diff("seq", working);
+        drop(ea);
+
+        // Branch B: push 200 → [1, 200] (from n1, not branch_a)
+        let mut eb = j.entry_mut(n1).next();
+        let branch_b = eb.uuid();
+        let mut working = seq_working(&eb, "seq");
+        working.push(Value::Int(200));
+        eb.apply_diff("seq", working);
+        drop(eb);
+
+        // Flush + reopen.
+        futures::executor::block_on(j.flush_tree()).unwrap();
+        let store = std::mem::replace(j.store_mut(), MemBlobStore::new());
+        let j2 = futures::executor::block_on(
+            BlobStoreJournal::open_with_snapshot_interval(store, interner, 1),
+        )
+        .unwrap()
+        .expect("journal should exist");
+
+        assert_eq!(
+            get_deque_items(j2.entry_ref(n1).get("seq").unwrap()),
+            vec![Value::Int(1)]
+        );
+        assert_eq!(
+            get_deque_items(j2.entry_ref(branch_a).get("seq").unwrap()),
+            vec![Value::Int(1), Value::Int(100)]
+        );
+        assert_eq!(
+            get_deque_items(j2.entry_ref(branch_b).get("seq").unwrap()),
+            vec![Value::Int(1), Value::Int(200)]
+        );
+    }
+
+    #[test]
+    fn roundtrip_mixed_types_coexist() {
+        let interner = Interner::new();
+        let a = interner.intern("a");
+        let (mut j, root) = futures::executor::block_on(
+            BlobStoreJournal::with_snapshot_interval(MemBlobStore::new(), interner.clone(), 1),
+        )
+        .unwrap();
+
+        // Turn 1: counter=0, seq=[10], obj={a:1}
+        let mut e = j.entry_mut(root).next();
+        let n1 = e.uuid();
+        e.apply_field("counter", &[], Value::Int(0));
+        let deque = TrackedDeque::from_vec(vec![Value::Int(10)]);
+        e.apply_diff("seq", deque);
+        e.apply_field("obj", &[], Value::object(FxHashMap::from_iter([(a, Value::Int(1))])));
+        drop(e);
+
+        // Turn 2: counter=1, seq=[10,20], obj={a:2}
+        let mut e = j.entry_mut(n1).next();
+        let n2 = e.uuid();
+        e.apply_field("counter", &[], Value::Int(1));
+        let mut working = seq_working(&e, "seq");
+        working.push(Value::Int(20));
+        e.apply_diff("seq", working);
+        e.apply_field("obj", &[], Value::object(FxHashMap::from_iter([(a, Value::Int(2))])));
+        drop(e);
+
+        // Flush + reopen.
+        futures::executor::block_on(j.flush_tree()).unwrap();
+        let store = std::mem::replace(j.store_mut(), MemBlobStore::new());
+        let j2 = futures::executor::block_on(
+            BlobStoreJournal::open_with_snapshot_interval(store, interner.clone(), 1),
+        )
+        .unwrap()
+        .expect("journal should exist");
+
+        // Turn 1.
+        let e1 = j2.entry_ref(n1);
+        assert_eq!(*e1.get("counter").unwrap(), Value::Int(0));
+        assert_eq!(get_deque_items(e1.get("seq").unwrap()), vec![Value::Int(10)]);
+        match e1.get("obj").unwrap() {
+            Value::Object(o) => assert_eq!(*o.get(&a).unwrap(), Value::Int(1)),
+            other => panic!("expected Object, got {other:?}"),
+        }
+
+        // Turn 2.
+        let e2 = j2.entry_ref(n2);
+        assert_eq!(*e2.get("counter").unwrap(), Value::Int(1));
+        assert_eq!(get_deque_items(e2.get("seq").unwrap()), vec![Value::Int(10), Value::Int(20)]);
+        match e2.get("obj").unwrap() {
+            Value::Object(o) => assert_eq!(*o.get(&a).unwrap(), Value::Int(2)),
+            other => panic!("expected Object, got {other:?}"),
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  Cluster 4 continued: Snapshot interval
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn interval_blob_count_much_lower() {
+        // Compare blob count: interval=1 vs interval=4 over 8 turns.
+        let count_with_interval = |interval: usize| {
+            let (mut j, root) = futures::executor::block_on(
+                BlobStoreJournal::with_snapshot_interval(
+                    MemBlobStore::new(),
+                    Interner::new(),
+                    interval,
+                ),
+            )
+            .unwrap();
+            let mut cursor = root;
+            for i in 1..=8 {
+                let mut e = j.entry_mut(cursor).next();
+                cursor = e.uuid();
+                e.apply_field(&format!("k{i}"), &[], Value::Int(i as i64));
+                drop(e);
+            }
+            futures::executor::block_on(j.flush_tree()).unwrap();
+            j.store().blob_count()
+        };
+
+        let count_1 = count_with_interval(1);
+        let count_4 = count_with_interval(4);
+
+        assert!(
+            count_4 < count_1,
+            "interval=4 ({count_4}) should use fewer blobs than interval=1 ({count_1})"
+        );
     }
 }

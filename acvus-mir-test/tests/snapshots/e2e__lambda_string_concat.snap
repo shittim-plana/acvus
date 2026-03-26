@@ -25,17 +25,21 @@ expression: ir
     ; r4 (map(...)) : Iterator<String>
     ; r5 (v9) : String
     ; r6 (join(...)) : String
-    ; r7 (v12) : String
-    ; r8 (@names) : List<String>
-    ; r9 (v10) : String
-    ; r10 (v2) : String
-    ; r11 (v8) : String
-    ; r12 (v4) : List<String>
+    ; r7 (v13) : String
+    ; r8 (v11) : String
+    ; r9 (@names) : List<String>
+    ; r10 (v14) : Iterator<String>
+    ; r11 (v4) : List<String>
+    ; r12 (x) : Iterator<String>
+    ; r13 (v2) : String
+    ; r14 (v8) : String
 
 === closure L0 (ValueId(0)) ===
      1 │   r0 = r1 + T2
      2 │   return r0
 
-    ; r0 (v2) : String
+    ; r0 (v3) : String
     ; r1 (v0) : String
-    ; r2 (v1) : String
+    ; r2 (n) : String
+    ; r3 (v4) : String
+    ; r4 (v2) : String

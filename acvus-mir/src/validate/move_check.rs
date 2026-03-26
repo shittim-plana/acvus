@@ -170,19 +170,35 @@ impl MoveState {
     fn join_from(&mut self, other: &MoveState) -> bool {
         let mut changed = false;
         for (&id, &liveness) in &other.values {
-            let entry = self.values.entry(id).or_insert(Liveness::Alive);
-            let joined = entry.join(liveness);
-            if *entry != joined {
-                *entry = joined;
-                changed = true;
+            use std::collections::hash_map::Entry;
+            match self.values.entry(id) {
+                Entry::Vacant(e) => {
+                    e.insert(liveness);
+                    changed = true; // New entry = change.
+                }
+                Entry::Occupied(mut e) => {
+                    let joined = e.get().join(liveness);
+                    if *e.get() != joined {
+                        e.insert(joined);
+                        changed = true;
+                    }
+                }
             }
         }
         for (&name, &liveness) in &other.vars {
-            let entry = self.vars.entry(name).or_insert(Liveness::Alive);
-            let joined = entry.join(liveness);
-            if *entry != joined {
-                *entry = joined;
-                changed = true;
+            use std::collections::hash_map::Entry;
+            match self.vars.entry(name) {
+                Entry::Vacant(e) => {
+                    e.insert(liveness);
+                    changed = true;
+                }
+                Entry::Occupied(mut e) => {
+                    let joined = e.get().join(liveness);
+                    if *e.get() != joined {
+                        e.insert(joined);
+                        changed = true;
+                    }
+                }
             }
         }
         changed
@@ -241,7 +257,6 @@ fn check_body(scope: &str, body: &MirBody, errors: &mut Vec<ValidationError>) {
         match &block.terminator {
             Terminator::Jump { target, args } => {
                 if let Some(&target_idx) = cfg.label_to_block.get(target) {
-                    // Check move state of jump args
                     propagate_args(
                         scope,
                         &block_exit[idx.0],
@@ -250,6 +265,7 @@ fn check_body(scope: &str, body: &MirBody, errors: &mut Vec<ValidationError>) {
                         &body.val_types,
                         &body.insts,
                         errors,
+                        &mut block_entry[target_idx.0],
                     );
                     if propagate_state(&block_exit[idx.0], &mut block_entry[target_idx.0]) {
                         worklist.push_back(target_idx);
@@ -273,6 +289,7 @@ fn check_body(scope: &str, body: &MirBody, errors: &mut Vec<ValidationError>) {
                             &body.val_types,
                             &body.insts,
                             errors,
+                            &mut block_entry[target_idx.0],
                         );
                         if propagate_state(&block_exit[idx.0], &mut block_entry[target_idx.0]) {
                             worklist.push_back(target_idx);
@@ -296,6 +313,7 @@ fn check_body(scope: &str, body: &MirBody, errors: &mut Vec<ValidationError>) {
                         &body.val_types,
                         &body.insts,
                         errors,
+                        &mut block_entry[target_idx.0],
                     );
                     if propagate_state(&block_exit[idx.0], &mut block_entry[target_idx.0]) {
                         worklist.push_back(target_idx);
@@ -319,17 +337,27 @@ fn propagate_state(source: &MoveState, target: &mut MoveState) -> bool {
 
 fn propagate_args(
     _scope: &str,
-    _source: &MoveState,
-    _args: &[ValueId],
-    _params: &[ValueId],
-    _val_types: &FxHashMap<ValueId, Ty>,
+    source: &MoveState,
+    args: &[ValueId],
+    params: &[ValueId],
+    val_types: &FxHashMap<ValueId, Ty>,
     _insts: &[Inst],
     _errors: &mut Vec<ValidationError>,
+    target_entry: &mut MoveState,
 ) {
-    // Block params receive values from args. The args are consumed (moved)
-    // at the jump site, which is handled by the block's exit state.
-    // No additional checking needed here — the args were already checked
-    // when they were used in the block's instructions.
+    // Map arg liveness → param liveness.
+    // If an arg is move-only and moved, the param inherits Moved.
+    for (arg, param) in args.iter().zip(params.iter()) {
+        let arg_liveness = source.get_value(*arg).unwrap_or(Liveness::Alive);
+        let is_move = val_types.get(param).and_then(|ty| is_move_only(ty)) == Some(true);
+        if is_move {
+            let entry = target_entry.values.entry(*param).or_insert(Liveness::Alive);
+            let joined = entry.join(arg_liveness);
+            *entry = joined;
+        } else {
+            target_entry.values.entry(*param).or_insert(Liveness::Alive);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -350,7 +378,8 @@ fn try_consume_value(
     let Some(ty) = val_types.get(&id) else {
         return false;
     };
-    let Some(true) = is_move_only(ty) else {
+    let move_only = is_move_only(ty);
+    let Some(true) = move_only else {
         return false;
     };
 
@@ -398,13 +427,16 @@ fn process_inst(
         }
         InstKind::BlockLabel { params, .. } => {
             for p in params {
-                state.set_value(*p, Liveness::Alive);
+                // Only set Alive if not already set by propagate_args.
+                // If propagate_args already set it to Moved (from incoming),
+                // we must not override.
+                state.values.entry(*p).or_insert(Liveness::Alive);
             }
         }
         InstKind::Nop => {}
 
         // === Variable operations ===
-        InstKind::VarLoad { dst, name } => {
+        InstKind::VarLoad { dst, name } | InstKind::ParamLoad { dst, name } => {
             // Check if $variable has been moved
             if let Some(Liveness::Moved { at }) = state.get_var(*name)
                 && let Some(ty) = val_types.get(dst)
@@ -1006,16 +1038,16 @@ mod tests {
             assert!(has_use_after_move(&result.unwrap_err()));
         }
 
-        /// S2: effectful iter assigned to $var, loaded twice
+        /// S2: effectful iter assigned to var, loaded twice
         #[test]
         fn reject_var_double_load() {
             let result = compile_template(
-                "{{ $a = @src }}{{ $a | collect | len | to_string }}{{ $a | collect | len | to_string }}",
+                "{{ a = @src }}{{ a | collect | len | to_string }}{{ a | collect | len | to_string }}",
                 &[("src", eff_iter_ty())],
             );
             assert!(
                 result.is_err(),
-                "should reject $var double load of effectful"
+                "should reject var double load of effectful"
             );
             assert!(has_use_after_move(&result.unwrap_err()));
         }
@@ -1069,16 +1101,16 @@ mod tests {
             );
         }
 
-        /// C4: $var reassignment revives
+        /// C4: var reassignment revives
         #[test]
         fn accept_var_reassign() {
             let result = compile_template(
-                "{{ $a = @src }}{{ $a | collect | len | to_string }}{{ $a = @src2 }}{{ $a | collect | len | to_string }}",
+                "{{ a = @src }}{{ a | collect | len | to_string }}{{ a = @src2 }}{{ a | collect | len | to_string }}",
                 &[("src", eff_iter_ty()), ("src2", eff_iter_ty())],
             );
             assert!(
                 result.is_ok(),
-                "reassigned $var should be alive: {result:?}"
+                "reassigned var should be alive: {result:?}"
             );
         }
 
@@ -1147,13 +1179,13 @@ mod tests {
         // Note: @context loads always create fresh values (ContextLoad → Alive),
         // so branch tests must use $var (mutable variable) which tracks liveness.
 
-        /// B1: $var holding move-only value, consumed in one branch, used after merge → ERROR
+        /// B1: var holding move-only value, consumed in one branch, used after merge → ERROR
         /// (conservative: any branch moves → merged state is Moved)
         #[test]
         fn reject_branch_move_then_use() {
-            // $a holds effectful iter, consumed in true branch, used again after merge
+            // a holds effectful iter, consumed in true branch, used again after merge
             let result = compile_template(
-                "{{ $a = @src }}{{ true = @flag }}{{ $a | collect | len | to_string }}{{_}}nothing{{/}}{{ $a | collect | len | to_string }}",
+                "{{ a = @src }}{{ true = @flag }}{{ a | collect | len | to_string }}{{_}}nothing{{/}}{{ a | collect | len | to_string }}",
                 &[("flag", Ty::Bool), ("src", eff_iter_ty())],
             );
             assert!(
@@ -1163,11 +1195,11 @@ mod tests {
             assert!(has_use_after_move(&result.unwrap_err()));
         }
 
-        /// B2: $var consumed in both branches, then used after merge → ERROR
+        /// B2: var consumed in both branches, then used after merge → ERROR
         #[test]
         fn reject_both_branches_move_then_use() {
             let result = compile_template(
-                "{{ $a = @src }}{{ true = @flag }}{{ $a | collect | len | to_string }}{{_}}{{ $a | collect | len | to_string }}{{/}}{{ $a | collect | len | to_string }}",
+                "{{ a = @src }}{{ true = @flag }}{{ a | collect | len | to_string }}{{_}}{{ a | collect | len | to_string }}{{/}}{{ a | collect | len | to_string }}",
                 &[("flag", Ty::Bool), ("src", eff_iter_ty())],
             );
             assert!(
@@ -1176,11 +1208,11 @@ mod tests {
             );
         }
 
-        /// B3: $var consumed in one branch only, no use after merge → OK
+        /// B3: var consumed in one branch only, no use after merge → OK
         #[test]
         fn accept_branch_move_no_use_after() {
             let result = compile_template(
-                "{{ $a = @src }}{{ true = @flag }}{{ $a | collect | len | to_string }}{{_}}nothing{{/}}",
+                "{{ a = @src }}{{ true = @flag }}{{ a | collect | len | to_string }}{{_}}nothing{{/}}",
                 &[("flag", Ty::Bool), ("src", eff_iter_ty())],
             );
             assert!(
@@ -1304,7 +1336,7 @@ mod tests {
         #[test]
         fn accept_lambda_context_in_body_is_fn() {
             let result = compile_template(
-                "{{ $f = (|z| -> collect(@src)) }}{{ $f(0) | len | to_string }}{{ $f(0) | len | to_string }}",
+                "{{ f = (|z| -> collect(@src)) }}{{ f(0) | len | to_string }}{{ f(0) | len | to_string }}",
                 &[("src", eff_iter_ty())],
             );
             // @src is NOT captured — it's loaded fresh each call via ContextLoad.
@@ -1341,16 +1373,16 @@ mod tests {
             );
         }
 
-        /// Effectful in $var — reuse rejected (soundness)
+        /// Effectful in var — reuse rejected (soundness)
         #[test]
         fn reject_effectful_var_without_purify() {
             let result = compile_template(
-                "{{ $a = @src }}{{ $a | collect | len | to_string }}{{ $a | collect | len | to_string }}",
+                "{{ a = @src }}{{ a | collect | len | to_string }}{{ a | collect | len | to_string }}",
                 &[("src", eff_iter_ty())],
             );
             assert!(
                 result.is_err(),
-                "effectful $var without purify should be rejected"
+                "effectful var without purify should be rejected"
             );
         }
     }

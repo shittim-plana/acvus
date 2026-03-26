@@ -20,11 +20,15 @@ expression: ir
     ; r3 (v3) : Int
     ; r4 (@out) : <error>
     ; r5 (v5) : Int
-    ; r6 (v10) : Int
-    ; r7 (v11) : Int
-    ; r8 (x) : Int
-    ; r9 (@a) : Int
-    ; r10 (y) : Int
-    ; r11 (v13) : Int
-    ; r12 (@out) : Int
-    ; r13 (@b) : Int
+    ; r6 (v12) : Int
+    ; r7 (v13) : Int
+    ; r8 (y) : Int
+    ; r9 (@out) : Int
+    ; r10 (@a) : Int
+    ; r11 (v17) : Int
+    ; r12 (y) : Int
+    ; r13 (v15) : Int
+    ; r14 (x) : Int
+    ; r15 (x) : Int
+    ; r16 (v16) : Int
+    ; r17 (@b) : Int

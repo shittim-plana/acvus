@@ -1,34 +1,45 @@
-//! SSA construction for context variables.
+//! SSA construction for context and local variables.
 //!
-//! Cranelift-style SSABuilder: tracks define/use of context variables across
+//! Cranelift-style SSABuilder: tracks define/use of variables across
 //! basic blocks, automatically inserts PHI (block params) at merge points.
 //!
 //! Usage:
 //! 1. Create SSABuilder
 //! 2. As lowerer emits code:
-//!    - `define(block, ctx, val)` when writing a context
-//!    - `use_var(block, ctx)` when reading a context → returns ValueId
+//!    - `define(block, var, val)` when writing a variable
+//!    - `use_var(block, var)` when reading a variable → returns ValueId
 //! 3. When all predecessors of a block are known, `seal_block(block)`
 //! 4. `finish()` returns the PHI insertions to apply
+
+use acvus_utils::Astr;
 
 use crate::graph::QualifiedRef;
 use crate::ir::{Label, ValueId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
+/// Key for SSA tracking: either a context variable or a local variable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum SsaVar {
+    /// Context variable: `@name`.
+    Context(QualifiedRef),
+    /// Local variable: `name` (hoisted) or `$name` (extern param).
+    Local(Astr),
+}
+
 /// A pending PHI that needs to be resolved when the block is sealed.
 #[derive(Debug, Clone)]
 struct PendingPhi {
-    context: QualifiedRef,
+    var: SsaVar,
     /// The ValueId allocated for this PHI result (block param).
     result: ValueId,
 }
 
-/// Tracks the SSA state for context variables.
+/// Tracks the SSA state for variables.
 #[derive(Debug)]
 pub struct SSABuilder {
-    /// Current definition of each context variable per block.
-    /// (block, context) → ValueId
-    current_defs: FxHashMap<(Label, QualifiedRef), ValueId>,
+    /// Current definition of each variable per block.
+    /// (block, var) → ValueId
+    current_defs: FxHashMap<(Label, SsaVar), ValueId>,
 
     /// Predecessors of each block.
     predecessors: FxHashMap<Label, Vec<Label>>,
@@ -41,8 +52,7 @@ pub struct SSABuilder {
     /// a PHI is tentatively placed and resolved when the block is sealed.
     pending_phis: FxHashMap<Label, Vec<PendingPhi>>,
 
-    /// Completed PHI insertions: block → list of (context, phi_result, incoming values).
-    /// The lowerer uses this to patch block params and jump args.
+    /// Completed PHI insertions.
     phi_results: Vec<PhiInsertion>,
 }
 
@@ -51,8 +61,8 @@ pub struct SSABuilder {
 pub struct PhiInsertion {
     /// The merge block where this PHI lives.
     pub block: Label,
-    /// Which context variable this PHI is for.
-    pub context: QualifiedRef,
+    /// Which variable this PHI is for.
+    pub var: SsaVar,
     /// The ValueId that represents the PHI result (block param).
     pub result: ValueId,
     /// Incoming values from predecessors: (predecessor_block, ValueId).
@@ -84,12 +94,12 @@ impl SSABuilder {
         self.predecessors.entry(to).or_default().push(from);
     }
 
-    /// Define a context variable in a block.
-    pub fn define(&mut self, block: Label, context: QualifiedRef, value: ValueId) {
-        self.current_defs.insert((block, context), value);
+    /// Define a variable in a block.
+    pub fn define(&mut self, block: Label, var: SsaVar, value: ValueId) {
+        self.current_defs.insert((block, var), value);
     }
 
-    /// Use a context variable in a block. Returns the ValueId holding the value.
+    /// Use a variable in a block. Returns the ValueId holding the value.
     ///
     /// If the variable was defined in this block, returns that definition.
     /// If not, looks up predecessors (recursively). If the block is sealed
@@ -98,17 +108,17 @@ impl SSABuilder {
     pub fn use_var(
         &mut self,
         block: Label,
-        context: QualifiedRef,
+        var: SsaVar,
         alloc_val: &mut impl FnMut() -> ValueId,
     ) -> ValueId {
         // Local definition in this block?
-        if let Some(&val) = self.current_defs.get(&(block, context)) {
+        if let Some(&val) = self.current_defs.get(&(block, var)) {
             return val;
         }
 
         // Block sealed?
         if self.sealed.contains(&block) {
-            return self.use_var_sealed(block, context, alloc_val);
+            return self.use_var_sealed(block, var, alloc_val);
         }
 
         // Not sealed — place a pending PHI.
@@ -117,11 +127,11 @@ impl SSABuilder {
             .entry(block)
             .or_default()
             .push(PendingPhi {
-                context,
+                var,
                 result: phi_val,
             });
         // Tentatively define this as the current value.
-        self.current_defs.insert((block, context), phi_val);
+        self.current_defs.insert((block, var), phi_val);
         phi_val
     }
 
@@ -138,7 +148,7 @@ impl SSABuilder {
         // Resolve pending PHIs.
         let pending = self.pending_phis.remove(&block).unwrap_or_default();
         for phi in pending {
-            self.resolve_phi(block, phi.context, phi.result, alloc_val);
+            self.resolve_phi(block, phi.var, phi.result, alloc_val);
         }
     }
 
@@ -152,38 +162,38 @@ impl SSABuilder {
     fn use_var_sealed(
         &mut self,
         block: Label,
-        context: QualifiedRef,
+        var: SsaVar,
         alloc_val: &mut impl FnMut() -> ValueId,
     ) -> ValueId {
         let preds = self.predecessors.get(&block).cloned().unwrap_or_default();
 
         if preds.is_empty() {
             panic!(
-                "use_var: context {:?} has no definition and no predecessors in block {:?}",
-                context, block
+                "use_var: {:?} has no definition and no predecessors in block {:?}",
+                var, block
             );
         }
 
         if preds.len() == 1 {
             // Single predecessor — just look up recursively.
-            let val = self.use_var(preds[0], context, alloc_val);
-            self.current_defs.insert((block, context), val);
+            let val = self.use_var(preds[0], var, alloc_val);
+            self.current_defs.insert((block, var), val);
             return val;
         }
 
         // Multiple predecessors — need PHI.
         let phi_val = alloc_val();
         // Define before resolving to break cycles (loop back edges).
-        self.current_defs.insert((block, context), phi_val);
-        self.resolve_phi(block, context, phi_val, alloc_val);
+        self.current_defs.insert((block, var), phi_val);
+        self.resolve_phi(block, var, phi_val, alloc_val);
         // resolve_phi may have replaced with a trivial value.
-        *self.current_defs.get(&(block, context)).unwrap()
+        *self.current_defs.get(&(block, var)).unwrap()
     }
 
     fn resolve_phi(
         &mut self,
         block: Label,
-        context: QualifiedRef,
+        var: SsaVar,
         phi_val: ValueId,
         alloc_val: &mut impl FnMut() -> ValueId,
     ) {
@@ -191,7 +201,7 @@ impl SSABuilder {
         let mut incoming = Vec::new();
 
         for pred in &preds {
-            let val = self.use_var(*pred, context, alloc_val);
+            let val = self.use_var(*pred, var, alloc_val);
             incoming.push((*pred, val));
         }
 
@@ -206,14 +216,14 @@ impl SSABuilder {
         if unique.len() == 1 {
             // Trivial — all predecessors provide the same value.
             let single = *unique.iter().next().unwrap();
-            self.current_defs.insert((block, context), single);
+            self.current_defs.insert((block, var), single);
             // No PHI insertion needed.
         } else {
             // Non-trivial PHI.
-            self.current_defs.insert((block, context), phi_val);
+            self.current_defs.insert((block, var), phi_val);
             self.phi_results.push(PhiInsertion {
                 block,
-                context,
+                var,
                 result: phi_val,
                 incoming,
             });
@@ -240,8 +250,8 @@ mod tests {
         }
     }
 
-    fn make_ctx(interner: &Interner, name: &str) -> QualifiedRef {
-        QualifiedRef::root(interner.intern(name))
+    fn make_ctx(interner: &Interner, name: &str) -> SsaVar {
+        SsaVar::Context(QualifiedRef::root(interner.intern(name)))
     }
 
     // ── Completeness: correct PHI insertion ──
@@ -314,7 +324,7 @@ mod tests {
         let phis = ssa.finish();
         assert_eq!(phis.len(), 1, "one PHI for the merge");
         assert_eq!(phis[0].block, label(3));
-        assert_eq!(phis[0].context, ctx);
+        assert_eq!(phis[0].var, ctx);
         assert_eq!(phis[0].incoming.len(), 2);
     }
 
@@ -533,10 +543,10 @@ mod tests {
         let phis = ssa.finish();
         // ctx_a should have PHI (different values from two sides)
         // ctx_b should NOT have PHI (same value from both sides — trivial)
-        let phi_contexts: Vec<QualifiedRef> = phis.iter().map(|p| p.context).collect();
-        assert!(phi_contexts.contains(&ctx_a), "ctx_a needs PHI");
+        let phi_vars: Vec<SsaVar> = phis.iter().map(|p| p.var).collect();
+        assert!(phi_vars.contains(&ctx_a), "ctx_a needs PHI");
         assert!(
-            !phi_contexts.contains(&ctx_b),
+            !phi_vars.contains(&ctx_b),
             "ctx_b should be trivially eliminated"
         );
         assert_eq!(rb, vb0, "ctx_b should resolve to original value");

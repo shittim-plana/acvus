@@ -116,8 +116,11 @@ pub fn lower(
             ParsedSource::Template(template) => lowerer.lower_template(template),
         };
 
-        // SSA context pass: promote ContextProject/Load/Store to SSA form.
+        // SSA pass: promote context/local variables to SSA form.
         crate::ssa_pass::run(&mut module.main, &fn_type_map);
+        for closure in module.closures.values_mut() {
+            crate::ssa_pass::run(closure, &fn_type_map);
+        }
 
         let validation_errors = crate::validate::validate(&module, &fn_type_map);
         let result: Result<_, Vec<crate::error::MirError>> = if validation_errors.is_empty() {

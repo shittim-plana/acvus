@@ -15,12 +15,12 @@ expression: ir
      9 │ L3:
     10 │   r6 = r1.0
     12 │   r7 = T0 + r6
-    13 │   jump L0(r7)
+    13 │   jump L0(r7, r6)
     14 │ L1:
-    16 │   jump L0(T0)
-    17 │ L0(r8: String):  ; merge_of L2
-    18 │   r9 = T0 + r8
-    19 │   return r9
+    16 │   jump L0(T0, r8)
+    17 │ L0(r9: String, r10: String):  ; merge_of L2
+    18 │   r11 = T0 + r9
+    19 │   return r11
 
     ; r0 (@pair) : <error>
     ; r1 (v1) : (String, Int)
@@ -29,11 +29,14 @@ expression: ir
     ; r4 (v5) : Bool
     ; r5 (v7) : Bool
     ; r6 (name) : String
-    ; r7 (v11) : String
-    ; r8 (v13) : String
+    ; r7 (v12) : String
+    ; r8 (v16) : String
     ; r9 (v14) : String
-    ; r10 (@pair) : (String, Int)
-    ; r11 (v12) : String
-    ; r12 (v4) : (String, Int)
-    ; r13 (v10) : String
-    ; r14 (v2) : String
+    ; r10 (v17) : String
+    ; r11 (v15) : String
+    ; r12 (name) : String
+    ; r13 (@pair) : (String, Int)
+    ; r14 (v4) : (String, Int)
+    ; r15 (v10) : String
+    ; r16 (v2) : String
+    ; r17 (v13) : String

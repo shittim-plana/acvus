@@ -62,9 +62,10 @@ mod tests {
     }
 
     #[test]
-    fn integration_context_read_var_write() {
+    fn extern_param_write_rejected() {
         let i = Interner::new();
-        assert!(compile_template(&i, "{{ $count = 42 }}", &[]).is_ok());
+        assert!(compile_template(&i, "{{ $count = 42 }}", &[]).is_err());
+        // Reading an extern param via context is still valid.
         assert!(compile_template(&i, "{{ @count | to_string }}", &[("count", Ty::Int)]).is_ok());
     }
 
@@ -563,5 +564,100 @@ mod tests {
         for dst in &proj_dsts {
             assert!(consumed.contains(dst), "projection leaked");
         }
+    }
+
+    // ── Materiality: context store validation ─────────────────────────
+    //
+    // Soundness: non-materializable types must be rejected.
+    // Completeness: materializable types must be accepted.
+
+    // ── Completeness: materializable types accepted ──
+
+    #[test]
+    fn materiality_store_int() {
+        let i = Interner::new();
+        assert!(compile_script(&i, "@x = 42; @x", &[("x", Ty::Int)]).is_ok());
+    }
+
+    #[test]
+    fn materiality_store_string() {
+        let i = Interner::new();
+        assert!(compile_script(&i, r#"@x = "hello"; @x"#, &[("x", Ty::String)]).is_ok());
+    }
+
+    #[test]
+    fn materiality_store_deque() {
+        let i = Interner::new();
+        let o = crate::ty::TySubst::new().fresh_concrete_origin();
+        assert!(compile_script(&i, "@x = [1, 2, 3]; @x", &[("x", Ty::Deque(Box::new(Ty::Int), o))]).is_ok());
+    }
+
+    #[test]
+    fn materiality_store_object() {
+        let i = Interner::new();
+        let obj_ty = Ty::Object(FxHashMap::from_iter([
+            (i.intern("name"), Ty::String),
+            (i.intern("age"), Ty::Int),
+        ]));
+        assert!(compile_script(&i, "@user = @user; @user", &[("user", obj_ty)]).is_ok());
+    }
+
+    #[test]
+    fn materiality_store_bool() {
+        let i = Interner::new();
+        assert!(compile_script(&i, "@x = true; @x", &[("x", Ty::Bool)]).is_ok());
+    }
+
+    // ── Soundness: non-materializable types rejected ──
+
+    #[test]
+    fn materiality_reject_fn_in_context() {
+        let i = Interner::new();
+        let fn_ty = Ty::Fn {
+            params: vec![Param::new(i.intern("x"), Ty::Int)],
+            ret: Box::new(Ty::Int),
+            captures: vec![],
+            effect: Effect::pure(),
+        };
+        // Storing a function to context must fail.
+        assert!(compile_script(&i, "@f = @f; @f", &[("f", fn_ty)]).is_err());
+    }
+
+    #[test]
+    fn materiality_reject_iterator_in_context() {
+        let i = Interner::new();
+        let iter_ty = Ty::Iterator(Box::new(Ty::Int), Effect::pure());
+        assert!(compile_script(&i, "@it = @it; @it", &[("it", iter_ty)]).is_err());
+    }
+
+    // ── Soundness: nested non-materializable rejected ──
+
+    #[test]
+    fn materiality_reject_list_of_fn() {
+        let i = Interner::new();
+        let fn_ty = Ty::Fn {
+            params: vec![Param::new(i.intern("x"), Ty::Int)],
+            ret: Box::new(Ty::Int),
+            captures: vec![],
+            effect: Effect::pure(),
+        };
+        let list_fn_ty = Ty::List(Box::new(fn_ty));
+        assert!(compile_script(&i, "@x = @x; @x", &[("x", list_fn_ty)]).is_err());
+    }
+
+    #[test]
+    fn materiality_reject_object_with_fn_field() {
+        let i = Interner::new();
+        let fn_ty = Ty::Fn {
+            params: vec![Param::new(i.intern("x"), Ty::Int)],
+            ret: Box::new(Ty::Int),
+            captures: vec![],
+            effect: Effect::pure(),
+        };
+        let obj_ty = Ty::Object(FxHashMap::from_iter([
+            (i.intern("name"), Ty::String),
+            (i.intern("callback"), fn_ty),
+        ]));
+        assert!(compile_script(&i, "@obj = @obj; @obj", &[("obj", obj_ty)]).is_err());
     }
 }

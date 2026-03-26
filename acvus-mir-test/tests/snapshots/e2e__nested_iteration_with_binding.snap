@@ -9,57 +9,64 @@ expression: ir
      0 │   r0 = context_project @matrix
      1 │   r1 = context_load r0
      3 │   r2 = cast ListToIterator r1
-     5 │   jump L0(r2, T0)
-     6 │ L0(r3: Iterator<List<Int>>, r4: String):
-     7 │   iter_step r5, r6 = r3 else L1(r4)
+     5 │   jump L0(r2, T0, r3, r4)
+     6 │ L0(r5: Iterator<List<Int>>, r6: String, r7: Int, r8: List<Int>):
+     7 │   iter_step r9, r10 = r5 else L1(r6)
      8 │ L3:
-    10 │   r7 = cast ListToIterator r5
-    12 │   jump L4(r7, T0)
-    13 │ L4(r8: Iterator<Int>, r9: String):
-    14 │   iter_step r10, r11 = r8 else L5(r9)
+    10 │   r11 = cast ListToIterator r9
+    12 │   jump L4(r11, T0, r7)
+    13 │ L4(r12: Iterator<Int>, r13: String, r14: Int):
+    14 │   iter_step r15, r16 = r12 else L5(r13)
     15 │ L7:
-    17 │   r12 = poison
-    18 │   r13 = T0 + r12
-    19 │   r14 = r9 + r13
-    20 │   jump L4(r11, r14)
-    21 │ L5(r15: String):
-    22 │   jump L6(r15)
-    23 │ L6(r16: String):
-    24 │   r17 = T0 + r16
-    25 │   r18 = r4 + r17
-    26 │   jump L0(r6, r18)
-    27 │ L1(r19: String):
-    28 │   jump L2(r19)
-    29 │ L2(r20: String):
-    30 │   r21 = T0 + r20
-    31 │   return r21
+    17 │   r17 = poison
+    18 │   r18 = T0 + r17
+    19 │   r19 = r13 + r18
+    20 │   jump L4(r16, r19, r15)
+    21 │ L5(r20: String):
+    22 │   jump L6(r20)
+    23 │ L6(r21: String):
+    24 │   r22 = T0 + r21
+    25 │   r23 = r6 + r22
+    26 │   jump L0(r10, r23, r14, r9)
+    27 │ L1(r24: String):
+    28 │   jump L2(r24)
+    29 │ L2(r25: String):
+    30 │   r26 = T0 + r25
+    31 │   return r26
 
     ; r0 (@matrix) : <error>
     ; r1 (v1) : List<List<Int>>
     ; r2 (v5) : Iterator<List<Int>>
-    ; r3 (v7) : Iterator<List<Int>>
-    ; r4 (v8) : String
-    ; r5 (row) : List<Int>
-    ; r6 (v10) : Iterator<List<Int>>
-    ; r7 (v12) : Iterator<Int>
-    ; r8 (v14) : Iterator<Int>
-    ; r9 (v15) : String
-    ; r10 (x) : Int
-    ; r11 (v17) : Iterator<Int>
-    ; r12 (to_string(...)) : String
-    ; r13 (v20) : String
-    ; r14 (v21) : String
-    ; r15 (v22) : String
-    ; r16 (v23) : String
-    ; r17 (v24) : String
-    ; r18 (v25) : String
-    ; r19 (v26) : String
-    ; r20 (v27) : String
-    ; r21 (v28) : String
-    ; r22 (@matrix) : List<List<Int>>
-    ; r23 (v6) : String
-    ; r24 (v11) : String
-    ; r25 (v18) : String
-    ; r26 (v2) : String
-    ; r27 (v4) : List<List<Int>>
-    ; r28 (v13) : String
+    ; r3 (v31) : Int
+    ; r4 (v32) : List<Int>
+    ; r5 (v7) : Iterator<List<Int>>
+    ; r6 (v8) : String
+    ; r7 (v33) : Int
+    ; r8 (v35) : List<Int>
+    ; r9 (row) : List<Int>
+    ; r10 (v10) : Iterator<List<Int>>
+    ; r11 (v13) : Iterator<Int>
+    ; r12 (v15) : Iterator<Int>
+    ; r13 (v16) : String
+    ; r14 (v34) : Int
+    ; r15 (x) : Int
+    ; r16 (v18) : Iterator<Int>
+    ; r17 (to_string(...)) : String
+    ; r18 (v22) : String
+    ; r19 (v23) : String
+    ; r20 (v24) : String
+    ; r21 (v25) : String
+    ; r22 (v26) : String
+    ; r23 (v27) : String
+    ; r24 (v28) : String
+    ; r25 (v29) : String
+    ; r26 (v30) : String
+    ; r27 (@matrix) : List<List<Int>>
+    ; r28 (v6) : String
+    ; r29 (v11) : String
+    ; r30 (v14) : String
+    ; r31 (x) : Int
+    ; r32 (row) : List<Int>
+    ; r33 (v2) : String
+    ; r34 (v4) : List<List<Int>>
+    ; r35 (v19) : String

@@ -414,7 +414,7 @@ impl Interpreter {
     fn run_loop<'s>(
         &'s mut self,
         insts: &'s [Inst],
-        closures: &'s FxHashMap<Label, Arc<MirBody>>,
+        closures: &'s FxHashMap<Label, MirBody>,
         frame: &'s mut Frame,
         projection_map: &'s mut FxHashMap<ValueId, QualifiedRef>,
         val_types: &'s FxHashMap<ValueId, Ty>,
@@ -425,7 +425,7 @@ impl Interpreter {
     async fn run_loop_inner(
         &mut self,
         insts: &[Inst],
-        closures: &FxHashMap<Label, Arc<MirBody>>,
+        closures: &FxHashMap<Label, MirBody>,
         frame: &mut Frame,
         projection_map: &mut FxHashMap<ValueId, QualifiedRef>,
         val_types: &FxHashMap<ValueId, Ty>,
@@ -448,7 +448,7 @@ impl Interpreter {
     async fn execute_inst(
         &mut self,
         insts: &[Inst],
-        closures: &FxHashMap<Label, Arc<MirBody>>,
+        closures: &FxHashMap<Label, MirBody>,
         pc: usize,
         frame: &mut Frame,
         projection_map: &mut FxHashMap<ValueId, QualifiedRef>,
@@ -477,6 +477,19 @@ impl Interpreter {
             InstKind::VarStore { name, src } => {
                 let val = frame.share(*src);
                 self.variables.insert(*name, val);
+            }
+            InstKind::ParamLoad { dst, name } => {
+                let val = self
+                    .variables
+                    .get(name)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "undefined param ${}",
+                            self.shared.interner.resolve(*name)
+                        )
+                    })
+                    .share();
+                frame.set(*dst, val);
             }
 
             // ── Context ───────────────────────────────────────
@@ -580,15 +593,13 @@ impl Interpreter {
                 captures,
             } => {
                 let captured: Vec<Value> = captures.iter().map(|c| frame.share(*c)).collect();
-                let closure_body = Arc::clone(
-                    closures
-                        .get(body)
-                        .unwrap_or_else(|| panic!("closure body not found: {body:?}")),
-                );
+                let closure_body = closures
+                    .get(body)
+                    .unwrap_or_else(|| panic!("closure body not found: {body:?}"));
                 frame.set(
                     *dst,
                     Value::closure(FnValue {
-                        body: closure_body,
+                        body: Arc::new(closure_body.clone()),
                         captures: captured.into(),
                     }),
                 );

@@ -23,13 +23,13 @@ expression: ir
     18 │   r13 = T0 + r11
     19 │   r14 = poison
     20 │   r15 = r13 + r14
-    21 │   jump L0(r15)
+    21 │   jump L0(r15, r11, r12)
     22 │ L1:
     25 │   r16 = T0 + T1
-    26 │   jump L0(r16)
-    27 │ L0(r17: String):  ; merge_of L2
-    28 │   r18 = T0 + r17
-    29 │   return r18
+    26 │   jump L0(r16, r17, r18)
+    27 │ L0(r19: String, r20: String, r21: Int):  ; merge_of L2
+    28 │   r22 = T0 + r19
+    29 │   return r22
 
     ; r0 (@user) : <error>
     ; r1 (v1) : {age: Int, email: String, name: String}
@@ -44,15 +44,21 @@ expression: ir
     ; r10 (v12) : Bool
     ; r11 (name) : String
     ; r12 (age) : Int
-    ; r13 (v17) : String
+    ; r13 (v18) : String
     ; r14 (to_string(...)) : String
-    ; r15 (v19) : String
-    ; r16 (v22) : String
-    ; r17 (v23) : String
-    ; r18 (v24) : String
-    ; r19 (@user) : {age: Int, email: String, name: String}
-    ; r20 (v4) : {age: Int, email: String, name: String}
-    ; r21 (v21) : String
-    ; r22 (v2) : String
-    ; r23 (v20) : String
-    ; r24 (v16) : String
+    ; r15 (v21) : String
+    ; r16 (v24) : String
+    ; r17 (v27) : String
+    ; r18 (v28) : Int
+    ; r19 (v25) : String
+    ; r20 (v29) : String
+    ; r21 (v30) : Int
+    ; r22 (v26) : String
+    ; r23 (v22) : String
+    ; r24 (@user) : {age: Int, email: String, name: String}
+    ; r25 (name) : String
+    ; r26 (v23) : String
+    ; r27 (v2) : String
+    ; r28 (v4) : {age: Int, email: String, name: String}
+    ; r29 (v16) : String
+    ; r30 (age) : Int

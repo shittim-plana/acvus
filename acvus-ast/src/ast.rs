@@ -365,10 +365,10 @@ pub enum UnaryOp {
 pub enum RefKind {
     /// A bare name: `x`.
     Value,
-    /// A context reference: `@x` (read-only, externally injected).
+    /// A context reference: `@x` (read-write, persisted state).
     Context,
-    /// A variable reference: `$x` (mutable local).
-    Variable,
+    /// An extern parameter: `$x` (immutable, externally injected).
+    ExternParam,
 }
 
 /// A literal value.
@@ -455,7 +455,7 @@ fn walk_pattern(pattern: &Pattern, refs: &mut rustc_hash::FxHashSet<Astr>) {
         Pattern::Binding { name, ref_kind, .. } => {
             match ref_kind {
                 RefKind::Context => { refs.insert(*name); }
-                RefKind::Variable | RefKind::Value => {}
+                RefKind::ExternParam | RefKind::Value => {}
             }
         }
         Pattern::Literal { .. } => {}

@@ -9,61 +9,70 @@ expression: ir
      0 │   r0 = context_project @users
      1 │   r1 = context_load r0
      3 │   r2 = cast ListToIterator r1
-     5 │   jump L0(r2, T0)
-     6 │ L0(r3: Iterator<{name: String, posts: List<{title: String}>}>, r4: String):
-     7 │   iter_step r5, r6 = r3 else L1(r4)
+     5 │   jump L0(r2, T0, r3, r4, r5)
+     6 │ L0(r6: Iterator<{name: String, posts: List<{title: String}>}>, r7: String, r8: String, r9: List<{title: String}>, r10: String):
+     7 │   iter_step r11, r12 = r6 else L1(r7)
      8 │ L3:
-     9 │   r7 = r5.name
-    10 │   r8 = r5.posts
-    12 │   r9 = cast ListToIterator r8
-    14 │   jump L4(r9, T0)
-    15 │ L4(r10: Iterator<{title: String}>, r11: String):
-    16 │   iter_step r12, r13 = r10 else L5(r11)
+     9 │   r13 = r11.name
+    10 │   r14 = r11.posts
+    12 │   r15 = cast ListToIterator r14
+    14 │   jump L4(r15, T0, r10)
+    15 │ L4(r16: Iterator<{title: String}>, r17: String, r18: String):
+    16 │   iter_step r19, r20 = r16 else L5(r17)
     17 │ L7:
-    18 │   r14 = r12.title
-    20 │   r15 = T0 + r14
-    21 │   r16 = r11 + r15
-    22 │   jump L4(r13, r16)
-    23 │ L5(r17: String):
-    24 │   jump L6(r17)
-    25 │ L6(r18: String):
-    26 │   r19 = T0 + r18
-    27 │   r20 = r4 + r19
-    28 │   jump L0(r6, r20)
-    29 │ L1(r21: String):
-    30 │   jump L2(r21)
-    31 │ L2(r22: String):
-    32 │   r23 = T0 + r22
-    33 │   return r23
+    18 │   r21 = r19.title
+    20 │   r22 = T0 + r21
+    21 │   r23 = r17 + r22
+    22 │   jump L4(r20, r23, r21)
+    23 │ L5(r24: String):
+    24 │   jump L6(r24)
+    25 │ L6(r25: String):
+    26 │   r26 = T0 + r25
+    27 │   r27 = r7 + r26
+    28 │   jump L0(r12, r27, r13, r14, r18)
+    29 │ L1(r28: String):
+    30 │   jump L2(r28)
+    31 │ L2(r29: String):
+    32 │   r30 = T0 + r29
+    33 │   return r30
 
     ; r0 (@users) : <error>
     ; r1 (v1) : List<{name: String, posts: List<{title: String}>}>
     ; r2 (v5) : Iterator<{name: String, posts: List<{title: String}>}>
-    ; r3 (v7) : Iterator<{name: String, posts: List<{title: String}>}>
-    ; r4 (v8) : String
-    ; r5 (v9) : {name: String, posts: List<{title: String}>}
-    ; r6 (v10) : Iterator<{name: String, posts: List<{title: String}>}>
-    ; r7 (name) : String
-    ; r8 (posts) : List<{title: String}>
-    ; r9 (v14) : Iterator<{title: String}>
-    ; r10 (v16) : Iterator<{title: String}>
-    ; r11 (v17) : String
-    ; r12 (v18) : {title: String}
-    ; r13 (v19) : Iterator<{title: String}>
-    ; r14 (title) : String
-    ; r15 (v22) : String
-    ; r16 (v23) : String
-    ; r17 (v24) : String
-    ; r18 (v25) : String
-    ; r19 (v26) : String
-    ; r20 (v27) : String
-    ; r21 (v28) : String
-    ; r22 (v29) : String
-    ; r23 (v30) : String
-    ; r24 (@users) : List<{name: String, posts: List<{title: String}>}>
-    ; r25 (v6) : String
-    ; r26 (v15) : String
-    ; r27 (v21) : String
-    ; r28 (v2) : String
-    ; r29 (v4) : List<{name: String, posts: List<{title: String}>}>
-    ; r30 (v13) : String
+    ; r3 (v33) : String
+    ; r4 (v34) : List<{title: String}>
+    ; r5 (v35) : String
+    ; r6 (v7) : Iterator<{name: String, posts: List<{title: String}>}>
+    ; r7 (v8) : String
+    ; r8 (v36) : String
+    ; r9 (v38) : List<{title: String}>
+    ; r10 (v40) : String
+    ; r11 (v9) : {name: String, posts: List<{title: String}>}
+    ; r12 (v10) : Iterator<{name: String, posts: List<{title: String}>}>
+    ; r13 (name) : String
+    ; r14 (posts) : List<{title: String}>
+    ; r15 (v15) : Iterator<{title: String}>
+    ; r16 (v17) : Iterator<{title: String}>
+    ; r17 (v18) : String
+    ; r18 (v41) : String
+    ; r19 (v19) : {title: String}
+    ; r20 (v20) : Iterator<{title: String}>
+    ; r21 (title) : String
+    ; r22 (v24) : String
+    ; r23 (v25) : String
+    ; r24 (v26) : String
+    ; r25 (v27) : String
+    ; r26 (v28) : String
+    ; r27 (v29) : String
+    ; r28 (v30) : String
+    ; r29 (v31) : String
+    ; r30 (v32) : String
+    ; r31 (v22) : String
+    ; r32 (@users) : List<{name: String, posts: List<{title: String}>}>
+    ; r33 (v6) : String
+    ; r34 (posts) : List<{title: String}>
+    ; r35 (v2) : String
+    ; r36 (title) : String
+    ; r37 (v4) : List<{name: String, posts: List<{title: String}>}>
+    ; r38 (v13) : String
+    ; r39 (v16) : String

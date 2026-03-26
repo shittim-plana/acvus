@@ -1,4 +1,3 @@
-use std::sync::Arc;
 
 use crate::ir::{Callee, InstKind, MirBody, MirModule, ValueId};
 use acvus_ast::Literal;
@@ -36,8 +35,7 @@ impl LiteralKey {
 pub fn dedup(mut module: MirModule) -> MirModule {
     module.main = dedup_body(module.main);
     for closure in module.closures.values_mut() {
-        let c = Arc::make_mut(closure);
-        *c = dedup_body(std::mem::take(c));
+        *closure = dedup_body(std::mem::take(closure));
     }
     module
 }
@@ -113,6 +111,7 @@ fn remap_uses(kind: &mut InstKind, remap: &FxHashMap<ValueId, ValueId>) {
         // No uses
         InstKind::Const { .. }
         | InstKind::VarLoad { .. }
+        | InstKind::ParamLoad { .. }
         | InstKind::BlockLabel { .. }
         | InstKind::Nop
         | InstKind::Poison { .. } => {}

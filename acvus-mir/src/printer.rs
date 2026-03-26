@@ -255,13 +255,19 @@ fn write_body(
             )?,
             InstKind::VarLoad { dst, name } => writeln!(
                 f,
-                "{} = var_load ${}",
+                "{} = var_load {}",
+                vn.fmt_val(*dst),
+                ctx.interner.resolve(*name)
+            )?,
+            InstKind::ParamLoad { dst, name } => writeln!(
+                f,
+                "{} = param_load ${}",
                 vn.fmt_val(*dst),
                 ctx.interner.resolve(*name)
             )?,
             InstKind::VarStore { name, src } => writeln!(
                 f,
-                "var_store ${} = {}",
+                "var_store {} = {}",
                 ctx.interner.resolve(*name),
                 vn.fmt_use(*src, &consts, &texts)
             )?,
@@ -927,10 +933,10 @@ mod tests {
     }
 
     #[test]
-    fn print_var_write() {
+    fn extern_param_write_rejected() {
         let interner = Interner::new();
-        let out = compile_and_dump("{{ $count = 42 }}", &FxHashMap::default(), &interner);
-        assert!(out.contains("var_store $count"));
+        let result = crate::test::compile_template(&interner, "{{ $count = 42 }}", &[]);
+        assert!(result.is_err());
     }
 
     #[test]

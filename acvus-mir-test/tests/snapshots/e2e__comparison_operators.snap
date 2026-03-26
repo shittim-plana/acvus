@@ -23,10 +23,12 @@ expression: ir
     ; r4 (v9) : Bool
     ; r5 (v11) : String
     ; r6 (to_string(...)) : String
-    ; r7 (v13) : String
-    ; r8 (@b) : Int
-    ; r9 (v10) : String
-    ; r10 (v6) : Int
-    ; r11 (@a) : Int
-    ; r12 (v8) : Int
-    ; r13 (v4) : String
+    ; r7 (v14) : String
+    ; r8 (v6) : Int
+    ; r9 (x) : Bool
+    ; r10 (v4) : String
+    ; r11 (v15) : Bool
+    ; r12 (@b) : Int
+    ; r13 (v10) : String
+    ; r14 (@a) : Int
+    ; r15 (v8) : Int

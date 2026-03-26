@@ -27,15 +27,19 @@ expression: ir
     ; r6 (v10) : String
     ; r7 (len(...)) : Int
     ; r8 (to_string(...)) : String
-    ; r9 (v13) : String
-    ; r10 (@flags) : List<Bool>
-    ; r11 (v2) : String
+    ; r9 (v14) : String
+    ; r10 (x) : List<Bool>
+    ; r11 (@flags) : List<Bool>
     ; r12 (v9) : String
     ; r13 (v4) : List<Bool>
+    ; r14 (v15) : List<Bool>
+    ; r15 (v2) : String
 
 === closure L0 (ValueId(0)) ===
      0 │   r0 = !r1
      1 │   return r0
 
-    ; r0 (v1) : Bool
+    ; r0 (v2) : Bool
     ; r1 (v0) : Bool
+    ; r2 (v3) : Bool
+    ; r3 (i) : Bool

@@ -1,4 +1,3 @@
-use std::sync::Arc;
 
 use acvus_ast::{BinOp, Literal, RangeKind, Span, UnaryOp};
 use acvus_utils::LocalFactory;
@@ -121,6 +120,11 @@ pub enum InstKind {
     VarStore {
         name: Astr,
         src: ValueId,
+    },
+    /// Load an extern parameter `$name`. Immutable — no corresponding store.
+    ParamLoad {
+        dst: ValueId,
+        name: Astr,
     },
 
     // Arithmetic / logic
@@ -331,8 +335,8 @@ pub enum ValOrigin {
     Named(Astr),
     /// A context reference: `@name`.
     Context(Astr),
-    /// A variable reference: `$name`.
-    Variable(Astr),
+    /// An extern parameter: `$name`.
+    ExternParam(Astr),
     /// A field access: `user.name` -- (object val, field name).
     Field(ValueId, Astr),
     /// Result of a function call: `to_string(...)`, `fetch(...)`.
@@ -372,7 +376,7 @@ impl DebugInfo {
         match self.val_origins.get(&val) {
             Some(ValOrigin::Named(name)) => interner.resolve(*name).to_string(),
             Some(ValOrigin::Context(name)) => format!("@{}", interner.resolve(*name)),
-            Some(ValOrigin::Variable(name)) => format!("${}", interner.resolve(*name)),
+            Some(ValOrigin::ExternParam(name)) => format!("${}", interner.resolve(*name)),
             Some(ValOrigin::Field(_, field)) => interner.resolve(*field).to_string(),
             Some(ValOrigin::Call(func)) => format!("{}(...)", interner.resolve(*func)),
             Some(ValOrigin::Expr) | None => format!("v{}", val.0),
@@ -414,7 +418,7 @@ impl MirBody {
 #[derive(Debug, Clone, Default)]
 pub struct MirModule {
     pub main: MirBody,
-    pub closures: FxHashMap<Label, Arc<MirBody>>,
+    pub closures: FxHashMap<Label, MirBody>,
 }
 
 impl MirModule {

@@ -7,10 +7,12 @@ expression: ir
 
 === main ===
      1 │   r0 = variant None
-     3 │   r1 = T0 + T0
-     4 │   return r1
+     2 │   var_store x = r0
+     4 │   r1 = T0 + T0
+     5 │   return r1
 
     ; r0 (v1) : Option<?0>
     ; r1 (v3) : String
     ; r2 (v0) : String
-    ; r3 (v2) : String
+    ; r3 (v4) : Option<?0>
+    ; r4 (v2) : String

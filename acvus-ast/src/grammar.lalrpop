@@ -18,7 +18,7 @@ extern {
         "float" => Token::FloatLit(<f64>),
         "string" => Token::StringLit(<String>),
         "ident" => Token::Ident(<Astr>),
-        "$ref" => Token::VarRef(<Astr>),
+        "$ref" => Token::ParamRef(<Astr>),
         "@ref" => Token::ContextRef(<Astr>),
         "true" => Token::True,
         "false" => Token::False,
@@ -242,7 +242,7 @@ PrimaryExpr: Expr = {
     <l:@L> <name:"ident"> <r:@R> =>
         Expr::Ident { name, ref_kind: RefKind::Value, span: Span::new(l, r) },
     <l:@L> <name:"$ref"> <r:@R> =>
-        Expr::Ident { name, ref_kind: RefKind::Variable, span: Span::new(l, r) },
+        Expr::Ident { name, ref_kind: RefKind::ExternParam, span: Span::new(l, r) },
     <l:@L> <name:"@ref"> <r:@R> =>
         Expr::Ident { name, ref_kind: RefKind::Context, span: Span::new(l, r) },
     <l:@L> <n:"int"> <r:@R> =>
@@ -364,7 +364,7 @@ ObjectField: ObjectExprField = {
         let span = Span::new(l, r);
         ObjectExprField {
             key: name,
-            value: Expr::Ident { name, ref_kind: RefKind::Variable, span },
+            value: Expr::Ident { name, ref_kind: RefKind::ExternParam, span },
             span,
         }
     },

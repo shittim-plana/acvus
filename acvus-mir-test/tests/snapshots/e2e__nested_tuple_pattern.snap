@@ -24,12 +24,12 @@ expression: ir
     21 │   r17 = r15.1
     22 │   r18 = r1.1
     24 │   r19 = T0 + r18
-    25 │   jump L0(r19)
+    25 │   jump L0(r19, r16, r17, r18)
     26 │ L1:
-    28 │   jump L0(T0)
-    29 │ L0(r20: String):  ; merge_of L2
-    30 │   r21 = T0 + r20
-    31 │   return r21
+    28 │   jump L0(T0, r20, r21, r22)
+    29 │ L0(r23: String, r24: Int, r25: Int, r26: String):  ; merge_of L2
+    30 │   r27 = T0 + r23
+    31 │   return r27
 
     ; r0 (@data) : <error>
     ; r1 (v1) : ((Int, Int), String)
@@ -50,11 +50,18 @@ expression: ir
     ; r16 (a) : Int
     ; r17 (b) : Int
     ; r18 (label) : String
-    ; r19 (v23) : String
-    ; r20 (v25) : String
-    ; r21 (v26) : String
-    ; r22 (@data) : ((Int, Int), String)
-    ; r23 (v22) : String
-    ; r24 (v4) : ((Int, Int), String)
-    ; r25 (v2) : String
-    ; r26 (v24) : String
+    ; r19 (v24) : String
+    ; r20 (v28) : Int
+    ; r21 (v29) : Int
+    ; r22 (v30) : String
+    ; r23 (v26) : String
+    ; r24 (v31) : Int
+    ; r25 (v32) : Int
+    ; r26 (v33) : String
+    ; r27 (v27) : String
+    ; r28 (v22) : String
+    ; r29 (@data) : ((Int, Int), String)
+    ; r30 (v25) : String
+    ; r31 (v2) : String
+    ; r32 (label) : String
+    ; r33 (v4) : ((Int, Int), String)

@@ -27,13 +27,13 @@ expression: ir
     21 │   r12 = r1[-1]
     23 │   r13 = poison
     24 │   r14 = T0 + r13
-    25 │   jump L0(r14)
+    25 │   jump L0(r14, r11, r12)
     26 │ L1:
     29 │   r15 = T0 + T1
-    30 │   jump L0(r15)
-    31 │ L0(r16: String):  ; merge_of L2
-    32 │   r17 = T0 + r16
-    33 │   return r17
+    30 │   jump L0(r15, r16, r17)
+    31 │ L0(r18: String, r19: Int, r20: Int):  ; merge_of L2
+    32 │   r21 = T0 + r18
+    33 │   return r21
 
     ; r0 (@items) : <error>
     ; r1 (v1) : List<Int>
@@ -49,13 +49,18 @@ expression: ir
     ; r11 (first) : Int
     ; r12 (last) : Int
     ; r13 (to_string(...)) : String
-    ; r14 (v18) : String
-    ; r15 (v21) : String
-    ; r16 (v22) : String
-    ; r17 (v23) : String
-    ; r18 (@items) : List<Int>
-    ; r19 (v4) : List<Int>
-    ; r20 (v2) : String
-    ; r21 (v20) : String
-    ; r22 (v16) : String
-    ; r23 (v19) : String
+    ; r14 (v19) : String
+    ; r15 (v22) : String
+    ; r16 (v25) : Int
+    ; r17 (v26) : Int
+    ; r18 (v23) : String
+    ; r19 (v29) : Int
+    ; r20 (v30) : Int
+    ; r21 (v24) : String
+    ; r22 (@items) : List<Int>
+    ; r23 (first) : Int
+    ; r24 (v20) : String
+    ; r25 (v4) : List<Int>
+    ; r26 (v21) : String
+    ; r27 (v2) : String
+    ; r28 (v16) : String

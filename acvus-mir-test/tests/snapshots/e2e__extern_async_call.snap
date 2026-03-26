@@ -14,6 +14,8 @@ expression: ir
     ; r0 (fetch_user(...)) : String
     ; r1 (v1) : Int
     ; r2 (v4) : String
-    ; r3 (v5) : String
-    ; r4 (v3) : String
+    ; r3 (v6) : String
+    ; r4 (v7) : String
     ; r5 (v0) : String
+    ; r6 (v3) : String
+    ; r7 (user) : String

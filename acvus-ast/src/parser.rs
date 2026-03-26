@@ -564,7 +564,7 @@ mod tests {
             assert!(mb.catch_all.is_none());
             assert!(matches!(
                 &mb.arms[0].pattern,
-                Pattern::Binding { name, ref_kind: RefKind::Variable, .. } if interner.resolve(*name) == "global"
+                Pattern::Binding { name, ref_kind: RefKind::ExternParam, .. } if interner.resolve(*name) == "global"
             ));
             assert!(matches!(
                 &mb.source,
@@ -767,7 +767,7 @@ mod tests {
                 assert_eq!(interner.resolve(fields[0].key), "value");
                 assert!(matches!(
                     &fields[0].pattern,
-                    Pattern::Binding { name, ref_kind: RefKind::Variable, .. } if interner.resolve(*name) == "value"
+                    Pattern::Binding { name, ref_kind: RefKind::ExternParam, .. } if interner.resolve(*name) == "value"
                 ));
                 assert_eq!(interner.resolve(fields[1].key), "name");
                 assert!(matches!(

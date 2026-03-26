@@ -9,35 +9,38 @@ expression: ir
      0 │   r0 = context_project @pairs
      1 │   r1 = context_load r0
      3 │   r2 = cast ListToIterator r1
-     5 │   jump L0(r2, T0)
-     6 │ L0(r3: Iterator<(String, Int)>, r4: String):
-     7 │   iter_step r5, r6 = r3 else L1(r4)
+     5 │   jump L0(r2, T0, r3)
+     6 │ L0(r4: Iterator<(String, Int)>, r5: String, r6: String):
+     7 │   iter_step r7, r8 = r4 else L1(r5)
      8 │ L3:
-     9 │   r7 = r5.0
-    11 │   r8 = T0 + r7
-    12 │   r9 = r4 + r8
-    13 │   jump L0(r6, r9)
-    14 │ L1(r10: String):
-    15 │   jump L2(r10)
-    16 │ L2(r11: String):
-    17 │   r12 = T0 + r11
-    18 │   return r12
+     9 │   r9 = r7.0
+    11 │   r10 = T0 + r9
+    12 │   r11 = r5 + r10
+    13 │   jump L0(r8, r11, r9)
+    14 │ L1(r12: String):
+    15 │   jump L2(r12)
+    16 │ L2(r13: String):
+    17 │   r14 = T0 + r13
+    18 │   return r14
 
     ; r0 (@pairs) : <error>
     ; r1 (v1) : List<(String, Int)>
     ; r2 (v5) : Iterator<(String, Int)>
-    ; r3 (v7) : Iterator<(String, Int)>
-    ; r4 (v8) : String
-    ; r5 (v9) : (String, Int)
-    ; r6 (v10) : Iterator<(String, Int)>
-    ; r7 (a) : String
-    ; r8 (v13) : String
-    ; r9 (v14) : String
-    ; r10 (v15) : String
-    ; r11 (v16) : String
-    ; r12 (v17) : String
-    ; r13 (@pairs) : List<(String, Int)>
-    ; r14 (v6) : String
-    ; r15 (v12) : String
-    ; r16 (v4) : List<(String, Int)>
-    ; r17 (v2) : String
+    ; r3 (v19) : String
+    ; r4 (v7) : Iterator<(String, Int)>
+    ; r5 (v8) : String
+    ; r6 (v20) : String
+    ; r7 (v9) : (String, Int)
+    ; r8 (v10) : Iterator<(String, Int)>
+    ; r9 (a) : String
+    ; r10 (v14) : String
+    ; r11 (v15) : String
+    ; r12 (v16) : String
+    ; r13 (v17) : String
+    ; r14 (v18) : String
+    ; r15 (@pairs) : List<(String, Int)>
+    ; r16 (v6) : String
+    ; r17 (v4) : List<(String, Int)>
+    ; r18 (v2) : String
+    ; r19 (a) : String
+    ; r20 (v12) : String

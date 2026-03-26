@@ -36,6 +36,7 @@ fn dst_of(kind: &InstKind) -> Option<ValueId> {
         | InstKind::ContextProject { dst, .. }
         | InstKind::ContextLoad { dst, .. }
         | InstKind::VarLoad { dst, .. }
+        | InstKind::ParamLoad { dst, .. }
         | InstKind::BinOp { dst, .. }
         | InstKind::UnaryOp { dst, .. }
         | InstKind::FieldGet { dst, .. }

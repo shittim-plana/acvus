@@ -49,9 +49,9 @@ pub enum Token {
     #[regex(r"[\p{L}_][\p{L}\p{N}_]*", |lex| lex.extras.intern(lex.slice()), priority = 2)]
     Ident(Astr),
 
-    // ── Variable reference: $name ──
+    // ── Extern parameter: $name ──
     #[regex(r"\$[\p{L}_][\p{L}\p{N}_]*", |lex| lex.extras.intern(&lex.slice()[1..]))]
-    VarRef(Astr),
+    ParamRef(Astr),
 
     // ── Context reference: @name ──
     #[regex(r"@[\p{L}_][\p{L}\p{N}_]*", |lex| lex.extras.intern(&lex.slice()[1..]))]
@@ -146,7 +146,7 @@ impl fmt::Display for Token {
             Token::FloatLit(n) => write!(f, "{n}"),
             Token::StringLit(s) => write!(f, "\"{s}\""),
             Token::Ident(_) => write!(f, "<ident>"),
-            Token::VarRef(_) => write!(f, "$<ref>"),
+            Token::ParamRef(_) => write!(f, "$<param>"),
             Token::ContextRef(_) => write!(f, "@<ref>"),
             Token::True => write!(f, "true"),
             Token::False => write!(f, "false"),

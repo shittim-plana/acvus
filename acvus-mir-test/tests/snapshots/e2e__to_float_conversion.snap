@@ -19,8 +19,10 @@ expression: ir
     ; r2 (to_float(...)) : Float
     ; r3 (v7) : String
     ; r4 (to_string(...)) : String
-    ; r5 (v9) : String
+    ; r5 (v10) : String
     ; r6 (@n) : Int
-    ; r7 (v6) : String
-    ; r8 (v2) : String
-    ; r9 (v4) : Int
+    ; r7 (v11) : Float
+    ; r8 (v6) : String
+    ; r9 (v2) : String
+    ; r10 (x) : Float
+    ; r11 (v4) : Int

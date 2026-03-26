@@ -57,6 +57,10 @@ pub enum ValidationErrorKind {
         moved_at: usize,
         ty: Ty,
     },
+    /// Attempt to store a non-materializable value to context.
+    NotMaterializable {
+        ty: Ty,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -1157,14 +1161,28 @@ impl<'a> CheckCtx<'a> {
             InstKind::ContextLoad { dst, .. } => {
                 let _ = self.ty_of(*dst, vt, span, pc, errors);
             }
-            InstKind::VarLoad { dst, .. } => {
+            InstKind::VarLoad { dst, .. } | InstKind::ParamLoad { dst, .. } => {
                 let _ = self.ty_of(*dst, vt, span, pc, errors);
             }
             InstKind::VarStore { src, .. } => {
                 let _ = self.ty_of(*src, vt, span, pc, errors);
             }
             InstKind::ContextStore { value, .. } => {
-                let _ = self.ty_of(*value, vt, span, pc, errors);
+                let val_ty = self.ty_of(*value, vt, span, pc, errors);
+                if let Some(ty) = val_ty {
+                    // Skip poison types (Error/Param) — these are unresolved,
+                    // not intentionally ephemeral. They match anything.
+                    if !matches!(ty, Ty::Error(_) | Ty::Param { .. }) && !ty.is_materializable() {
+                        errors.push(ValidationError {
+                            scope: self.scope_name.clone(),
+                            inst_index: pc,
+                            span,
+                            kind: ValidationErrorKind::NotMaterializable {
+                                ty: ty.clone(),
+                            },
+                        });
+                    }
+                }
             }
 
             // === Control flow ===

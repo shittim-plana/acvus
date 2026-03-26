@@ -146,7 +146,7 @@ fn analyze_refs(module: &MirModule, qref_to_name: &FxHashMap<QualifiedRef, Astr>
         let closure_val_def = {
             // Build val_def for the closure body.
             let closure_module = MirModule {
-                main: closure.as_ref().clone(),
+                main: closure.clone(),
                 closures: FxHashMap::default(),
             };
             ValDefMapAnalysis.run(&closure_module, ())

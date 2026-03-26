@@ -146,7 +146,7 @@ fn context_read() {
 #[test]
 fn variable_write() {
     let i = Interner::new();
-    let ir = compile_simple(&i, "{{ $count = 42 }}").unwrap();
+    let ir = compile_simple(&i, "{{ count = 42 }}").unwrap();
     insta::assert_snapshot!(ir);
 }
 
@@ -613,11 +613,11 @@ fn error_iter_not_iterable() {
 #[test]
 fn variable_new_ref_binding() {
     let i = Interner::new();
-    // $result is not in initial context — dynamically created via $-binding.
+    // result is not in initial context — dynamically created via binding.
     let context = ctx(&i, &[("name", Ty::String)]);
     let ir = compile_to_ir(
         &i,
-        r#"{{ $result = @name }}{{ $result }}"#,
+        r#"{{ result = @name }}{{ result }}"#,
         &context,
     )
     .unwrap();
@@ -627,11 +627,11 @@ fn variable_new_ref_binding() {
 #[test]
 fn variable_new_ref_in_match_arm() {
     let i = Interner::new();
-    // $selected is created inside a match arm, then read after the match.
+    // selected is created inside a match arm, then read after the match.
     let context = ctx(&i, &[("role", Ty::String)]);
     let ir = compile_to_ir(
         &i,
-        r#"{{ "admin" = @role }}{{ $selected = "yes" }}{{_}}{{ $selected = "no" }}{{/}}{{ $selected }}"#,
+        r#"{{ selected = "" }}{{ "admin" = @role }}{{ selected = "yes" }}{{_}}{{ selected = "no" }}{{/}}{{ selected }}"#,
         &context,
     )
     .unwrap();
@@ -817,7 +817,7 @@ fn list_destructure_tail() {
 #[test]
 fn variable_write_then_read() {
     let i = Interner::new();
-    let ir = compile_simple(&i, r#"{{ $x = 42 }}{{ $x | to_string }}"#).unwrap();
+    let ir = compile_simple(&i, r#"{{ x = 42 }}{{ x | to_string }}"#).unwrap();
     insta::assert_snapshot!(ir);
 }
 
@@ -1026,7 +1026,7 @@ fn variable_write_computed() {
     let context = ctx(&i, &[("a", Ty::Int), ("b", Ty::Int)]);
     let ir = compile_to_ir(
         &i,
-        r#"{{ $result = @a + @b }}{{ $result | to_string }}"#,
+        r#"{{ result = @a + @b }}{{ result | to_string }}"#,
         &context,
     )
     .unwrap();
@@ -1115,7 +1115,7 @@ fn variable_write_in_iteration() {
     let context = ctx(&i, &[("items", Ty::List(Box::new(Ty::Int)))]);
     let ir = compile_to_ir(
         &i,
-        r#"{{ x in @items }}{{ $last = x }}{{/}}{{ $last | to_string }}"#,
+        r#"{{ last = 0 }}{{ x in @items }}{{ last = x }}{{/}}{{ last | to_string }}"#,
         &context,
     )
     .unwrap();
@@ -1268,7 +1268,7 @@ fn variable_accumulate_in_loop() {
     let context = ctx(&i, &[("items", Ty::List(Box::new(Ty::Int)))]);
     let ir = compile_to_ir(
         &i,
-        r#"{{ $sum = 0 }}{{ x in @items }}{{ $sum = $sum + x }}{{/}}{{ $sum | to_string }}"#,
+        r#"{{ sum = 0 }}{{ x in @items }}{{ sum = sum + x }}{{/}}{{ sum | to_string }}"#,
         &context,
     )
     .unwrap();
@@ -1289,17 +1289,17 @@ fn pipe_map_to_string_then_filter() {
     insta::assert_snapshot!(ir);
 }
 
-// ── Edge case: local $-var captured in lambda ───────────────────
+// ── Edge case: local var captured in lambda ──────────────────────
 
 #[test]
 fn lambda_capture_local_var_ref() {
     let i = Interner::new();
-    // $offset is NOT in initial context — created as local $-var.
+    // offset is NOT in initial context — created as local var.
     // Lambda must capture it correctly (not fall through to StorageLoad).
     let context = ctx(&i, &[("items", Ty::List(Box::new(Ty::Int)))]);
     let ir = compile_to_ir(
         &i,
-        r#"{{ $offset = 10 }}{{ x = @items | iter | filter(|i| -> i > $offset) | collect }}{{ x | len | to_string }}{{_}}{{/}}"#,
+        r#"{{ offset = 10 }}{{ x = @items | iter | filter(|i| -> i > offset) | collect }}{{ x | len | to_string }}{{_}}{{/}}"#,
         &context,
     )
     .unwrap();

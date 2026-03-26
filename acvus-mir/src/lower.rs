@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use acvus_ast::{
     BinOp, Expr, IndentModifier, IterBlock, Literal, MatchBlock, Node, ObjectExprField,
     ObjectPatternField, Pattern, RefKind, Script, Span, Stmt, Template, TupleElem,
@@ -18,14 +16,14 @@ pub struct Lowerer<'a> {
     body: MirBody,
     /// Interner for string interning.
     interner: &'a Interner,
-    /// Stack of scopes: variable name → register.
-    scopes: Vec<FxHashMap<Astr, ValueId>>,
+    /// Stack of scopes: variable name → type (for validity, capture, and VarLoad typing).
+    scopes: Vec<FxHashMap<Astr, Ty>>,
     /// Type map from type checker.
     type_map: TypeMap,
     /// Coercion map from type checker (expr_span → CastKind).
     coercion_lookup: FxHashMap<Span, CastKind>,
     /// Closures produced during lowering.
-    closures: FxHashMap<Label, Arc<MirBody>>,
+    closures: FxHashMap<Label, MirBody>,
     /// Global closure label counter — shared across nesting levels to prevent
     /// label collisions when nested closures each allocate from a sub-body.
     closure_label_count: u32,
@@ -124,7 +122,6 @@ impl<'a> Lowerer<'a> {
         let coercion_lookup: FxHashMap<Span, CastKind> = coercion_map.into_iter().collect();
         // Pre-inject function names into the initial scope.
         let initial_scope = FxHashMap::default();
-        // (function values will be resolved at call sites, not as scope values)
         Self {
             body: MirBody::new(),
             interner,
@@ -195,9 +192,11 @@ impl<'a> Lowerer<'a> {
 
     fn lower_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Bind { name, expr, .. } => {
+            Stmt::Bind { name, expr, span } => {
                 let val = self.lower_expr(expr);
-                self.scopes.last_mut().unwrap().insert(*name, val);
+                let ty = self.body.val_types.get(&val).cloned().unwrap_or(Ty::error());
+                self.emit_inst(*span, InstKind::VarStore { name: *name, src: val });
+                self.define_var(*name, ty);
             }
             Stmt::ContextStore { name, expr, span } => {
                 self.lower_context_store(*name, expr, *span);
@@ -463,22 +462,37 @@ impl<'a> Lowerer<'a> {
     }
 
     fn pop_scope(&mut self) {
-        self.scopes.pop();
-    }
-
-    fn define_var(&mut self, name: Astr, reg: ValueId) {
-        if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name, reg);
-        }
-    }
-
-    fn lookup_var(&self, name: Astr) -> Option<ValueId> {
-        for scope in self.scopes.iter().rev() {
-            if let Some(&reg) = scope.get(&name) {
-                return Some(reg);
+        let inner = self.scopes.pop().unwrap();
+        if let Some(outer) = self.scopes.last_mut() {
+            // Hoisting: variables that exist in outer scope keep their (possibly updated) type.
+            // Variables defined only in inner scope do NOT propagate out.
+            for (name, ty) in &inner {
+                if outer.contains_key(name) {
+                    // Already in outer — update type (inner may have re-bound with different value).
+                    outer.insert(*name, ty.clone());
+                }
+                // else: inner-only definition — does not escape.
             }
         }
-        None
+    }
+
+    fn define_var(&mut self, name: Astr, ty: Ty) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name, ty);
+        }
+    }
+
+    fn is_defined(&self, name: Astr) -> bool {
+        self.scopes.iter().rev().any(|scope| scope.contains_key(&name))
+    }
+
+    fn var_type(&self, name: Astr) -> Ty {
+        for scope in self.scopes.iter().rev() {
+            if let Some(ty) = scope.get(&name) {
+                return ty.clone();
+            }
+        }
+        Ty::error()
     }
 
     fn set_val_type(&mut self, val: ValueId, ty: Ty) {
@@ -766,21 +780,24 @@ impl<'a> Lowerer<'a> {
                     self.mark_projection(dst);
                     dst
                 }
-                RefKind::Variable => {
-                    if let Some(reg) = self.lookup_var(*name) {
-                        return reg;
-                    }
+                RefKind::ExternParam => {
                     let dst = self.alloc_typed(*span);
-                    self.set_origin(dst, ValOrigin::Variable(*name));
-                    self.emit_inst(*span, InstKind::VarLoad { dst, name: *name });
+                    self.set_origin(dst, ValOrigin::ExternParam(*name));
+                    self.emit_inst(*span, InstKind::ParamLoad { dst, name: *name });
                     dst
                 }
                 RefKind::Value => {
-                    if let Some(reg) = self.lookup_var(*name) {
-                        return reg;
+                    if !self.is_defined(*name) {
+                        // Undefined variable — emit Unit (dead code).
+                        let dst = self.alloc_val();
+                        self.set_val_type(dst, Ty::Unit);
+                        return dst;
                     }
                     let dst = self.alloc_val();
-                    self.set_val_type(dst, Ty::Unit);
+                    let ty = self.var_type(*name);
+                    self.set_val_type(dst, ty);
+                    self.set_origin(dst, ValOrigin::Named(*name));
+                    self.emit_inst(*span, InstKind::VarLoad { dst, name: *name });
                     dst
                 }
             },
@@ -882,28 +899,34 @@ impl<'a> Lowerer<'a> {
                 let param_names: FxHashSet<Astr> = params.iter().map(|p| p.name).collect();
                 let free_vars = self.free_vars_in_expr(body, &param_names);
 
+                // Emit VarLoad for each captured variable (snapshot current value).
                 let capture_regs: Vec<ValueId> = free_vars
                     .iter()
-                    .filter_map(|name| self.lookup_var(*name))
+                    .map(|(name, var_span)| {
+                        let dst = self.alloc_typed(*var_span);
+                        self.set_origin(dst, ValOrigin::Named(*name));
+                        self.emit_inst(*var_span, InstKind::VarLoad { dst, name: *name });
+                        dst
+                    })
                     .collect();
                 // Create closure body.
                 let closure_label = self.alloc_closure_label();
 
                 // Build the closure body MIR in a sub-lowerer.
                 let mut sub_body = MirBody::new();
-                let mut sub_scopes = vec![FxHashMap::default()];
+                let mut sub_scopes: Vec<FxHashMap<Astr, Ty>> = vec![FxHashMap::default()];
 
                 // Captures become the first registers.
                 let mut closure_capture_regs = Vec::new();
-                for (i, name) in free_vars.iter().enumerate() {
+                for (i, (name, _)) in free_vars.iter().enumerate() {
                     let reg = sub_body.val_factory.next();
                     closure_capture_regs.push(reg);
-                    sub_scopes[0].insert(*name, reg);
-                    if let Some(outer_reg) = capture_regs.get(i)
-                        && let Some(ty) = self.body.val_types.get(outer_reg)
-                    {
-                        sub_body.val_types.insert(reg, ty.clone());
-                    }
+                    let cap_ty = capture_regs.get(i)
+                        .and_then(|r| self.body.val_types.get(r))
+                        .cloned()
+                        .unwrap_or(Ty::error());
+                    sub_scopes[0].insert(*name, cap_ty.clone());
+                    sub_body.val_types.insert(reg, cap_ty);
                 }
 
                 // Params follow captures.
@@ -911,8 +934,8 @@ impl<'a> Lowerer<'a> {
                 for p in params.iter() {
                     let reg = sub_body.val_factory.next();
                     closure_param_regs.push(reg);
-                    sub_scopes[0].insert(p.name, reg);
                     let ty = self.type_of_span(p.span);
+                    sub_scopes[0].insert(p.name, ty.clone());
                     sub_body.val_types.insert(reg, ty);
                 }
 
@@ -921,6 +944,15 @@ impl<'a> Lowerer<'a> {
                 let saved_body = std::mem::replace(&mut self.body, sub_body);
                 let saved_scopes = std::mem::replace(&mut self.scopes, sub_scopes);
                 let saved_projections = std::mem::take(&mut self.projections);
+
+                // Emit VarStore for captures so VarLoad in body can find them.
+                for ((name, _), capture_reg) in free_vars.iter().zip(closure_capture_regs.iter()) {
+                    self.emit_inst(*span, InstKind::VarStore { name: *name, src: *capture_reg });
+                }
+                // Emit VarStore for params.
+                for (p, param_reg) in params.iter().zip(closure_param_regs.iter()) {
+                    self.emit_inst(p.span, InstKind::VarStore { name: p.name, src: *param_reg });
+                }
 
                 // lower_expr calls maybe_cast(body.span(), val) which will
                 // pick up any lambda return coercion registered by the typechecker.
@@ -941,7 +973,7 @@ impl<'a> Lowerer<'a> {
                 closure_body_mir.capture_regs = closure_capture_regs;
                 closure_body_mir.param_regs = closure_param_regs;
                 self.closures
-                    .insert(closure_label, Arc::new(closure_body_mir));
+                    .insert(closure_label, closure_body_mir);
 
                 // Allocate dst with Fn type. If a return-site Cast was inserted,
                 // update the Fn's ret to match the actual (cast) return type.
@@ -1137,7 +1169,7 @@ impl<'a> Lowerer<'a> {
         let dst = self.alloc_typed(call_span);
 
         // Named function call (Ident).
-        if let Expr::Ident { name, ref_kind, .. } = func {
+        if let Expr::Ident { name, ref_kind, span: ident_span, .. } = func {
             match ref_kind {
                 // @fn_name(args) — context-based function (legacy, will be migrated)
                 RefKind::Context => {
@@ -1178,7 +1210,12 @@ impl<'a> Lowerer<'a> {
                     }
 
                     // 2. Local variable (closure/lambda — Indirect call)
-                    if let Some(closure_reg) = self.lookup_var(*name) {
+                    if self.is_defined(*name) {
+                        let closure_reg = self.alloc_val();
+                        let closure_ty = self.var_type(*name);
+                        self.set_val_type(closure_reg, closure_ty);
+                        self.set_origin(closure_reg, ValOrigin::Named(*name));
+                        self.emit_inst(*ident_span, InstKind::VarLoad { dst: closure_reg, name: *name });
                         self.emit_inst(
                             call_span,
                             InstKind::FunctionCall {
@@ -1230,8 +1267,11 @@ impl<'a> Lowerer<'a> {
         {
             let src = self.lower_expr(&mb.source);
             match ref_kind {
-                RefKind::Variable => {
-                    self.emit_inst(*pat_span, InstKind::VarStore { name: *name, src });
+                RefKind::ExternParam => {
+                    // Typeck already reported ExternParamAssign.
+                    let dst = self.alloc_val();
+                    self.emit_inst(*pat_span, InstKind::Poison { dst });
+                    return dst;
                 }
                 RefKind::Context => {
                     let ctx_id = self.context_ref(*name);
@@ -1252,7 +1292,9 @@ impl<'a> Lowerer<'a> {
                     );
                 }
                 RefKind::Value => {
-                    self.define_var(*name, src);
+                    let ty = self.body.val_types.get(&src).cloned().unwrap_or(Ty::error());
+                    self.emit_inst(*pat_span, InstKind::VarStore { name: *name, src });
+                    self.define_var(*name, ty);
                 }
             }
             return self.emit_empty_string(mb.span);
@@ -1523,15 +1565,11 @@ impl<'a> Lowerer<'a> {
     /// Returns a register holding a Bool (true = match).
     fn lower_pattern_test(&mut self, pattern: &Pattern, src_reg: ValueId, span: Span) -> ValueId {
         match pattern {
-            Pattern::Binding { name, ref_kind, .. } => {
-                if *ref_kind == RefKind::Variable {
-                    self.emit_inst(
-                        span,
-                        InstKind::VarStore {
-                            name: *name,
-                            src: src_reg,
-                        },
-                    );
+            Pattern::Binding { ref_kind, .. } => {
+                if *ref_kind == RefKind::ExternParam {
+                    // Typeck already reported ExternParamAssign.
+                    let dst = self.alloc_val();
+                    self.emit_inst(span, InstKind::Poison { dst });
                 }
                 self.emit_const_bool(span, true)
             }
@@ -1758,7 +1796,18 @@ impl<'a> Lowerer<'a> {
                 ..
             } => {
                 self.set_origin(src_reg, ValOrigin::Named(*name));
-                self.define_var(*name, src_reg);
+                let ty = self.body.val_types.get(&src_reg).cloned().unwrap_or(Ty::error());
+                self.emit_inst(span, InstKind::VarStore { name: *name, src: src_reg });
+                self.define_var(*name, ty);
+            }
+            Pattern::Binding {
+                name,
+                ref_kind: RefKind::ExternParam,
+                ..
+            } => {
+                // Typeck already reported ExternParamAssign.
+                let dst = self.alloc_val();
+                self.emit_inst(span, InstKind::Poison { dst });
             }
             Pattern::Binding { .. } | Pattern::Literal { .. } => {}
 
@@ -1841,7 +1890,7 @@ impl<'a> Lowerer<'a> {
 
     // --- Free variable analysis ---
 
-    fn free_vars_in_expr(&self, expr: &Expr, bound: &FxHashSet<Astr>) -> Vec<Astr> {
+    fn free_vars_in_expr(&self, expr: &Expr, bound: &FxHashSet<Astr>) -> Vec<(Astr, Span)> {
         let mut free = Vec::new();
         let mut seen = FxHashSet::default();
         self.collect_free_vars(expr, bound, &mut free, &mut seen);
@@ -1852,7 +1901,7 @@ impl<'a> Lowerer<'a> {
         &self,
         stmts: &[Stmt],
         bound: &mut FxHashSet<Astr>,
-        free: &mut Vec<Astr>,
+        free: &mut Vec<(Astr, Span)>,
         seen: &mut FxHashSet<Astr>,
     ) {
         for stmt in stmts {
@@ -1877,26 +1926,26 @@ impl<'a> Lowerer<'a> {
         &self,
         expr: &Expr,
         bound: &FxHashSet<Astr>,
-        free: &mut Vec<Astr>,
+        free: &mut Vec<(Astr, Span)>,
         seen: &mut FxHashSet<Astr>,
     ) {
         match expr {
             Expr::Ident {
                 name,
                 ref_kind: RefKind::Value,
-                ..
+                span,
             } => {
                 if bound.contains(name) || seen.contains(name) {
                     return;
                 }
-                if self.lookup_var(*name).is_some() {
+                if self.is_defined(*name) {
                     seen.insert(*name);
-                    free.push(*name);
+                    free.push((*name, *span));
                 }
             }
             // Variable/context refs resolve at runtime — no capture needed.
             Expr::Ident {
-                ref_kind: RefKind::Variable | RefKind::Context,
+                ref_kind: RefKind::ExternParam | RefKind::Context,
                 ..
             } => {}
             Expr::BinaryOp { left, right, .. } => {
@@ -2019,15 +2068,10 @@ mod tests {
     }
 
     #[test]
-    fn lower_var_write() {
+    fn extern_param_write_rejected() {
         let interner = Interner::new();
-        let module = lower(&interner, "{{ $count = 42 }}");
-        let has_store = module
-            .main
-            .insts
-            .iter()
-            .any(|i| matches!(&i.kind, InstKind::VarStore { name, .. } if interner.resolve(*name) == "count"));
-        assert!(has_store);
+        let result = crate::test::compile_template(&interner, "{{ $count = 42 }}", &[]);
+        assert!(result.is_err());
     }
 
     #[test]

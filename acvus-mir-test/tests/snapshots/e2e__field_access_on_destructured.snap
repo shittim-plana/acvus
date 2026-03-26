@@ -16,12 +16,12 @@ expression: ir
     10 │   r6 = r1.0
     12 │   r7 = r6.name
     13 │   r8 = T0 + r7
-    14 │   jump L0(r8)
+    14 │   jump L0(r8, r6)
     15 │ L1:
-    17 │   jump L0(T0)
-    18 │ L0(r9: String):  ; merge_of L2
-    19 │   r10 = T0 + r9
-    20 │   return r10
+    17 │   jump L0(T0, r9)
+    18 │ L0(r10: String, r11: {name: String}):  ; merge_of L2
+    19 │   r12 = T0 + r10
+    20 │   return r12
 
     ; r0 (@pair) : <error>
     ; r1 (v1) : ({name: String}, Int)
@@ -31,11 +31,14 @@ expression: ir
     ; r5 (v7) : Bool
     ; r6 (obj) : {name: String}
     ; r7 (name) : String
-    ; r8 (v12) : String
-    ; r9 (v14) : String
+    ; r8 (v13) : String
+    ; r9 (v17) : {name: String}
     ; r10 (v15) : String
-    ; r11 (@pair) : ({name: String}, Int)
-    ; r12 (v4) : ({name: String}, Int)
-    ; r13 (v10) : String
-    ; r14 (v2) : String
-    ; r15 (v13) : String
+    ; r11 (v18) : {name: String}
+    ; r12 (v16) : String
+    ; r13 (obj) : {name: String}
+    ; r14 (@pair) : ({name: String}, Int)
+    ; r15 (v14) : String
+    ; r16 (v4) : ({name: String}, Int)
+    ; r17 (v10) : String
+    ; r18 (v2) : String

@@ -138,6 +138,7 @@ impl<'a> TransferFunction<AbstractValue> for ValueDomainTransfer<'a> {
 
             // All other instructions that produce a value -> Top
             InstKind::VarLoad { dst, .. }
+            | InstKind::ParamLoad { dst, .. }
             | InstKind::FieldGet { dst, .. }
             | InstKind::ObjectGet { dst, .. }
             | InstKind::FunctionCall { dst, .. }

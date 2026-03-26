@@ -58,7 +58,7 @@ fn inline_module(
         let mut inlined_body = inline_body(closure, all_modules, recursive_fns);
         inlined_body.capture_regs = remap_value_ids(&closure.capture_regs, &FxHashMap::default());
         inlined_body.param_regs = remap_value_ids(&closure.param_regs, &FxHashMap::default());
-        closures.insert(*label, std::sync::Arc::new(inlined_body));
+        closures.insert(*label, inlined_body);
     }
 
     MirModule {
@@ -236,6 +236,10 @@ fn remap_inst(
 
         // Variables
         InstKind::VarLoad { dst, name } => InstKind::VarLoad {
+            dst: r(*dst),
+            name: *name,
+        },
+        InstKind::ParamLoad { dst, name } => InstKind::ParamLoad {
             dst: r(*dst),
             name: *name,
         },

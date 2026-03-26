@@ -22,12 +22,12 @@ expression: ir
     18 │   r14 = r1.1
     19 │   r15 = r14.x
     21 │   r16 = T0 + r13
-    22 │   jump L0(r16)
+    22 │   jump L0(r16, r15, r13)
     23 │ L1:
-    25 │   jump L0(T0)
-    26 │ L0(r17: String):  ; merge_of L2
-    27 │   r18 = T0 + r17
-    28 │   return r18
+    25 │   jump L0(T0, r17, r18)
+    26 │ L0(r19: String, r20: Int, r21: String):  ; merge_of L2
+    27 │   r22 = T0 + r19
+    28 │   return r22
 
     ; r0 (@data) : <error>
     ; r1 (v1) : (String, {x: Int})
@@ -45,11 +45,16 @@ expression: ir
     ; r13 (label) : String
     ; r14 (v17) : {x: Int}
     ; r15 (x) : Int
-    ; r16 (v20) : String
-    ; r17 (v22) : String
-    ; r18 (v23) : String
-    ; r19 (@data) : (String, {x: Int})
-    ; r20 (v4) : (String, {x: Int})
-    ; r21 (v21) : String
-    ; r22 (v2) : String
-    ; r23 (v19) : String
+    ; r16 (v21) : String
+    ; r17 (v25) : Int
+    ; r18 (v26) : String
+    ; r19 (v23) : String
+    ; r20 (v27) : Int
+    ; r21 (v28) : String
+    ; r22 (v24) : String
+    ; r23 (v22) : String
+    ; r24 (@data) : (String, {x: Int})
+    ; r25 (label) : String
+    ; r26 (v2) : String
+    ; r27 (v4) : (String, {x: Int})
+    ; r28 (v19) : String

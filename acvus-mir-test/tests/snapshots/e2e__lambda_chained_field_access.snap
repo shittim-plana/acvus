@@ -24,12 +24,14 @@ expression: ir
     ; r4 (map(...)) : Iterator<String>
     ; r5 (v9) : String
     ; r6 (join(...)) : String
-    ; r7 (v12) : String
-    ; r8 (@users) : List<{address: {city: String}}>
-    ; r9 (v10) : String
-    ; r10 (v2) : String
-    ; r11 (v8) : String
-    ; r12 (v4) : List<{address: {city: String}}>
+    ; r7 (v13) : String
+    ; r8 (v11) : String
+    ; r9 (@users) : List<{address: {city: String}}>
+    ; r10 (v14) : Iterator<String>
+    ; r11 (v4) : List<{address: {city: String}}>
+    ; r12 (x) : Iterator<String>
+    ; r13 (v2) : String
+    ; r14 (v8) : String
 
 === closure L0 (ValueId(0)) ===
      0 │   r0 = r1.address
@@ -39,3 +41,5 @@ expression: ir
     ; r0 (address) : {city: String}
     ; r1 (v0) : {address: {city: String}}
     ; r2 (city) : String
+    ; r3 (u) : {address: {city: String}}
+    ; r4 (v4) : {address: {city: String}}

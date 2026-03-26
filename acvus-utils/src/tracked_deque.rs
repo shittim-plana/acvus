@@ -1,5 +1,22 @@
 use std::hash::{BuildHasher, Hash, Hasher};
 
+/// Opaque checksum for TrackedDeque integrity verification.
+///
+/// Cannot be constructed from arbitrary values — only obtained via:
+/// - `TrackedDeque::checksum()` (read from existing deque)
+/// - `OwnedDequeDiff::apply_with_checksum()` (derive from diff application)
+/// - Deserialization (serde)
+///
+/// This prevents accidental construction of invalid checksums.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct DequeChecksum(u64);
+
+impl std::fmt::LowerHex for DequeChecksum {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::LowerHex::fmt(&self.0, f)
+    }
+}
+
 /// A deque with per-turn diff tracking and origin checksum.
 ///
 /// Supports four operations:
@@ -24,7 +41,7 @@ pub struct TrackedDeque<T> {
     items: Vec<T>,
     head: usize,
     checkpoint: Option<DequeCheckpoint>,
-    checksum: u64,
+    checksum: DequeChecksum,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -54,19 +71,26 @@ pub struct OwnedDequeDiff<T> {
     pub pushed: Vec<T>,
 }
 
-fn random_checksum() -> u64 {
-    std::collections::hash_map::RandomState::new()
-        .build_hasher()
-        .finish()
+fn random_checksum() -> DequeChecksum {
+    DequeChecksum(
+        std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish(),
+    )
 }
 
-fn squash_checksum(origin: u64, consumed: usize, removed_back: usize, pushed_len: usize) -> u64 {
+fn squash_checksum(
+    origin: DequeChecksum,
+    consumed: usize,
+    removed_back: usize,
+    pushed_len: usize,
+) -> DequeChecksum {
     let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
-    origin.hash(&mut hasher);
+    origin.0.hash(&mut hasher);
     consumed.hash(&mut hasher);
     removed_back.hash(&mut hasher);
     pushed_len.hash(&mut hasher);
-    hasher.finish()
+    DequeChecksum(hasher.finish())
 }
 
 impl<T> TrackedDeque<T> {
@@ -88,9 +112,19 @@ impl<T> TrackedDeque<T> {
         }
     }
 
+    /// Restore a deque with a previously stored checksum.
+    pub fn from_vec_with_checksum(items: Vec<T>, checksum: DequeChecksum) -> Self {
+        Self {
+            items,
+            head: 0,
+            checkpoint: None,
+            checksum,
+        }
+    }
+
     // ── Accessors ──────────────────────────────────────────────
 
-    pub fn checksum(&self) -> u64 {
+    pub fn checksum(&self) -> DequeChecksum {
         self.checksum
     }
 
@@ -269,6 +303,20 @@ impl<T> OwnedDequeDiff<T> {
         }
         prev.extend(self.pushed);
         prev
+    }
+
+    /// Apply this diff and compute the new squeezed checksum.
+    pub fn apply_with_checksum(
+        self,
+        prev: Vec<T>,
+        origin_checksum: DequeChecksum,
+    ) -> (Vec<T>, DequeChecksum) {
+        let consumed = self.consumed;
+        let removed_back = self.removed_back;
+        let pushed_len = self.pushed.len();
+        let items = self.apply(prev);
+        let new_checksum = squash_checksum(origin_checksum, consumed, removed_back, pushed_len);
+        (items, new_checksum)
     }
 
     /// Returns `true` if this diff represents no change.

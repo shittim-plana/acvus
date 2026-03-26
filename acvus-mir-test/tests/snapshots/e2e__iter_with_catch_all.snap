@@ -10,41 +10,44 @@ expression: ir
      0 │   r0 = context_project @items
      1 │   r1 = context_load r0
      3 │   r2 = cast ListToIterator r1
-     5 │   jump L0(r2, T0)
-     6 │ L0(r3: Iterator<Int>, r4: String):
-     7 │   iter_step r5, r6 = r3 else L1(r4)
+     5 │   jump L0(r2, T0, r3)
+     6 │ L0(r4: Iterator<Int>, r5: String, r6: Int):
+     7 │   iter_step r7, r8 = r4 else L1(r5)
      8 │ L3:
-    10 │   r7 = poison
-    11 │   r8 = T0 + r7
-    12 │   r9 = r4 + r8
-    13 │   jump L0(r6, r9)
-    14 │ L1(r10: String):
-    17 │   r11 = T0 + T1
-    18 │   r12 = r10 + r11
-    19 │   jump L2(r12)
-    20 │ L2(r13: String):
-    21 │   r14 = T0 + r13
-    22 │   return r14
+    10 │   r9 = poison
+    11 │   r10 = T0 + r9
+    12 │   r11 = r5 + r10
+    13 │   jump L0(r8, r11, r7)
+    14 │ L1(r12: String):
+    17 │   r13 = T0 + T1
+    18 │   r14 = r12 + r13
+    19 │   jump L2(r14)
+    20 │ L2(r15: String):
+    21 │   r16 = T0 + r15
+    22 │   return r16
 
     ; r0 (@items) : <error>
     ; r1 (v1) : List<Int>
     ; r2 (v5) : Iterator<Int>
-    ; r3 (v7) : Iterator<Int>
-    ; r4 (v8) : String
-    ; r5 (x) : Int
-    ; r6 (v10) : Iterator<Int>
-    ; r7 (to_string(...)) : String
-    ; r8 (v13) : String
-    ; r9 (v14) : String
-    ; r10 (v15) : String
-    ; r11 (v18) : String
-    ; r12 (v19) : String
-    ; r13 (v20) : String
-    ; r14 (v21) : String
-    ; r15 (v11) : String
-    ; r16 (@items) : List<Int>
-    ; r17 (v17) : String
-    ; r18 (v6) : String
-    ; r19 (v2) : String
-    ; r20 (v4) : List<Int>
-    ; r21 (v16) : String
+    ; r3 (v23) : Int
+    ; r4 (v7) : Iterator<Int>
+    ; r5 (v8) : String
+    ; r6 (v24) : Int
+    ; r7 (x) : Int
+    ; r8 (v10) : Iterator<Int>
+    ; r9 (to_string(...)) : String
+    ; r10 (v14) : String
+    ; r11 (v15) : String
+    ; r12 (v16) : String
+    ; r13 (v19) : String
+    ; r14 (v20) : String
+    ; r15 (v21) : String
+    ; r16 (v22) : String
+    ; r17 (v11) : String
+    ; r18 (@items) : List<Int>
+    ; r19 (v6) : String
+    ; r20 (v17) : String
+    ; r21 (v4) : List<Int>
+    ; r22 (v18) : String
+    ; r23 (v2) : String
+    ; r24 (x) : Int

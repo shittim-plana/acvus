@@ -23,13 +23,13 @@ expression: ir
     16 │   r7 = unwrap r1
     18 │   r8 = poison
     19 │   r9 = T0 + r8
-    20 │   jump L0(r9)
+    20 │   jump L0(r9, r7)
     21 │ L1:
     24 │   r10 = T0 + T1
-    25 │   jump L0(r10)
-    26 │ L0(r11: String):  ; merge_of L2
-    27 │   r12 = T0 + r11
-    28 │   return r12
+    25 │   jump L0(r10, r11)
+    26 │ L0(r12: String, r13: Int):  ; merge_of L2
+    27 │   r14 = T0 + r12
+    28 │   return r14
 
     ; r0 (@opt) : <error>
     ; r1 (v1) : Option<Int>
@@ -40,13 +40,16 @@ expression: ir
     ; r6 (v8) : Bool
     ; r7 (v) : Int
     ; r8 (to_string(...)) : String
-    ; r9 (v13) : String
-    ; r10 (v16) : String
-    ; r11 (v17) : String
+    ; r9 (v14) : String
+    ; r10 (v17) : String
+    ; r11 (v20) : Int
     ; r12 (v18) : String
-    ; r13 (v11) : String
-    ; r14 (@opt) : Option<Int>
-    ; r15 (v14) : String
-    ; r16 (v4) : Option<Int>
+    ; r13 (v22) : Int
+    ; r14 (v19) : String
+    ; r15 (v11) : String
+    ; r16 (@opt) : Option<Int>
     ; r17 (v15) : String
-    ; r18 (v2) : String
+    ; r18 (v4) : Option<Int>
+    ; r19 (v2) : String
+    ; r20 (v) : Int
+    ; r21 (v16) : String

@@ -27,16 +27,20 @@ expression: ir
     ; r6 (v10) : String
     ; r7 (len(...)) : Int
     ; r8 (to_string(...)) : String
-    ; r9 (v13) : String
-    ; r10 (@vals) : List<Float>
-    ; r11 (v2) : String
+    ; r9 (v14) : String
+    ; r10 (x) : List<Float>
+    ; r11 (@vals) : List<Float>
     ; r12 (v9) : String
     ; r13 (v4) : List<Float>
+    ; r14 (v15) : List<Float>
+    ; r15 (v2) : String
 
 === closure L0 (ValueId(0)) ===
      1 │   r0 = r1 * 2.0 (r2)
      2 │   return r0
 
-    ; r0 (v2) : Float
+    ; r0 (v3) : Float
     ; r1 (v0) : Float
-    ; r2 (v1) : Float
+    ; r2 (v2) : Float
+    ; r3 (v) : Float
+    ; r4 (v4) : Float

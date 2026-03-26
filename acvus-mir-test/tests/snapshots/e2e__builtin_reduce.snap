@@ -30,6 +30,10 @@ expression: ir
      0 │   r0 = r1 + r2
      1 │   return r0
 
-    ; r0 (v2) : Int
+    ; r0 (v4) : Int
     ; r1 (v0) : Int
     ; r2 (v1) : Int
+    ; r3 (b) : Int
+    ; r4 (v5) : Int
+    ; r5 (v6) : Int
+    ; r6 (a) : Int

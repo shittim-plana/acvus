@@ -122,16 +122,16 @@ impl Polarity {
 
 /// 3-tier purity classification for types.
 ///
-/// `Pure` — scalars that can cross context boundaries as-is.
-/// `Lazy` — containers, closures, iterators — need deep inspection to determine pureability.
-/// `Unpure` — opaque types that can never be purified.
+/// `Concrete` — scalars that can cross context boundaries as-is.
+/// `Composite` — containers, closures, iterators — need deep inspection to determine pureability.
+/// `Ephemeral` — opaque types that can never be purified.
 ///
-/// `Ord` derive: `Pure < Lazy < Unpure`, so `max()` gives the least-pure tier.
+/// `Ord` derive: `Concrete < Composite < Ephemeral`, so `max()` gives the least-pure tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Purity {
-    Pure,
-    Lazy,
-    Unpure,
+pub enum Materiality {
+    Concrete,
+    Composite,
+    Ephemeral,
 }
 
 /// Fine-grained effect information: which contexts are read/written,
@@ -395,10 +395,10 @@ impl Ty {
     }
 
     /// Returns the purity tier of this type (shallow — does not recurse into containers).
-    pub fn purity(&self) -> Purity {
+    pub fn purity(&self) -> Materiality {
         match self {
             Ty::Int | Ty::Float | Ty::String | Ty::Bool | Ty::Unit | Ty::Range | Ty::Byte => {
-                Purity::Pure
+                Materiality::Concrete
             }
             Ty::List(_)
             | Ty::Deque(..)
@@ -409,9 +409,9 @@ impl Ty {
             | Ty::Iterator(..)
             | Ty::Sequence(..)
             | Ty::Option(_)
-            | Ty::Enum { .. } => Purity::Lazy,
-            Ty::Opaque(_) => Purity::Unpure,
-            Ty::Param { .. } | Ty::Error(_) => Purity::Unpure,
+            | Ty::Enum { .. } => Materiality::Composite,
+            Ty::Opaque(_) => Materiality::Ephemeral,
+            Ty::Param { .. } | Ty::Error(_) => Materiality::Ephemeral,
         }
     }
 
@@ -440,34 +440,25 @@ impl Ty {
         }
     }
 
-    /// Returns true if this type's values can be persisted to storage.
+    /// Returns true if this type can be materialized — serialized to storage
+    /// and restored without losing meaning.
     ///
-    /// Storable = can be serialized and restored without losing meaning.
-    /// The rules:
-    /// - **Pure** (scalars): always storable.
-    /// - **Lazy (Pure effect)**: storable. Iterator/Sequence will be collected
-    ///   (materialized to eager) at the storage boundary.
-    /// - **Lazy (Effectful)**: NOT storable. Collecting an effectful iterator
-    ///   could trigger observable side effects in an uncontrolled order.
-    /// - **Unpure** (Opaque): NOT storable. Opaque values are runtime-only handles.
-    /// - **Fn/ExternFn**: NOT storable. Closures and function pointers cannot
-    ///   be serialized.
-    ///
-    /// Recursively checks container contents: `List<Fn>` is not storable.
-    pub fn is_storable(&self) -> bool {
+    /// - **Concrete** (scalars): always materializable.
+    /// - **Composite** (containers): materializable iff all contents are recursively
+    ///   materializable. e.g. `List<Int>` yes, `List<Fn>` no.
+    /// - **Ephemeral** (Iterator, Sequence, Fn, Handle, Opaque): never materializable.
+    ///   These are runtime-only values that cannot cross storage boundaries.
+    pub fn is_materializable(&self) -> bool {
         match self {
             Ty::Int | Ty::Float | Ty::String | Ty::Bool | Ty::Unit | Ty::Range | Ty::Byte => true,
-            Ty::List(inner) | Ty::Deque(inner, _) => inner.is_storable(),
-            Ty::Option(inner) => inner.is_storable(),
-            Ty::Tuple(elems) => elems.iter().all(|e| e.is_storable()),
-            Ty::Object(fields) => fields.values().all(|v| v.is_storable()),
+            Ty::List(inner) | Ty::Deque(inner, _) => inner.is_materializable(),
+            Ty::Option(inner) => inner.is_materializable(),
+            Ty::Tuple(elems) => elems.iter().all(|e| e.is_materializable()),
+            Ty::Object(fields) => fields.values().all(|v| v.is_materializable()),
             Ty::Enum { variants, .. } => variants
                 .values()
-                .all(|p| p.as_ref().is_none_or(|ty| ty.is_storable())),
-            Ty::Iterator(inner, effect) | Ty::Sequence(inner, _, effect) => {
-                effect.is_pure() && inner.is_storable()
-            }
-            Ty::Handle(..) | Ty::Fn { .. } | Ty::Opaque(_) => false,
+                .all(|p| p.as_ref().is_none_or(|ty| ty.is_materializable())),
+            Ty::Iterator(_, _) | Ty::Sequence(_, _, _) | Ty::Handle(..) | Ty::Fn { .. } | Ty::Opaque(_) => false,
             Ty::Param { .. } | Ty::Error(_) => false,
         }
     }
@@ -3724,38 +3715,38 @@ mod tests {
 
     #[test]
     fn purity_scalars_are_pure() {
-        assert_eq!(Ty::Int.purity(), Purity::Pure);
-        assert_eq!(Ty::Float.purity(), Purity::Pure);
-        assert_eq!(Ty::String.purity(), Purity::Pure);
-        assert_eq!(Ty::Bool.purity(), Purity::Pure);
-        assert_eq!(Ty::Unit.purity(), Purity::Pure);
-        assert_eq!(Ty::Range.purity(), Purity::Pure);
-        assert_eq!(Ty::Byte.purity(), Purity::Pure);
+        assert_eq!(Ty::Int.purity(), Materiality::Concrete);
+        assert_eq!(Ty::Float.purity(), Materiality::Concrete);
+        assert_eq!(Ty::String.purity(), Materiality::Concrete);
+        assert_eq!(Ty::Bool.purity(), Materiality::Concrete);
+        assert_eq!(Ty::Unit.purity(), Materiality::Concrete);
+        assert_eq!(Ty::Range.purity(), Materiality::Concrete);
+        assert_eq!(Ty::Byte.purity(), Materiality::Concrete);
     }
 
     #[test]
     fn purity_containers_are_lazy() {
         let mut s = TySubst::new();
         let o = s.fresh_concrete_origin();
-        assert_eq!(Ty::List(Box::new(Ty::Int)).purity(), Purity::Lazy);
-        assert_eq!(Ty::Deque(Box::new(Ty::Int), o).purity(), Purity::Lazy);
+        assert_eq!(Ty::List(Box::new(Ty::Int)).purity(), Materiality::Composite);
+        assert_eq!(Ty::Deque(Box::new(Ty::Int), o).purity(), Materiality::Composite);
         assert_eq!(
             Ty::Iterator(Box::new(Ty::Int), Effect::pure()).purity(),
-            Purity::Lazy
+            Materiality::Composite
         );
         assert_eq!(
             Ty::Sequence(Box::new(Ty::Int), o, Effect::pure()).purity(),
-            Purity::Lazy
+            Materiality::Composite
         );
-        assert_eq!(Ty::Option(Box::new(Ty::Int)).purity(), Purity::Lazy);
-        assert_eq!(Ty::Tuple(vec![Ty::Int]).purity(), Purity::Lazy);
+        assert_eq!(Ty::Option(Box::new(Ty::Int)).purity(), Materiality::Composite);
+        assert_eq!(Ty::Tuple(vec![Ty::Int]).purity(), Materiality::Composite);
     }
 
     #[test]
     fn purity_object_is_lazy() {
         let i = Interner::new();
         let obj = Ty::Object(FxHashMap::from_iter([(i.intern("x"), Ty::Int)]));
-        assert_eq!(obj.purity(), Purity::Lazy);
+        assert_eq!(obj.purity(), Materiality::Composite);
     }
 
     #[test]
@@ -3767,7 +3758,7 @@ mod tests {
             effect: Effect::pure(),
             captures: vec![],
         };
-        assert_eq!(fn_ty.purity(), Purity::Lazy);
+        assert_eq!(fn_ty.purity(), Materiality::Composite);
     }
 
     #[test]
@@ -3779,7 +3770,7 @@ mod tests {
             effect: Effect::pure(),
             captures: vec![],
         };
-        assert_eq!(fn_ty.purity(), Purity::Lazy);
+        assert_eq!(fn_ty.purity(), Materiality::Composite);
     }
 
     #[test]
@@ -3789,31 +3780,31 @@ mod tests {
             name: i.intern("Color"),
             variants: FxHashMap::from_iter([(i.intern("Red"), None), (i.intern("Green"), None)]),
         };
-        assert_eq!(enum_ty.purity(), Purity::Lazy);
+        assert_eq!(enum_ty.purity(), Materiality::Composite);
     }
 
     #[test]
     fn purity_opaque_is_unpure() {
-        assert_eq!(Ty::Opaque("HttpResponse".into()).purity(), Purity::Unpure);
+        assert_eq!(Ty::Opaque("HttpResponse".into()).purity(), Materiality::Ephemeral);
     }
 
     #[test]
     fn purity_special_types() {
         // Unresolved types are conservatively Unpure.
-        assert_eq!(Ty::error().purity(), Purity::Unpure);
+        assert_eq!(Ty::error().purity(), Materiality::Ephemeral);
         let mut s = TySubst::new();
-        assert_eq!(s.fresh_param().purity(), Purity::Unpure);
+        assert_eq!(s.fresh_param().purity(), Materiality::Ephemeral);
     }
 
     #[test]
     fn purity_ord_pure_lt_lazy_lt_unpure() {
-        assert!(Purity::Pure < Purity::Lazy);
-        assert!(Purity::Lazy < Purity::Unpure);
-        assert!(Purity::Pure < Purity::Unpure);
+        assert!(Materiality::Concrete < Materiality::Composite);
+        assert!(Materiality::Composite < Materiality::Ephemeral);
+        assert!(Materiality::Concrete < Materiality::Ephemeral);
         // max() gives least-pure tier
-        assert_eq!(std::cmp::max(Purity::Pure, Purity::Lazy), Purity::Lazy);
-        assert_eq!(std::cmp::max(Purity::Lazy, Purity::Unpure), Purity::Unpure);
-        assert_eq!(std::cmp::max(Purity::Pure, Purity::Unpure), Purity::Unpure);
+        assert_eq!(std::cmp::max(Materiality::Concrete, Materiality::Composite), Materiality::Composite);
+        assert_eq!(std::cmp::max(Materiality::Composite, Materiality::Ephemeral), Materiality::Ephemeral);
+        assert_eq!(std::cmp::max(Materiality::Concrete, Materiality::Ephemeral), Materiality::Ephemeral);
     }
 
     // ── is_pureable() transitive tests ─────────────────────────────────
@@ -4678,72 +4669,72 @@ mod tests {
 
     #[test]
     fn storable_int() {
-        assert!(Ty::Int.is_storable());
+        assert!(Ty::Int.is_materializable());
     }
     #[test]
     fn storable_float() {
-        assert!(Ty::Float.is_storable());
+        assert!(Ty::Float.is_materializable());
     }
     #[test]
     fn storable_string() {
-        assert!(Ty::String.is_storable());
+        assert!(Ty::String.is_materializable());
     }
     #[test]
     fn storable_bool() {
-        assert!(Ty::Bool.is_storable());
+        assert!(Ty::Bool.is_materializable());
     }
     #[test]
     fn storable_unit() {
-        assert!(Ty::Unit.is_storable());
+        assert!(Ty::Unit.is_materializable());
     }
     #[test]
     fn storable_byte() {
-        assert!(Ty::Byte.is_storable());
+        assert!(Ty::Byte.is_materializable());
     }
     #[test]
     fn storable_range() {
-        assert!(Ty::Range.is_storable());
+        assert!(Ty::Range.is_materializable());
     }
 
     // -- Lazy containers with pure contents: storable --
 
     #[test]
     fn storable_list_of_int() {
-        assert!(Ty::List(Box::new(Ty::Int)).is_storable());
+        assert!(Ty::List(Box::new(Ty::Int)).is_materializable());
     }
     #[test]
     fn storable_option_string() {
-        assert!(Ty::Option(Box::new(Ty::String)).is_storable());
+        assert!(Ty::Option(Box::new(Ty::String)).is_materializable());
     }
     #[test]
     fn storable_tuple() {
-        assert!(Ty::Tuple(vec![Ty::Int, Ty::String]).is_storable());
+        assert!(Ty::Tuple(vec![Ty::Int, Ty::String]).is_materializable());
     }
 
-    // -- Iterator/Sequence with Pure effect: storable --
+    // -- Iterator/Sequence: always Ephemeral, never materializable --
 
     #[test]
-    fn storable_pure_iterator() {
-        assert!(Ty::Iterator(Box::new(Ty::Int), Effect::pure()).is_storable());
+    fn not_materializable_pure_iterator() {
+        assert!(!Ty::Iterator(Box::new(Ty::Int), Effect::pure()).is_materializable());
     }
 
     #[test]
-    fn storable_pure_sequence() {
+    fn not_materializable_pure_sequence() {
         let o = Origin::Concrete(0);
-        assert!(Ty::Sequence(Box::new(Ty::Int), o, Effect::pure()).is_storable());
+        assert!(!Ty::Sequence(Box::new(Ty::Int), o, Effect::pure()).is_materializable());
     }
 
-    // -- Iterator/Sequence with Effectful: NOT storable --
+    // -- Iterator/Sequence with Effectful: also NOT materializable --
 
     #[test]
     fn not_storable_effectful_iterator() {
-        assert!(!Ty::Iterator(Box::new(Ty::Int), Effect::io()).is_storable());
+        assert!(!Ty::Iterator(Box::new(Ty::Int), Effect::io()).is_materializable());
     }
 
     #[test]
     fn not_storable_effectful_sequence() {
         let o = Origin::Concrete(0);
-        assert!(!Ty::Sequence(Box::new(Ty::Int), o, Effect::io()).is_storable());
+        assert!(!Ty::Sequence(Box::new(Ty::Int), o, Effect::io()).is_materializable());
     }
 
     // -- Fn: never storable --
@@ -4757,7 +4748,7 @@ mod tests {
             captures: vec![],
             effect: Effect::pure(),
         };
-        assert!(!fn_ty.is_storable());
+        assert!(!fn_ty.is_materializable());
     }
 
     #[test]
@@ -4769,14 +4760,14 @@ mod tests {
             captures: vec![],
             effect: Effect::io(),
         };
-        assert!(!fn_ty.is_storable());
+        assert!(!fn_ty.is_materializable());
     }
 
     // -- Opaque: never storable --
 
     #[test]
     fn not_storable_opaque() {
-        assert!(!Ty::Opaque("Connection".into()).is_storable());
+        assert!(!Ty::Opaque("Connection".into()).is_materializable());
     }
 
     // -- Recursive: container with non-storable inner --
@@ -4790,12 +4781,12 @@ mod tests {
             captures: vec![],
             effect: Effect::pure(),
         };
-        assert!(!Ty::List(Box::new(fn_ty)).is_storable());
+        assert!(!Ty::List(Box::new(fn_ty)).is_materializable());
     }
 
     #[test]
     fn not_storable_list_of_opaque() {
-        assert!(!Ty::List(Box::new(Ty::Opaque("X".into()))).is_storable());
+        assert!(!Ty::List(Box::new(Ty::Opaque("X".into()))).is_materializable());
     }
 
     #[test]
@@ -4807,19 +4798,19 @@ mod tests {
             captures: vec![],
             effect: Effect::io(),
         };
-        assert!(!Ty::Iterator(Box::new(fn_ty), Effect::pure()).is_storable());
+        assert!(!Ty::Iterator(Box::new(fn_ty), Effect::pure()).is_materializable());
     }
 
     #[test]
-    fn storable_list_of_pure_iterator() {
-        // List<Iterator<Int, Pure>> — Iterator inner is storable, effect is Pure
-        assert!(Ty::List(Box::new(Ty::Iterator(Box::new(Ty::Int), Effect::pure()))).is_storable());
+    fn not_materializable_list_of_pure_iterator() {
+        // List<Iterator<Int, Pure>> — Iterator is Ephemeral, so List containing it is not materializable.
+        assert!(!Ty::List(Box::new(Ty::Iterator(Box::new(Ty::Int), Effect::pure()))).is_materializable());
     }
 
     #[test]
     fn not_storable_list_of_effectful_iterator() {
         // List<Iterator<Int, Effectful>> — effectful inner makes the whole thing non-storable
-        assert!(!Ty::List(Box::new(Ty::Iterator(Box::new(Ty::Int), Effect::io()))).is_storable());
+        assert!(!Ty::List(Box::new(Ty::Iterator(Box::new(Ty::Int), Effect::io()))).is_materializable());
     }
 
     // ================================================================

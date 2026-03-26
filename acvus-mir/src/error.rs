@@ -53,6 +53,7 @@ pub enum MirErrorKind {
         source_ty: Ty,
     },
     ContextWriteAttempt(String),
+    ExternParamAssign(String),
     SourceNotIterable {
         actual: Ty,
     },
@@ -179,6 +180,9 @@ impl<'a> fmt::Display for MirErrorDisplay<'a> {
             }
             MirErrorKind::ContextWriteAttempt(name) => {
                 write!(f, "context `@{name}` is read-only and cannot be assigned")
+            }
+            MirErrorKind::ExternParamAssign(name) => {
+                write!(f, "extern param `${name}` is immutable and cannot be assigned")
             }
             MirErrorKind::NonPureContextLoad { name, ty } => {
                 write!(

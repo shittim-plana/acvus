@@ -622,7 +622,7 @@ mod tests {
             &[
                 (
                     "double",
-                    "x * 2",
+                    "$x * 2",
                     Some(vec![("x", Ty::Int)]),
                     Constraint::Inferred,
                 ),
@@ -663,7 +663,7 @@ mod tests {
             &[
                 (
                     "add",
-                    "x + y",
+                    "$x + $y",
                     Some(vec![("x", Ty::Int), ("y", Ty::Int)]),
                     Constraint::Inferred,
                 ),
@@ -686,13 +686,13 @@ mod tests {
             &[
                 (
                     "inc",
-                    "x + 1",
+                    "$x + 1",
                     Some(vec![("x", Ty::Int)]),
                     Constraint::Inferred,
                 ),
                 (
                     "double_inc",
-                    "inc(x) + inc(x)",
+                    "inc($x) + inc($x)",
                     Some(vec![("x", Ty::Int)]),
                     Constraint::Inferred,
                 ),
@@ -774,7 +774,7 @@ mod tests {
             &[
                 (
                     "double",
-                    "x * 2",
+                    "$x * 2",
                     Some(vec![("x", Ty::Int)]),
                     Constraint::Inferred,
                 ),
@@ -815,7 +815,7 @@ mod tests {
             &[
                 (
                     "echo",
-                    "s",
+                    "$s",
                     Some(vec![("s", Ty::String)]),
                     Constraint::Inferred,
                 ),
@@ -838,7 +838,7 @@ mod tests {
             &[
                 (
                     "inc",
-                    "x + 1",
+                    "$x + 1",
                     Some(vec![("x", Ty::Int)]),
                     Constraint::Inferred,
                 ),
@@ -862,7 +862,7 @@ mod tests {
             &[
                 (
                     "is_positive",
-                    "x > 0",
+                    "$x > 0",
                     Some(vec![("x", Ty::Int)]),
                     Constraint::Inferred,
                 ),
@@ -923,7 +923,7 @@ mod tests {
             &[
                 (
                     "inc",
-                    "x + 1",
+                    "$x + 1",
                     Some(vec![("x", Ty::Int)]),
                     Constraint::Inferred,
                 ),
@@ -946,13 +946,13 @@ mod tests {
             &[
                 (
                     "is_even",
-                    "is_odd(n - 1)",
+                    "is_odd($n - 1)",
                     Some(vec![("n", Ty::Int)]),
                     Constraint::Exact(Ty::Bool),
                 ),
                 (
                     "is_odd",
-                    "is_even(n - 1)",
+                    "is_even($n - 1)",
                     Some(vec![("n", Ty::Int)]),
                     Constraint::Exact(Ty::Bool),
                 ),
@@ -975,7 +975,7 @@ mod tests {
             &[
                 (
                     "fib",
-                    "fib(n - 1) + fib(n - 2)",
+                    "fib($n - 1) + fib($n - 2)",
                     Some(vec![("n", Ty::Int)]),
                     Constraint::Exact(Ty::Int),
                 ),
@@ -998,7 +998,7 @@ mod tests {
             &[
                 (
                     "avg",
-                    "(a + b) / 2.0",
+                    "($a + $b) / 2.0",
                     Some(vec![("a", Ty::Float), ("b", Ty::Float)]),
                     Constraint::Inferred,
                 ),
@@ -1359,7 +1359,7 @@ mod tests {
             &[
                 (
                     "f",
-                    "f(x - 1)",
+                    "f($x - 1)",
                     Some(vec![("x", Ty::Int)]),
                     Constraint::Exact(Ty::Int),
                 ),
@@ -1470,19 +1470,19 @@ mod tests {
             &[
                 (
                     "stage1",
-                    "x + 1",
+                    "$x + 1",
                     Some(vec![("x", Ty::Int)]),
                     Constraint::Inferred,
                 ),
                 (
                     "stage2",
-                    "x * 2",
+                    "$x * 2",
                     Some(vec![("x", Ty::Int)]),
                     Constraint::Inferred,
                 ),
                 (
                     "stage3",
-                    "x - 1",
+                    "$x - 1",
                     Some(vec![("x", Ty::Int)]),
                     Constraint::Inferred,
                 ),
@@ -1687,7 +1687,7 @@ mod tests {
             &[
                 (
                     "add",
-                    "x + y",
+                    "$x + $y",
                     Some(vec![("x", Ty::Int), ("y", Ty::Int)]),
                     Constraint::Inferred,
                 ),

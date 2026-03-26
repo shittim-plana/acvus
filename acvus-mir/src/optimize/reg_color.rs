@@ -7,13 +7,12 @@
 use crate::ir::{Callee, InstKind, MirBody, MirModule, ValueId};
 use acvus_utils::LocalFactory;
 use rustc_hash::FxHashMap;
-use std::sync::Arc;
 
 /// Run register coloring on all bodies in a module.
 pub fn color(mut module: MirModule) -> MirModule {
     color_body(&mut module.main);
     for closure in module.closures.values_mut() {
-        color_body(Arc::make_mut(closure));
+        color_body(closure);
     }
     module
 }
@@ -142,6 +141,7 @@ fn for_each_def(kind: &InstKind, mut f: impl FnMut(ValueId)) {
         | InstKind::ContextProject { dst, .. }
         | InstKind::ContextLoad { dst, .. }
         | InstKind::VarLoad { dst, .. }
+        | InstKind::ParamLoad { dst, .. }
         | InstKind::BinOp { dst, .. }
         | InstKind::UnaryOp { dst, .. }
         | InstKind::FieldGet { dst, .. }
@@ -200,6 +200,7 @@ fn for_each_use(kind: &InstKind, mut f: impl FnMut(ValueId)) {
         InstKind::Const { .. }
         | InstKind::ContextProject { .. }
         | InstKind::VarLoad { .. }
+        | InstKind::ParamLoad { .. }
         | InstKind::LoadFunction { .. }
         | InstKind::BlockLabel { .. }
         | InstKind::Nop
@@ -300,6 +301,7 @@ fn rewrite_inst(kind: &mut InstKind, remap: &impl Fn(ValueId) -> ValueId) {
             r(value);
         }
         InstKind::VarLoad { dst, .. } => r(dst),
+        InstKind::ParamLoad { dst, .. } => r(dst),
         InstKind::VarStore { src, .. } => r(src),
         InstKind::BinOp {
             dst, left, right, ..

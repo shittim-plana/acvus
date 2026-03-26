@@ -21,7 +21,7 @@ use super::types::*;
 /// Inferred context parameter for a single context.
 #[derive(Debug, Clone)]
 pub struct InferredParam {
-    pub name: Astr,
+    pub name: QualifiedRef,
     pub ty: Ty,
 }
 
@@ -390,16 +390,15 @@ pub fn infer_scc(
         };
 
         let mut ctx_types: FxHashMap<Astr, Ty> = FxHashMap::default();
-        let mut unknown_vars: FxHashMap<Astr, Ty> = FxHashMap::default();
+        let mut unknown_vars: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
 
         for r in &fn_ref.context_reads {
-            let name = r.name;
-            if let Some(ty) = known_ctx.get(&name) {
-                ctx_types.insert(name, ty.clone());
+            if let Some(ty) = known_ctx.get(&r.name) {
+                ctx_types.insert(r.name, ty.clone());
             } else {
                 let var = subst.fresh_param();
-                unknown_vars.insert(name, var.clone());
-                ctx_types.insert(name, var);
+                unknown_vars.insert(*r, var.clone());
+                ctx_types.insert(r.name, var);
             }
         }
 
@@ -432,7 +431,7 @@ pub fn infer_scc(
             fn_direct_writes.insert(fid, unchecked.body_writes.clone());
 
             let bind: Vec<Param> = unchecked
-                .inferred_params
+                .extern_params
                 .iter()
                 .map(|(name, ty)| Param::new(*name, subst.resolve(ty)))
                 .collect();
@@ -606,16 +605,15 @@ pub fn infer(
 
             // Build context types.
             let mut ctx_types: FxHashMap<Astr, Ty> = FxHashMap::default();
-            let mut unknown_vars: FxHashMap<Astr, Ty> = FxHashMap::default();
+            let mut unknown_vars: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
 
             for r in &fn_ref.context_reads {
-                let name = r.name;
-                if let Some(ty) = known_ctx.get(&name) {
-                    ctx_types.insert(name, ty.clone());
+                if let Some(ty) = known_ctx.get(&r.name) {
+                    ctx_types.insert(r.name, ty.clone());
                 } else {
                     let var = subst.fresh_param();
-                    unknown_vars.insert(name, var.clone());
-                    ctx_types.insert(name, var);
+                    unknown_vars.insert(*r, var.clone());
+                    ctx_types.insert(r.name, var);
                 }
             }
 
@@ -649,7 +647,7 @@ pub fn infer(
                 fn_direct_writes.insert(fid, unchecked.body_writes.clone());
 
                 let bind: Vec<Param> = unchecked
-                    .inferred_params
+                    .extern_params
                     .iter()
                     .map(|(name, ty)| Param::new(*name, subst.resolve(ty)))
                     .collect();
@@ -700,7 +698,7 @@ pub fn infer(
 
     // ── STEP 3: Collect results ─────────────────────────────────────
 
-    let mut all_map: FxHashMap<Astr, Ty> = FxHashMap::default();
+    let mut all_map: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
     for params in fn_params.values() {
         for param in params {
             all_map
@@ -913,7 +911,7 @@ mod tests {
         let result = infer(&i, &graph, &ext);
 
         assert_eq!(result.all_params.len(), 1);
-        assert_eq!(result.all_params[0].name, i.intern("x"));
+        assert_eq!(result.all_params[0].name, QualifiedRef::root(i.intern("x")));
         assert_eq!(result.all_params[0].ty, Ty::Int);
     }
 
@@ -973,7 +971,7 @@ mod tests {
 
         // Only @y should be inferred, @x is already known.
         assert_eq!(result.all_params.len(), 1);
-        assert_eq!(result.all_params[0].name, i.intern("y"));
+        assert_eq!(result.all_params[0].name, QualifiedRef::root(i.intern("y")));
         assert_eq!(result.all_params[0].ty, Ty::Int);
     }
 
@@ -1244,7 +1242,7 @@ mod tests {
             // takes an iterator param, returns element
             &[(
                 "consumer",
-                "_0",
+                "$_0",
                 Some(vec![Ty::Iterator(Box::new(Ty::Int), iter_effect)]),
             )],
             &[],
@@ -1267,7 +1265,7 @@ mod tests {
             &i,
             &[(
                 "processor",
-                "_0",
+                "$_0",
                 Some(vec![Ty::Iterator(Box::new(Ty::Int), Effect::pure())]),
             )],
             &[],
@@ -1295,7 +1293,7 @@ mod tests {
             &i,
             &[(
                 "caller",
-                "_0",
+                "$_0",
                 Some(vec![Ty::Fn {
                     params: vec![],
                     ret: Box::new(Ty::Int),
@@ -1331,7 +1329,7 @@ mod tests {
                 ("read_a", "@a", Some(vec![])),
                 (
                     "use_fn",
-                    "_0",
+                    "$_0",
                     Some(vec![Ty::Fn {
                         params: vec![],
                         ret: Box::new(Ty::Int),
@@ -1370,7 +1368,7 @@ mod tests {
             &[
                 (
                     "fn_a",
-                    "_0",
+                    "$_0",
                     Some(vec![Ty::Fn {
                         params: vec![],
                         ret: Box::new(Ty::Int),
@@ -1383,7 +1381,7 @@ mod tests {
                 ),
                 (
                     "fn_b",
-                    "_0",
+                    "$_0",
                     Some(vec![Ty::Fn {
                         params: vec![],
                         ret: Box::new(Ty::Int),
