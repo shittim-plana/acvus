@@ -196,7 +196,7 @@ impl EntryMut for ContextOverlay {
 
 /// Deep-set a nested field on a Value. Clones the object at each level.
 /// path must be non-empty.
-fn deep_set_field(interner: &Interner, mut root: Value, path: &[&str], value: Value) -> Value {
+fn deep_set_field(interner: &Interner, root: Value, path: &[&str], value: Value) -> Value {
     debug_assert!(!path.is_empty());
 
     if path.len() == 1 {

@@ -111,7 +111,7 @@ pub struct Choice {
 
 #[derive(Deserialize)]
 pub struct ResponseMessage {
-    pub role: Option<String>,
+    pub role: String,
     pub content: Option<ResponseContent>,
     pub tool_calls: Option<Vec<ResponseToolCall>>,
 }
@@ -132,18 +132,18 @@ pub struct ResponseContentPart {
 
 #[derive(Deserialize)]
 pub struct ResponseToolCall {
-    pub id: Option<String>,
-    pub function: Option<ResponseToolCallFunction>,
+    pub id: String,
+    pub function: ResponseToolCallFunction,
 }
 
 #[derive(Deserialize)]
 pub struct ResponseToolCallFunction {
-    pub name: Option<String>,
-    pub arguments: Option<String>,
+    pub name: String,
+    pub arguments: String,
 }
 
 #[derive(Deserialize)]
 pub struct ResponseUsage {
-    pub prompt_tokens: Option<u32>,
-    pub completion_tokens: Option<u32>,
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
 }

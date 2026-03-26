@@ -66,11 +66,11 @@ fn parse_response(json: serde_json::Value) -> Result<(ModelResponse, Usage), Req
         })?;
 
     let usage = Usage {
-        input_tokens: resp.usage.as_ref().and_then(|u| u.input_tokens),
-        output_tokens: resp.usage.as_ref().and_then(|u| u.output_tokens),
+        input_tokens: Some(resp.usage.input_tokens),
+        output_tokens: Some(resp.usage.output_tokens),
     };
 
-    let role = resp.role.unwrap_or_else(|| "assistant".into());
+    let role = resp.role;
 
     let mut texts = Vec::new();
     let mut tool_calls = Vec::new();
@@ -82,7 +82,7 @@ fn parse_response(json: serde_json::Value) -> Result<(ModelResponse, Usage), Req
                 tool_calls.push(ToolCall {
                     id,
                     name,
-                    arguments: input.unwrap_or_default(),
+                    arguments: input,
                 });
             }
             _ => {}

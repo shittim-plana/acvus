@@ -106,9 +106,9 @@ pub struct CountTokensRequest {
 
 #[derive(Deserialize)]
 pub struct Response {
-    pub role: Option<String>,
+    pub role: String,
     pub content: Vec<ResponseContentBlock>,
-    pub usage: Option<ResponseUsage>,
+    pub usage: ResponseUsage,
 }
 
 #[derive(Deserialize)]
@@ -122,7 +122,7 @@ pub enum ResponseContentBlock {
     ToolUse {
         id: String,
         name: String,
-        input: Option<serde_json::Value>,
+        input: serde_json::Value,
     },
     #[serde(other)]
     Unknown,
@@ -136,8 +136,8 @@ pub struct ResponseImageSource {
 
 #[derive(Deserialize)]
 pub struct ResponseUsage {
-    pub input_tokens: Option<u32>,
-    pub output_tokens: Option<u32>,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
 }
 
 // ── Count Tokens Response ───────────────────────────────────────────

@@ -68,23 +68,27 @@ fn parse_response(json: serde_json::Value) -> Result<(ModelResponse, Usage), Req
         .ok_or(RequestError::EmptyResponse)?;
 
     let usage = Usage {
-        input_tokens: resp.usage.as_ref().and_then(|u| u.prompt_tokens),
-        output_tokens: resp.usage.as_ref().and_then(|u| u.completion_tokens),
+        input_tokens: resp.usage.as_ref().map(|u| u.prompt_tokens),
+        output_tokens: resp.usage.as_ref().map(|u| u.completion_tokens),
     };
 
     // Check for tool calls first
     if let Some(tool_calls) = choice.message.tool_calls {
-        let calls: Vec<ToolCall> = tool_calls
+        let calls: Result<Vec<ToolCall>, RequestError> = tool_calls
             .into_iter()
-            .filter_map(|tc| {
-                Some(ToolCall {
-                    id: tc.id?,
-                    name: tc.function.as_ref()?.name.clone()?,
-                    arguments: serde_json::from_str(tc.function?.arguments.as_deref()?)
-                        .unwrap_or_default(),
+            .map(|tc| {
+                let arguments = serde_json::from_str(&tc.function.arguments)
+                    .map_err(|e| RequestError::ResponseParse {
+                        detail: format!("tool call arguments: {e}"),
+                    })?;
+                Ok(ToolCall {
+                    id: tc.id,
+                    name: tc.function.name,
+                    arguments,
                 })
             })
             .collect();
+        let calls = calls?;
         if !calls.is_empty() {
             return Ok((ModelResponse::ToolCalls(calls), usage));
         }
@@ -101,7 +105,7 @@ fn parse_response(json: serde_json::Value) -> Result<(ModelResponse, Usage), Req
         None => String::new(),
     };
 
-    let role = choice.message.role.unwrap_or_else(|| "assistant".into());
+    let role = choice.message.role;
     Ok((
         ModelResponse::Content(vec![ContentItem {
             role,
@@ -136,6 +140,21 @@ fn obj_get_u32(obj: &FxHashMap<Astr, Value>, key: Astr) -> Option<u32> {
         Value::Int(i) => u32::try_from(*i).ok(),
         _ => None,
     }
+}
+
+fn usage_to_value(usage: &Usage, input_tokens_key: Astr, output_tokens_key: Astr) -> Value {
+    let input = match usage.input_tokens {
+        Some(n) => Value::Int(n as i64),
+        None => Value::Unit,
+    };
+    let output = match usage.output_tokens {
+        Some(n) => Value::Int(n as i64),
+        None => Value::Unit,
+    };
+    Value::object(FxHashMap::from_iter([
+        (input_tokens_key, input),
+        (output_tokens_key, output),
+    ]))
 }
 
 /// Convert a Value::List of Objects (role/content) into Vec<Message>.
@@ -201,16 +220,7 @@ fn response_to_value(
                 })
                 .collect();
 
-            let usage_obj = Value::object(FxHashMap::from_iter([
-                (
-                    input_tokens_key,
-                    Value::Int(usage.input_tokens.unwrap_or(0) as i64),
-                ),
-                (
-                    output_tokens_key,
-                    Value::Int(usage.output_tokens.unwrap_or(0) as i64),
-                ),
-            ]));
+            let usage_obj = usage_to_value(usage, input_tokens_key, output_tokens_key);
 
             Value::object(FxHashMap::from_iter([
                 (content_key, Value::list(items)),
@@ -234,16 +244,7 @@ fn response_to_value(
                 })
                 .collect();
 
-            let usage_obj = Value::object(FxHashMap::from_iter([
-                (
-                    input_tokens_key,
-                    Value::Int(usage.input_tokens.unwrap_or(0) as i64),
-                ),
-                (
-                    output_tokens_key,
-                    Value::Int(usage.output_tokens.unwrap_or(0) as i64),
-                ),
-            ]));
+            let usage_obj = usage_to_value(usage, input_tokens_key, output_tokens_key);
 
             Value::object(FxHashMap::from_iter([
                 (content_key, Value::list(vec![])),

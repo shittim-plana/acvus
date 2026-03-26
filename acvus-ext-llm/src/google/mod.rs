@@ -2,9 +2,9 @@ mod schema;
 
 use crate::http::{Fetch, HttpRequest, RequestError};
 use crate::message::*;
-use acvus_interpreter::{Defs, ExternFn, ExternRegistry, Uses, Value};
+use acvus_interpreter::{Defs, ExternFn, ExternRegistry, RuntimeError, Uses, Value};
 use acvus_mir::ty::Ty;
-use acvus_utils::Interner;
+use acvus_utils::{Astr, Interner};
 use rust_decimal::Decimal;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
@@ -94,13 +94,11 @@ fn parse_response(json: serde_json::Value) -> Result<(ModelResponse, Usage), Req
             texts.push(text);
         }
         if let Some(fc) = part.function_call {
-            if let Some(name) = fc.name {
-                tool_calls.push(ToolCall {
-                    id: name.clone(),
-                    name,
-                    arguments: fc.args.unwrap_or_default(),
-                });
-            }
+            tool_calls.push(ToolCall {
+                id: fc.name.clone(),
+                name: fc.name,
+                arguments: fc.args,
+            });
         }
     }
 
@@ -119,24 +117,53 @@ fn parse_response(json: serde_json::Value) -> Result<(ModelResponse, Usage), Req
 
 // ── Value helpers ───────────────────────────────────────────────────
 
+fn obj_get_str(obj: &FxHashMap<Astr, Value>, key: Astr) -> Option<String> {
+    match obj.get(&key)? {
+        Value::String(s) => Some(s.to_string()),
+        _ => None,
+    }
+}
+
 /// Extract messages from `Value::List` of objects with role/content fields.
-fn extract_messages(messages: &Value, interner: &Interner) -> Vec<Message> {
+fn extract_messages(messages: &Value, interner: &Interner) -> Result<Vec<Message>, RuntimeError> {
     let role_key = interner.intern("role");
     let content_key = interner.intern("content");
 
-    messages
-        .as_list()
-        .iter()
-        .map(|item| {
-            let obj = item.as_object();
-            let role = obj[&role_key].as_str().to_string();
-            let content = obj[&content_key].as_str().to_string();
-            Message::Content {
-                role,
-                content: Content::Text(content),
+    let list = match messages {
+        Value::List(l) => l.as_slice(),
+        other => {
+            return Err(RuntimeError::fetch(format!(
+                "google_llm: expected List for messages, got {:?}",
+                other.kind()
+            )));
+        }
+    };
+
+    let mut result = Vec::with_capacity(list.len());
+    for item in list {
+        let obj = match item {
+            Value::Object(o) => o,
+            other => {
+                return Err(RuntimeError::fetch(format!(
+                    "google_llm: expected Object in messages list, got {:?}",
+                    other.kind()
+                )));
             }
-        })
-        .collect()
+        };
+
+        let role = obj_get_str(obj, role_key).ok_or_else(|| {
+            RuntimeError::fetch("google_llm: missing 'role' field in message")
+        })?;
+        let content_str = obj_get_str(obj, content_key).ok_or_else(|| {
+            RuntimeError::fetch("google_llm: missing 'content' field in message")
+        })?;
+
+        result.push(Message::Content {
+            role,
+            content: Content::Text(content_str),
+        });
+    }
+    Ok(result)
 }
 
 /// Split the first system-role message out of the list.
@@ -292,13 +319,30 @@ pub fn google_registry<F: Fetch + Send + Sync + 'static>(fetch: Arc<F>) -> Exter
                       Uses(()): Uses<()>| {
                     let fetch = Arc::clone(&fetch);
                     async move {
-                        let msgs = extract_messages(&messages, &interner);
+                        let msgs = extract_messages(&messages, &interner)?;
                         let (system, rest) = split_system(&msgs);
 
-                        let config_obj = config.as_object();
-                        let endpoint = config_obj[&endpoint_key].as_str();
-                        let api_key = config_obj[&api_key_key].as_str();
-                        let model = config_obj[&model_key].as_str();
+                        let config_obj = match &config {
+                            Value::Object(o) => o,
+                            other => {
+                                return Err(RuntimeError::fetch(format!(
+                                    "google_llm: expected Object for config, got {:?}",
+                                    other.kind()
+                                )));
+                            }
+                        };
+
+                        let endpoint =
+                            obj_get_str(config_obj, endpoint_key).ok_or_else(|| {
+                                RuntimeError::fetch("google_llm: missing 'endpoint' in config")
+                            })?;
+                        let api_key =
+                            obj_get_str(config_obj, api_key_key).ok_or_else(|| {
+                                RuntimeError::fetch("google_llm: missing 'api_key' in config")
+                            })?;
+                        let model = obj_get_str(config_obj, model_key).ok_or_else(|| {
+                            RuntimeError::fetch("google_llm: missing 'model' in config")
+                        })?;
                         let temperature = obj_get_decimal(config_obj, temperature_key);
                         let top_p = obj_get_decimal(config_obj, top_p_key);
                         let top_k = obj_get_u32(config_obj, top_k_key);

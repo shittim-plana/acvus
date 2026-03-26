@@ -84,8 +84,7 @@ pub enum ExternHandler {
                 ) -> Pin<
                     Box<
                         dyn Future<Output = Result<ExternOutput, RuntimeError>>
-                            + Send
-                            + Sync,
+                            + Send,
                     >,
                 > + Send
                 + Sync,
@@ -124,7 +123,7 @@ where
 pub fn into_async_extern_handler<A, U, R, D, F, Fut>(f: F) -> ExternHandler
 where
     F: Fn(Interner, A, Uses<U>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<(R, Defs<D>), RuntimeError>> + Send + Sync + 'static,
+    Fut: Future<Output = Result<(R, Defs<D>), RuntimeError>> + Send + 'static,
     A: FromValues + 'static,
     U: FromValues + 'static,
     R: IntoValue + 'static,
@@ -273,7 +272,6 @@ impl ExternFnBuilder {
         F: Fn(Interner, A, Uses<U>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<(R, Defs<D>), RuntimeError>>
             + Send
-            + Sync
             + 'static,
         A: FromValues + 'static,
         U: FromValues + 'static,

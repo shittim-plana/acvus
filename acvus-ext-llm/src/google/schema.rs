@@ -228,8 +228,8 @@ pub struct ResponseInlineData {
 
 #[derive(Deserialize)]
 pub struct ResponseFunctionCall {
-    pub name: Option<String>,
-    pub args: Option<serde_json::Value>,
+    pub name: String,
+    pub args: serde_json::Value,
 }
 
 #[derive(Deserialize)]
