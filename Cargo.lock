@@ -69,6 +69,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "acvus-ext-llm"
+version = "0.1.0"
+dependencies = [
+ "acvus-interpreter",
+ "acvus-mir",
+ "acvus-utils",
+ "rust_decimal",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "tokio",
+ "trait-variant",
+]
+
+[[package]]
 name = "acvus-interpreter"
 version = "0.1.0"
 dependencies = [

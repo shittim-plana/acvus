@@ -2,8 +2,9 @@
 //!
 //! Provides base64 and URL encoding/decoding. All pure.
 
-use acvus_interpreter::{ExternFn, ExternRegistry, Value};
+use acvus_interpreter::{Defs, ExternFn, ExternRegistry, Uses};
 use acvus_mir::ty::Ty;
+use acvus_utils::Interner;
 
 use base64::Engine;
 
@@ -14,9 +15,8 @@ pub fn encoding_registry() -> ExternRegistry {
             .params(vec![Ty::String])
             .ret(Ty::String)
             .pure()
-            .sync_handler(|args, _interner| {
-                let s = args[0].as_str();
-                Ok(Value::string(base64::engine::general_purpose::STANDARD.encode(s)))
+            .handler(|_interner: &Interner, (s,): (String,), Uses(()): Uses<()>| {
+                Ok((base64::engine::general_purpose::STANDARD.encode(&s), Defs(())))
             }),
 
         // base64_decode(s) -> String
@@ -24,13 +24,12 @@ pub fn encoding_registry() -> ExternRegistry {
             .params(vec![Ty::String])
             .ret(Ty::String)
             .pure()
-            .sync_handler(|args, _interner| {
-                let s = args[0].as_str();
-                let bytes = base64::engine::general_purpose::STANDARD.decode(s)
+            .handler(|_interner: &Interner, (s,): (String,), Uses(()): Uses<()>| {
+                let bytes = base64::engine::general_purpose::STANDARD.decode(&s)
                     .unwrap_or_else(|e| panic!("base64_decode: invalid input: {e}"));
                 let decoded = String::from_utf8(bytes)
                     .unwrap_or_else(|e| panic!("base64_decode: invalid UTF-8: {e}"));
-                Ok(Value::string(decoded))
+                Ok((decoded, Defs(())))
             }),
 
         // url_encode(s) -> String
@@ -38,13 +37,12 @@ pub fn encoding_registry() -> ExternRegistry {
             .params(vec![Ty::String])
             .ret(Ty::String)
             .pure()
-            .sync_handler(|args, _interner| {
-                let s = args[0].as_str();
+            .handler(|_interner: &Interner, (s,): (String,), Uses(()): Uses<()>| {
                 let encoded = percent_encoding::utf8_percent_encode(
-                    s,
+                    &s,
                     percent_encoding::NON_ALPHANUMERIC,
                 ).to_string();
-                Ok(Value::string(encoded))
+                Ok((encoded, Defs(())))
             }),
 
         // url_decode(s) -> String
@@ -52,12 +50,11 @@ pub fn encoding_registry() -> ExternRegistry {
             .params(vec![Ty::String])
             .ret(Ty::String)
             .pure()
-            .sync_handler(|args, _interner| {
-                let s = args[0].as_str();
-                let decoded = percent_encoding::percent_decode_str(s)
+            .handler(|_interner: &Interner, (s,): (String,), Uses(()): Uses<()>| {
+                let decoded = percent_encoding::percent_decode_str(&s)
                     .decode_utf8_lossy()
                     .into_owned();
-                Ok(Value::string(decoded))
+                Ok((decoded, Defs(())))
             }),
     ])
 }

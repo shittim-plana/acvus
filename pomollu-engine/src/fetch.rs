@@ -1,4 +1,4 @@
-use std::future::Future;
+use Future;
 
 use acvus_orchestration::HttpRequest;
 use wasm_bindgen::prelude::*;

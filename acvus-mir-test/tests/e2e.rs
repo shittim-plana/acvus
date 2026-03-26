@@ -3,7 +3,7 @@ use acvus_mir::graph::{
     Constraint, FnConstraint, FnKind, Function, FunctionId, Signature,
 };
 use acvus_mir_test::*;
-use acvus_utils::{Astr, Freeze, Interner};
+use acvus_utils::{Astr, Interner};
 use rustc_hash::FxHashMap;
 
 /// Helper: compile a template source via the graph pipeline (extract → resolve → lower).
@@ -367,9 +367,7 @@ fn extern_async_call() {
         id: FunctionId::alloc(),
         name: i.intern("fetch_user"),
         namespace: None,
-        kind: FnKind::Extern {
-            deps: Freeze::new(vec![]),
-        },
+        kind: FnKind::Extern,
         constraint: FnConstraint {
             signature: Some(Signature {
                 params: vec![Param::new(i.intern("id"), Ty::Int)],

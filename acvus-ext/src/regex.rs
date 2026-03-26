@@ -1,8 +1,12 @@
 //! Regex extension functions via ExternRegistry.
 
 use acvus_interpreter::iter::IterHandle;
-use acvus_interpreter::{ExternFn, ExternRegistry, OpaqueValue, Value};
+use acvus_interpreter::{
+    Defs, ExternFn, ExternRegistry, FromValue, IntoValue, OpaqueValue, RuntimeError, Uses, Value,
+    ValueKind,
+};
 use acvus_mir::ty::{Effect, Ty};
+use acvus_utils::Interner;
 
 const OPAQUE_NAME: &str = "Regex";
 
@@ -10,17 +14,34 @@ fn opaque_ty() -> Ty {
     Ty::Opaque(OPAQUE_NAME.into())
 }
 
-fn extract_regex(v: &Value) -> &regex::Regex {
-    let Value::Opaque(o) = v else {
-        panic!("expected Opaque<Regex>, got {v:?}");
-    };
-    o.downcast_ref::<regex::Regex>()
-        .expect("opaque value is not a Regex")
+/// Newtype for `regex::Regex` — enables typed FromValue/IntoValue conversion.
+struct Re(regex::Regex);
+
+impl FromValue for Re {
+    fn from_value(value: Value) -> Result<Self, RuntimeError> {
+        match value {
+            Value::Opaque(o) => {
+                let r = o.downcast_ref::<regex::Regex>()
+                    .ok_or_else(|| RuntimeError::unexpected_type(
+                        "FromValue<Re>",
+                        &[ValueKind::Opaque],
+                        ValueKind::Opaque,
+                    ))?;
+                Ok(Re(r.clone()))
+            }
+            other => Err(RuntimeError::unexpected_type(
+                "FromValue<Re>",
+                &[ValueKind::Opaque],
+                other.kind(),
+            )),
+        }
+    }
 }
 
-fn compile_regex(pattern: &str) -> regex::Regex {
-    regex::Regex::new(pattern)
-        .unwrap_or_else(|e| panic!("regex: invalid pattern '{pattern}': {e}"))
+impl IntoValue for Re {
+    fn into_value(self) -> Value {
+        Value::opaque(OpaqueValue::new(OPAQUE_NAME, self.0))
+    }
 }
 
 /// Build the regex ExternRegistry.
@@ -31,12 +52,10 @@ pub fn regex_registry() -> ExternRegistry {
             .params(vec![Ty::String])
             .ret(opaque_ty())
             .pure()
-            .sync_handler(|args, _interner| {
-                let pattern = args[0].as_str();
-                Ok(Value::opaque(OpaqueValue::new(
-                    OPAQUE_NAME,
-                    compile_regex(pattern),
-                )))
+            .handler(|_interner: &Interner, (pattern,): (String,), Uses(()): Uses<()>| {
+                let re = regex::Regex::new(&pattern)
+                    .unwrap_or_else(|e| panic!("regex: invalid pattern '{pattern}': {e}"));
+                Ok((Re(re), Defs(())))
             }),
 
         // regex_match(re, text) -> Bool
@@ -44,10 +63,8 @@ pub fn regex_registry() -> ExternRegistry {
             .params(vec![opaque_ty(), Ty::String])
             .ret(Ty::Bool)
             .pure()
-            .sync_handler(|args, _interner| {
-                let re = extract_regex(&args[0]);
-                let text = args[1].as_str();
-                Ok(Value::Bool(re.is_match(text)))
+            .handler(|_interner: &Interner, (Re(re), text): (Re, String), Uses(()): Uses<()>| {
+                Ok((re.is_match(&text), Defs(())))
             }),
 
         // regex_find(re, text) -> Option<String>
@@ -55,29 +72,27 @@ pub fn regex_registry() -> ExternRegistry {
             .params(vec![opaque_ty(), Ty::String])
             .ret(Ty::String) // TODO: proper Option<String> return type
             .pure()
-            .sync_handler(|args, interner| {
-                let re = extract_regex(&args[0]);
-                let text = args[1].as_str();
-                match re.find(text) {
-                    Some(m) => Ok(Value::some(interner, Value::string(m.as_str()))),
-                    None => Ok(Value::none(interner)),
-                }
+            .handler(|interner: &Interner, (Re(re), text): (Re, String), Uses(()): Uses<()>| {
+                let result = match re.find(&text) {
+                    Some(m) => Value::some(interner, Value::string(m.as_str())),
+                    None => Value::none(interner),
+                };
+                Ok((result, Defs(())))
             }),
 
-        // regex_find_all(re, text) -> Iterator<String, IO>
+        // regex_find_all(re, text) -> Iterator<String, SelfModifying>
         ExternFn::build("regex_find_all")
             .params(vec![opaque_ty(), Ty::String])
             .ret(Ty::Iterator(Box::new(Ty::String), Effect::self_modifying()))
             .pure()
-            .sync_handler(|args, _interner| {
-                let re = extract_regex(&args[0]).clone();
-                let text = args[1].as_str().to_string();
+            .handler(|_interner: &Interner, (Re(re), text): (Re, String), Uses(()): Uses<()>| {
                 let mut start = 0;
-                Ok(Value::iterator(IterHandle::from_fn(Effect::self_modifying(), move || {
+                let iter = Value::iterator(IterHandle::from_fn(Effect::self_modifying(), move || {
                     let m = re.find_at(&text, start)?;
                     start = m.end();
                     Some(Value::string(m.as_str()))
-                })))
+                }));
+                Ok((iter, Defs(())))
             }),
 
         // regex_replace(text, re, replacement) -> String
@@ -85,25 +100,19 @@ pub fn regex_registry() -> ExternRegistry {
             .params(vec![Ty::String, opaque_ty(), Ty::String])
             .ret(Ty::String)
             .pure()
-            .sync_handler(|args, _interner| {
-                let text = args[0].as_str();
-                let re = extract_regex(&args[1]);
-                let rep = args[2].as_str();
-                Ok(Value::string(re.replace_all(text, rep).into_owned()))
+            .handler(|_interner: &Interner, (text, Re(re), rep): (String, Re, String), Uses(()): Uses<()>| {
+                Ok((re.replace_all(&text, rep.as_str()).into_owned(), Defs(())))
             }),
 
-        // regex_split(re, text) -> Iterator<String, IO>
+        // regex_split(re, text) -> Iterator<String, SelfModifying>
         ExternFn::build("regex_split")
             .params(vec![opaque_ty(), Ty::String])
             .ret(Ty::Iterator(Box::new(Ty::String), Effect::self_modifying()))
             .pure()
-            .sync_handler(|args, _interner| {
-                let re = extract_regex(&args[0]).clone();
-                let text = args[1].as_str().to_string();
-                // Split produces all segments — collect lazily via find boundaries.
+            .handler(|_interner: &Interner, (Re(re), text): (Re, String), Uses(()): Uses<()>| {
                 let mut last_end = 0;
                 let mut done = false;
-                Ok(Value::iterator(IterHandle::from_fn(Effect::self_modifying(), move || {
+                let iter = Value::iterator(IterHandle::from_fn(Effect::self_modifying(), move || {
                     if done {
                         return None;
                     }
@@ -115,34 +124,31 @@ pub fn regex_registry() -> ExternRegistry {
                         }
                         None => {
                             done = true;
-                            // Emit the trailing segment.
                             Some(Value::string(&text[last_end..]))
                         }
                     }
-                })))
+                }));
+                Ok((iter, Defs(())))
             }),
 
-        // regex_extract(text, re) -> Iterator<String, IO>  (capture group 1)
+        // regex_extract(text, re) -> Iterator<String, SelfModifying>  (capture group 1)
         ExternFn::build("regex_extract")
             .params(vec![Ty::String, opaque_ty()])
             .ret(Ty::Iterator(Box::new(Ty::String), Effect::self_modifying()))
             .pure()
-            .sync_handler(|args, _interner| {
-                let text = args[0].as_str().to_string();
-                let re = extract_regex(&args[1]).clone();
+            .handler(|_interner: &Interner, (text, Re(re)): (String, Re), Uses(()): Uses<()>| {
                 let mut start = 0;
-                Ok(Value::iterator(IterHandle::from_fn(Effect::self_modifying(), move || {
+                let iter = Value::iterator(IterHandle::from_fn(Effect::self_modifying(), move || {
                     loop {
                         let caps = re.captures_at(&text, start)?;
                         let full = caps.get(0)?;
                         start = full.end();
-                        // Return capture group 1 if present.
                         if let Some(group1) = caps.get(1) {
                             return Some(Value::string(group1.as_str()));
                         }
-                        // No group 1 — skip this match.
                     }
-                })))
+                }));
+                Ok((iter, Defs(())))
             }),
     ])
 }

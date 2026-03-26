@@ -227,7 +227,7 @@ impl LspSession {
         };
         let source = match &func.kind {
             FnKind::Local(src) => self.graph.interner().resolve(src.source),
-            FnKind::Extern { .. } => return vec![],
+            FnKind::Extern => return vec![],
         };
 
         if cursor == 0 || cursor > source.len() || !source.is_char_boundary(cursor) {

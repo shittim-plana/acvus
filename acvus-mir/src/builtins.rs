@@ -1,8 +1,6 @@
 use acvus_utils::{Astr, Interner};
 use rustc_hash::FxHashMap;
 
-use acvus_utils::Freeze;
-
 use crate::graph::types::{Constraint, FnConstraint, FnKind, Function, FunctionId, Signature};
 use crate::ty::{Effect, Param, ParamConstraint, Ty, TySubst};
 
@@ -441,9 +439,7 @@ fn make_builtin(interner: &Interner, name: &str, sig_fn: SigFn) -> Function {
         id: FunctionId::alloc(),
         name: interner.intern(name),
         namespace: None,
-        kind: FnKind::Extern {
-            deps: Freeze::new(vec![]),
-        },
+        kind: FnKind::Extern,
         constraint: FnConstraint {
             signature: Some(Signature {
                 params: named_params.clone(),

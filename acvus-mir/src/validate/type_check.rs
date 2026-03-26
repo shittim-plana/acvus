@@ -11,8 +11,9 @@
 //! - `Cast` is the *only* instruction allowed to change a value's type.
 //! - Generic variance is invariant: inner types must match recursively.
 
+use crate::graph::FunctionId;
 use crate::ir::{Callee, InstKind, Label, MirBody, MirModule, ValueId};
-use crate::ty::{Effect, Origin, Ty};
+use crate::ty::{Effect, EffectSet, Origin, Ty};
 use acvus_ast::{BinOp, Literal, Span, UnaryOp};
 use acvus_utils::LocalIdOps;
 use rustc_hash::FxHashMap;
@@ -63,15 +64,15 @@ pub enum ValidationErrorKind {
 // ---------------------------------------------------------------------------
 
 /// Check type consistency of the entire module.  Returns all errors found.
-pub fn check_types(module: &MirModule) -> Vec<ValidationError> {
+pub fn check_types(module: &MirModule, fn_types: &FxHashMap<FunctionId, Ty>) -> Vec<ValidationError> {
     let mut errors = Vec::new();
 
-    let mut ctx = CheckCtx::new("main".to_string());
+    let mut ctx = CheckCtx::new("main".to_string(), fn_types);
     ctx.check_body(&module.main, &mut errors);
 
     for (label, closure) in &module.closures {
         let name = format!("closure({:?})", label);
-        let mut ctx = CheckCtx::new(name);
+        let mut ctx = CheckCtx::new(name, fn_types);
         ctx.check_body(closure, &mut errors);
     }
 
@@ -222,17 +223,29 @@ fn binop_is_logical(op: BinOp) -> bool {
 // Check context
 // ---------------------------------------------------------------------------
 
-struct CheckCtx {
+struct CheckCtx<'a> {
     scope_name: String,
     /// label → index in `insts` (for Jump target block param lookup)
     label_map: FxHashMap<Label, usize>,
+    /// FunctionId → Ty mapping for callee effect verification.
+    fn_types: &'a FxHashMap<FunctionId, Ty>,
 }
 
-impl CheckCtx {
-    fn new(scope_name: String) -> Self {
+impl<'a> CheckCtx<'a> {
+    fn new(scope_name: String, fn_types: &'a FxHashMap<FunctionId, Ty>) -> Self {
         Self {
             scope_name,
             label_map: FxHashMap::default(),
+            fn_types,
+        }
+    }
+
+    /// Extract effect from a Direct callee's type. Returns None if pure or unknown.
+    fn callee_effect(&self, fn_id: &FunctionId) -> Option<&'a EffectSet> {
+        let ty = self.fn_types.get(fn_id)?;
+        match ty {
+            Ty::Fn { effect: Effect::Resolved(eff), .. } => Some(eff),
+            _ => None,
         }
     }
 
@@ -950,13 +963,41 @@ impl CheckCtx {
                 let _ = self.ty_of(*dst, vt, span, pc, errors);
             }
 
-            InstKind::FunctionCall { dst, callee, args, context_uses: _, context_defs: _ } => {
+            InstKind::FunctionCall { dst, callee, args, context_uses, context_defs } => {
                 match callee {
-                    Callee::Direct(_) => {
-                        // Direct graph function — cannot verify signature at MIR level.
-                        // TODO: verify context_uses/context_defs count matches callee's
-                        // EffectSet reads/writes (requires fn type info in CheckCtx).
+                    Callee::Direct(fn_id) => {
                         let _ = self.ty_of(*dst, vt, span, pc, errors);
+
+                        // Verify context_uses/context_defs count matches callee's effect.
+                        // Only verify when SSA pass has populated them (non-empty).
+                        // Empty is valid: pre-SSA IR or contexts not in source scope
+                        // — interpreter dual-path fallback handles this.
+                        if let Some(eff) = self.callee_effect(fn_id) {
+                            if !context_uses.is_empty() && context_uses.len() != eff.reads.len() {
+                                errors.push(ValidationError {
+                                    scope: self.scope_name.clone(),
+                                    inst_index: pc,
+                                    span,
+                                    kind: ValidationErrorKind::ArityMismatch {
+                                        inst_name: "FunctionCall(Direct) context_uses".to_string(),
+                                        expected: eff.reads.len(),
+                                        got: context_uses.len(),
+                                    },
+                                });
+                            }
+                            if !context_defs.is_empty() && context_defs.len() != eff.writes.len() {
+                                errors.push(ValidationError {
+                                    scope: self.scope_name.clone(),
+                                    inst_index: pc,
+                                    span,
+                                    kind: ValidationErrorKind::ArityMismatch {
+                                        inst_name: "FunctionCall(Direct) context_defs".to_string(),
+                                        expected: eff.writes.len(),
+                                        got: context_defs.len(),
+                                    },
+                                });
+                            }
+                        }
                     }
                     Callee::Indirect(closure) => {
                         let closure_ty = ty!(*closure);
@@ -1004,11 +1045,26 @@ impl CheckCtx {
 
             // === Spawn / Eval ===
             InstKind::Spawn {
-                dst, callee, args, ..
+                dst, callee, args, context_uses,
             } => {
                 match callee {
-                    Callee::Direct(_) => {
-                        // Direct graph function — cannot verify signature at MIR level
+                    Callee::Direct(fn_id) => {
+                        // Verify context_uses count matches callee's effect reads.
+                        // Only when SSA pass has populated them (non-empty).
+                        if let Some(eff) = self.callee_effect(fn_id) {
+                            if !context_uses.is_empty() && context_uses.len() != eff.reads.len() {
+                                errors.push(ValidationError {
+                                    scope: self.scope_name.clone(),
+                                    inst_index: pc,
+                                    span,
+                                    kind: ValidationErrorKind::ArityMismatch {
+                                        inst_name: "Spawn(Direct) context_uses".to_string(),
+                                        expected: eff.reads.len(),
+                                        got: context_uses.len(),
+                                    },
+                                });
+                            }
+                        }
                         let dst_ty = ty!(*dst);
                         if !matches!(dst_ty, Ty::Handle(..) | Ty::Error(_) | Ty::Param { .. }) {
                             errors.push(ValidationError {
@@ -1262,7 +1318,7 @@ mod tests {
             })],
             vt,
         );
-        let errors = check_types(&module);
+        let errors = check_types(&module, &FxHashMap::default());
         assert!(errors.is_empty());
     }
 
@@ -1279,7 +1335,7 @@ mod tests {
             })],
             vt,
         );
-        let errors = check_types(&module);
+        let errors = check_types(&module, &FxHashMap::default());
         assert!(!errors.is_empty(), "type mismatch should be caught");
     }
 
@@ -1300,7 +1356,7 @@ mod tests {
             })],
             vt,
         );
-        let errors = check_types(&module);
+        let errors = check_types(&module, &FxHashMap::default());
         assert!(errors.is_empty(), "Cast should be skipped by type checker");
     }
 
@@ -1323,7 +1379,7 @@ mod tests {
             })],
             vt,
         );
-        let errors = check_types(&module);
+        let errors = check_types(&module, &FxHashMap::default());
         assert!(!errors.is_empty(), "BinOp type mismatch should be caught");
     }
 
@@ -1342,7 +1398,7 @@ mod tests {
             })], // only 1
             vt,
         );
-        let errors = check_types(&module);
+        let errors = check_types(&module, &FxHashMap::default());
         assert!(!errors.is_empty(), "tuple arity mismatch should be caught");
     }
 
@@ -1369,7 +1425,7 @@ mod tests {
             ],
             vt,
         );
-        let errors = check_types(&module);
+        let errors = check_types(&module, &FxHashMap::default());
         assert!(
             errors.is_empty(),
             "matching jump arg types should pass: {errors:?}"

@@ -189,7 +189,7 @@ pub async fn run(
         .with_fn_types(cr.fn_types)
         .with_context_names(cr.context_names);
 
-    let overlay = ContextOverlay::new(Arc::new(snapshot));
+    let overlay = ContextOverlay::new(Arc::new(snapshot), interner.clone());
     let mut interp = Interpreter::new(shared, cr.entry_id, overlay);
     let result = interp.execute().await.expect("execution failed");
 
@@ -239,7 +239,7 @@ pub async fn run_script(
         .with_fn_types(cr.fn_types)
         .with_context_names(cr.context_names);
 
-    let overlay = ContextOverlay::new(Arc::new(snapshot));
+    let overlay = ContextOverlay::new(Arc::new(snapshot), interner.clone());
     let mut interp = Interpreter::new(shared, cr.entry_id, overlay);
     let result = interp.execute().await.expect("execution failed");
     result.value
@@ -285,7 +285,7 @@ pub async fn run_script_with_externs(
         .with_fn_types(cr.fn_types)
         .with_context_names(cr.context_names);
 
-    let overlay = ContextOverlay::new(Arc::new(snapshot));
+    let overlay = ContextOverlay::new(Arc::new(snapshot), interner.clone());
     let mut interp = Interpreter::new(shared, cr.entry_id, overlay);
     interp.execute().await.expect("execution failed")
 }

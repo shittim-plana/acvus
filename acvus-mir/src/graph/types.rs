@@ -70,27 +70,13 @@ pub struct FnConstraint {
     pub output: Constraint,
 }
 
-/// Declared dependency of an extern function.
-/// The compiler trusts these hints for effect analysis and scheduling.
-/// Violation at runtime (accessing undeclared dependencies) is a soundness
-/// violation and must panic.
-#[derive(Debug, Clone)]
-pub enum DependencyHint {
-    /// Depends on another function's output.
-    Function(FunctionId, Ty),
-    /// Reads a context value.
-    ContextRead(QualifiedRef, Ty),
-    /// Writes a context value.
-    ContextWrite(QualifiedRef, Ty),
-}
-
 #[derive(Debug, Clone)]
 pub enum FnKind {
     /// Has source code. Graph engine typechecks and compiles.
     Local(SourceCode),
     /// Black box. Runtime provides the value.
-    /// `deps` declares dependencies for effect analysis. Undeclared access = panic.
-    Extern { deps: Freeze<Vec<DependencyHint>> },
+    /// Effect information lives in the function's type (`Ty::Fn { effect }`).
+    Extern,
 }
 
 /// An executable entity in the graph.

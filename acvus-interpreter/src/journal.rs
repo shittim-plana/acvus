@@ -7,7 +7,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use acvus_utils::{OwnedDequeDiff, TrackedDeque};
+use acvus_utils::{Interner, OwnedDequeDiff, TrackedDeque};
+use rustc_hash::FxHashMap;
 
 use crate::value::Value;
 
@@ -64,14 +65,16 @@ pub struct ContextOverlay {
     base: Arc<dyn EntryRef>,
     patches: Vec<ContextWrite>,
     cache: HashMap<String, Value>,
+    interner: Interner,
 }
 
 impl ContextOverlay {
-    pub fn new(base: Arc<dyn EntryRef>) -> Self {
+    pub fn new(base: Arc<dyn EntryRef>, interner: Interner) -> Self {
         Self {
             base,
             patches: Vec::new(),
             cache: HashMap::new(),
+            interner,
         }
     }
 
@@ -81,6 +84,7 @@ impl ContextOverlay {
             base: Arc::clone(&self.base),
             patches: Vec::new(),
             cache: self.cache.clone(),
+            interner: self.interner.clone(),
         }
     }
 
@@ -104,11 +108,16 @@ impl ContextOverlay {
                 }
                 ContextWrite::FieldPatch {
                     key,
-                    path: _,
+                    path,
                     value,
                 } => {
-                    // TODO: nested field patching
-                    self.cache.insert(key.clone(), value.clone());
+                    let existing = self.cache.get(key.as_str())
+                        .or_else(|| self.base.get(key))
+                        .cloned()
+                        .unwrap_or(Value::Unit);
+                    let path_strs: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
+                    let updated = deep_set_field(&self.interner, existing, &path_strs, value.clone());
+                    self.cache.insert(key.clone(), updated);
                 }
                 ContextWrite::DequeDiff { key, .. } => {
                     // Deque diffs don't update cache (read original + diff).
@@ -136,8 +145,13 @@ impl EntryMut for ContextOverlay {
                 value,
             });
         } else {
-            // TODO: nested field patching on cache
-            self.cache.insert(key.to_string(), value.clone());
+            // Deep-set: read existing object, update nested field, write back.
+            let existing = self.cache.get(key)
+                .or_else(|| self.base.get(key))
+                .cloned()
+                .unwrap_or(Value::Unit);
+            let updated = deep_set_field(&self.interner, existing, path, value.clone());
+            self.cache.insert(key.to_string(), updated);
             self.patches.push(ContextWrite::FieldPatch {
                 key: key.to_string(),
                 path: path.iter().map(|s| s.to_string()).collect(),
@@ -180,6 +194,37 @@ impl EntryMut for ContextOverlay {
     }
 }
 
+/// Deep-set a nested field on a Value. Clones the object at each level.
+/// path must be non-empty.
+fn deep_set_field(interner: &Interner, mut root: Value, path: &[&str], value: Value) -> Value {
+    debug_assert!(!path.is_empty());
+
+    if path.len() == 1 {
+        // Base case: set field directly on root object.
+        if let Value::Object(ref arc_map) = root {
+            let mut map = (**arc_map).clone();
+            let field_key = interner.intern(path[0]);
+            map.insert(field_key, value);
+            return Value::object(map);
+        }
+        // Not an object — replace entirely (best-effort).
+        return value;
+    }
+
+    // Recursive case: navigate into nested object.
+    if let Value::Object(ref arc_map) = root {
+        let mut map = (**arc_map).clone();
+        let field_key = interner.intern(path[0]);
+        let child = map.get(&field_key).cloned().unwrap_or(Value::Unit);
+        let updated_child = deep_set_field(interner, child, &path[1..], value);
+        map.insert(field_key, updated_child);
+        return Value::object(map);
+    }
+
+    // Not navigable — replace entirely.
+    value
+}
+
 impl EntryLifecycle for ContextOverlay {
     fn next(self) -> Self {
         // Next turn: keep base + cache (accumulated state), clear patches.
@@ -187,6 +232,7 @@ impl EntryLifecycle for ContextOverlay {
             base: self.base,
             patches: Vec::new(),
             cache: self.cache,
+            interner: self.interner,
         }
     }
 
@@ -196,6 +242,7 @@ impl EntryLifecycle for ContextOverlay {
             base: Arc::clone(&self.base),
             patches: Vec::new(),
             cache: self.cache.clone(),
+            interner: self.interner.clone(),
         }
     }
 }

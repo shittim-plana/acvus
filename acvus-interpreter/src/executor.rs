@@ -34,7 +34,7 @@ pub trait Executor: Send + Sync {
     /// Spawn an async future (ExternFn, no interpreter access).
     fn spawn_async(
         &self,
-        f: Pin<Box<dyn std::future::Future<Output = Result<ExecResult, RuntimeError>> + Send + Sync>>,
+        f: Pin<Box<dyn Future<Output = Result<ExecResult, RuntimeError>> + Send + Sync>>,
     ) -> HandleValue;
 
     /// Force a handle to completion and return its result.
@@ -49,7 +49,7 @@ pub trait Executor: Send + Sync {
 /// Tag types for HandleValue dispatch in SequentialExecutor.
 struct DeferredInterpreter(Interpreter);
 struct DeferredBlocking(Box<dyn FnOnce() -> Result<ExecResult, RuntimeError> + Send + Sync>);
-struct DeferredAsync(Pin<Box<dyn std::future::Future<Output = Result<ExecResult, RuntimeError>> + Send + Sync>>);
+struct DeferredAsync(Pin<Box<dyn Future<Output = Result<ExecResult, RuntimeError>> + Send + Sync>>);
 
 /// Simplest executor — spawn stores the computation, eval runs it immediately.
 /// No parallelism. Good for testing and deterministic execution.
@@ -69,7 +69,7 @@ impl Executor for SequentialExecutor {
 
     fn spawn_async(
         &self,
-        f: Pin<Box<dyn std::future::Future<Output = Result<ExecResult, RuntimeError>> + Send + Sync>>,
+        f: Pin<Box<dyn Future<Output = Result<ExecResult, RuntimeError>> + Send + Sync>>,
     ) -> HandleValue {
         HandleValue::new(DeferredAsync(f))
     }

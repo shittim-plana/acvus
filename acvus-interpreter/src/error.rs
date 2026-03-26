@@ -134,6 +134,8 @@ pub enum RuntimeErrorKind {
     ToolCallLimitExceeded { limit: usize },
     /// Assert expression evaluated to false.
     AssertFailed,
+    /// Internal interpreter error (compiler bug or invalid state).
+    Internal { message: std::string::String },
 }
 
 // ── Constructors ────────────────────────────────────────────────────
@@ -228,6 +230,12 @@ impl RuntimeError {
             kind: RuntimeErrorKind::AssertFailed,
         }
     }
+
+    pub fn internal(message: impl Into<std::string::String>) -> Self {
+        Self {
+            kind: RuntimeErrorKind::Internal { message: message.into() },
+        }
+    }
 }
 
 // ── Display ─────────────────────────────────────────────────────────
@@ -289,6 +297,7 @@ impl fmt::Display for RuntimeError {
                 write!(f, "tool call limit exceeded ({limit} rounds)")
             }
             RuntimeErrorKind::AssertFailed => write!(f, "assert failed"),
+            RuntimeErrorKind::Internal { message } => write!(f, "internal: {message}"),
         }
     }
 }

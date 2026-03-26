@@ -173,7 +173,7 @@ impl IncrementalGraph {
         };
         match &mut func.kind {
             FnKind::Local(src) => src.source = source,
-            FnKind::Extern { .. } => return,
+            FnKind::Extern => return,
         }
 
         // 1. Re-extract.
@@ -696,7 +696,7 @@ impl IncrementalGraph {
 
         // Add extern function types.
         for func in self.functions.values() {
-            if let FnKind::Extern { .. } = &func.kind
+            if let FnKind::Extern = &func.kind
                 && let Constraint::Exact(ty) = &func.constraint.output
             {
                 fn_type_env.insert(func.name, ty.clone());

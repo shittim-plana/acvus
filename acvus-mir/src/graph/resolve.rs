@@ -200,7 +200,7 @@ pub fn resolve(
                     fn_type_env.insert(func.name, meta.ty.clone());
                 }
             }
-            FnKind::Extern { .. } => {
+            FnKind::Extern => {
                 if let Constraint::Exact(ty) = &func.constraint.output {
                     fn_type_env.insert(func.name, ty.clone());
                 }
@@ -1935,9 +1935,7 @@ mod tests {
             id: FunctionId::alloc(),
             name: interner.intern(name),
             namespace: None,
-            kind: FnKind::Extern {
-                deps: Freeze::new(vec![]),
-            },
+            kind: FnKind::Extern,
             constraint: FnConstraint {
                 signature: Some(Signature {
                     params: named_params.clone(),

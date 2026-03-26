@@ -23,7 +23,7 @@ fn inst(kind: InstKind) -> Inst {
 }
 
 fn empty_overlay() -> ContextOverlay {
-    ContextOverlay::new(Arc::new(HashMap::<String, Value>::new()))
+    ContextOverlay::new(Arc::new(HashMap::<String, Value>::new()), Interner::new())
 }
 
 fn make_context(

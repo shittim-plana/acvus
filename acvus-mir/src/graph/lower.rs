@@ -119,7 +119,7 @@ pub fn lower(
         // SSA context pass: promote ContextProject/Load/Store to SSA form.
         crate::ssa_pass::run(&mut module.main, &fn_type_map);
 
-        let validation_errors = crate::validate::validate(&module);
+        let validation_errors = crate::validate::validate(&module, &fn_type_map);
         let result: Result<_, Vec<crate::error::MirError>> = if validation_errors.is_empty() {
             Ok((module, hints))
         } else {

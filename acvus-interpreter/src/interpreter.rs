@@ -256,43 +256,87 @@ impl Interpreter {
         }
     }
 
-    /// Fork for spawn — shared state is cheap clone, overlay forks, args carried.
+    /// Resolve context name for a QualifiedRef. Returns owned String to avoid borrow conflicts.
+    fn resolve_context_key(&self, qref: &QualifiedRef) -> Result<String, RuntimeError> {
+        let name = self.shared.context_names.get(qref)
+            .ok_or_else(|| RuntimeError::internal(format!(
+                "no context name for {qref:?}"
+            )))?;
+        Ok(self.shared.interner.resolve(*name).to_string())
+    }
+
+    /// Collect context uses: SSA hint (from frame) or fallback (from overlay via type).
+    fn collect_context_uses(
+        &self,
+        context_uses: &[(QualifiedRef, ValueId)],
+        fn_id: &FunctionId,
+        frame: &Frame,
+    ) -> Result<Vec<Value>, RuntimeError> {
+        if !context_uses.is_empty() {
+            Ok(context_uses.iter().map(|(_, vid)| frame.share(*vid)).collect())
+        } else {
+            self.collect_uses_from_type(fn_id)
+        }
+    }
+
     /// Fallback: collect context uses from function type (overlay path, no SSA hint).
-    fn collect_uses_from_type(&self, fn_id: &FunctionId) -> Vec<Value> {
+    fn collect_uses_from_type(&self, fn_id: &FunctionId) -> Result<Vec<Value>, RuntimeError> {
         let Some(fn_ty) = self.shared.fn_types.get(fn_id) else {
-            return vec![];
+            return Ok(vec![]);
         };
         let Ty::Fn { effect: Effect::Resolved(eff), .. } = fn_ty else {
-            return vec![];
+            return Ok(vec![]);
         };
         eff.reads
             .iter()
             .map(|qref| {
-                let name = self.shared.context_names.get(qref)
-                    .unwrap_or_else(|| panic!("collect_uses: no name for {:?}", qref));
-                let key = self.shared.interner.resolve(*name);
+                let key = self.resolve_context_key(qref)?;
                 self.overlay
-                    .get(key)
-                    .unwrap_or_else(|| panic!("collect_uses: undefined context '{}'", key))
-                    .clone()
+                    .get(&key)
+                    .cloned()
+                    .ok_or_else(|| RuntimeError::internal(format!(
+                        "undefined context '{key}'"
+                    )))
             })
             .collect()
     }
 
+    /// Apply context defs: SSA hint (frame + overlay) or fallback (overlay only via type).
+    fn apply_context_defs(
+        &mut self,
+        context_defs: &[(QualifiedRef, ValueId)],
+        fn_id: &FunctionId,
+        defs: Vec<Value>,
+        frame: &mut Frame,
+        projection_map: &mut FxHashMap<ValueId, QualifiedRef>,
+    ) -> Result<(), RuntimeError> {
+        if !context_defs.is_empty() {
+            for ((ctx_id, vid), def_value) in context_defs.iter().zip(defs) {
+                let key = self.resolve_context_key(ctx_id)?;
+                let for_overlay = def_value.share();
+                frame.set(*vid, def_value);
+                self.overlay.apply_field(&key, &[], for_overlay);
+                projection_map.insert(*vid, *ctx_id);
+            }
+        } else {
+            self.apply_defs_from_type(fn_id, defs)?;
+        }
+        Ok(())
+    }
+
     /// Fallback: apply context defs from function type (overlay path, no SSA hint).
-    fn apply_defs_from_type(&mut self, fn_id: &FunctionId, defs: Vec<Value>) {
+    fn apply_defs_from_type(&mut self, fn_id: &FunctionId, defs: Vec<Value>) -> Result<(), RuntimeError> {
         let Some(fn_ty) = self.shared.fn_types.get(fn_id) else {
-            return;
+            return Ok(());
         };
         let Ty::Fn { effect: Effect::Resolved(eff), .. } = fn_ty else {
-            return;
+            return Ok(());
         };
         for (qref, def_value) in eff.writes.iter().zip(defs) {
-            let name = self.shared.context_names.get(qref)
-                .unwrap_or_else(|| panic!("apply_defs: no name for {:?}", qref));
-            let key = self.shared.interner.resolve(*name);
-            self.overlay.apply_field(key, &[], def_value);
+            let key = self.resolve_context_key(qref)?;
+            self.overlay.apply_field(&key, &[], def_value);
         }
+        Ok(())
     }
 
     /// Fork for spawn — shared state is cheap clone, overlay forks, args carried.
@@ -331,7 +375,7 @@ impl Interpreter {
         let value = self.execute_function(&entry, &args).await?;
         let overlay = std::mem::replace(
             &mut self.overlay,
-            ContextOverlay::new(Arc::new(std::collections::HashMap::new())),
+            ContextOverlay::new(Arc::new(std::collections::HashMap::new()), self.shared.interner.clone()),
         );
         let writes = overlay.into_patches();
         Ok(ExecResult { value, writes, defs: Vec::new() })
@@ -702,16 +746,7 @@ impl Interpreter {
                             };
                             let arg_vals: Vec<Value> =
                                 args.iter().map(|a| frame.use_val(*a, val_types)).collect();
-
-                            // Collect uses: SSA hint (frame) or fallback (overlay via type).
-                            let uses = if !context_uses.is_empty() {
-                                context_uses
-                                    .iter()
-                                    .map(|(_, vid)| frame.share(*vid))
-                                    .collect()
-                            } else {
-                                self.collect_uses_from_type(id)
-                            };
+                            let uses = self.collect_context_uses(context_uses, id, &frame)?;
 
                             let output = match &handler {
                                 crate::extern_fn::ExternHandler::Sync(f) => {
@@ -723,24 +758,10 @@ impl Interpreter {
                                 }
                             };
 
-                            // Apply defs: SSA hint (frame + overlay) or fallback (overlay only via type).
-                            if !context_defs.is_empty() {
-                                for ((ctx_id, vid), def_value) in
-                                    context_defs.iter().zip(output.defs)
-                                {
-                                    let name = self.shared.context_names.get(ctx_id)
-                                        .unwrap_or_else(|| panic!("call: no name for {:?}", ctx_id));
-                                    let key = self.shared.interner.resolve(*name);
-                                    // Write to both overlay (for context persistence) and
-                                    // frame (for SSA def — subsequent reads see this value).
-                                    let for_overlay = def_value.share();
-                                    frame.set(*vid, def_value);
-                                    self.overlay.apply_field(key, &[], for_overlay);
-                                    projection_map.insert(*vid, *ctx_id);
-                                }
-                            } else {
-                                self.apply_defs_from_type(id, output.defs);
-                            }
+                            self.apply_context_defs(
+                                context_defs, id, output.defs,
+                                frame, projection_map,
+                            )?;
 
                             output.rets.into_iter().next().unwrap_or(Value::Unit)
                         } else {
@@ -791,15 +812,7 @@ impl Interpreter {
                 let handle = if is_extern {
                     let spawn_args: Vec<Value> =
                         args.iter().map(|a| frame.share(*a)).collect();
-                    // Uses: SSA hint (frame) or fallback (overlay via type).
-                    let uses: Vec<Value> = if !context_uses.is_empty() {
-                        context_uses
-                            .iter()
-                            .map(|(_, vid)| frame.share(*vid))
-                            .collect()
-                    } else {
-                        self.collect_uses_from_type(&callee_id)
-                    };
+                    let uses = self.collect_context_uses(context_uses, &callee_id, &frame)?;
                     let handler = match self.function(&callee_id) {
                         Executable::Extern(h) => h.clone(),
                         _ => unreachable!(),
@@ -861,15 +874,10 @@ impl Interpreter {
                 for ((ctx_id, vid), def_value) in
                     context_defs.iter().zip(defs)
                 {
-                    let name = self
-                        .shared
-                        .context_names
-                        .get(ctx_id)
-                        .unwrap_or_else(|| panic!("eval: no name for {:?}", ctx_id));
-                    let key = self.shared.interner.resolve(*name);
+                    let key = self.resolve_context_key(ctx_id)?;
                     let for_overlay = def_value.share();
                     frame.set(*vid, def_value);
-                    self.overlay.apply_field(key, &[], for_overlay);
+                    self.overlay.apply_field(&key, &[], for_overlay);
                     projection_map.insert(*vid, *ctx_id);
                 }
 

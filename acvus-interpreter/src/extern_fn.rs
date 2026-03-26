@@ -29,7 +29,7 @@ use std::sync::Arc;
 
 use acvus_mir::graph::{Constraint, FnConstraint, FnKind, Function, FunctionId};
 use acvus_mir::ty::{Effect, Param, Ty};
-use acvus_utils::{Freeze, Interner};
+use acvus_utils::Interner;
 use rustc_hash::FxHashMap;
 
 use crate::error::RuntimeError;
@@ -83,7 +83,7 @@ pub enum ExternHandler {
                     Interner,
                 ) -> Pin<
                     Box<
-                        dyn std::future::Future<Output = Result<ExternOutput, RuntimeError>>
+                        dyn Future<Output = Result<ExternOutput, RuntimeError>>
                             + Send
                             + Sync,
                     >,
@@ -124,7 +124,7 @@ where
 pub fn into_async_extern_handler<A, U, R, D, F, Fut>(f: F) -> ExternHandler
 where
     F: Fn(Interner, A, Uses<U>) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<(R, Defs<D>), RuntimeError>> + Send + Sync + 'static,
+    Fut: Future<Output = Result<(R, Defs<D>), RuntimeError>> + Send + Sync + 'static,
     A: FromValues + 'static,
     U: FromValues + 'static,
     R: IntoValue + 'static,
@@ -271,7 +271,7 @@ impl ExternFnBuilder {
     pub fn handler_async<A, U, R, D, F, Fut>(self, f: F) -> ExternFn
     where
         F: Fn(Interner, A, Uses<U>) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<(R, Defs<D>), RuntimeError>>
+        Fut: Future<Output = Result<(R, Defs<D>), RuntimeError>>
             + Send
             + Sync
             + 'static,
@@ -365,9 +365,7 @@ impl ExternRegistry {
                 id,
                 name,
                 namespace: None,
-                kind: FnKind::Extern {
-                    deps: Freeze::new(vec![]),
-                },
+                kind: FnKind::Extern,
                 constraint: FnConstraint {
                     signature: None,
                     output: Constraint::Exact(fn_ty),
