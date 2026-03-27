@@ -371,31 +371,9 @@ impl Ty {
         }
     }
 
-    /// Returns true if this type can be represented as a `PureValue` at runtime.
-    /// Non-pure types (Fn, Opaque) can only be used in restricted contexts (e.g. call-only).
-    #[deprecated(note = "use purity() or is_pureable()")]
-    pub fn is_pure(&self) -> bool {
-        match self {
-            Ty::Int | Ty::Float | Ty::String | Ty::Bool | Ty::Unit | Ty::Range | Ty::Byte => true,
-            Ty::List(inner) => inner.is_pure(),
-            Ty::Deque(inner, _) => inner.is_pure(),
-            Ty::Option(inner) => inner.is_pure(),
-            Ty::Tuple(elems) => elems.iter().all(|e| e.is_pure()),
-            Ty::Object(fields) => fields.values().all(|v| v.is_pure()),
-            Ty::Enum { variants, .. } => variants
-                .values()
-                .all(|p| p.as_ref().is_none_or(|ty| ty.is_pure())),
-            Ty::Fn { .. }
-            | Ty::Opaque(_)
-            | Ty::Handle(..)
-            | Ty::Iterator(..)
-            | Ty::Sequence(..) => false,
-            Ty::Param { .. } | Ty::Error(_) => false,
-        }
-    }
 
     /// Returns the purity tier of this type (shallow — does not recurse into containers).
-    pub fn purity(&self) -> Materiality {
+    pub fn materiality(&self) -> Materiality {
         match self {
             Ty::Int | Ty::Float | Ty::String | Ty::Bool | Ty::Unit | Ty::Range | Ty::Byte => {
                 Materiality::Concrete
@@ -3715,38 +3693,38 @@ mod tests {
 
     #[test]
     fn purity_scalars_are_pure() {
-        assert_eq!(Ty::Int.purity(), Materiality::Concrete);
-        assert_eq!(Ty::Float.purity(), Materiality::Concrete);
-        assert_eq!(Ty::String.purity(), Materiality::Concrete);
-        assert_eq!(Ty::Bool.purity(), Materiality::Concrete);
-        assert_eq!(Ty::Unit.purity(), Materiality::Concrete);
-        assert_eq!(Ty::Range.purity(), Materiality::Concrete);
-        assert_eq!(Ty::Byte.purity(), Materiality::Concrete);
+        assert_eq!(Ty::Int.materiality(), Materiality::Concrete);
+        assert_eq!(Ty::Float.materiality(), Materiality::Concrete);
+        assert_eq!(Ty::String.materiality(), Materiality::Concrete);
+        assert_eq!(Ty::Bool.materiality(), Materiality::Concrete);
+        assert_eq!(Ty::Unit.materiality(), Materiality::Concrete);
+        assert_eq!(Ty::Range.materiality(), Materiality::Concrete);
+        assert_eq!(Ty::Byte.materiality(), Materiality::Concrete);
     }
 
     #[test]
     fn purity_containers_are_lazy() {
         let mut s = TySubst::new();
         let o = s.fresh_concrete_origin();
-        assert_eq!(Ty::List(Box::new(Ty::Int)).purity(), Materiality::Composite);
-        assert_eq!(Ty::Deque(Box::new(Ty::Int), o).purity(), Materiality::Composite);
+        assert_eq!(Ty::List(Box::new(Ty::Int)).materiality(), Materiality::Composite);
+        assert_eq!(Ty::Deque(Box::new(Ty::Int), o).materiality(), Materiality::Composite);
         assert_eq!(
-            Ty::Iterator(Box::new(Ty::Int), Effect::pure()).purity(),
+            Ty::Iterator(Box::new(Ty::Int), Effect::pure()).materiality(),
             Materiality::Composite
         );
         assert_eq!(
-            Ty::Sequence(Box::new(Ty::Int), o, Effect::pure()).purity(),
+            Ty::Sequence(Box::new(Ty::Int), o, Effect::pure()).materiality(),
             Materiality::Composite
         );
-        assert_eq!(Ty::Option(Box::new(Ty::Int)).purity(), Materiality::Composite);
-        assert_eq!(Ty::Tuple(vec![Ty::Int]).purity(), Materiality::Composite);
+        assert_eq!(Ty::Option(Box::new(Ty::Int)).materiality(), Materiality::Composite);
+        assert_eq!(Ty::Tuple(vec![Ty::Int]).materiality(), Materiality::Composite);
     }
 
     #[test]
     fn purity_object_is_lazy() {
         let i = Interner::new();
         let obj = Ty::Object(FxHashMap::from_iter([(i.intern("x"), Ty::Int)]));
-        assert_eq!(obj.purity(), Materiality::Composite);
+        assert_eq!(obj.materiality(), Materiality::Composite);
     }
 
     #[test]
@@ -3758,7 +3736,7 @@ mod tests {
             effect: Effect::pure(),
             captures: vec![],
         };
-        assert_eq!(fn_ty.purity(), Materiality::Composite);
+        assert_eq!(fn_ty.materiality(), Materiality::Composite);
     }
 
     #[test]
@@ -3770,7 +3748,7 @@ mod tests {
             effect: Effect::pure(),
             captures: vec![],
         };
-        assert_eq!(fn_ty.purity(), Materiality::Composite);
+        assert_eq!(fn_ty.materiality(), Materiality::Composite);
     }
 
     #[test]
@@ -3780,20 +3758,20 @@ mod tests {
             name: i.intern("Color"),
             variants: FxHashMap::from_iter([(i.intern("Red"), None), (i.intern("Green"), None)]),
         };
-        assert_eq!(enum_ty.purity(), Materiality::Composite);
+        assert_eq!(enum_ty.materiality(), Materiality::Composite);
     }
 
     #[test]
     fn purity_opaque_is_unpure() {
-        assert_eq!(Ty::Opaque("HttpResponse".into()).purity(), Materiality::Ephemeral);
+        assert_eq!(Ty::Opaque("HttpResponse".into()).materiality(), Materiality::Ephemeral);
     }
 
     #[test]
     fn purity_special_types() {
         // Unresolved types are conservatively Unpure.
-        assert_eq!(Ty::error().purity(), Materiality::Ephemeral);
+        assert_eq!(Ty::error().materiality(), Materiality::Ephemeral);
         let mut s = TySubst::new();
-        assert_eq!(s.fresh_param().purity(), Materiality::Ephemeral);
+        assert_eq!(s.fresh_param().materiality(), Materiality::Ephemeral);
     }
 
     #[test]

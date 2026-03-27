@@ -698,7 +698,7 @@ impl<'a, 's> TypeChecker<'a, 's> {
                         self.body_reads.insert(*name);
                         self.propagate_call_effect(Effect::io());
                         if !allow_non_pure
-                            && ty.purity() == Materiality::Ephemeral
+                            && ty.materiality() == Materiality::Ephemeral
                             && !ty.is_error()
                             && !ty.is_param()
                         {
