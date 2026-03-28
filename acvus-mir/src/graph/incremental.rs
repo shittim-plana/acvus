@@ -36,41 +36,32 @@ pub struct ContextInfo {
 pub struct IncrementalGraph {
     interner: Interner,
 
-    // ── Namespaces ──
-    namespaces: FxHashMap<NamespaceId, Namespace>,
-    name_to_ns: FxHashMap<Astr, NamespaceId>,
-
     // ── Source data ──
-    functions: FxHashMap<FunctionId, Function>,
+    functions: FxHashMap<QualifiedRef, Function>,
     contexts: FxHashMap<QualifiedRef, Context>,
-    /// (namespace, name) → FunctionId. namespace=None means root.
-    name_to_fn: FxHashMap<(Option<NamespaceId>, Astr), FunctionId>,
 
     // ── Phase 0: Extract cache ──
-    extract_cache: FxHashMap<FunctionId, ExtractEntry>,
+    extract_cache: FxHashMap<QualifiedRef, ExtractEntry>,
 
     // ── Call graph ──
-    call_edges: FxHashMap<FunctionId, Vec<FunctionId>>,
-    reverse_edges: FxHashMap<FunctionId, Vec<FunctionId>>,
-    scc_order: Vec<Vec<FunctionId>>,
-    fn_to_scc: FxHashMap<FunctionId, usize>,
+    call_edges: FxHashMap<QualifiedRef, Vec<QualifiedRef>>,
+    reverse_edges: FxHashMap<QualifiedRef, Vec<QualifiedRef>>,
+    scc_order: Vec<Vec<QualifiedRef>>,
+    fn_to_scc: FxHashMap<QualifiedRef, usize>,
 
     // ── Phase 1: Infer cache (per SCC index) ──
     infer_cache: Vec<Option<SccInferResult>>,
 
     // ── Diagnostics ──
-    diagnostics: FxHashMap<FunctionId, Vec<MirError>>,
+    diagnostics: FxHashMap<QualifiedRef, Vec<MirError>>,
 }
 
 impl IncrementalGraph {
     pub fn new(interner: &Interner) -> Self {
         Self {
             interner: interner.clone(),
-            namespaces: FxHashMap::default(),
-            name_to_ns: FxHashMap::default(),
             functions: FxHashMap::default(),
             contexts: FxHashMap::default(),
-            name_to_fn: FxHashMap::default(),
             extract_cache: FxHashMap::default(),
             call_edges: FxHashMap::default(),
             reverse_edges: FxHashMap::default(),
@@ -83,61 +74,49 @@ impl IncrementalGraph {
 
     // ── Namespace management ─────────────────────────────────────────
 
-    pub fn add_namespace(&mut self, ns: Namespace) {
-        self.name_to_ns.insert(ns.name, ns.id);
-        self.namespaces.insert(ns.id, ns);
-    }
-
-    pub fn remove_namespace(&mut self, id: NamespaceId) {
-        if let Some(ns) = self.namespaces.remove(&id) {
-            self.name_to_ns.remove(&ns.name);
-            // Remove all functions and contexts in this namespace.
-            let fn_ids: Vec<FunctionId> = self
-                .functions
-                .values()
-                .filter(|f| f.namespace == Some(id))
-                .map(|f| f.id)
-                .collect();
-            for fid in fn_ids {
-                self.remove_function(fid);
-            }
-            let ctx_refs: Vec<QualifiedRef> = self
-                .contexts
-                .iter()
-                .filter(|(_, c)| c.namespace == Some(id))
-                .map(|(qref, _)| *qref)
-                .collect();
-            for qref in ctx_refs {
-                self.remove_context(qref);
-            }
+    pub fn remove_namespace(&mut self, ns_name: Astr) {
+        // Remove all functions and contexts in this namespace.
+        let fn_refs: Vec<QualifiedRef> = self
+            .functions
+            .values()
+            .filter(|f| f.qref.namespace == Some(ns_name))
+            .map(|f| f.qref)
+            .collect();
+        for qref in fn_refs {
+            self.remove_function(qref);
+        }
+        let ctx_refs: Vec<QualifiedRef> = self
+            .contexts
+            .iter()
+            .filter(|(_, c)| c.qref.namespace == Some(ns_name))
+            .map(|(qref, _)| *qref)
+            .collect();
+        for qref in ctx_refs {
+            self.remove_context(qref);
         }
     }
 
     // ── Registration ────────────────────────────────────────────────
 
     pub fn add_function(&mut self, func: Function) {
-        let key = (func.namespace, func.name);
-        self.name_to_fn.insert(key, func.id);
-        let id = func.id;
-        self.functions.insert(id, func);
-        self.run_extract(id);
+        let qref = func.qref;
+        self.functions.insert(qref, func);
+        self.run_extract(qref);
         self.rebuild_graph();
     }
 
-    pub fn remove_function(&mut self, id: FunctionId) {
-        if let Some(func) = self.functions.remove(&id) {
-            let key = (func.namespace, func.name);
-            self.name_to_fn.remove(&key);
-            self.extract_cache.remove(&id);
-            self.call_edges.remove(&id);
-            self.diagnostics.remove(&id);
-            self.remove_reverse_edges(id);
+    pub fn remove_function(&mut self, qref: QualifiedRef) {
+        if self.functions.remove(&qref).is_some() {
+            self.extract_cache.remove(&qref);
+            self.call_edges.remove(&qref);
+            self.diagnostics.remove(&qref);
+            self.remove_reverse_edges(qref);
             self.rebuild_graph();
         }
     }
 
     pub fn add_context(&mut self, ctx: Context) {
-        let qref = ctx.qualified_ref();
+        let qref = ctx.qref;
         self.contexts.insert(qref, ctx);
         // Context change can affect all infer — full rebuild.
         self.invalidate_all_infer();
@@ -153,8 +132,8 @@ impl IncrementalGraph {
 
     // ── Source update (main incremental entry point) ────────────────
 
-    pub fn update_source(&mut self, id: FunctionId, source: Astr) {
-        let Some(func) = self.functions.get_mut(&id) else {
+    pub fn update_source(&mut self, qref: QualifiedRef, source: Astr) {
+        let Some(func) = self.functions.get_mut(&qref) else {
             return;
         };
         match &mut func.kind {
@@ -164,11 +143,11 @@ impl IncrementalGraph {
         }
 
         // 1. Re-extract.
-        let old_edges = self.call_edges.get(&id).cloned();
-        self.run_extract(id);
+        let old_edges = self.call_edges.get(&qref).cloned();
+        self.run_extract(qref);
 
         // 2. Check if call edges changed.
-        let new_edges = self.call_edges.get(&id);
+        let new_edges = self.call_edges.get(&qref);
         let edges_changed = old_edges.as_ref() != new_edges;
 
         if edges_changed {
@@ -176,29 +155,29 @@ impl IncrementalGraph {
             self.rebuild_graph();
         } else {
             // SCC unchanged — only re-infer the affected SCC + propagate.
-            self.dirty_propagate(id);
+            self.dirty_propagate(qref);
         }
     }
 
     // ── Queries ─────────────────────────────────────────────────────
 
-    pub fn diagnostics(&self, id: FunctionId) -> &[MirError] {
+    pub fn diagnostics(&self, qref: QualifiedRef) -> &[MirError] {
         self.diagnostics
-            .get(&id)
+            .get(&qref)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
     }
 
-    pub fn all_diagnostics(&self) -> impl Iterator<Item = (FunctionId, &[MirError])> {
+    pub fn all_diagnostics(&self) -> impl Iterator<Item = (QualifiedRef, &[MirError])> {
         self.diagnostics
             .iter()
-            .map(|(&id, errs)| (id, errs.as_slice()))
+            .map(|(&qref, errs)| (qref, errs.as_slice()))
     }
 
     /// Get context/param info that must be injected externally for a function.
-    pub fn context_info(&self, id: FunctionId) -> Vec<ContextInfo> {
+    pub fn context_info(&self, qref: QualifiedRef) -> Vec<ContextInfo> {
         // Collect from infer results: fn_params for this function.
-        let scc_idx = match self.fn_to_scc.get(&id) {
+        let scc_idx = match self.fn_to_scc.get(&qref) {
             Some(&idx) => idx,
             None => return vec![],
         };
@@ -208,7 +187,7 @@ impl IncrementalGraph {
         };
         scc_result
             .fn_params
-            .get(&id)
+            .get(&qref)
             .map(|params| {
                 params
                     .iter()
@@ -224,26 +203,16 @@ impl IncrementalGraph {
     // TODO: resolution now comes from InferResult outcomes.
     // SccInferResult needs to store resolutions for this to work.
     // For now, always returns None.
-    pub fn resolution(&self, _id: FunctionId) -> Option<()> {
+    pub fn resolution(&self, _qref: QualifiedRef) -> Option<()> {
         None
     }
 
-    pub fn function(&self, id: FunctionId) -> Option<&Function> {
-        self.functions.get(&id)
+    pub fn function(&self, qref: QualifiedRef) -> Option<&Function> {
+        self.functions.get(&qref)
     }
 
     pub fn interner(&self) -> &Interner {
         &self.interner
-    }
-
-    pub fn namespace(&self, id: NamespaceId) -> Option<&Namespace> {
-        self.namespaces.get(&id)
-    }
-
-    pub fn namespace_by_name(&self, name: Astr) -> Option<&Namespace> {
-        self.name_to_ns
-            .get(&name)
-            .and_then(|id| self.namespaces.get(id))
     }
 
     // ── Resolution ───────────────────────────────────────────────────
@@ -251,13 +220,15 @@ impl IncrementalGraph {
     /// Resolve a function name.
     /// - `qualifier = None` → unqualified, root only.
     /// - `qualifier = Some(ns_name)` → qualified, specific namespace only.
-    pub fn resolve_fn(&self, qualifier: Option<Astr>, name: Astr) -> Option<FunctionId> {
-        match qualifier {
-            None => self.name_to_fn.get(&(None, name)).copied(),
-            Some(ns_name) => {
-                let ns_id = self.name_to_ns.get(&ns_name)?;
-                self.name_to_fn.get(&(Some(*ns_id), name)).copied()
-            }
+    pub fn resolve_fn(&self, qualifier: Option<Astr>, name: Astr) -> Option<QualifiedRef> {
+        let qref = match qualifier {
+            None => QualifiedRef::root(name),
+            Some(ns_name) => QualifiedRef::qualified(ns_name, name),
+        };
+        if self.functions.contains_key(&qref) {
+            Some(qref)
+        } else {
+            None
         }
     }
 
@@ -280,12 +251,12 @@ impl IncrementalGraph {
     /// Used by LSP for completions.
     pub fn visible_contexts(
         &self,
-        ns: Option<NamespaceId>,
-    ) -> Vec<(Option<NamespaceId>, Astr, &Context)> {
+        ns: Option<Astr>,
+    ) -> Vec<(Option<Astr>, Astr, &Context)> {
         self.contexts
             .values()
-            .filter(|c| c.namespace.is_none() || c.namespace == ns)
-            .map(|c| (c.namespace, c.name, c))
+            .filter(|c| c.qref.namespace.is_none() || c.qref.namespace == ns)
+            .map(|c| (c.qref.namespace, c.qref.name, c))
             .collect()
     }
 
@@ -295,19 +266,19 @@ impl IncrementalGraph {
     /// Used by LSP for completions.
     pub fn visible_functions(
         &self,
-        ns: Option<NamespaceId>,
-    ) -> Vec<(Option<NamespaceId>, Astr, &Function)> {
+        ns: Option<Astr>,
+    ) -> Vec<(Option<Astr>, Astr, &Function)> {
         self.functions
             .values()
-            .filter(|f| f.namespace.is_none() || f.namespace == ns)
-            .map(|f| (f.namespace, f.name, f))
+            .filter(|f| f.qref.namespace.is_none() || f.qref.namespace == ns)
+            .map(|f| (f.qref.namespace, f.qref.name, f))
             .collect()
     }
 
     // ── Internal: Extract ───────────────────────────────────────────
 
-    fn run_extract(&mut self, id: FunctionId) {
-        let Some(func) = self.functions.get(&id) else {
+    fn run_extract(&mut self, qref: QualifiedRef) {
+        let Some(func) = self.functions.get(&qref) else {
             return;
         };
 
@@ -318,7 +289,7 @@ impl IncrementalGraph {
             return;
         };
 
-        if let Some(entry) = self.extract_cache.get(&id)
+        if let Some(entry) = self.extract_cache.get(&qref)
             && entry.source_hash == source_hash
         {
             return; // No change.
@@ -329,21 +300,21 @@ impl IncrementalGraph {
             // Update call edges.
             // TODO: qualified call edges once AST supports ns:func() syntax.
             // For now, only unqualified (root) names are resolved.
-            let root_fn_names: FxHashMap<Astr, FunctionId> = self
-                .name_to_fn
+            let root_fn_names: FxHashMap<Astr, QualifiedRef> = self
+                .functions
                 .iter()
-                .filter(|((ns, _), _)| ns.is_none())
-                .map(|((_, name), &id)| (*name, id))
+                .filter(|(q, _)| q.namespace.is_none())
+                .map(|(&q, _)| (q.name, q))
                 .collect();
-            let new_edges = extract_call_edges(&parsed, &root_fn_names, id);
-            self.remove_reverse_edges(id);
+            let new_edges = extract_call_edges(&parsed, &root_fn_names, qref);
+            self.remove_reverse_edges(qref);
             for &callee in &new_edges {
-                self.reverse_edges.entry(callee).or_default().push(id);
+                self.reverse_edges.entry(callee).or_default().push(qref);
             }
-            self.call_edges.insert(id, new_edges);
+            self.call_edges.insert(qref, new_edges);
 
             self.extract_cache.insert(
-                id,
+                qref,
                 ExtractEntry {
                     source_hash,
                     refs,
@@ -352,18 +323,18 @@ impl IncrementalGraph {
             );
         } else {
             // Parse failed — clear caches.
-            self.extract_cache.remove(&id);
-            self.call_edges.remove(&id);
-            self.remove_reverse_edges(id);
+            self.extract_cache.remove(&qref);
+            self.call_edges.remove(&qref);
+            self.remove_reverse_edges(qref);
         }
     }
 
-    fn remove_reverse_edges(&mut self, id: FunctionId) {
-        if let Some(old_callees) = self.call_edges.get(&id) {
+    fn remove_reverse_edges(&mut self, qref: QualifiedRef) {
+        if let Some(old_callees) = self.call_edges.get(&qref) {
             let old_callees = old_callees.clone();
             for callee in old_callees {
                 if let Some(rev) = self.reverse_edges.get_mut(&callee) {
-                    rev.retain(|&x| x != id);
+                    rev.retain(|&x| x != qref);
                 }
             }
         }
@@ -372,14 +343,14 @@ impl IncrementalGraph {
     // ── Internal: Graph rebuild (SCC) ───────────────────────────────
 
     fn rebuild_graph(&mut self) {
-        let local_ids: Vec<FunctionId> = self
+        let local_qrefs: Vec<QualifiedRef> = self
             .functions
             .values()
             .filter(|f| matches!(f.kind, FnKind::Local(_)))
-            .map(|f| f.id)
+            .map(|f| f.qref)
             .collect();
 
-        self.scc_order = tarjan_scc(&local_ids, &self.call_edges);
+        self.scc_order = tarjan_scc(&local_qrefs, &self.call_edges);
         self.fn_to_scc.clear();
         for (idx, scc) in self.scc_order.iter().enumerate() {
             for &fid in scc {
@@ -400,22 +371,22 @@ impl IncrementalGraph {
         let known_ctx = self.known_context_types();
         let mut resolved_fn_types = crate::builtins::builtin_fn_types(&self.interner);
 
-        let fn_by_id: FxHashMap<FunctionId, &Function> = self
+        let fn_by_id: FxHashMap<QualifiedRef, &Function> = self
             .functions
             .iter()
             .filter(|(_, f)| matches!(f.kind, FnKind::Local(_)))
-            .map(|(&id, f)| (id, f))
+            .map(|(&qref, f)| (qref, f))
             .collect();
 
-        let extract_refs: FxHashMap<FunctionId, &FnRefs> = self
+        let extract_refs: FxHashMap<QualifiedRef, &FnRefs> = self
             .extract_cache
             .iter()
-            .map(|(&id, e)| (id, &e.refs))
+            .map(|(&qref, e)| (qref, &e.refs))
             .collect();
-        let extract_parsed: FxHashMap<FunctionId, &ParsedSource> = self
+        let extract_parsed: FxHashMap<QualifiedRef, &ParsedSource> = self
             .extract_cache
             .iter()
-            .map(|(&id, e)| (id, &e.parsed))
+            .map(|(&qref, e)| (qref, &e.parsed))
             .collect();
 
         for (scc_idx, scc) in self.scc_order.iter().enumerate() {
@@ -428,11 +399,11 @@ impl IncrementalGraph {
                 continue;
             }
 
-            let refs_owned: FxHashMap<FunctionId, FnRefs> = scc
+            let refs_owned: FxHashMap<QualifiedRef, FnRefs> = scc
                 .iter()
                 .filter_map(|fid| extract_refs.get(fid).map(|r| (*fid, (*r).clone())))
                 .collect();
-            let parsed_owned: FxHashMap<FunctionId, &ParsedSource> = scc
+            let parsed_owned: FxHashMap<QualifiedRef, &ParsedSource> = scc
                 .iter()
                 .filter_map(|fid| extract_parsed.get(fid).map(|p| (*fid, *p)))
                 .collect();
@@ -455,7 +426,7 @@ impl IncrementalGraph {
         self.propagate_effects();
     }
 
-    fn dirty_propagate(&mut self, changed_fn: FunctionId) {
+    fn dirty_propagate(&mut self, changed_fn: QualifiedRef) {
         let Some(&start_scc) = self.fn_to_scc.get(&changed_fn) else {
             return;
         };
@@ -467,22 +438,22 @@ impl IncrementalGraph {
         let known_ctx = self.known_context_types();
         let mut resolved_fn_types = crate::builtins::builtin_fn_types(&self.interner);
 
-        let fn_by_id: FxHashMap<FunctionId, &Function> = self
+        let fn_by_id: FxHashMap<QualifiedRef, &Function> = self
             .functions
             .iter()
             .filter(|(_, f)| matches!(f.kind, FnKind::Local(_)))
-            .map(|(&id, f)| (id, f))
+            .map(|(&qref, f)| (qref, f))
             .collect();
 
-        let extract_refs: FxHashMap<FunctionId, FnRefs> = self
+        let extract_refs: FxHashMap<QualifiedRef, FnRefs> = self
             .extract_cache
             .iter()
-            .map(|(&id, e)| (id, e.refs.clone()))
+            .map(|(&qref, e)| (qref, e.refs.clone()))
             .collect();
-        let extract_parsed: FxHashMap<FunctionId, &ParsedSource> = self
+        let extract_parsed: FxHashMap<QualifiedRef, &ParsedSource> = self
             .extract_cache
             .iter()
-            .map(|(&id, e)| (id, &e.parsed))
+            .map(|(&qref, e)| (qref, &e.parsed))
             .collect();
 
         // Accumulate resolved types from prior SCCs.
@@ -510,11 +481,11 @@ impl IncrementalGraph {
                 .as_ref()
                 .map(|r| r.resolved_types.clone());
 
-            let refs_for_scc: FxHashMap<FunctionId, FnRefs> = scc
+            let refs_for_scc: FxHashMap<QualifiedRef, FnRefs> = scc
                 .iter()
                 .filter_map(|fid| extract_refs.get(fid).map(|r| (*fid, r.clone())))
                 .collect();
-            let parsed_for_scc: FxHashMap<FunctionId, &ParsedSource> = scc
+            let parsed_for_scc: FxHashMap<QualifiedRef, &ParsedSource> = scc
                 .iter()
                 .filter_map(|fid| extract_parsed.get(fid).map(|p| (*fid, *p)))
                 .collect();
@@ -608,7 +579,7 @@ impl IncrementalGraph {
 
         // Propagate through call graph in SCC order (fixpoint within each SCC).
         // We need to collect all fn_metas into one map for propagation.
-        let mut all_effects: FxHashMap<FunctionId, EffectSet> = FxHashMap::default();
+        let mut all_effects: FxHashMap<QualifiedRef, EffectSet> = FxHashMap::default();
         for scc_result in self.infer_cache.iter().flatten() {
             for (&fid, meta) in &scc_result.fn_metas {
                 all_effects.insert(fid, meta.effect.clone());
@@ -655,7 +626,7 @@ impl IncrementalGraph {
             .values()
             .filter_map(|ctx| {
                 if let Constraint::Exact(ty) = &ctx.constraint {
-                    Some((ctx.qualified_ref(), ty.clone()))
+                    Some((ctx.qref, ty.clone()))
                 } else {
                     None
                 }
@@ -674,8 +645,8 @@ impl IncrementalGraph {
     pub fn extract_result(&self) -> ExtractResult {
         let mut fn_refs = FxHashMap::default();
         let parsed = FxHashMap::default();
-        for (&id, entry) in &self.extract_cache {
-            fn_refs.insert(id, entry.refs.clone());
+        for (&qref, entry) in &self.extract_cache {
+            fn_refs.insert(qref, entry.refs.clone());
             // ParsedSource is not Clone — we need to handle this.
             // For now, skip parsed in snapshot (batch lower can re-extract if needed).
         }
@@ -684,8 +655,8 @@ impl IncrementalGraph {
 
     /// Build a snapshot InferResult for compatibility with batch APIs.
     pub fn infer_result(&self) -> super::infer::InferResult {
-        let mut fn_params: FxHashMap<FunctionId, Vec<InferredParam>> = FxHashMap::default();
-        let mut outcomes: FxHashMap<FunctionId, super::infer::FnInferOutcome> =
+        let mut fn_params: FxHashMap<QualifiedRef, Vec<InferredParam>> = FxHashMap::default();
+        let mut outcomes: FxHashMap<QualifiedRef, super::infer::FnInferOutcome> =
             FxHashMap::default();
 
         for scc_result in self.infer_cache.iter().flatten() {

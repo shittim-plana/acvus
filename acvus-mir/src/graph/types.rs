@@ -1,22 +1,19 @@
-//! Type definitions for the new compilation graph.
+//! Type definitions for the compilation graph.
 //!
-//! Key differences from `graph::types`:
-//! - Entity split into Function (executable) and Context (loadable).
-//! - FnConstraint bundles signature + output.
-//! - No membership — PHI/SSA handles type unification.
-//! - Function has name instead of name_to_id — graph owns the name→id mapping.
+//! Functions and Contexts are identified by `QualifiedRef` (namespace + name).
+//! No opaque IDs — the name IS the identity.
 
-use acvus_utils::Astr;
 use acvus_utils::Freeze;
 
 use crate::ty::{EffectConstraint, Ty};
 
 // ── Identifiers ─────────────────────────────────────────────────────
 
-acvus_utils::declare_id!(pub FunctionId);
 acvus_utils::declare_id!(pub VersionId);
 acvus_utils::declare_id!(pub ScopeId);
-acvus_utils::declare_id!(pub NamespaceId);
+
+// Re-export from acvus-utils.
+pub use acvus_utils::QualifiedRef;
 
 // ── Source ───────────────────────────────────────────────────────────
 
@@ -28,8 +25,8 @@ pub enum SourceKind {
 
 #[derive(Debug, Clone)]
 pub struct SourceCode {
-    pub name: Astr,
-    pub source: Astr,
+    pub name: QualifiedRef,
+    pub source: acvus_utils::Astr,
     pub kind: SourceKind,
 }
 
@@ -42,7 +39,7 @@ pub enum Constraint {
     /// Exact declared type.
     Exact(Ty),
     /// Type derived from a function's output type.
-    DerivedFnOutput(FunctionId, TypeTransform),
+    DerivedFnOutput(QualifiedRef, TypeTransform),
     /// Type derived from a context's type.
     DerivedContext(QualifiedRef, TypeTransform),
 }
@@ -90,61 +87,30 @@ pub enum ParsedAst {
     Template(acvus_ast::Template),
 }
 
-/// An executable entity in the graph.
+/// An executable entity in the graph. Identified by `QualifiedRef`.
 #[derive(Debug, Clone)]
 pub struct Function {
-    pub id: FunctionId,
-    pub name: Astr,
-    /// Namespace this function belongs to. `None` = root (global).
-    pub namespace: Option<NamespaceId>,
+    /// Unique identity = namespace + name.
+    pub qref: QualifiedRef,
     pub kind: FnKind,
     pub constraint: FnConstraint,
 }
 
-// Re-export from acvus-utils.
-pub use acvus_utils::QualifiedRef;
-
 // ── Context ──────────────────────────────────────────────────────────
 
 /// A loadable value in the graph. Injected externally or derived from a function.
-/// Identity = QualifiedRef (namespace + name). No separate ContextId.
+/// Identified by `QualifiedRef` (namespace + name).
 #[derive(Debug, Clone)]
 pub struct Context {
-    pub name: Astr,
-    /// Namespace this context belongs to. `None` = root (global).
-    pub namespace: Option<NamespaceId>,
+    /// Unique identity = namespace + name.
+    pub qref: QualifiedRef,
     pub constraint: Constraint,
-}
-
-impl Context {
-    /// The qualified reference that uniquely identifies this context.
-    pub fn qualified_ref(&self) -> QualifiedRef {
-        // Note: namespace here is NamespaceId, but QualifiedRef uses Astr.
-        // The graph must resolve NamespaceId → Astr for this.
-        // For root contexts (namespace=None), this is straightforward.
-        QualifiedRef {
-            namespace: None,
-            name: self.name,
-        }
-    }
-}
-
-// ── Namespace ────────────────────────────────────────────────────────
-
-/// A flat scope for qualified access.
-/// - Unqualified `@name` / `func()` → resolves in root only.
-/// - Qualified `@ns::name` / `ns::func()` → resolves in the named namespace only.
-#[derive(Debug, Clone)]
-pub struct Namespace {
-    pub id: NamespaceId,
-    pub name: Astr,
 }
 
 // ── Compilation graph ───────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct CompilationGraph {
-    pub namespaces: Freeze<Vec<Namespace>>,
     pub functions: Freeze<Vec<Function>>,
     pub contexts: Freeze<Vec<Context>>,
 }

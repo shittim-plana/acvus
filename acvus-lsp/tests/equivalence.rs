@@ -13,19 +13,16 @@ fn batch_errors(interner: &Interner, source: &str, ctx: &[(&str, Ty)]) -> Vec<St
     let contexts: Vec<Context> = ctx
         .iter()
         .map(|(name, ty)| Context {
-            name: interner.intern(name),
-            namespace: None,
+            qref: QualifiedRef::root(interner.intern(name)),
             constraint: Constraint::Exact(ty.clone()),
         })
         .collect();
+    let test_qref = QualifiedRef::root(interner.intern("test"));
     let graph = CompilationGraph {
-        namespaces: Freeze::new(vec![]),
         functions: Freeze::new(vec![Function {
-            id: FunctionId::alloc(),
-            name: interner.intern("test"),
-            namespace: None,
+            qref: test_qref,
             kind: FnKind::Local(SourceCode {
-                name: interner.intern("test"),
+                name: test_qref,
                 source: interner.intern(source),
                 kind: SourceKind::Template,
             }),
@@ -144,6 +141,7 @@ fn namespace_context_isolation() {
     let ns = session.add_namespace("node_a");
     session.add_context("value", Some(ns), Constraint::Exact(Ty::Int));
     session.add_context("global", None, Constraint::Exact(Ty::String));
+
 
     // Root function sees @global.
     let doc_root = session.open("root_fn", "{{ @global }}", SourceKind::Template, None);

@@ -4,7 +4,7 @@ use acvus_utils::{Astr, Interner};
 use rustc_hash::FxHashMap;
 use rustc_hash::FxHashSet;
 
-use crate::graph::{FunctionId, QualifiedRef};
+use crate::graph::QualifiedRef;
 use crate::ty::{Effect, Ty};
 
 acvus_utils::declare_local_id!(pub ValueId);
@@ -34,7 +34,7 @@ pub enum CastKind {
     /// `Range → Iterator<Int, Pure>` — materialise range into lazy iterator.
     RangeToIterator,
     /// ExternCast — coercion performed by a registered pure ExternFn.
-    Extern(FunctionId),
+    Extern(QualifiedRef),
 }
 
 impl CastKind {
@@ -83,7 +83,7 @@ impl CastKind {
 #[derive(Debug, Clone)]
 pub enum Callee {
     /// Compile-time known function. Enables pre-fetch and inlining.
-    Direct(FunctionId),
+    Direct(QualifiedRef),
     /// Runtime-determined callable (closure, variable holding a function).
     Indirect(ValueId),
 }
@@ -150,7 +150,7 @@ pub enum InstKind {
     /// Load a graph-level function into a value (for passing as argument, storing, etc.)
     LoadFunction {
         dst: ValueId,
-        id: FunctionId,
+        id: QualifiedRef,
     },
     /// Unified function call. Callee can be a direct graph function or an indirect value.
     /// Semantically equivalent to Spawn + Eval (synchronous call = spawn then immediately eval).

@@ -19,22 +19,22 @@ use super::types::*;
 
 #[derive(Debug)]
 pub struct LowerError {
-    pub fn_id: FunctionId,
+    pub fn_id: QualifiedRef,
     pub errors: Vec<MirError>,
 }
 
 #[derive(Debug)]
 pub struct LowerResult {
-    pub modules: FxHashMap<FunctionId, (MirModule, HintTable)>,
+    pub modules: FxHashMap<QualifiedRef, (MirModule, HintTable)>,
     pub errors: Vec<LowerError>,
 }
 
 impl LowerResult {
-    pub fn module(&self, id: FunctionId) -> Option<&MirModule> {
+    pub fn module(&self, id: QualifiedRef) -> Option<&MirModule> {
         self.modules.get(&id).map(|(m, _)| m)
     }
 
-    pub fn hints(&self, id: FunctionId) -> Option<&HintTable> {
+    pub fn hints(&self, id: QualifiedRef) -> Option<&HintTable> {
         self.modules.get(&id).map(|(_, h)| h)
     }
 
@@ -59,16 +59,16 @@ pub fn lower(
         if matches!(func.kind, FnKind::Extern) {
             continue;
         }
-        let Some(parsed) = extract.parsed.get(&func.id) else {
+        let Some(parsed) = extract.parsed.get(&func.qref) else {
             continue;
         };
         // Only lower Complete functions.
-        let Some(resolution) = infer_result.try_resolution(func.id) else {
+        let Some(resolution) = infer_result.try_resolution(func.qref) else {
             continue;
         };
 
         // Build context_ids for this function: only contexts that this function references.
-        let fn_refs = extract.fn_refs.get(&func.id);
+        let fn_refs = extract.fn_refs.get(&func.qref);
         let context_ids: FxHashMap<QualifiedRef, Ty> = match fn_refs {
             Some(refs) => refs
                 .context_reads
@@ -89,7 +89,7 @@ pub fn lower(
         let resolution_clone = resolution.clone();
 
         // Build function_ids from graph functions.
-        let function_ids: FxHashMap<Astr, (FunctionId, Ty)> = graph
+        let function_ids: FxHashMap<Astr, (QualifiedRef, Ty)> = graph
             .functions
             .iter()
             .filter_map(|f| {
@@ -97,14 +97,14 @@ pub fn lower(
                     Constraint::Exact(ty) => ty.clone(),
                     _ => Ty::error(),
                 };
-                Some((f.name, (f.id, ty)))
+                Some((f.qref.name, (f.qref, ty)))
             })
             .collect();
 
-        // Build FunctionId → Ty map for SSA pass (callee effect resolution).
-        let fn_type_map: FxHashMap<FunctionId, Ty> = function_ids
+        // Build QualifiedRef → Ty map for SSA pass (callee effect resolution).
+        let fn_type_map: FxHashMap<QualifiedRef, Ty> = function_ids
             .values()
-            .map(|(id, ty)| (*id, ty.clone()))
+            .map(|(qref, ty)| (*qref, ty.clone()))
             .collect();
 
         let lowerer = crate::lower::Lowerer::new(
@@ -137,11 +137,11 @@ pub fn lower(
 
         match result {
             Ok((module, hints)) => {
-                modules.insert(func.id, (module, hints));
+                modules.insert(func.qref, (module, hints));
             }
             Err(errs) => {
                 errors.push(LowerError {
-                    fn_id: func.id,
+                    fn_id: func.qref,
                     errors: errs,
                 });
             }
@@ -167,19 +167,16 @@ mod tests {
         let contexts = ctx
             .iter()
             .map(|(name, ty)| Context {
-                name: interner.intern(name),
-                namespace: None,
+                qref: QualifiedRef::root(interner.intern(name)),
                 constraint: Constraint::Exact(ty.clone()),
             })
             .collect();
+        let fn_qref = QualifiedRef::root(interner.intern("test"));
         CompilationGraph {
-            namespaces: Freeze::new(vec![]),
             functions: Freeze::new(vec![Function {
-                id: FunctionId::alloc(),
-                name: interner.intern("test"),
-                namespace: None,
+                qref: fn_qref,
                 kind: FnKind::Local(SourceCode {
-                    name: interner.intern("test"),
+                    name: fn_qref,
                     source: interner.intern(source),
                     kind: SourceKind::Script,
                 }),
@@ -193,8 +190,8 @@ mod tests {
         }
     }
 
-    fn first_fn_id(graph: &CompilationGraph) -> FunctionId {
-        graph.functions[0].id
+    fn first_fn_ref(graph: &CompilationGraph) -> QualifiedRef {
+        graph.functions[0].qref
     }
 
     // -- Completeness: valid programs lower to MIR --
@@ -208,7 +205,7 @@ mod tests {
         let result = lower(&i, &graph, &ext, &inf);
 
         assert!(!result.has_errors(), "errors: {:?}", result.errors);
-        let uid = first_fn_id(&graph);
+        let uid = first_fn_ref(&graph);
         assert!(result.module(uid).is_some());
     }
 
@@ -221,7 +218,7 @@ mod tests {
         let result = lower(&i, &graph, &ext, &inf);
 
         assert!(!result.has_errors(), "errors: {:?}", result.errors);
-        let uid = first_fn_id(&graph);
+        let uid = first_fn_ref(&graph);
         assert!(result.module(uid).is_some());
     }
 
@@ -251,7 +248,7 @@ mod tests {
         let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
         let result = lower(&i, &graph, &ext, &inf);
         assert!(!result.has_errors(), "errors: {:?}", result.errors);
-        let module = result.module(first_fn_id(&graph)).unwrap();
+        let module = result.module(first_fn_ref(&graph)).unwrap();
         // Irrefutable match-bind should NOT generate JumpIf.
         assert!(
             !module
@@ -275,7 +272,7 @@ mod tests {
         let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
         let result = lower(&i, &graph, &ext, &inf);
         assert!(!result.has_errors(), "errors: {:?}", result.errors);
-        let module = result.module(first_fn_id(&graph)).unwrap();
+        let module = result.module(first_fn_ref(&graph)).unwrap();
         // Refutable match-bind MUST generate JumpIf.
         assert!(
             module
@@ -299,7 +296,7 @@ mod tests {
         let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
         let result = lower(&i, &graph, &ext, &inf);
         assert!(!result.has_errors(), "errors: {:?}", result.errors);
-        let module = result.module(first_fn_id(&graph)).unwrap();
+        let module = result.module(first_fn_ref(&graph)).unwrap();
         // Iterate must generate IterStep.
         assert!(
             module
@@ -326,7 +323,7 @@ mod tests {
         let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
         let result = lower(&i, &graph, &ext, &inf);
         assert!(!result.has_errors(), "errors: {:?}", result.errors);
-        let module = result.module(first_fn_id(&graph)).unwrap();
+        let module = result.module(first_fn_ref(&graph)).unwrap();
         // Nested iterate: two IterStep instructions.
         let iter_count = module
             .main
@@ -348,7 +345,7 @@ mod tests {
         // Infer should produce Incomplete for this function (type mismatch).
         // Lower should produce no module for this unit.
         let result = lower(&i, &graph, &ext, &inf);
-        let uid = first_fn_id(&graph);
+        let uid = first_fn_ref(&graph);
         assert!(result.module(uid).is_none());
     }
 }

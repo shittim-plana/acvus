@@ -27,7 +27,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use acvus_mir::graph::{Constraint, FnConstraint, FnKind, Function, FunctionId};
+use acvus_mir::graph::{Constraint, FnConstraint, FnKind, Function, QualifiedRef};
 use acvus_mir::ty::{Effect, EffectSet, EffectTarget, Param, TokenId, Ty};
 use acvus_utils::Interner;
 use rustc_hash::FxHashMap;
@@ -345,8 +345,8 @@ impl ExternFnBuilder {
 pub struct Registered {
     /// Functions to add to CompilationGraph.
     pub functions: Vec<Function>,
-    /// Runtime handlers keyed by the allocated FunctionId.
-    pub executables: FxHashMap<FunctionId, Executable>,
+    /// Runtime handlers keyed by QualifiedRef.
+    pub executables: FxHashMap<QualifiedRef, Executable>,
 }
 
 /// A collection of ExternFns, created lazily with interner access.
@@ -363,15 +363,15 @@ impl ExternRegistry {
         }
     }
 
-    /// Allocate FunctionIds and produce both graph Functions and runtime Executables.
+    /// Construct QualifiedRefs and produce both graph Functions and runtime Executables.
     pub fn register(self, interner: &Interner) -> Registered {
         let fns = (self.factory)(interner);
         let mut functions = Vec::with_capacity(fns.len());
         let mut executables = FxHashMap::default();
 
         for f in fns {
-            let id = FunctionId::alloc();
             let name = interner.intern(&f.name);
+            let qref = QualifiedRef::root(name);
 
             // Build Ty::Fn for the graph.
             let params: Vec<Param> = f
@@ -388,9 +388,7 @@ impl ExternRegistry {
             };
 
             functions.push(Function {
-                id,
-                name,
-                namespace: None,
+                qref,
                 kind: FnKind::Extern,
                 constraint: FnConstraint {
                     signature: None,
@@ -400,8 +398,8 @@ impl ExternRegistry {
             });
 
             match f.handler_kind {
-                HandlerKind::Legacy(h) => executables.insert(id, Executable::Builtin(h)),
-                HandlerKind::Extern(h) => executables.insert(id, Executable::Extern(h)),
+                HandlerKind::Legacy(h) => executables.insert(qref, Executable::Builtin(h)),
+                HandlerKind::Extern(h) => executables.insert(qref, Executable::Extern(h)),
             };
         }
 

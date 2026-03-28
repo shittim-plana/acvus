@@ -4,7 +4,7 @@ use std::sync::Arc;
 use acvus_interpreter::{
     ContextOverlay, Executable, Interpreter, InterpreterContext, SequentialExecutor, Value,
 };
-use acvus_mir::graph::{FunctionId, QualifiedRef};
+use acvus_mir::graph::QualifiedRef;
 use acvus_mir::ir::*;
 use acvus_mir::ty::Ty;
 use acvus_utils::{Interner, LocalFactory};
@@ -30,7 +30,7 @@ fn empty_overlay() -> ContextOverlay {
 
 fn make_context(
     interner: &Interner,
-    functions: FxHashMap<FunctionId, Executable>,
+    functions: FxHashMap<QualifiedRef, Executable>,
 ) -> InterpreterContext {
     let executor = Arc::new(SequentialExecutor);
     InterpreterContext::new(interner, functions, executor)
@@ -45,8 +45,8 @@ fn make_context(
 async fn spawn_eval_basic() {
     let interner = Interner::new();
 
-    let entry_id = FunctionId::alloc();
-    let callee_id = FunctionId::alloc();
+    let entry_id = QualifiedRef::root(interner.intern("entry"));
+    let callee_id = QualifiedRef::root(interner.intern("callee"));
 
     // ── Callee module: receives one param, returns param + 1 ──
     let callee_module = {
@@ -133,8 +133,8 @@ async fn spawn_eval_basic() {
 async fn spawn_eval_context_defs() {
     let interner = Interner::new();
 
-    let entry_id = FunctionId::alloc();
-    let callee_id = FunctionId::alloc();
+    let entry_id = QualifiedRef::root(interner.intern("entry"));
+    let callee_id = QualifiedRef::root(interner.intern("callee"));
     let ctx_name = interner.intern("counter");
     let ctx_id = QualifiedRef::root(ctx_name);
 
@@ -237,8 +237,8 @@ async fn spawn_eval_context_defs() {
 async fn spawn_eval_multi_args() {
     let interner = Interner::new();
 
-    let entry_id = FunctionId::alloc();
-    let callee_id = FunctionId::alloc();
+    let entry_id = QualifiedRef::root(interner.intern("entry"));
+    let callee_id = QualifiedRef::root(interner.intern("callee"));
 
     // ── Callee: param0 + param1 ──
     let callee_module = {

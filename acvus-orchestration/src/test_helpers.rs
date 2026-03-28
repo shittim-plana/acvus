@@ -3,11 +3,10 @@
 //! Not a public API — will be replaced when the real API is designed.
 
 pub mod compile {
-    use acvus_mir::graph::{extract, infer, lower as graph_lower, CompilationGraph, Function};
+    use acvus_mir::graph::{extract, infer, lower as graph_lower, CompilationGraph, Function, QualifiedRef};
     use acvus_mir::graph::infer::InferResult;
     use acvus_mir::hints::HintTable;
     use acvus_mir::ir::MirModule;
-    use acvus_mir::graph::FunctionId;
     use acvus_utils::{Freeze, Interner};
     use rustc_hash::FxHashMap;
 
@@ -17,7 +16,7 @@ pub mod compile {
     /// End-to-end compilation result.
     pub struct CompileResult {
         /// Per-function MIR modules (only for Complete functions).
-        pub modules: FxHashMap<FunctionId, (MirModule, HintTable)>,
+        pub modules: FxHashMap<QualifiedRef, (MirModule, HintTable)>,
         /// Spec-level field errors (parse errors from inline content).
         pub field_errors: Vec<FieldError>,
         /// Span mapping for type error → spec field resolution.
@@ -37,15 +36,15 @@ pub mod compile {
             self.infer_result.has_errors()
         }
 
-        pub fn module(&self, id: FunctionId) -> Option<&MirModule> {
+        pub fn module(&self, id: QualifiedRef) -> Option<&MirModule> {
             self.modules.get(&id).map(|(m, _)| m)
         }
 
         /// Find function by name.
-        pub fn function_id(&self, interner: &Interner, name: &str) -> Option<FunctionId> {
+        pub fn function_id(&self, interner: &Interner, name: &str) -> Option<QualifiedRef> {
             self.graph.functions.iter()
-                .find(|f| interner.resolve(f.name) == name)
-                .map(|f| f.id)
+                .find(|f| interner.resolve(f.qref.name) == name)
+                .map(|f| f.qref)
         }
 
         /// Whether a function compiled successfully (Complete + MIR produced).

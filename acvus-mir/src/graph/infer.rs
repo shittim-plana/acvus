@@ -89,9 +89,9 @@ impl FnInferOutcome {
 #[derive(Debug)]
 pub struct InferResult {
     /// Per-function inference outcome (Complete or Incomplete).
-    pub outcomes: FxHashMap<FunctionId, FnInferOutcome>,
+    pub outcomes: FxHashMap<QualifiedRef, FnInferOutcome>,
     /// Per-function inferred context parameters (for UI display).
-    pub fn_params: FxHashMap<FunctionId, Vec<InferredParam>>,
+    pub fn_params: FxHashMap<QualifiedRef, Vec<InferredParam>>,
     /// All context parameters across all functions, deduplicated.
     pub all_params: Vec<InferredParam>,
     /// Resolved context types (known + inferred).
@@ -102,13 +102,13 @@ impl InferResult {
     /// Get the checked resolution for a function, if complete.
     pub fn try_resolution(
         &self,
-        id: FunctionId,
+        id: QualifiedRef,
     ) -> Option<&crate::typeck::TypeResolution<crate::typeck::Checked>> {
         self.outcomes.get(&id)?.resolution()
     }
 
     /// Get the function type for a function.
-    pub fn fn_type(&self, id: FunctionId) -> Option<&Ty> {
+    pub fn fn_type(&self, id: QualifiedRef) -> Option<&Ty> {
         self.outcomes.get(&id).map(|o| &o.meta().ty)
     }
 
@@ -125,7 +125,7 @@ impl InferResult {
     }
 
     /// Collect all errors across all functions.
-    pub fn errors(&self) -> Vec<(FunctionId, &[crate::error::MirError])> {
+    pub fn errors(&self) -> Vec<(QualifiedRef, &[crate::error::MirError])> {
         self.outcomes
             .iter()
             .filter_map(|(&id, o)| match o {
@@ -141,12 +141,12 @@ impl InferResult {
 // ── Call graph + SCC ─────────────────────────────────────────────────
 
 /// Extract call edges for a single function from its parsed AST.
-/// Returns the list of FunctionIds that this function references.
+/// Returns the list of QualifiedRefs that this function references.
 pub fn extract_call_edges(
     parsed: &ParsedSource,
-    name_to_fn: &FxHashMap<Astr, FunctionId>,
-    self_id: FunctionId,
-) -> Vec<FunctionId> {
+    name_to_fn: &FxHashMap<Astr, QualifiedRef>,
+    self_id: QualifiedRef,
+) -> Vec<QualifiedRef> {
     let names: Vec<Astr> = match parsed {
         ParsedSource::Script(script) => collect_value_refs_script(script),
         ParsedSource::Template(template) => collect_value_refs_template(template),
@@ -168,23 +168,23 @@ pub fn extract_call_edges(
 fn build_call_graph(
     graph: &CompilationGraph,
     extract: &ExtractResult,
-) -> FxHashMap<FunctionId, Vec<FunctionId>> {
-    let name_to_id: FxHashMap<Astr, FunctionId> = graph
+) -> FxHashMap<QualifiedRef, Vec<QualifiedRef>> {
+    let name_to_id: FxHashMap<Astr, QualifiedRef> = graph
         .functions
         .iter()
         .filter(|f| matches!(f.kind, FnKind::Local(_) | FnKind::LocalAst(_)))
-        .map(|f| (f.name, f.id))
+        .map(|f| (f.qref.name, f.qref))
         .collect();
 
-    let mut edges: FxHashMap<FunctionId, Vec<FunctionId>> = FxHashMap::default();
+    let mut edges: FxHashMap<QualifiedRef, Vec<QualifiedRef>> = FxHashMap::default();
     for func in graph.functions.iter() {
         if matches!(func.kind, FnKind::Extern) {
             continue;
         }
-        let Some(parsed) = extract.parsed.get(&func.id) else {
+        let Some(parsed) = extract.parsed.get(&func.qref) else {
             continue;
         };
-        edges.insert(func.id, extract_call_edges(parsed, &name_to_id, func.id));
+        edges.insert(func.qref, extract_call_edges(parsed, &name_to_id, func.qref));
     }
     edges
 }
@@ -318,25 +318,25 @@ fn collect_value_refs_expr(expr: &acvus_ast::Expr, refs: &mut Vec<Astr>) {
 /// Tarjan's SCC algorithm. Returns SCCs in reverse topological order
 /// (leaf SCCs first — dependencies before dependents).
 pub fn tarjan_scc(
-    ids: &[FunctionId],
-    edges: &FxHashMap<FunctionId, Vec<FunctionId>>,
-) -> Vec<Vec<FunctionId>> {
+    ids: &[QualifiedRef],
+    edges: &FxHashMap<QualifiedRef, Vec<QualifiedRef>>,
+) -> Vec<Vec<QualifiedRef>> {
     let mut index_counter: u32 = 0;
-    let mut stack: Vec<FunctionId> = Vec::new();
-    let mut on_stack: FxHashSet<FunctionId> = FxHashSet::default();
-    let mut index: FxHashMap<FunctionId, u32> = FxHashMap::default();
-    let mut lowlink: FxHashMap<FunctionId, u32> = FxHashMap::default();
-    let mut result: Vec<Vec<FunctionId>> = Vec::new();
+    let mut stack: Vec<QualifiedRef> = Vec::new();
+    let mut on_stack: FxHashSet<QualifiedRef> = FxHashSet::default();
+    let mut index: FxHashMap<QualifiedRef, u32> = FxHashMap::default();
+    let mut lowlink: FxHashMap<QualifiedRef, u32> = FxHashMap::default();
+    let mut result: Vec<Vec<QualifiedRef>> = Vec::new();
 
     fn strongconnect(
-        v: FunctionId,
-        edges: &FxHashMap<FunctionId, Vec<FunctionId>>,
+        v: QualifiedRef,
+        edges: &FxHashMap<QualifiedRef, Vec<QualifiedRef>>,
         index_counter: &mut u32,
-        stack: &mut Vec<FunctionId>,
-        on_stack: &mut FxHashSet<FunctionId>,
-        index: &mut FxHashMap<FunctionId, u32>,
-        lowlink: &mut FxHashMap<FunctionId, u32>,
-        result: &mut Vec<Vec<FunctionId>>,
+        stack: &mut Vec<QualifiedRef>,
+        on_stack: &mut FxHashSet<QualifiedRef>,
+        index: &mut FxHashMap<QualifiedRef, u32>,
+        lowlink: &mut FxHashMap<QualifiedRef, u32>,
+        result: &mut Vec<Vec<QualifiedRef>>,
     ) {
         index.insert(v, *index_counter);
         lowlink.insert(v, *index_counter);
@@ -407,9 +407,9 @@ pub fn tarjan_scc(
 #[derive(Debug, Clone)]
 pub struct SccInferResult {
     /// Per-function metadata (type, params, effect).
-    pub fn_metas: FxHashMap<FunctionId, FunctionMeta>,
+    pub fn_metas: FxHashMap<QualifiedRef, FunctionMeta>,
     /// Per-function inferred context parameters.
-    pub fn_params: FxHashMap<FunctionId, Vec<InferredParam>>,
+    pub fn_params: FxHashMap<QualifiedRef, Vec<InferredParam>>,
     /// Function name → resolved Ty::Fn (for passing to next SCC).
     pub resolved_types: FxHashMap<Astr, Ty>,
 }
@@ -420,19 +420,19 @@ pub struct SccInferResult {
 /// `known_ctx`: declared context types from the graph.
 pub fn infer_scc(
     interner: &Interner,
-    scc: &[FunctionId],
-    fn_by_id: &FxHashMap<FunctionId, &Function>,
-    extract_refs: &FxHashMap<FunctionId, super::extract::FnRefs>,
-    extract_parsed: &FxHashMap<FunctionId, &ParsedSource>,
+    scc: &[QualifiedRef],
+    fn_by_id: &FxHashMap<QualifiedRef, &Function>,
+    extract_refs: &FxHashMap<QualifiedRef, super::extract::FnRefs>,
+    extract_parsed: &FxHashMap<QualifiedRef, &ParsedSource>,
     known_ctx: &FxHashMap<QualifiedRef, Ty>,
     resolved_fn_types: &FxHashMap<Astr, Ty>,
 ) -> SccInferResult {
     let mut subst = TySubst::new();
-    let mut fn_params: FxHashMap<FunctionId, Vec<InferredParam>> = FxHashMap::default();
-    let mut fn_bind_params: FxHashMap<FunctionId, Vec<Param>> = FxHashMap::default();
-    let mut fn_ret_vars: FxHashMap<FunctionId, Ty> = FxHashMap::default();
-    let mut fn_effect_vars: FxHashMap<FunctionId, Effect> = FxHashMap::default();
-    let mut fn_direct_effects: FxHashMap<FunctionId, EffectSet> = FxHashMap::default();
+    let mut fn_params: FxHashMap<QualifiedRef, Vec<InferredParam>> = FxHashMap::default();
+    let mut fn_bind_params: FxHashMap<QualifiedRef, Vec<Param>> = FxHashMap::default();
+    let mut fn_ret_vars: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
+    let mut fn_effect_vars: FxHashMap<QualifiedRef, Effect> = FxHashMap::default();
+    let mut fn_direct_effects: FxHashMap<QualifiedRef, EffectSet> = FxHashMap::default();
 
     // Build Ty::Fn for functions in this SCC (with fresh ret/effect vars).
     let mut scc_fn_types: FxHashMap<Astr, Ty> = FxHashMap::default();
@@ -460,7 +460,7 @@ pub fn infer_scc(
             captures: vec![],
             effect,
         };
-        scc_fn_types.insert(func.name, fn_ty);
+        scc_fn_types.insert(func.qref.name, fn_ty);
     }
 
     // Build TypeEnv: already-resolved functions + this SCC's unresolved functions.
@@ -540,7 +540,7 @@ pub fn infer_scc(
 
     // Resolve all functions in this SCC.
     let mut resolved_types: FxHashMap<Astr, Ty> = FxHashMap::default();
-    let mut fn_metas: FxHashMap<FunctionId, FunctionMeta> = FxHashMap::default();
+    let mut fn_metas: FxHashMap<QualifiedRef, FunctionMeta> = FxHashMap::default();
 
     for &fid in scc {
         let func = fn_by_id[&fid];
@@ -567,7 +567,7 @@ pub fn infer_scc(
             captures: vec![],
             effect,
         };
-        resolved_types.insert(func.name, fn_ty.clone());
+        resolved_types.insert(func.qref.name, fn_ty.clone());
         fn_metas.insert(
             fid,
             FunctionMeta {
@@ -603,17 +603,17 @@ pub fn infer(
     type_registry: Freeze<TypeRegistry>,
 ) -> InferResult {
     let mut subst = TySubst::with_registry(type_registry);
-    let mut fn_params: FxHashMap<FunctionId, Vec<InferredParam>> = FxHashMap::default();
-    let mut fn_bind_params: FxHashMap<FunctionId, Vec<Param>> = FxHashMap::default();
+    let mut fn_params: FxHashMap<QualifiedRef, Vec<InferredParam>> = FxHashMap::default();
+    let mut fn_bind_params: FxHashMap<QualifiedRef, Vec<Param>> = FxHashMap::default();
     // Direct effects per function, collected from typeck body_effect.
-    let mut fn_direct_effects: FxHashMap<FunctionId, EffectSet> = FxHashMap::default();
+    let mut fn_direct_effects: FxHashMap<QualifiedRef, EffectSet> = FxHashMap::default();
     // Typeck results per function — stored for check_completeness after SCC completes.
     let mut fn_unchecked: FxHashMap<
-        FunctionId,
+        QualifiedRef,
         crate::typeck::TypeResolution<crate::typeck::Unchecked>,
     > = FxHashMap::default();
     // Typeck errors per function (from analysis mode).
-    let mut fn_typeck_errors: FxHashMap<FunctionId, Vec<crate::error::MirError>> =
+    let mut fn_typeck_errors: FxHashMap<QualifiedRef, Vec<crate::error::MirError>> =
         FxHashMap::default();
 
     // Resolved function types — populated as SCCs complete.
@@ -623,7 +623,7 @@ pub fn infer(
     for func in graph.functions.iter() {
         if let FnKind::Extern = &func.kind {
             if let Constraint::Exact(ty) = &func.constraint.output {
-                resolved_fn_types.insert(func.name, ty.clone());
+                resolved_fn_types.insert(func.qref.name, ty.clone());
             }
         }
     }
@@ -633,45 +633,45 @@ pub fn infer(
     for ctx in graph.contexts.iter() {
         match &ctx.constraint {
             Constraint::Exact(ty) => {
-                known_ctx.insert(ctx.qualified_ref(), ty.clone());
+                known_ctx.insert(ctx.qref, ty.clone());
             }
             Constraint::Inferred => {
                 // Declared but type unknown — use fresh var. Infer will determine the type.
-                known_ctx.insert(ctx.qualified_ref(), subst.fresh_param());
+                known_ctx.insert(ctx.qref, subst.fresh_param());
             }
             Constraint::DerivedFnOutput(_, _) | Constraint::DerivedContext(_, _) => {
                 // TODO: resolve derived types. For now, fresh var.
-                known_ctx.insert(ctx.qualified_ref(), subst.fresh_param());
+                known_ctx.insert(ctx.qref, subst.fresh_param());
             }
         }
     }
     // User-provided types override.
     known_ctx.extend(user_context_types.iter().map(|(&k, v)| (k, v.clone())));
 
-    // Map FunctionId → Function for lookup.
-    let fn_by_id: FxHashMap<FunctionId, &Function> = graph
+    // Map QualifiedRef → Function for lookup.
+    let fn_by_id: FxHashMap<QualifiedRef, &Function> = graph
         .functions
         .iter()
         .filter(|f| matches!(f.kind, FnKind::Local(_) | FnKind::LocalAst(_)))
-        .map(|f| (f.id, f))
+        .map(|f| (f.qref, f))
         .collect();
 
     // ── STEP 1: Build call graph and compute SCCs ───────────────────
 
     let call_graph = build_call_graph(graph, extract);
-    let local_ids: Vec<FunctionId> = graph
+    let local_ids: Vec<QualifiedRef> = graph
         .functions
         .iter()
         .filter(|f| matches!(f.kind, FnKind::Local(_) | FnKind::LocalAst(_)))
-        .map(|f| f.id)
+        .map(|f| f.qref)
         .collect();
     let sccs = tarjan_scc(&local_ids, &call_graph);
 
     // ── STEP 2: Process each SCC in topological order ───────────────
 
     // Track ret vars and effect vars per function (across all SCCs).
-    let mut fn_ret_vars: FxHashMap<FunctionId, Ty> = FxHashMap::default();
-    let mut fn_effect_vars: FxHashMap<FunctionId, Effect> = FxHashMap::default();
+    let mut fn_ret_vars: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
+    let mut fn_effect_vars: FxHashMap<QualifiedRef, Effect> = FxHashMap::default();
 
     for scc in &sccs {
         // Build Ty::Fn for functions in this SCC (with fresh ret/effect vars).
@@ -701,7 +701,7 @@ pub fn infer(
                 captures: vec![],
                 effect,
             };
-            scc_fn_types.insert(func.name, fn_ty);
+            scc_fn_types.insert(func.qref.name, fn_ty);
         }
 
         // Build TypeEnv: already-resolved functions + this SCC's unresolved functions.
@@ -816,7 +816,7 @@ pub fn infer(
                 captures: vec![],
                 effect,
             };
-            resolved_fn_types.insert(func.name, resolved_fn_ty);
+            resolved_fn_types.insert(func.qref.name, resolved_fn_ty);
         }
     }
 
@@ -836,7 +836,7 @@ pub fn infer(
         .collect();
 
     // Build FunctionMeta for each local function (initially with empty transitive effects).
-    let mut fn_metas: FxHashMap<FunctionId, FunctionMeta> = FxHashMap::default();
+    let mut fn_metas: FxHashMap<QualifiedRef, FunctionMeta> = FxHashMap::default();
 
     for &fid in &local_ids {
         let ret = fn_ret_vars
@@ -924,7 +924,7 @@ pub fn infer(
 
     // ── STEP 4: check_completeness + effect constraint → outcomes ──
 
-    let mut outcomes: FxHashMap<FunctionId, FnInferOutcome> = FxHashMap::default();
+    let mut outcomes: FxHashMap<QualifiedRef, FnInferOutcome> = FxHashMap::default();
 
     for &fid in &local_ids {
         let meta = fn_metas.remove(&fid).unwrap_or(FunctionMeta {
@@ -1052,14 +1052,12 @@ mod tests {
     use acvus_utils::{Freeze, Interner};
 
     fn make_graph(interner: &Interner, source: &str) -> CompilationGraph {
+        let qref = QualifiedRef::root(interner.intern("test"));
         CompilationGraph {
-            namespaces: Freeze::new(vec![]),
             functions: Freeze::new(vec![Function {
-                id: FunctionId::alloc(),
-                name: interner.intern("test"),
-                namespace: None,
+                qref,
                 kind: FnKind::Local(SourceCode {
-                    name: interner.intern("test"),
+                    name: qref,
                     source: interner.intern(source),
                     kind: SourceKind::Script,
                 }),
@@ -1081,19 +1079,16 @@ mod tests {
         let contexts = ctx
             .iter()
             .map(|(name, ty)| Context {
-                name: interner.intern(name),
-                namespace: None,
+                qref: QualifiedRef::root(interner.intern(name)),
                 constraint: Constraint::Exact(ty.clone()),
             })
             .collect();
+        let qref = QualifiedRef::root(interner.intern("test"));
         CompilationGraph {
-            namespaces: Freeze::new(vec![]),
             functions: Freeze::new(vec![Function {
-                id: FunctionId::alloc(),
-                name: interner.intern("test"),
-                namespace: None,
+                qref,
                 kind: FnKind::Local(SourceCode {
-                    name: interner.intern("test"),
+                    name: qref,
                     source: interner.intern(source),
                     kind: SourceKind::Script,
                 }),
@@ -1201,12 +1196,12 @@ mod tests {
         interner: &Interner,
         fns: &[(&str, &str, Option<Vec<Ty>>)],
         ctx: &[(&str, Ty)],
-    ) -> (CompilationGraph, Vec<(Astr, FunctionId)>) {
+    ) -> (CompilationGraph, Vec<(Astr, QualifiedRef)>) {
         let mut functions = Vec::new();
         let mut ids = Vec::new();
         for &(name, source, ref params) in fns {
-            let fid = FunctionId::alloc();
             let aname = interner.intern(name);
+            let fid = QualifiedRef::root(aname);
             let sig = params.as_ref().map(|p| Signature {
                 params: p
                     .iter()
@@ -1215,11 +1210,9 @@ mod tests {
                     .collect(),
             });
             functions.push(Function {
-                id: fid,
-                name: aname,
-                namespace: None,
+                qref: fid,
                 kind: FnKind::Local(SourceCode {
-                    name: aname,
+                    name: fid,
                     source: interner.intern(source),
                     kind: SourceKind::Script,
                 }),
@@ -1234,13 +1227,11 @@ mod tests {
         let contexts = ctx
             .iter()
             .map(|(name, ty)| Context {
-                name: interner.intern(name),
-                namespace: None,
+                qref: QualifiedRef::root(interner.intern(name)),
                 constraint: Constraint::Exact(ty.clone()),
             })
             .collect();
         let graph = CompilationGraph {
-            namespaces: Freeze::new(vec![]),
             functions: Freeze::new(functions),
             contexts: Freeze::new(contexts),
         };
@@ -1630,18 +1621,16 @@ mod tests {
         let contexts = ctx
             .iter()
             .map(|(name, ty)| Context {
-                name: interner.intern(name),
-                namespace: None,
+                qref: QualifiedRef::root(interner.intern(name)),
                 constraint: Constraint::Exact(ty.clone()),
             })
             .collect();
         let mut functions = crate::builtins::standard_builtins(interner);
+        let qref = QualifiedRef::root(interner.intern("test"));
         functions.push(Function {
-            id: FunctionId::alloc(),
-            name: interner.intern("test"),
-            namespace: None,
+            qref,
             kind: FnKind::Local(SourceCode {
-                name: interner.intern("test"),
+                name: qref,
                 source: interner.intern(source),
                 kind: SourceKind::Script,
             }),
@@ -1652,7 +1641,6 @@ mod tests {
             },
         });
         CompilationGraph {
-            namespaces: Freeze::new(vec![]),
             functions: Freeze::new(functions),
             contexts: Freeze::new(contexts),
         }
@@ -1662,14 +1650,14 @@ mod tests {
         make_graph_with_ctx_and_builtins(interner, source, &[])
     }
 
-    fn last_local_id(graph: &CompilationGraph) -> FunctionId {
+    fn last_local_id(graph: &CompilationGraph) -> QualifiedRef {
         graph
             .functions
             .iter()
             .rev()
             .find(|f| matches!(f.kind, FnKind::Local(_) | FnKind::LocalAst(_)))
             .expect("no local function")
-            .id
+            .qref
     }
 
     /// Build a multi-function CompilationGraph with builtins.
@@ -1678,12 +1666,11 @@ mod tests {
         interner: &Interner,
         fns: &[(&str, &str, Option<Vec<(&str, Ty)>>, Constraint)],
         ctx: &[(&str, Ty)],
-    ) -> (CompilationGraph, Vec<(Astr, FunctionId)>) {
+    ) -> (CompilationGraph, Vec<(Astr, QualifiedRef)>) {
         let contexts: Vec<Context> = ctx
             .iter()
             .map(|(name, ty)| Context {
-                name: interner.intern(name),
-                namespace: None,
+                qref: QualifiedRef::root(interner.intern(name)),
                 constraint: Constraint::Exact(ty.clone()),
             })
             .collect();
@@ -1692,15 +1679,13 @@ mod tests {
         let mut ids = Vec::new();
 
         for (name, source, sig, output) in fns {
-            let fid = FunctionId::alloc();
             let aname = interner.intern(name);
+            let fid = QualifiedRef::root(aname);
             ids.push((aname, fid));
             functions.push(Function {
-                id: fid,
-                name: aname,
-                namespace: None,
+                qref: fid,
                 kind: FnKind::Local(SourceCode {
-                    name: aname,
+                    name: fid,
                     source: interner.intern(source),
                     kind: SourceKind::Script,
                 }),
@@ -1722,7 +1707,6 @@ mod tests {
         let graph = CompilationGraph {
             functions: Freeze::new(functions),
             contexts: Freeze::new(contexts),
-            namespaces: Default::default(),
         };
         (graph, ids)
     }
@@ -1732,7 +1716,7 @@ mod tests {
         interner: &Interner,
         fns: &[(&str, &str, Option<Vec<(&str, Ty)>>, Constraint)],
         ctx: &[(&str, Ty)],
-    ) -> (InferResult, Vec<(Astr, FunctionId)>) {
+    ) -> (InferResult, Vec<(Astr, QualifiedRef)>) {
         infer_with_extern(interner, fns, &[], ctx)
     }
 
@@ -1742,12 +1726,11 @@ mod tests {
         local_fns: &[(&str, &str, Option<Vec<(&str, Ty)>>, Constraint)],
         extern_fns: &[Function],
         ctx: &[(&str, Ty)],
-    ) -> (InferResult, Vec<(Astr, FunctionId)>) {
+    ) -> (InferResult, Vec<(Astr, QualifiedRef)>) {
         let contexts: Vec<Context> = ctx
             .iter()
             .map(|(name, ty)| Context {
-                name: interner.intern(name),
-                namespace: None,
+                qref: QualifiedRef::root(interner.intern(name)),
                 constraint: Constraint::Exact(ty.clone()),
             })
             .collect();
@@ -1756,15 +1739,13 @@ mod tests {
         let mut ids = Vec::new();
 
         for (name, source, sig, output) in local_fns {
-            let fid = FunctionId::alloc();
             let aname = interner.intern(name);
+            let fid = QualifiedRef::root(aname);
             ids.push((aname, fid));
             functions.push(Function {
-                id: fid,
-                name: aname,
-                namespace: None,
+                qref: fid,
                 kind: FnKind::Local(SourceCode {
-                    name: aname,
+                    name: fid,
                     source: interner.intern(source),
                     kind: SourceKind::Script,
                 }),
@@ -1787,7 +1768,6 @@ mod tests {
         let graph = CompilationGraph {
             functions: Freeze::new(functions),
             contexts: Freeze::new(contexts),
-            namespaces: Default::default(),
         };
         let ext = extract::extract(interner, &graph);
         let result = infer(interner, &graph, &ext, &FxHashMap::default(), Freeze::default());
@@ -1816,7 +1796,7 @@ mod tests {
     /// Get the tail type (return type) of a function from InferResult.
     /// In the old resolve pipeline, fn_type() returned the tail type.
     /// In the new pipeline, fn_type() returns the full Ty::Fn.
-    fn tail_type(result: &InferResult, id: FunctionId) -> Option<Ty> {
+    fn tail_type(result: &InferResult, id: QualifiedRef) -> Option<Ty> {
         result.outcomes.get(&id)?.tail_ty().cloned()
     }
 
@@ -1827,9 +1807,7 @@ mod tests {
             .map(|(i, ty)| crate::ty::Param::new(interner.intern(&format!("_{i}")), ty))
             .collect();
         Function {
-            id: FunctionId::alloc(),
-            name: interner.intern(name),
-            namespace: None,
+            qref: QualifiedRef::root(interner.intern(name)),
             kind: FnKind::Extern,
             constraint: FnConstraint {
                 signature: Some(Signature {
@@ -1852,25 +1830,21 @@ mod tests {
         source: &str,
         ctx: &[(&str, Ty)],
         effect: crate::ty::EffectConstraint,
-    ) -> (InferResult, FunctionId) {
+    ) -> (InferResult, QualifiedRef) {
         let contexts: Vec<Context> = ctx
             .iter()
             .map(|(name, ty)| Context {
-                name: interner.intern(name),
-                namespace: None,
+                qref: QualifiedRef::root(interner.intern(name)),
                 constraint: Constraint::Exact(ty.clone()),
             })
             .collect();
 
         let mut functions = crate::builtins::standard_builtins(interner);
-        let fid = FunctionId::alloc();
-        let name = interner.intern("test");
+        let fid = QualifiedRef::root(interner.intern("test"));
         functions.push(Function {
-            id: fid,
-            name,
-            namespace: None,
+            qref: fid,
             kind: FnKind::Local(SourceCode {
-                name,
+                name: fid,
                 source: interner.intern(source),
                 kind: SourceKind::Script,
             }),
@@ -1884,7 +1858,6 @@ mod tests {
         let graph = CompilationGraph {
             functions: Freeze::new(functions),
             contexts: Freeze::new(contexts),
-            namespaces: Default::default(),
         };
         let ext = extract::extract(interner, &graph);
         let result = infer(interner, &graph, &ext, &FxHashMap::default(), Freeze::default());
@@ -1998,7 +1971,7 @@ mod tests {
         let ext = extract::extract(&i, &graph);
         let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
 
-        let ctx_ref = graph.contexts[0].qualified_ref();
+        let ctx_ref = graph.contexts[0].qref;
         assert_eq!(*result.context_type(&ctx_ref).unwrap(), Ty::Int);
     }
 
@@ -3493,7 +3466,7 @@ mod tests {
         let ext = extract::extract(&i, &graph);
         let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
 
-        let fid = graph.functions[0].id;
+        let fid = graph.functions[0].qref;
         let params = &result.fn_params[&fid];
         assert_eq!(params.len(), 1);
         assert_eq!(params[0].name, QualifiedRef::root(i.intern("x")));
@@ -3522,7 +3495,7 @@ mod tests {
         let ext = extract::extract(&i, &graph);
         let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
 
-        let fid = graph.functions[0].id;
+        let fid = graph.functions[0].qref;
         let effect = &result.outcomes[&fid].meta().effect;
         let qref = QualifiedRef::root(i.intern("x"));
         assert!(effect.writes.contains(&EffectTarget::Context(qref)), "should track context write");
@@ -3553,7 +3526,7 @@ mod tests {
         let ext = extract::extract(&i, &graph);
         let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
 
-        let fid = graph.functions[0].id;
+        let fid = graph.functions[0].qref;
         let effect = &result.outcomes[&fid].meta().effect;
         let qref = QualifiedRef::root(i.intern("offset"));
         assert!(
@@ -3572,7 +3545,7 @@ mod tests {
         let ext = extract::extract(&i, &graph);
         let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
 
-        let fid = graph.functions[0].id;
+        let fid = graph.functions[0].qref;
         assert!(
             result.outcomes[&fid].is_complete(),
             "declared Exact context should be Complete"
@@ -3584,18 +3557,15 @@ mod tests {
     fn context_declared_inferred_is_complete() {
         let i = Interner::new();
         let contexts = vec![Context {
-            name: i.intern("x"),
-            namespace: None,
+            qref: QualifiedRef::root(i.intern("x")),
             constraint: Constraint::Inferred,
         }];
+        let test_qref = QualifiedRef::root(i.intern("test"));
         let graph = CompilationGraph {
-            namespaces: Freeze::new(vec![]),
             functions: Freeze::new(vec![Function {
-                id: FunctionId::alloc(),
-                name: i.intern("test"),
-                namespace: None,
+                qref: test_qref,
                 kind: FnKind::Local(SourceCode {
-                    name: i.intern("test"),
+                    name: test_qref,
                     source: i.intern("@x + 1"),
                     kind: SourceKind::Script,
                 }),
@@ -3610,7 +3580,7 @@ mod tests {
         let ext = extract::extract(&i, &graph);
         let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
 
-        let fid = graph.functions[0].id;
+        let fid = graph.functions[0].qref;
         assert!(
             result.outcomes[&fid].is_complete(),
             "Inferred context should still be Complete"
@@ -3629,7 +3599,7 @@ mod tests {
         let ext = extract::extract(&i, &graph);
         let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
 
-        let fid = graph.functions[0].id;
+        let fid = graph.functions[0].qref;
         assert!(
             !result.outcomes[&fid].is_complete(),
             "undeclared context should be Incomplete"
@@ -3646,7 +3616,7 @@ mod tests {
         user.insert(QualifiedRef::root(i.intern("x")), Ty::Int);
         let result = infer(&i, &graph, &ext, &user, Freeze::default());
 
-        let fid = graph.functions[0].id;
+        let fid = graph.functions[0].qref;
         assert!(
             result.outcomes[&fid].is_complete(),
             "user-provided context should be Complete"
@@ -3664,7 +3634,7 @@ mod tests {
         let ext = extract::extract(&i, &graph);
         let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
 
-        let fid = graph.functions[0].id;
+        let fid = graph.functions[0].qref;
         assert!(
             !result.outcomes[&fid].is_complete(),
             "type mismatch should be Incomplete"
@@ -3888,18 +3858,15 @@ mod tests {
         // "reader" reads @x (no constraint).
         // "caller" calls reader() but has pure constraint.
         let contexts: Vec<Context> = vec![Context {
-            name: i.intern("x"),
-            namespace: None,
+            qref: QualifiedRef::root(i.intern("x")),
             constraint: Constraint::Exact(Ty::Int),
         }];
         let mut functions = crate::builtins::standard_builtins(&i);
-        let reader_id = FunctionId::alloc();
+        let reader_id = QualifiedRef::root(i.intern("reader"));
         functions.push(Function {
-            id: reader_id,
-            name: i.intern("reader"),
-            namespace: None,
+            qref: reader_id,
             kind: FnKind::Local(SourceCode {
-                name: i.intern("reader"),
+                name: reader_id,
                 source: i.intern("@x"),
                 kind: SourceKind::Script,
             }),
@@ -3909,13 +3876,11 @@ mod tests {
                 effect: None,
             },
         });
-        let caller_id = FunctionId::alloc();
+        let caller_id = QualifiedRef::root(i.intern("caller"));
         functions.push(Function {
-            id: caller_id,
-            name: i.intern("caller"),
-            namespace: None,
+            qref: caller_id,
             kind: FnKind::Local(SourceCode {
-                name: i.intern("caller"),
+                name: caller_id,
                 source: i.intern("reader()"),
                 kind: SourceKind::Script,
             }),
@@ -3926,7 +3891,6 @@ mod tests {
             },
         });
         let graph = CompilationGraph {
-            namespaces: Freeze::new(vec![]),
             functions: Freeze::new(functions),
             contexts: Freeze::new(contexts),
         };

@@ -11,8 +11,8 @@
 
 use acvus_ast::{AstId, Expr, Literal, ObjectExprField, RefKind, Script, Span};
 use acvus_mir::graph::{
-    CompilationGraph, Constraint, Context, FnConstraint, FnKind, Function, FunctionId,
-    Namespace as MirNamespace, NamespaceId, ParsedAst, QualifiedRef, Signature, SourceCode,
+    CompilationGraph, Constraint, Context, FnConstraint, FnKind, Function,
+    ParsedAst, QualifiedRef, Signature, SourceCode,
     SourceKind,
 };
 use acvus_mir::ty::{EffectConstraint, Ty};
@@ -84,6 +84,7 @@ pub fn lower_namespace(
     ns: &Namespace,
     extern_fns: &[Function],
 ) -> LowerOutput {
+    let ns_name = interner.intern(&ns.name);
     let mut functions: Vec<Function> = extern_fns.to_vec();
     let mut contexts = Vec::new();
     let mut span_map = SpanMap::default();
@@ -92,16 +93,16 @@ pub fn lower_namespace(
     for item in &ns.items {
         match item {
             Item::Block(block) => {
-                functions.push(lower_block(interner, block));
+                functions.push(lower_block(interner, block, ns_name));
             }
             Item::Llm(llm) => {
-                let result = lower_llm(interner, llm);
+                let result = lower_llm(interner, llm, ns_name);
                 functions.push(result.function);
                 span_map.entries.extend(result.span_entries);
                 field_errors.extend(result.field_errors);
             }
             Item::Display(display) => {
-                let result = lower_display(interner, display);
+                let result = lower_display(interner, display, ns_name);
                 functions.extend(result.functions);
                 span_map.entries.extend(result.span_entries);
                 field_errors.extend(result.field_errors);
@@ -111,7 +112,6 @@ pub fn lower_namespace(
 
     LowerOutput {
         graph: CompilationGraph {
-            namespaces: Freeze::new(vec![]),
             functions: Freeze::new(functions),
             contexts: Freeze::new(contexts),
         },
@@ -230,7 +230,7 @@ fn bind(interner: &Interner, name: &str, expr: Expr) -> acvus_ast::Stmt {
 
 // ── Block lowering ─────────────────────────────────────────────────
 
-fn lower_block(interner: &Interner, block: &Block) -> Function {
+fn lower_block(interner: &Interner, block: &Block, ns_name: Astr) -> Function {
     let kind = match block.mode {
         BlockMode::Script => SourceKind::Script,
         BlockMode::Template => SourceKind::Template,
@@ -240,12 +240,11 @@ fn lower_block(interner: &Interner, block: &Block) -> Function {
         BlockMode::Script => Constraint::Inferred,
     };
 
+    let qref = QualifiedRef::qualified(ns_name, interner.intern(&block.name));
     Function {
-        id: FunctionId::alloc(),
-        name: interner.intern(&block.name),
-        namespace: None,
+        qref,
         kind: FnKind::Local(SourceCode {
-            name: interner.intern(&block.name),
+            name: qref,
             source: interner.intern(&block.source),
             kind,
         }),
@@ -270,7 +269,7 @@ struct LlmLowerResult {
 /// Each message becomes an Object literal `{ role: "...", content: ... }`.
 /// Content::Ref → function call, Content::Inline → parsed expression.
 /// All messages are collected into a List and passed to the ExternFn.
-fn lower_llm(interner: &Interner, llm: &LlmSpec) -> LlmLowerResult {
+fn lower_llm(interner: &Interner, llm: &LlmSpec, ns_name: Astr) -> LlmLowerResult {
     let (extern_fn_name, messages) = match &llm.provider {
         Provider::Google(spec) => ("google_llm", build_google_messages(spec)),
         Provider::OpenAI(_) => todo!("OpenAI lowering"),
@@ -334,10 +333,9 @@ fn lower_llm(interner: &Interner, llm: &LlmSpec) -> LlmLowerResult {
     let tail = call(ident(interner, extern_fn_name), vec![messages_list]);
     let ast = script(stmts, tail);
 
+    let qref = QualifiedRef::qualified(ns_name, interner.intern(&llm.name));
     let function = Function {
-        id: FunctionId::alloc(),
-        name: interner.intern(&llm.name),
-        namespace: None,
+        qref,
         kind: FnKind::LocalAst(ParsedAst::Script(ast)),
         constraint: FnConstraint {
             signature: Some(Signature { params: vec![] }),
@@ -411,15 +409,14 @@ struct DisplayLowerResult {
 ///   - template function: `tpl(bind) -> String`
 ///   - history function (if Some): `@source | map(tpl)` → Iterator<String>
 ///   - live function (if Some): `@source | map(tpl)` → Iterator<String>
-fn lower_display(interner: &Interner, display: &DisplaySpec) -> DisplayLowerResult {
+fn lower_display(interner: &Interner, display: &DisplaySpec, ns_name: Astr) -> DisplayLowerResult {
     match display {
         DisplaySpec::Static { name, source } => {
+            let qref = QualifiedRef::qualified(ns_name, interner.intern(name));
             let func = Function {
-                id: FunctionId::alloc(),
-                name: interner.intern(name),
-                namespace: None,
+                qref,
                 kind: FnKind::Local(SourceCode {
-                    name: interner.intern(name),
+                    name: qref,
                     source: interner.intern(source),
                     kind: SourceKind::Template,
                 }),
@@ -450,12 +447,11 @@ fn lower_display(interner: &Interner, display: &DisplaySpec) -> DisplayLowerResu
             //    The bind param is an ExternParam ($name) in the template.
             //    Infer discovers it in analysis_mode and infers its type from usage.
             let tpl_name = format!("__{name}_tpl");
+            let tpl_qref = QualifiedRef::qualified(ns_name, interner.intern(&tpl_name));
             let tpl_func = Function {
-                id: FunctionId::alloc(),
-                name: interner.intern(&tpl_name),
-                namespace: None,
+                qref: tpl_qref,
                 kind: FnKind::Local(SourceCode {
-                    name: interner.intern(&tpl_name),
+                    name: tpl_qref,
                     source: interner.intern(template),
                     kind: SourceKind::Template,
                 }),
@@ -489,10 +485,9 @@ fn lower_display(interner: &Interner, display: &DisplaySpec) -> DisplayLowerResu
                         );
                         let ast = script_tail(map_call);
 
+                        let history_qref = QualifiedRef::qualified(ns_name, interner.intern(&history_name));
                         functions.push(Function {
-                            id: FunctionId::alloc(),
-                            name: interner.intern(&history_name),
-                            namespace: None,
+                            qref: history_qref,
                             kind: FnKind::LocalAst(ParsedAst::Script(ast)),
                             constraint: FnConstraint {
                                 signature: Some(Signature { params: vec![] }),
@@ -531,10 +526,9 @@ fn lower_display(interner: &Interner, display: &DisplaySpec) -> DisplayLowerResu
                         );
                         let ast = script_tail(map_call);
 
+                        let live_qref = QualifiedRef::qualified(ns_name, interner.intern(&live_name));
                         functions.push(Function {
-                            id: FunctionId::alloc(),
-                            name: interner.intern(&live_name),
-                            namespace: None,
+                            qref: live_qref,
                             kind: FnKind::LocalAst(ParsedAst::Script(ast)),
                             constraint: FnConstraint {
                                 signature: Some(Signature { params: vec![] }),
@@ -583,7 +577,7 @@ mod tests {
         let output = lower_namespace(&i, &ns, &[]);
 
         let func = &output.graph.functions[0];
-        assert_eq!(i.resolve(func.name), "greeting");
+        assert_eq!(i.resolve(func.qref.name), "greeting");
         assert!(matches!(func.constraint.output, Constraint::Exact(Ty::String)));
         assert!(!func.constraint.effect.as_ref().unwrap().io);
     }
@@ -639,7 +633,7 @@ mod tests {
         // Block + LLM function
         assert_eq!(output.graph.functions.len(), 2);
         let llm_func = &output.graph.functions[1];
-        assert_eq!(i.resolve(llm_func.name), "chat");
+        assert_eq!(i.resolve(llm_func.qref.name), "chat");
         assert!(matches!(llm_func.kind, FnKind::LocalAst(ParsedAst::Script(_))));
 
         // Ref-only messages → no span entries, no field errors
@@ -720,7 +714,7 @@ mod tests {
 
         assert_eq!(output.graph.functions.len(), 1);
         let func = &output.graph.functions[0];
-        assert_eq!(i.resolve(func.name), "output");
+        assert_eq!(i.resolve(func.qref.name), "output");
         assert!(matches!(func.constraint.output, Constraint::Exact(Ty::String)));
     }
 
@@ -741,9 +735,9 @@ mod tests {
 
         // template + history + live = 3 functions
         assert_eq!(output.graph.functions.len(), 3);
-        assert_eq!(i.resolve(output.graph.functions[0].name), "__messages_tpl");
-        assert_eq!(i.resolve(output.graph.functions[1].name), "messages_history");
-        assert_eq!(i.resolve(output.graph.functions[2].name), "messages_live");
+        assert_eq!(i.resolve(output.graph.functions[0].qref.name), "__messages_tpl");
+        assert_eq!(i.resolve(output.graph.functions[1].qref.name), "messages_history");
+        assert_eq!(i.resolve(output.graph.functions[2].qref.name), "messages_live");
 
         // history and live are LocalAst
         assert!(matches!(output.graph.functions[1].kind, FnKind::LocalAst(_)));
@@ -794,9 +788,7 @@ mod tests {
     fn extern_fns_included_in_graph() {
         let i = Interner::new();
         let extern_fn = Function {
-            id: FunctionId::alloc(),
-            name: i.intern("google_llm"),
-            namespace: None,
+            qref: QualifiedRef::root(i.intern("google_llm")),
             kind: FnKind::Extern,
             constraint: FnConstraint {
                 signature: None,
@@ -813,7 +805,7 @@ mod tests {
         let output = lower_namespace(&i, &ns, &[extern_fn]);
 
         assert_eq!(output.graph.functions.len(), 2);
-        assert_eq!(i.resolve(output.graph.functions[0].name), "google_llm");
+        assert_eq!(i.resolve(output.graph.functions[0].qref.name), "google_llm");
     }
 
     // ════════════════════════════════════════════════════════════════

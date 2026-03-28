@@ -1,4 +1,4 @@
-use acvus_mir::graph::{Constraint, FnConstraint, FnKind, Function, FunctionId, Signature};
+use acvus_mir::graph::{Constraint, FnConstraint, FnKind, Function, QualifiedRef, Signature};
 use acvus_mir::{
     graph::infer,
     ty::{Effect, Param, Ty},
@@ -16,7 +16,7 @@ fn compile_analysis(
 ) -> Result<(acvus_mir::ir::MirModule, acvus_mir::hints::HintTable), Vec<acvus_mir::error::MirError>>
 {
     use acvus_mir::graph::{
-        CompilationGraph, Constraint, Context, FnConstraint, FnKind, Function, FunctionId,
+        CompilationGraph, Constraint, Context, FnConstraint, FnKind, Function, QualifiedRef,
         SourceCode, SourceKind,
     };
     use acvus_mir::graph::{extract, lower as graph_lower};
@@ -28,33 +28,29 @@ fn compile_analysis(
     let mut contexts: Vec<Context> = ctx
         .iter()
         .map(|(name, ty)| Context {
-            name: interner.intern(name),
-            namespace: None,
+            qref: QualifiedRef::root(interner.intern(name)),
             constraint: Constraint::Exact(ty.clone()),
         })
         .collect();
 
     // Discover context refs in source that aren't declared — add as Inferred.
     let template = acvus_ast::parse(interner, source).expect("parse failed");
-    let declared: FxHashSet<Astr> = contexts.iter().map(|c| c.name).collect();
-    for qref in acvus_ast::extract_template_context_refs(&template) {
-        if !declared.contains(&qref.name) {
+    let declared: FxHashSet<Astr> = contexts.iter().map(|c| c.qref.name).collect();
+    for ast_qref in acvus_ast::extract_template_context_refs(&template) {
+        if !declared.contains(&ast_qref.name) {
             contexts.push(Context {
-                name: qref.name,
-                namespace: None,
+                qref: QualifiedRef::root(ast_qref.name),
                 constraint: Constraint::Inferred,
             });
         }
     }
 
+    let test_qref = QualifiedRef::root(interner.intern("test"));
     let graph = CompilationGraph {
-        namespaces: Freeze::new(vec![]),
         functions: Freeze::new(vec![Function {
-            id: FunctionId::alloc(),
-            name: interner.intern("test"),
-            namespace: None,
+            qref: test_qref,
             kind: FnKind::Local(SourceCode {
-                name: interner.intern("test"),
+                name: test_qref,
                 source: interner.intern(source),
                 kind: SourceKind::Template,
             }),
@@ -75,7 +71,7 @@ fn compile_analysis(
         return Err(result.errors.into_iter().flat_map(|e| e.errors).collect());
     }
 
-    let uid = graph.functions[0].id;
+    let uid = graph.functions[0].qref;
     result
         .modules
         .into_iter()
@@ -350,9 +346,7 @@ fn lambda_in_filter() {
 fn extern_async_call() {
     let i = Interner::new();
     let fetch_user = Function {
-        id: FunctionId::alloc(),
-        name: i.intern("fetch_user"),
-        namespace: None,
+        qref: QualifiedRef::root(i.intern("fetch_user")),
         kind: FnKind::Extern,
         constraint: FnConstraint {
             signature: Some(Signature {

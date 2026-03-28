@@ -647,7 +647,7 @@ fn process_inst(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::FunctionId;
+    use crate::graph::QualifiedRef;
     use crate::ir::{Callee, DebugInfo, Inst, MirBody, MirModule};
     use crate::ty::{Effect, Param};
     use acvus_utils::{Interner, LocalFactory};
@@ -772,14 +772,14 @@ mod tests {
             vec![
                 inst(InstKind::FunctionCall {
                     dst: v1,
-                    callee: Callee::Direct(FunctionId::alloc()),
+                    callee: Callee::Direct(QualifiedRef::root(Interner::new().intern("test"))),
                     args: vec![v0],
                     context_uses: vec![],
                     context_defs: vec![],
                 }),
                 inst(InstKind::FunctionCall {
                     dst: v2,
-                    callee: Callee::Direct(FunctionId::alloc()),
+                    callee: Callee::Direct(QualifiedRef::root(Interner::new().intern("test"))),
                     args: vec![v0],
                     context_uses: vec![],
                     context_defs: vec![],
@@ -808,14 +808,14 @@ mod tests {
             vec![
                 inst(InstKind::FunctionCall {
                     dst: v1,
-                    callee: Callee::Direct(FunctionId::alloc()),
+                    callee: Callee::Direct(QualifiedRef::root(Interner::new().intern("test"))),
                     args: vec![v0],
                     context_uses: vec![],
                     context_defs: vec![],
                 }),
                 inst(InstKind::FunctionCall {
                     dst: v2,
-                    callee: Callee::Direct(FunctionId::alloc()),
+                    callee: Callee::Direct(QualifiedRef::root(Interner::new().intern("test"))),
                     args: vec![v0],
                     context_uses: vec![],
                     context_defs: vec![],
@@ -849,7 +849,7 @@ mod tests {
         let module = make_module(
             vec![inst(InstKind::FunctionCall {
                 dst: v1,
-                callee: Callee::Direct(FunctionId::alloc()),
+                callee: Callee::Direct(QualifiedRef::root(Interner::new().intern("test"))),
                 args: vec![v0],
                 context_uses: vec![],
                 context_defs: vec![],
@@ -892,7 +892,7 @@ mod tests {
                 // use v1
                 inst(InstKind::FunctionCall {
                     dst: v4,
-                    callee: Callee::Direct(FunctionId::alloc()),
+                    callee: Callee::Direct(QualifiedRef::root(Interner::new().intern("test"))),
                     args: vec![v1],
                     context_uses: vec![],
                     context_defs: vec![],
@@ -904,7 +904,7 @@ mod tests {
                 // use v3
                 inst(InstKind::FunctionCall {
                     dst: v5,
-                    callee: Callee::Direct(FunctionId::alloc()),
+                    callee: Callee::Direct(QualifiedRef::root(Interner::new().intern("test"))),
                     args: vec![v3],
                     context_uses: vec![],
                     context_defs: vec![],
@@ -946,7 +946,7 @@ mod tests {
                 inst(InstKind::VarLoad { dst: v1, name: a }),
                 inst(InstKind::FunctionCall {
                     dst: v3,
-                    callee: Callee::Direct(FunctionId::alloc()),
+                    callee: Callee::Direct(QualifiedRef::root(Interner::new().intern("test"))),
                     args: vec![v1],
                     context_uses: vec![],
                     context_defs: vec![],
@@ -955,7 +955,7 @@ mod tests {
                 inst(InstKind::VarLoad { dst: v2, name: a }),
                 inst(InstKind::FunctionCall {
                     dst: v4,
-                    callee: Callee::Direct(FunctionId::alloc()),
+                    callee: Callee::Direct(QualifiedRef::root(Interner::new().intern("test"))),
                     args: vec![v2],
                     context_uses: vec![],
                     context_defs: vec![],

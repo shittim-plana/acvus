@@ -10,7 +10,7 @@
 use acvus_mir::error::MirError;
 use acvus_mir::graph::incremental::{ContextInfo, IncrementalGraph};
 use acvus_mir::graph::types::*;
-use acvus_utils::Interner;
+use acvus_utils::{Astr, Interner};
 use rustc_hash::FxHashMap;
 
 // ── Public types ────────────────────────────────────────────────────
@@ -60,8 +60,8 @@ pub enum CompletionKind {
 
 pub struct LspSession {
     graph: IncrementalGraph,
-    doc_to_fn: FxHashMap<DocId, FunctionId>,
-    fn_to_doc: FxHashMap<FunctionId, DocId>,
+    doc_to_fn: FxHashMap<DocId, QualifiedRef>,
+    fn_to_doc: FxHashMap<QualifiedRef, DocId>,
     next_doc_id: u32,
 }
 
@@ -89,34 +89,29 @@ impl LspSession {
 
     // ── Namespace management (delegate) ─────────────────────────────
 
-    pub fn add_namespace(&mut self, name: &str) -> NamespaceId {
-        let id = NamespaceId::alloc();
-        let ns = Namespace {
-            id,
-            name: self.graph.interner().intern(name),
-        };
-        self.graph.add_namespace(ns);
-        id
+    pub fn add_namespace(&mut self, name: &str) -> Astr {
+        let ns_name = self.graph.interner().intern(name);
+        ns_name
     }
 
-    pub fn remove_namespace(&mut self, id: NamespaceId) {
+    pub fn remove_namespace(&mut self, ns_name: Astr) {
         // Remove docs bound to functions in this namespace.
-        let fn_ids: Vec<FunctionId> = self
+        let fn_qrefs: Vec<QualifiedRef> = self
             .fn_to_doc
             .keys()
-            .filter(|fid| {
+            .filter(|qref| {
                 self.graph
-                    .function(**fid)
-                    .map_or(false, |f| f.namespace == Some(id))
+                    .function(**qref)
+                    .map_or(false, |f| f.qref.namespace == Some(ns_name))
             })
             .copied()
             .collect();
-        for fid in fn_ids {
-            if let Some(doc_id) = self.fn_to_doc.remove(&fid) {
+        for qref in fn_qrefs {
+            if let Some(doc_id) = self.fn_to_doc.remove(&qref) {
                 self.doc_to_fn.remove(&doc_id);
             }
         }
-        self.graph.remove_namespace(id);
+        self.graph.remove_namespace(ns_name);
     }
 
     // ── Context management (delegate) ───────────────────────────────
@@ -124,14 +119,16 @@ impl LspSession {
     pub fn add_context(
         &mut self,
         name: &str,
-        namespace: Option<NamespaceId>,
+        namespace: Option<Astr>,
         constraint: Constraint,
     ) -> QualifiedRef {
         let interned = self.graph.interner().intern(name);
-        let qref = QualifiedRef::root(interned);
+        let qref = match namespace {
+            Some(ns) => QualifiedRef::qualified(ns, interned),
+            None => QualifiedRef::root(interned),
+        };
         self.graph.add_context(Context {
-            name: interned,
-            namespace,
+            qref,
             constraint,
         });
         qref
@@ -149,21 +146,22 @@ impl LspSession {
         name: &str,
         source: &str,
         kind: SourceKind,
-        namespace: Option<NamespaceId>,
+        namespace: Option<Astr>,
     ) -> DocId {
         let doc_id = DocId(self.next_doc_id);
         self.next_doc_id += 1;
 
         let interner = self.graph.interner().clone();
         let fn_name = interner.intern(name);
-        let fn_id = FunctionId::alloc();
+        let qref = match namespace {
+            Some(ns) => QualifiedRef::qualified(ns, fn_name),
+            None => QualifiedRef::root(fn_name),
+        };
 
         let func = Function {
-            id: fn_id,
-            name: fn_name,
-            namespace,
+            qref,
             kind: FnKind::Local(SourceCode {
-                name: fn_name,
+                name: qref,
                 source: interner.intern(source),
                 kind,
             }),
@@ -175,30 +173,30 @@ impl LspSession {
         };
 
         self.graph.add_function(func);
-        self.doc_to_fn.insert(doc_id, fn_id);
-        self.fn_to_doc.insert(fn_id, doc_id);
+        self.doc_to_fn.insert(doc_id, qref);
+        self.fn_to_doc.insert(qref, doc_id);
         doc_id
     }
 
     /// Update a document's source.
     pub fn update_source(&mut self, id: DocId, source: &str) {
-        let Some(&fn_id) = self.doc_to_fn.get(&id) else {
+        let Some(&qref) = self.doc_to_fn.get(&id) else {
             return;
         };
         let interned = self.graph.interner().intern(source);
-        self.graph.update_source(fn_id, interned);
+        self.graph.update_source(qref, interned);
     }
 
     /// Close a document. Removes the Function from the graph.
     pub fn close(&mut self, id: DocId) {
-        if let Some(fn_id) = self.doc_to_fn.remove(&id) {
-            self.fn_to_doc.remove(&fn_id);
-            self.graph.remove_function(fn_id);
+        if let Some(qref) = self.doc_to_fn.remove(&id) {
+            self.fn_to_doc.remove(&qref);
+            self.graph.remove_function(qref);
         }
     }
 
-    /// Get the FunctionId for a document.
-    pub fn function_id(&self, id: DocId) -> Option<FunctionId> {
+    /// Get the QualifiedRef for a document.
+    pub fn function_ref(&self, id: DocId) -> Option<QualifiedRef> {
         self.doc_to_fn.get(&id).copied()
     }
 
@@ -206,12 +204,12 @@ impl LspSession {
 
     /// Diagnostics for a document.
     pub fn diagnostics(&self, id: DocId) -> Vec<LspError> {
-        let Some(&fn_id) = self.doc_to_fn.get(&id) else {
+        let Some(&qref) = self.doc_to_fn.get(&id) else {
             return vec![];
         };
         let interner = self.graph.interner();
         self.graph
-            .diagnostics(fn_id)
+            .diagnostics(qref)
             .iter()
             .map(|e| mir_error_to_lsp(e, interner))
             .collect()
@@ -219,23 +217,23 @@ impl LspSession {
 
     /// Context/param info for a document.
     pub fn context_info(&self, id: DocId) -> Vec<ContextInfo> {
-        let Some(&fn_id) = self.doc_to_fn.get(&id) else {
+        let Some(&qref) = self.doc_to_fn.get(&id) else {
             return vec![];
         };
-        self.graph.context_info(fn_id)
+        self.graph.context_info(qref)
     }
 
     /// Completions at cursor position.
     pub fn completions(&self, id: DocId, cursor: usize) -> Vec<CompletionItem> {
-        let Some(&fn_id) = self.doc_to_fn.get(&id) else {
+        let Some(&qref) = self.doc_to_fn.get(&id) else {
             return vec![];
         };
-        let Some(func) = self.graph.function(fn_id) else {
+        let Some(func) = self.graph.function(qref) else {
             return vec![];
         };
         let source = match &func.kind {
             FnKind::Local(src) => self.graph.interner().resolve(src.source),
-            FnKind::Extern => return vec![],
+            FnKind::LocalAst(_) | FnKind::Extern => return vec![],
         };
 
         if cursor == 0 || cursor > source.len() || !source.is_char_boundary(cursor) {
@@ -243,7 +241,7 @@ impl LspSession {
         }
 
         let before = &source[..cursor];
-        let ns = func.namespace;
+        let ns = func.qref.namespace;
         let interner = self.graph.interner();
 
         match detect_trigger(before) {
@@ -258,7 +256,7 @@ impl LspSession {
 
     fn context_completions(
         &self,
-        ns: Option<NamespaceId>,
+        ns: Option<Astr>,
         prefix: &str,
         interner: &Interner,
     ) -> Vec<CompletionItem> {
@@ -267,13 +265,9 @@ impl LspSession {
             let name_str = interner.resolve(name);
             let label = match ctx_ns {
                 None => format!("@{name_str}"),
-                Some(ns_id) => {
-                    let ns_name = self
-                        .graph
-                        .namespace(ns_id)
-                        .map(|n| interner.resolve(n.name))
-                        .unwrap_or("?");
-                    format!("@{ns_name}:{name_str}")
+                Some(ns_name) => {
+                    let ns_str = interner.resolve(ns_name);
+                    format!("@{ns_str}:{name_str}")
                 }
             };
             if !label[1..].starts_with(prefix) {

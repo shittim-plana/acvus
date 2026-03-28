@@ -22,7 +22,7 @@ pub enum AccessKind {
 
 #[derive(Debug, Clone)]
 pub struct Access {
-    pub fn_id: FunctionId,
+    pub fn_ref: QualifiedRef,
     pub kind: AccessKind,
 }
 
@@ -50,7 +50,7 @@ pub struct ClusterResult {
     /// Function dependency edges derived from context data flow.
     /// (fn_a, fn_b) means fn_a must complete before fn_b starts
     /// (because fn_a writes a context that fn_b reads).
-    pub dependencies: Vec<(FunctionId, FunctionId)>,
+    pub dependencies: Vec<(QualifiedRef, QualifiedRef)>,
 }
 
 // ── Clustering ──────────────────────────────────────────────────────
@@ -71,11 +71,11 @@ pub fn cluster(graph: &CompilationGraph, extract: &ExtractResult) -> ClusterResu
 
     for &ctx_qref in &mutable_contexts {
         let mut accesses = Vec::new();
-        let mut writers: Vec<FunctionId> = Vec::new();
-        let mut readers: Vec<FunctionId> = Vec::new();
+        let mut writers: Vec<QualifiedRef> = Vec::new();
+        let mut readers: Vec<QualifiedRef> = Vec::new();
 
         for func in graph.functions.iter() {
-            let Some(fn_ref) = extract.fn_refs.get(&func.id) else {
+            let Some(fn_ref) = extract.fn_refs.get(&func.qref) else {
                 continue;
             };
 
@@ -85,16 +85,16 @@ pub fn cluster(graph: &CompilationGraph, extract: &ExtractResult) -> ClusterResu
             if is_write {
                 // Writer also reads (read-modify-write pattern).
                 accesses.push(Access {
-                    fn_id: func.id,
+                    fn_ref: func.qref,
                     kind: AccessKind::Write,
                 });
-                writers.push(func.id);
+                writers.push(func.qref);
             } else if is_read {
                 accesses.push(Access {
-                    fn_id: func.id,
+                    fn_ref: func.qref,
                     kind: AccessKind::Read,
                 });
-                readers.push(func.id);
+                readers.push(func.qref);
             }
         }
 
@@ -143,24 +143,24 @@ mod tests {
     ) -> CompilationGraph {
         let unit_list: Vec<Function> = units
             .iter()
-            .map(|(name, source)| Function {
-                id: FunctionId::alloc(),
-                name: interner.intern(name),
-                namespace: None,
-                kind: FnKind::Local(SourceCode {
-                    name: interner.intern(name),
-                    source: interner.intern(source),
-                    kind: SourceKind::Script,
-                }),
-                constraint: FnConstraint {
-                    signature: None,
-                    output: Constraint::Inferred,
-                    effect: None,
-                },
+            .map(|(name, source)| {
+                let qref = QualifiedRef::root(interner.intern(name));
+                Function {
+                    qref,
+                    kind: FnKind::Local(SourceCode {
+                        name: qref,
+                        source: interner.intern(source),
+                        kind: SourceKind::Script,
+                    }),
+                    constraint: FnConstraint {
+                        signature: None,
+                        output: Constraint::Inferred,
+                        effect: None,
+                    },
+                }
             })
             .collect();
         CompilationGraph {
-            namespaces: Freeze::new(vec![]),
             functions: Freeze::new(unit_list),
             contexts: Freeze::new(vec![]),
         }
@@ -209,13 +209,13 @@ mod tests {
             "should have dependency edges"
         );
 
-        let writer_id = graph.functions[0].id;
-        let reader_id = graph.functions[1].id;
+        let writer_ref = graph.functions[0].qref;
+        let reader_ref = graph.functions[1].qref;
         assert!(
             result
                 .dependencies
                 .iter()
-                .any(|(from, to)| *from == writer_id && *to == reader_id),
+                .any(|(from, to)| *from == writer_ref && *to == reader_ref),
             "writer should come before reader"
         );
     }

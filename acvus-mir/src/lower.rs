@@ -6,7 +6,7 @@ use acvus_ast::{
 use acvus_utils::{Astr, Freeze, Interner};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::graph::{FunctionId, QualifiedRef};
+use crate::graph::QualifiedRef;
 use crate::hints::HintTable;
 use crate::ir::{Callee, CastKind, Inst, InstKind, Label, MirBody, MirModule, ValOrigin, ValueId};
 use crate::ty::{Effect, Ty};
@@ -31,10 +31,8 @@ pub struct Lowerer<'a> {
     hints: HintTable,
     /// Context QualifiedRef → Ty.
     context_ids: Freeze<FxHashMap<QualifiedRef, Ty>>,
-    /// Function name → (FunctionId, Ty).
-    function_ids: Freeze<FxHashMap<Astr, (FunctionId, Ty)>>,
-    /// FunctionId → return type (for ExternCast lowering). Built once from function_ids.
-    fn_ret_types: FxHashMap<FunctionId, Ty>,
+    /// Function name → (QualifiedRef, Ty).
+    function_ids: Freeze<FxHashMap<Astr, (QualifiedRef, Ty)>>,
     /// ValueIds that are projections (not yet materialized values).
     /// FieldAccess on a projection produces another projection.
     /// Use `ensure_loaded` to materialize.
@@ -125,7 +123,7 @@ impl<'a> Lowerer<'a> {
         type_map: TypeMap,
         coercion_map: CoercionMap,
         context_ids: Freeze<FxHashMap<QualifiedRef, Ty>>,
-        function_ids: Freeze<FxHashMap<Astr, (FunctionId, Ty)>>,
+        function_ids: Freeze<FxHashMap<Astr, (QualifiedRef, Ty)>>,
     ) -> Self {
         let coercion_lookup: FxHashMap<AstId, CastKind> = coercion_map.into_iter().collect();
         // Pre-inject function names into the initial scope.
@@ -737,13 +735,12 @@ impl<'a> Lowerer<'a> {
         let val = self.materialize(val, span);
         if let Some(&kind) = self.coercion_lookup.get(&id) {
             match kind {
-                CastKind::Extern(fn_id) => {
+                CastKind::Extern(fn_ref) => {
                     // ExternCast → lower as FunctionCall (pure, 1 arg, no context).
                     // Determine result type from the cast function's return type.
                     let ret_ty = self
                         .function_ids
-                        .values()
-                        .find(|(id, _)| *id == fn_id)
+                        .get(&fn_ref.name)
                         .and_then(|(_, ty)| match ty {
                             Ty::Fn { ret, .. } => Some(ret.as_ref().clone()),
                             _ => None,
@@ -755,7 +752,7 @@ impl<'a> Lowerer<'a> {
                         span,
                         InstKind::FunctionCall {
                             dst: cast_dst,
-                            callee: Callee::Direct(fn_id),
+                            callee: Callee::Direct(fn_ref),
                             args: vec![val],
                             context_uses: vec![],
                             context_defs: vec![],

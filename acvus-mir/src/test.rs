@@ -14,29 +14,26 @@ use crate::ir::MirModule;
 use crate::ty::Ty;
 
 /// Build a single-unit CompilationGraph for testing.
-/// Returns the graph and the `FunctionId` of the test unit.
+/// Returns the graph and the `QualifiedRef` of the test unit.
 fn make_graph(
     interner: &Interner,
     source: &str,
     kind: SourceKind,
     ctx: &[(&str, Ty)],
-) -> (CompilationGraph, FunctionId) {
+) -> (CompilationGraph, QualifiedRef) {
     let contexts = ctx
         .iter()
         .map(|(name, ty)| Context {
-            name: interner.intern(name),
-            namespace: None,
+            qref: QualifiedRef::root(interner.intern(name)),
             constraint: Constraint::Exact(ty.clone()),
         })
         .collect();
-    let test_id = FunctionId::alloc();
+    let test_qref = QualifiedRef::root(interner.intern("test"));
     let mut functions = crate::builtins::standard_builtins(interner);
     functions.push(Function {
-        id: test_id,
-        name: interner.intern("test"),
-        namespace: None,
+        qref: test_qref,
         kind: FnKind::Local(SourceCode {
-            name: interner.intern("test"),
+            name: test_qref,
             source: interner.intern(source),
             kind,
         }),
@@ -47,17 +44,16 @@ fn make_graph(
         },
     });
     let graph = CompilationGraph {
-        namespaces: Freeze::new(vec![]),
         functions: Freeze::new(functions),
         contexts: Freeze::new(contexts),
     };
-    (graph, test_id)
+    (graph, test_qref)
 }
 
 fn run_pipeline(
     interner: &Interner,
     graph: &CompilationGraph,
-    target: FunctionId,
+    target: QualifiedRef,
 ) -> Result<(MirModule, HintTable), Vec<MirError>> {
     let ext = extract::extract(interner, graph);
     let inf = infer::infer(interner, graph, &ext, &FxHashMap::default(), Freeze::default());

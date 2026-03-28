@@ -29,9 +29,9 @@ pub struct FnRefs {
 /// Phase 0 output: extracted references for all functions.
 #[derive(Debug)]
 pub struct ExtractResult {
-    pub fn_refs: FxHashMap<FunctionId, FnRefs>,
+    pub fn_refs: FxHashMap<QualifiedRef, FnRefs>,
     /// Parsed ASTs cached for later phases (avoid re-parsing).
-    pub parsed: FxHashMap<FunctionId, ParsedSource>,
+    pub parsed: FxHashMap<QualifiedRef, ParsedSource>,
 }
 
 /// Cached parsed AST.
@@ -116,8 +116,8 @@ pub fn extract(interner: &Interner, graph: &CompilationGraph) -> ExtractResult {
 
     for func in graph.functions.iter() {
         if let Some((refs, parsed_source)) = extract_one(interner, func) {
-            fn_refs.insert(func.id, refs);
-            parsed.insert(func.id, parsed_source);
+            fn_refs.insert(func.qref, refs);
+            parsed.insert(func.qref, parsed_source);
         }
     }
 
@@ -229,24 +229,20 @@ mod tests {
         interner: &Interner,
         source: &str,
         ctx_names: &[&str],
-    ) -> (CompilationGraph, FunctionId) {
-        let fn_id = FunctionId::alloc();
+    ) -> (CompilationGraph, QualifiedRef) {
+        let fn_qref = QualifiedRef::root(interner.intern("test_unit"));
         let contexts: Vec<Context> = ctx_names
             .iter()
             .map(|&name| Context {
-                name: interner.intern(name),
-                namespace: None,
+                qref: QualifiedRef::root(interner.intern(name)),
                 constraint: Constraint::Exact(crate::ty::Ty::Int),
             })
             .collect();
         let graph = CompilationGraph {
-            namespaces: Freeze::new(vec![]),
             functions: Freeze::new(vec![Function {
-                id: fn_id,
-                name: interner.intern("test_unit"),
-                namespace: None,
+                qref: fn_qref,
                 kind: FnKind::Local(SourceCode {
-                    name: interner.intern("test"),
+                    name: fn_qref,
                     source: interner.intern(source),
                     kind: SourceKind::Script,
                 }),
@@ -258,7 +254,7 @@ mod tests {
             }]),
             contexts: Freeze::new(contexts),
         };
-        (graph, fn_id)
+        (graph, fn_qref)
     }
 
     // -- Completeness: valid reads detected --

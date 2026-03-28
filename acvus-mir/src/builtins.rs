@@ -1,7 +1,7 @@
 use acvus_utils::{Astr, Interner};
 use rustc_hash::FxHashMap;
 
-use crate::graph::types::{Constraint, FnConstraint, FnKind, Function, FunctionId, Signature};
+use crate::graph::types::{Constraint, FnConstraint, FnKind, Function, QualifiedRef, Signature};
 use crate::ty::{Effect, Param, ParamConstraint, Ty, TySubst};
 
 /// Shorthand: build a `Param` with a positional dummy name `_0`, `_1`, …
@@ -445,9 +445,7 @@ fn make_builtin(interner: &Interner, name: &str, sig_fn: SigFn) -> Function {
         .map(|(i, ty)| Param::new(interner.intern(&format!("_{i}")), ty.clone()))
         .collect();
     Function {
-        id: FunctionId::alloc(),
-        name: interner.intern(name),
-        namespace: None,
+        qref: QualifiedRef::root(interner.intern(name)),
         kind: FnKind::Extern,
         constraint: FnConstraint {
             signature: Some(Signature {
@@ -466,7 +464,7 @@ fn make_builtin(interner: &Interner, name: &str, sig_fn: SigFn) -> Function {
 
 /// Generate all builtin functions as graph `Function` entries.
 ///
-/// Each builtin gets a unique `FunctionId`. Polymorphic signatures contain
+/// Each builtin gets a unique `QualifiedRef`. Polymorphic signatures contain
 /// `Ty::Param` tokens from a throwaway `TySubst` — callers must
 /// `instantiate()` before unification.
 pub fn standard_builtins(interner: &Interner) -> Vec<Function> {
@@ -545,11 +543,11 @@ pub fn builtin_fn_types(interner: &Interner) -> FxHashMap<Astr, Ty> {
     for func in standard_builtins(interner) {
         if let Constraint::Exact(ty) = func.constraint.output {
             assert!(
-                !map.contains_key(&func.name),
+                !map.contains_key(&func.qref.name),
                 "duplicate builtin name: {}",
-                interner.resolve(func.name)
+                interner.resolve(func.qref.name)
             );
-            map.insert(func.name, ty);
+            map.insert(func.qref.name, ty);
         }
     }
     map

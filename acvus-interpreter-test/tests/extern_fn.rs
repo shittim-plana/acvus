@@ -330,7 +330,7 @@ fn ir_function_call_has_context_bindings() {
     );
 
     // Find the FunctionCall in the entry module's IR.
-    let entry_module = cr.modules.get(&cr.entry_id).unwrap();
+    let entry_module = cr.modules.get(&cr.entry_qref).unwrap();
     let module = match entry_module {
         Executable::Module(m) => m,
         _ => panic!("entry should be a Module"),
@@ -411,7 +411,7 @@ fn ir_pure_function_call_no_context_bindings() {
         vec![registry],
     );
 
-    let entry_module = cr.modules.get(&cr.entry_id).unwrap();
+    let entry_module = cr.modules.get(&cr.entry_qref).unwrap();
     let module = match entry_module {
         Executable::Module(m) => m,
         _ => panic!("entry should be a Module"),

@@ -3,7 +3,7 @@
 //! Each builtin is a plain `fn(Args) -> Result<Value, RuntimeError>`.
 //! Registered by name via `register_all`.
 
-use acvus_mir::graph::FunctionId;
+use acvus_mir::graph::QualifiedRef;
 use acvus_utils::{Astr, Interner};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
@@ -18,17 +18,17 @@ use crate::value::Value;
 // ── Registration ─────────────────────────────────────────────────────
 
 /// Build all builtin handlers as a HashMap.
-/// Maps builtin name → FunctionId from the compilation graph.
+/// Maps builtin name → QualifiedRef from the compilation graph.
 pub fn build_builtins(
-    builtin_ids: &FxHashMap<Astr, FunctionId>,
+    builtin_ids: &FxHashMap<Astr, QualifiedRef>,
     interner: &Interner,
-) -> FxHashMap<FunctionId, BuiltinHandler> {
+) -> FxHashMap<QualifiedRef, BuiltinHandler> {
     let mut map = FxHashMap::default();
 
     let mut reg = |name: &str, handler: SyncBuiltinFn| {
         let aname = interner.intern(name);
-        if let Some(&id) = builtin_ids.get(&aname) {
-            map.insert(id, BuiltinHandler::Sync(handler));
+        if let Some(&qref) = builtin_ids.get(&aname) {
+            map.insert(qref, BuiltinHandler::Sync(handler));
         }
     };
 
@@ -96,8 +96,8 @@ pub fn build_builtins(
     // Async builtins (iterator consumers)
     let mut reg_async = |name: &str, handler: crate::interpreter::AsyncBuiltinFn| {
         let aname = interner.intern(name);
-        if let Some(&id) = builtin_ids.get(&aname) {
-            map.insert(id, BuiltinHandler::Async(handler));
+        if let Some(&qref) = builtin_ids.get(&aname) {
+            map.insert(qref, BuiltinHandler::Async(handler));
         }
     };
 

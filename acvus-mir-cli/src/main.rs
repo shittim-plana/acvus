@@ -118,8 +118,7 @@ fn main() {
         .context
         .iter()
         .map(|(name, def)| acvus_mir::graph::types::Context {
-            name: interner.intern(name),
-            namespace: None,
+            qref: QualifiedRef::root(interner.intern(name)),
             constraint: Constraint::Exact(def.to_ty(&interner)),
         })
         .collect();
@@ -143,8 +142,7 @@ fn main() {
             },
         };
         contexts.push(acvus_mir::graph::types::Context {
-            name: interner.intern(name),
-            namespace: None,
+            qref: QualifiedRef::root(interner.intern(name)),
             constraint: Constraint::Exact(fn_ty),
         });
     }
@@ -155,14 +153,12 @@ fn main() {
         SourceKind::Template
     };
 
-    let fn_id = FunctionId::alloc();
+    let fn_qref = QualifiedRef::root(interner.intern("main"));
     let mut functions = acvus_mir::builtins::standard_builtins(&interner);
     functions.push(Function {
-        id: fn_id,
-        name: interner.intern("main"),
-        namespace: None,
+        qref: fn_qref,
         kind: FnKind::Local(SourceCode {
-            name: interner.intern("main"),
+            name: fn_qref,
             source: interner.intern(&source),
             kind: source_kind,
         }),
@@ -174,7 +170,6 @@ fn main() {
     });
 
     let graph = CompilationGraph {
-        namespaces: Freeze::new(vec![]),
         functions: Freeze::new(functions),
         contexts: Freeze::new(contexts),
     };
@@ -197,7 +192,7 @@ fn main() {
         process::exit(1);
     }
 
-    match result.module(fn_id) {
+    match result.module(fn_qref) {
         Some(module) => {
             println!("{}", dump(&interner, module));
         }

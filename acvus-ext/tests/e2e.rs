@@ -6,8 +6,8 @@ use std::sync::Arc;
 use acvus_ext::*;
 use acvus_interpreter::builtins::build_builtins;
 use acvus_interpreter::*;
-use acvus_mir::graph::*;
 use acvus_mir::graph::{extract, infer, lower as graph_lower};
+use acvus_mir::graph::*;
 use acvus_mir::ty::{CastRule, Effect, Ty, TySubst, TypeRegistry, UserDefinedDecl, UserDefinedId};
 use acvus_utils::{Astr, Freeze, Interner};
 use rustc_hash::FxHashMap;
@@ -45,24 +45,21 @@ async fn run_ext_with_registry(
     let contexts: Vec<Context> = context_types
         .iter()
         .map(|(name, ty)| Context {
-            name: *name,
-            namespace: None,
+            qref: QualifiedRef::root(*name),
             constraint: Constraint::Exact(ty.clone()),
         })
         .collect();
 
     // Build function list: builtins + ext + entry.
-    let entry_id = FunctionId::alloc();
+    let entry_qref = QualifiedRef::root(interner.intern("test"));
     let mut functions = acvus_mir::builtins::standard_builtins(interner);
     for reg in &registered {
         functions.extend(reg.functions.iter().cloned());
     }
     functions.push(Function {
-        id: entry_id,
-        name: interner.intern("test"),
-        namespace: None,
+        qref: entry_qref,
         kind: FnKind::Local(SourceCode {
-            name: interner.intern("test"),
+            name: entry_qref,
             source: interner.intern(source),
             kind: SourceKind::Script,
         }),
@@ -74,7 +71,6 @@ async fn run_ext_with_registry(
     });
 
     let graph = CompilationGraph {
-        namespaces: Freeze::new(vec![]),
         functions: Freeze::new(functions),
         contexts: Freeze::new(contexts),
     };
@@ -95,16 +91,16 @@ async fn run_ext_with_registry(
     }
 
     // Build runtime functions: modules + builtins + ext handlers.
-    let mut exec_fns: FxHashMap<FunctionId, Executable> = result
+    let mut exec_fns: FxHashMap<QualifiedRef, Executable> = result
         .modules
         .into_iter()
-        .map(|(id, (module, _))| (id, Executable::Module(module)))
+        .map(|(qref, (module, _))| (qref, Executable::Module(module)))
         .collect();
 
-    let builtin_ids: FxHashMap<Astr, FunctionId> =
-        graph.functions.iter().map(|f| (f.name, f.id)).collect();
-    for (id, handler) in build_builtins(&builtin_ids, interner) {
-        exec_fns.insert(id, Executable::Builtin(handler));
+    let builtin_ids: FxHashMap<Astr, QualifiedRef> =
+        graph.functions.iter().map(|f| (f.qref.name, f.qref)).collect();
+    for (qref, handler) in build_builtins(&builtin_ids, interner) {
+        exec_fns.insert(qref, Executable::Builtin(handler));
     }
     for reg in registered {
         exec_fns.extend(reg.executables);
@@ -114,7 +110,7 @@ async fn run_ext_with_registry(
     let context_names: FxHashMap<QualifiedRef, Astr> = graph
         .contexts
         .iter()
-        .map(|ctx| (ctx.qualified_ref(), ctx.name))
+        .map(|ctx| (ctx.qref, ctx.qref.name))
         .collect();
     let snapshot: HashMap<String, Value> = context
         .into_iter()
@@ -125,7 +121,7 @@ async fn run_ext_with_registry(
     let shared =
         InterpreterContext::new(interner, exec_fns, executor).with_context_names(context_names);
     let overlay = ContextOverlay::new(Arc::new(snapshot), interner.clone());
-    let mut interp = Interpreter::new(shared, entry_id, overlay);
+    let mut interp = Interpreter::new(shared, entry_qref, overlay);
     interp.execute().await.expect("execution failed").value
 }
 
@@ -452,13 +448,13 @@ async fn extern_cast_auto_coercion() {
         .map(|r| r.register(&i))
         .collect();
 
-    // Find to_int's FunctionId for the CastRule.
-    let to_int_id = registered[0]
+    // Find to_int's QualifiedRef for the CastRule.
+    let to_int_qref = registered[0]
         .functions
         .iter()
-        .find(|f| i.resolve(f.name) == "to_int")
+        .find(|f| i.resolve(f.qref.name) == "to_int")
         .unwrap()
-        .id;
+        .qref;
 
     let my_num_id = tr.iter().next().unwrap().0;
     let my_num_ty = Ty::UserDefined {
@@ -471,23 +467,21 @@ async fn extern_cast_auto_coercion() {
     tr.register_cast(CastRule {
         from: my_num_ty,
         to: Ty::Int,
-        fn_id: to_int_id,
+        fn_ref: to_int_qref,
     });
 
     let type_registry = Freeze::new(tr);
 
     // Build graph manually (same as run_ext_with_registry but with pre-registered fns).
-    let entry_id = FunctionId::alloc();
+    let entry_qref = QualifiedRef::root(i.intern("test"));
     let mut functions = acvus_mir::builtins::standard_builtins(&i);
     for reg in &registered {
         functions.extend(reg.functions.iter().cloned());
     }
     functions.push(Function {
-        id: entry_id,
-        name: i.intern("test"),
-        namespace: None,
+        qref: entry_qref,
         kind: FnKind::Local(SourceCode {
-            name: i.intern("test"),
+            name: entry_qref,
             source: i.intern("double(make_num())"),
             kind: SourceKind::Script,
         }),
@@ -499,7 +493,6 @@ async fn extern_cast_auto_coercion() {
     });
 
     let graph = CompilationGraph {
-        namespaces: Freeze::new(vec![]),
         functions: Freeze::new(functions),
         contexts: Freeze::new(vec![]),
     };
@@ -520,29 +513,29 @@ async fn extern_cast_auto_coercion() {
     }
 
     // Verify: the lowered MIR should contain a FunctionCall to to_int (the cast fn).
-    let module = compile_result.module(entry_id).unwrap();
+    let module = compile_result.module(entry_qref).unwrap();
     let has_cast_call = module.main.insts.iter().any(|inst| {
         matches!(
             &inst.kind,
             acvus_mir::ir::InstKind::FunctionCall {
-                callee: acvus_mir::ir::Callee::Direct(id),
+                callee: acvus_mir::ir::Callee::Direct(qref),
                 ..
-            } if *id == to_int_id
+            } if *qref == to_int_qref
         )
     });
     assert!(has_cast_call, "expected FunctionCall to to_int (ExternCast), got: {:#?}", module.main.insts);
 
     // Execute.
-    let mut exec_fns: FxHashMap<FunctionId, Executable> = compile_result
+    let mut exec_fns: FxHashMap<QualifiedRef, Executable> = compile_result
         .modules
         .into_iter()
-        .map(|(id, (module, _))| (id, Executable::Module(module)))
+        .map(|(qref, (module, _))| (qref, Executable::Module(module)))
         .collect();
 
-    let builtin_ids: FxHashMap<Astr, FunctionId> =
-        graph.functions.iter().map(|f| (f.name, f.id)).collect();
-    for (id, handler) in acvus_interpreter::builtins::build_builtins(&builtin_ids, &i) {
-        exec_fns.insert(id, Executable::Builtin(handler));
+    let builtin_ids: FxHashMap<Astr, QualifiedRef> =
+        graph.functions.iter().map(|f| (f.qref.name, f.qref)).collect();
+    for (qref, handler) in acvus_interpreter::builtins::build_builtins(&builtin_ids, &i) {
+        exec_fns.insert(qref, Executable::Builtin(handler));
     }
     for reg in registered {
         exec_fns.extend(reg.executables);
@@ -551,7 +544,7 @@ async fn extern_cast_auto_coercion() {
     let executor = Arc::new(SequentialExecutor);
     let shared = InterpreterContext::new(&i, exec_fns, executor);
     let overlay = ContextOverlay::new(Arc::new(HashMap::new()), i.clone());
-    let mut interp = Interpreter::new(shared, entry_id, overlay);
+    let mut interp = Interpreter::new(shared, entry_qref, overlay);
     let result = interp.execute().await.expect("execution failed");
 
     // make_num() → MyNum(42), auto-cast to_int → 42, double → 84

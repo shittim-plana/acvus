@@ -11,7 +11,7 @@
 use std::ops::Range;
 
 use acvus_mir::graph::incremental::IncrementalGraph;
-use acvus_mir::graph::{Function, FunctionId};
+use acvus_mir::graph::{Function, QualifiedRef};
 use acvus_utils::Interner;
 use rustc_hash::FxHashMap;
 
@@ -35,8 +35,8 @@ pub struct Session {
     field_errors: Vec<FieldError>,
     /// Span mapping for type error → spec field resolution.
     span_map: SpanMap,
-    /// Mapping from spec item name → FunctionId(s) in the graph.
-    item_functions: FxHashMap<String, Vec<FunctionId>>,
+    /// Mapping from spec item name → QualifiedRef(s) in the graph.
+    item_functions: FxHashMap<String, Vec<QualifiedRef>>,
 }
 
 impl Session {
@@ -79,10 +79,10 @@ impl Session {
 
         // Register each function in the incremental graph.
         for func in lowered.graph.functions.iter() {
-            let name = self.interner.resolve(func.name).to_string();
-            let fid = func.id;
+            let name = self.interner.resolve(func.qref.name).to_string();
+            let qref = func.qref;
             self.graph.add_function(func.clone());
-            self.item_functions.entry(name).or_default().push(fid);
+            self.item_functions.entry(name).or_default().push(qref);
         }
 
         // Register contexts.
@@ -94,10 +94,10 @@ impl Session {
     /// Register externally provided functions (config-bound LLM callables, tools, etc.).
     pub fn register_extern(&mut self, fns: Vec<Function>) {
         for func in fns {
-            let name = self.interner.resolve(func.name).to_string();
-            let fid = func.id;
+            let name = self.interner.resolve(func.qref.name).to_string();
+            let qref = func.qref;
             self.graph.add_function(func);
-            self.item_functions.entry(name).or_default().push(fid);
+            self.item_functions.entry(name).or_default().push(qref);
         }
     }
 
@@ -114,12 +114,12 @@ impl Session {
     }
 
     /// Get type-checking diagnostics for a specific function.
-    pub fn diagnostics(&self, id: FunctionId) -> &[acvus_mir::error::MirError] {
-        self.graph.diagnostics(id)
+    pub fn diagnostics(&self, qref: QualifiedRef) -> &[acvus_mir::error::MirError] {
+        self.graph.diagnostics(qref)
     }
 
     /// Get all diagnostics across all functions.
-    pub fn all_diagnostics(&self) -> impl Iterator<Item = (FunctionId, &[acvus_mir::error::MirError])> {
+    pub fn all_diagnostics(&self) -> impl Iterator<Item = (QualifiedRef, &[acvus_mir::error::MirError])> {
         self.graph.all_diagnostics()
     }
 
@@ -130,7 +130,7 @@ impl Session {
     }
 
     /// Look up function ID by name.
-    pub fn function_id(&self, name: &str) -> Option<FunctionId> {
+    pub fn function_id(&self, name: &str) -> Option<QualifiedRef> {
         self.item_functions.get(name)?.first().copied()
     }
 

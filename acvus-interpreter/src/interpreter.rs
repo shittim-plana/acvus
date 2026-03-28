@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use acvus_ast::{BinOp, Literal, RangeKind, UnaryOp};
-use acvus_mir::graph::FunctionId;
+use acvus_mir::graph::QualifiedRef;
 use acvus_mir::ir::{Callee, CastKind, Inst, InstKind, Label, MirBody, MirModule, ValueId};
 use acvus_mir::ty::{Effect, Ty};
 use acvus_utils::{Astr, Freeze, Interner, LocalFactory, LocalVec, TrackedDeque};
@@ -167,7 +167,6 @@ enum ApplyResult {
 }
 
 use crate::journal::{ContextOverlay, ContextWrite, EntryMut, EntryRef};
-use acvus_mir::graph::QualifiedRef;
 
 // ── Interpreter ──────────────────────────────────────────────────────
 
@@ -202,8 +201,8 @@ impl Executable {
 #[derive(Clone)]
 pub struct InterpreterContext {
     pub interner: Interner,
-    pub functions: Freeze<FxHashMap<FunctionId, Executable>>,
-    pub fn_types: Freeze<FxHashMap<FunctionId, Ty>>,
+    pub functions: Freeze<FxHashMap<QualifiedRef, Executable>>,
+    pub fn_types: Freeze<FxHashMap<QualifiedRef, Ty>>,
     pub context_names: Freeze<FxHashMap<QualifiedRef, Astr>>,
     pub executor: Arc<dyn crate::executor::Executor>,
 }
@@ -211,7 +210,7 @@ pub struct InterpreterContext {
 impl InterpreterContext {
     pub fn new(
         interner: &Interner,
-        functions: FxHashMap<FunctionId, Executable>,
+        functions: FxHashMap<QualifiedRef, Executable>,
         executor: Arc<dyn crate::executor::Executor>,
     ) -> Self {
         Self {
@@ -223,7 +222,7 @@ impl InterpreterContext {
         }
     }
 
-    pub fn with_fn_types(mut self, fn_types: FxHashMap<FunctionId, Ty>) -> Self {
+    pub fn with_fn_types(mut self, fn_types: FxHashMap<QualifiedRef, Ty>) -> Self {
         self.fn_types = Freeze::new(fn_types);
         self
     }
@@ -237,7 +236,7 @@ impl InterpreterContext {
 /// Per-execution mutable state.
 pub struct Interpreter {
     shared: InterpreterContext,
-    entry: FunctionId,
+    entry: QualifiedRef,
     overlay: ContextOverlay,
     variables: FxHashMap<Astr, Value>,
     /// Arguments passed to this interpreter via Spawn.
@@ -246,7 +245,7 @@ pub struct Interpreter {
 }
 
 impl Interpreter {
-    pub fn new(shared: InterpreterContext, entry: FunctionId, overlay: ContextOverlay) -> Self {
+    pub fn new(shared: InterpreterContext, entry: QualifiedRef, overlay: ContextOverlay) -> Self {
         Self {
             shared,
             entry,
@@ -270,7 +269,7 @@ impl Interpreter {
     fn collect_context_uses(
         &self,
         context_uses: &[(QualifiedRef, ValueId)],
-        fn_id: &FunctionId,
+        fn_id: &QualifiedRef,
         frame: &Frame,
     ) -> Result<Vec<Value>, RuntimeError> {
         if !context_uses.is_empty() {
@@ -284,7 +283,7 @@ impl Interpreter {
     }
 
     /// Fallback: collect context uses from function type (overlay path, no SSA hint).
-    fn collect_uses_from_type(&self, fn_id: &FunctionId) -> Result<Vec<Value>, RuntimeError> {
+    fn collect_uses_from_type(&self, fn_id: &QualifiedRef) -> Result<Vec<Value>, RuntimeError> {
         let Some(fn_ty) = self.shared.fn_types.get(fn_id) else {
             return Ok(vec![]);
         };
@@ -315,7 +314,7 @@ impl Interpreter {
     fn apply_context_defs(
         &mut self,
         context_defs: &[(QualifiedRef, ValueId)],
-        fn_id: &FunctionId,
+        fn_id: &QualifiedRef,
         defs: Vec<Value>,
         frame: &mut Frame,
         projection_map: &mut FxHashMap<ValueId, QualifiedRef>,
@@ -337,7 +336,7 @@ impl Interpreter {
     /// Fallback: apply context defs from function type (overlay path, no SSA hint).
     fn apply_defs_from_type(
         &mut self,
-        fn_id: &FunctionId,
+        fn_id: &QualifiedRef,
         defs: Vec<Value>,
     ) -> Result<(), RuntimeError> {
         let Some(fn_ty) = self.shared.fn_types.get(fn_id) else {
@@ -362,7 +361,7 @@ impl Interpreter {
     }
 
     /// Fork for spawn — shared state is cheap clone, overlay forks, args carried.
-    pub fn fork(&self, entry: FunctionId, args: Vec<Value>) -> Self {
+    pub fn fork(&self, entry: QualifiedRef, args: Vec<Value>) -> Self {
         Self {
             shared: self.shared.clone(),
             entry,
@@ -372,19 +371,21 @@ impl Interpreter {
         }
     }
 
-    fn function(&self, id: &FunctionId) -> &Executable {
+    fn function(&self, id: &QualifiedRef) -> &Executable {
         self.shared
             .functions
             .get(id)
-            .unwrap_or_else(|| panic!("no function for #{}", id.index()))
+            .unwrap_or_else(|| {
+                let name = self.shared.interner.resolve(id.name);
+                panic!("no function for {id:?} (name={name:?})")
+            })
     }
 
-    fn module(&self, id: &FunctionId) -> &MirModule {
+    fn module(&self, id: &QualifiedRef) -> &MirModule {
         match self.function(id) {
             Executable::Module(m) => m,
             other => panic!(
-                "expected Module for #{}, got {}",
-                id.index(),
+                "expected Module for {id:?}, got {}",
                 other.variant_name()
             ),
         }
@@ -410,10 +411,10 @@ impl Interpreter {
         })
     }
 
-    /// Execute a specific function by FunctionId with explicit args.
+    /// Execute a specific function by QualifiedRef with explicit args.
     async fn execute_function(
         &mut self,
-        id: &FunctionId,
+        id: &QualifiedRef,
         args: &[Value],
     ) -> Result<Value, RuntimeError> {
         let m = self.module(id);
@@ -762,8 +763,8 @@ impl Interpreter {
             }
 
             // ── Functions ─────────────────────────────────────
-            InstKind::LoadFunction { dst, id } => {
-                frame.set(*dst, Value::Int(id.index() as i64));
+            InstKind::LoadFunction { dst: _, id: _ } => {
+                todo!("LoadFunction: graph-level function references not yet supported at runtime");
             }
             InstKind::FunctionCall {
                 dst,
@@ -1285,8 +1286,8 @@ impl Interpreter {
         .await
     }
 
-    /// Dispatch a direct function call by FunctionId.
-    async fn dispatch_call(&mut self, id: &FunctionId, args: Args) -> Result<Value, RuntimeError> {
+    /// Dispatch a direct function call by QualifiedRef.
+    async fn dispatch_call(&mut self, id: &QualifiedRef, args: Args) -> Result<Value, RuntimeError> {
         match self.function(id) {
             Executable::Builtin(BuiltinHandler::Sync(f)) => {
                 let f = *f;
@@ -1305,9 +1306,8 @@ impl Interpreter {
                 // Direct FunctionCall to an Extern is not supported — the compiler
                 // should emit Spawn+Eval for extern functions.
                 panic!(
-                    "extern function #{} called via FunctionCall; \
+                    "extern function {id:?} called via FunctionCall; \
                      use Spawn+Eval for extern functions with uses/defs",
-                    id.index()
                 )
             }
         }

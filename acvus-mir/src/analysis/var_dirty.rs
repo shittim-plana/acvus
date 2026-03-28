@@ -138,7 +138,7 @@ fn traces_to_var_load(
 mod tests {
     use super::*;
     use crate::{
-        graph::FunctionId,
+        graph::QualifiedRef,
         ir::{Callee, DebugInfo, Inst, MirBody},
     };
     use acvus_ast::Span;
@@ -350,7 +350,7 @@ mod tests {
             // v0 = FunctionCall("make_user", [])
             inst(InstKind::FunctionCall {
                 dst: v0,
-                callee: Callee::Direct(FunctionId::alloc()),
+                callee: Callee::Direct(QualifiedRef::root(Interner::new().intern("test"))),
                 args: vec![],
                 context_uses: vec![],
                 context_defs: vec![],
@@ -466,7 +466,7 @@ mod tests {
             }),
             inst(InstKind::FunctionCall {
                 dst: v2,
-                callee: Callee::Direct(FunctionId::alloc()),
+                callee: Callee::Direct(QualifiedRef::root(Interner::new().intern("test"))),
                 args: vec![v1],
                 context_uses: vec![],
                 context_defs: vec![],

@@ -17,13 +17,13 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::ir::*;
 
-use super::types::FunctionId;
+use super::types::QualifiedRef;
 
 /// Result of the inlining pass.
 #[derive(Debug)]
 pub struct InlineResult {
     /// Inlined MIR per top-level function.
-    pub modules: FxHashMap<FunctionId, MirModule>,
+    pub modules: FxHashMap<QualifiedRef, MirModule>,
 }
 
 /// Inline all local function calls within each top-level function's MIR.
@@ -31,8 +31,8 @@ pub struct InlineResult {
 /// `modules`: per-function MIR from the lower phase.
 /// `recursive_fns`: functions that should NOT be inlined (recursive / mutual recursive).
 pub fn inline(
-    modules: &FxHashMap<FunctionId, MirModule>,
-    recursive_fns: &FxHashSet<FunctionId>,
+    modules: &FxHashMap<QualifiedRef, MirModule>,
+    recursive_fns: &FxHashSet<QualifiedRef>,
 ) -> InlineResult {
     let mut result = FxHashMap::default();
 
@@ -47,8 +47,8 @@ pub fn inline(
 /// Inline all eligible calls within a single MirModule.
 fn inline_module(
     module: &MirModule,
-    all_modules: &FxHashMap<FunctionId, MirModule>,
-    recursive_fns: &FxHashSet<FunctionId>,
+    all_modules: &FxHashMap<QualifiedRef, MirModule>,
+    recursive_fns: &FxHashSet<QualifiedRef>,
 ) -> MirModule {
     let body = inline_body(&module.main, all_modules, recursive_fns);
 
@@ -72,8 +72,8 @@ fn inline_module(
 /// where an inlined body itself contains calls to other local functions).
 fn inline_body(
     body: &MirBody,
-    all_modules: &FxHashMap<FunctionId, MirModule>,
-    recursive_fns: &FxHashSet<FunctionId>,
+    all_modules: &FxHashMap<QualifiedRef, MirModule>,
+    recursive_fns: &FxHashSet<QualifiedRef>,
 ) -> MirBody {
     let mut current = body.clone();
 
@@ -550,13 +550,14 @@ mod tests {
     fn inline_simple_call() {
         // caller: r0 = const 1; r1 = call f(r0); yield r1
         // callee f: r0 = param; r1 = r0 + r0; return r1
-        let callee_id = FunctionId::alloc();
+        let i = acvus_utils::Interner::new();
+        let callee_id = QualifiedRef::root(i.intern("callee"));
 
         let callee_body = make_body(
             vec![
                 InstKind::VarLoad {
                     dst: v(0),
-                    name: acvus_utils::Interner::new().intern("_0"),
+                    name: i.intern("_0"),
                 },
                 InstKind::BinOp {
                     dst: v(1),
@@ -589,7 +590,7 @@ mod tests {
 
         let mut modules = FxHashMap::default();
         modules.insert(callee_id, make_module(callee_body));
-        let caller_id = FunctionId::alloc();
+        let caller_id = QualifiedRef::root(i.intern("caller"));
         modules.insert(caller_id, make_module(caller_body));
 
         let result = inline(&modules, &FxHashSet::default());
@@ -622,7 +623,8 @@ mod tests {
     #[test]
     fn inline_preserves_extern_call() {
         // call to an extern function (not in modules) should stay.
-        let extern_id = FunctionId::alloc();
+        let i = acvus_utils::Interner::new();
+        let extern_id = QualifiedRef::root(i.intern("ext"));
 
         let caller_body = make_body(
             vec![
@@ -642,7 +644,7 @@ mod tests {
             2,
         );
 
-        let caller_id = FunctionId::alloc();
+        let caller_id = QualifiedRef::root(i.intern("caller"));
         let mut modules = FxHashMap::default();
         modules.insert(caller_id, make_module(caller_body));
         // extern_id is NOT in modules → cannot be inlined.
@@ -660,7 +662,8 @@ mod tests {
 
     #[test]
     fn inline_skips_recursive() {
-        let rec_id = FunctionId::alloc();
+        let i = acvus_utils::Interner::new();
+        let rec_id = QualifiedRef::root(i.intern("rec"));
 
         let rec_body = make_body(
             vec![
@@ -687,7 +690,7 @@ mod tests {
             1,
         );
 
-        let caller_id = FunctionId::alloc();
+        let caller_id = QualifiedRef::root(i.intern("caller"));
         let mut modules = FxHashMap::default();
         modules.insert(rec_id, make_module(rec_body));
         modules.insert(caller_id, make_module(caller_body));
@@ -712,9 +715,10 @@ mod tests {
         // f: return g()
         // main: yield f()
         // After inlining: main should have Const(42) + Yield, no calls.
-        let g_id = FunctionId::alloc();
-        let f_id = FunctionId::alloc();
-        let main_id = FunctionId::alloc();
+        let i = acvus_utils::Interner::new();
+        let g_id = QualifiedRef::root(i.intern("g"));
+        let f_id = QualifiedRef::root(i.intern("f"));
+        let main_id = QualifiedRef::root(i.intern("main"));
 
         let g_body = make_body(
             vec![
@@ -795,16 +799,17 @@ mod tests {
             2,
         );
 
-        let caller_id = FunctionId::alloc();
+        let i = acvus_utils::Interner::new();
+        let caller_id = QualifiedRef::root(i.intern("caller"));
         let mut modules = FxHashMap::default();
         modules.insert(caller_id, make_module(caller_body));
 
         let result = inline(&modules, &FxHashSet::default());
         let inlined = &result.modules[&caller_id];
 
-        let has_call = inlined.main.insts.iter().any(|i| {
+        let has_call = inlined.main.insts.iter().any(|inst| {
             matches!(
-                i.kind,
+                inst.kind,
                 InstKind::FunctionCall {
                     callee: Callee::Indirect(_),
                     ..

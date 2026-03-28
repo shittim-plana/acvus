@@ -28,17 +28,15 @@ pub fn compile_to_ir_with(
     let contexts: Vec<Context> = ctx
         .iter()
         .map(|(name, ty)| Context {
-            name: interner.intern(name),
-            namespace: None,
+            qref: QualifiedRef::root(interner.intern(name)),
             constraint: Constraint::Exact(ty.clone()),
         })
         .collect();
+    let test_qref = QualifiedRef::root(interner.intern("test"));
     let mut functions = vec![Function {
-        id: FunctionId::alloc(),
-        name: interner.intern("test"),
-        namespace: None,
+        qref: test_qref,
         kind: FnKind::Local(SourceCode {
-            name: interner.intern("test"),
+            name: test_qref,
             source: interner.intern(source),
             kind: SourceKind::Template,
         }),
@@ -50,7 +48,6 @@ pub fn compile_to_ir_with(
     }];
     functions.extend_from_slice(extern_fns);
     let graph = CompilationGraph {
-        namespaces: Freeze::new(vec![]),
         functions: Freeze::new(functions),
         contexts: Freeze::new(contexts),
     };
@@ -66,7 +63,7 @@ pub fn compile_to_ir_with(
             .collect();
         return Err(errs.join("\n"));
     }
-    let uid = graph.functions[0].id;
+    let uid = graph.functions[0].qref;
     let module = result
         .module(uid)
         .ok_or_else(|| "no module produced".to_string())?;
@@ -113,19 +110,16 @@ pub fn compile_script_ir(
     let contexts: Vec<Context> = context
         .iter()
         .map(|(name, ty)| Context {
-            name: *name,
-            namespace: None,
+            qref: QualifiedRef::root(*name),
             constraint: Constraint::Exact(ty.clone()),
         })
         .collect();
+    let test_qref = QualifiedRef::root(interner.intern("test"));
     let graph = CompilationGraph {
-        namespaces: Freeze::new(vec![]),
         functions: Freeze::new(vec![Function {
-            id: FunctionId::alloc(),
-            name: interner.intern("test"),
-            namespace: None,
+            qref: test_qref,
             kind: FnKind::Local(SourceCode {
-                name: interner.intern("test"),
+                name: test_qref,
                 source: interner.intern(source),
                 kind: SourceKind::Script,
             }),
@@ -149,7 +143,7 @@ pub fn compile_script_ir(
             .collect();
         return Err(errs.join("\n"));
     }
-    let uid = graph.functions[0].id;
+    let uid = graph.functions[0].qref;
     let module = result
         .module(uid)
         .ok_or_else(|| "no module produced".to_string())?;

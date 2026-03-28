@@ -12,7 +12,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::analysis::cfg::{BlockIdx, Cfg, Terminator};
-use crate::graph::{FunctionId, QualifiedRef};
+use crate::graph::QualifiedRef;
 use crate::ir::{Callee, Inst, InstKind, Label, MirBody, ValueId};
 use crate::ssa::{ENTRY_BLOCK, SSABuilder, SsaVar};
 use crate::ty::{Effect, Ty};
@@ -22,7 +22,7 @@ use crate::ty::{Effect, Ty};
 /// `fn_types` maps FunctionId → Ty for resolving callee effects
 /// (which contexts a function reads/writes). Used to populate
 /// `context_uses`/`context_defs` on FunctionCall/Spawn instructions.
-pub fn run(body: &mut MirBody, fn_types: &FxHashMap<FunctionId, Ty>) {
+pub fn run(body: &mut MirBody, fn_types: &FxHashMap<QualifiedRef, Ty>) {
     // Step 1: Build CFG + collect context + local variable ops.
     let cfg = Cfg::build(&body.insts);
     if cfg.blocks.is_empty() {
@@ -76,7 +76,7 @@ pub fn run(body: &mut MirBody, fn_types: &FxHashMap<FunctionId, Ty>) {
 /// before it's written (dead initial load).
 fn forward_context_values(
     body: &mut MirBody,
-    fn_types: &FxHashMap<FunctionId, Ty>,
+    fn_types: &FxHashMap<QualifiedRef, Ty>,
 ) -> FxHashMap<ValueId, ValueId> {
     // Map: projection ValueId → QualifiedRef.
     let mut val_to_ctx: FxHashMap<ValueId, QualifiedRef> = FxHashMap::default();
@@ -211,8 +211,8 @@ fn forward_context_values(
 /// Only `EffectTarget::Context` refs are returned — `Token` targets are NOT
 /// SSA-compatible and must never be converted to context_uses/context_defs.
 fn extract_effect_refs(
-    fn_types: &FxHashMap<FunctionId, Ty>,
-    fn_id: &FunctionId,
+    fn_types: &FxHashMap<QualifiedRef, Ty>,
+    fn_id: &QualifiedRef,
 ) -> Option<(Vec<QualifiedRef>, Vec<QualifiedRef>)> {
     use crate::ty::EffectTarget;
 
@@ -829,7 +829,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     /// Empty fn_types — no ExternFn effect info.
-    fn no_fn_types() -> FxHashMap<FunctionId, Ty> {
+    fn no_fn_types() -> FxHashMap<QualifiedRef, Ty> {
         FxHashMap::default()
     }
 
@@ -1022,7 +1022,7 @@ mod tests {
         let interner = Interner::new();
         let ctx_name = interner.intern("ctx");
         let qref = QualifiedRef::root(ctx_name);
-        let callee_id = FunctionId::alloc();
+        let callee_id = QualifiedRef::root(interner.intern("callee"));
 
         // Build fn_types: callee reads + writes @ctx.
         let mut fn_types = FxHashMap::default();
@@ -1114,7 +1114,7 @@ mod tests {
     #[test]
     fn function_call_pure_no_context() {
         let interner = Interner::new();
-        let callee_id = FunctionId::alloc();
+        let callee_id = QualifiedRef::root(interner.intern("callee"));
 
         // Pure function — no reads, no writes.
         let mut fn_types = FxHashMap::default();
@@ -1178,7 +1178,7 @@ mod tests {
         let interner = Interner::new();
         let ctx_name = interner.intern("ctx");
         let qref = QualifiedRef::root(ctx_name);
-        let callee_id = FunctionId::alloc();
+        let callee_id = QualifiedRef::root(interner.intern("callee"));
 
         let mut fn_types = FxHashMap::default();
         fn_types.insert(
@@ -1289,7 +1289,7 @@ mod tests {
         let ctx_name = interner.intern("ctx");
         let qref = QualifiedRef::root(ctx_name);
         let token = TokenId::alloc();
-        let callee_id = FunctionId::alloc();
+        let callee_id = QualifiedRef::root(interner.intern("callee"));
 
         let mut fn_types = FxHashMap::default();
         fn_types.insert(
@@ -1370,7 +1370,7 @@ mod tests {
         let ctx_name = interner.intern("ctx");
         let qref = QualifiedRef::root(ctx_name);
         let token = TokenId::alloc();
-        let callee_id = FunctionId::alloc();
+        let callee_id = QualifiedRef::root(interner.intern("callee"));
 
         let mut fn_types = FxHashMap::default();
         fn_types.insert(
@@ -1450,7 +1450,7 @@ mod tests {
         let ctx_name = interner.intern("ctx");
         let qref = QualifiedRef::root(ctx_name);
         let token = TokenId::alloc();
-        let callee_id = FunctionId::alloc();
+        let callee_id = QualifiedRef::root(interner.intern("callee"));
 
         let mut fn_types = FxHashMap::default();
         fn_types.insert(
@@ -1562,7 +1562,7 @@ mod tests {
         let interner = Interner::new();
         let qref = QualifiedRef::root(interner.intern("ctx"));
         let token = TokenId::alloc();
-        let fid = FunctionId::alloc();
+        let fid = QualifiedRef::root(interner.intern("callee"));
 
         let mut fn_types = FxHashMap::default();
         fn_types.insert(

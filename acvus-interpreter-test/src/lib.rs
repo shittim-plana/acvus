@@ -15,12 +15,12 @@ use rustc_hash::FxHashMap;
 
 /// Compile a template source → MirModule + context id mapping.
 pub struct CompileResult {
-    pub entry_id: FunctionId,
-    pub modules: FxHashMap<FunctionId, Executable>,
+    pub entry_qref: QualifiedRef,
+    pub modules: FxHashMap<QualifiedRef, Executable>,
     pub context_names: FxHashMap<QualifiedRef, Astr>,
-    pub builtin_ids: FxHashMap<Astr, FunctionId>,
-    pub fn_types: FxHashMap<FunctionId, Ty>,
-    pub extern_executables: FxHashMap<FunctionId, Executable>,
+    pub builtin_ids: FxHashMap<Astr, QualifiedRef>,
+    pub fn_types: FxHashMap<QualifiedRef, Ty>,
+    pub extern_executables: FxHashMap<QualifiedRef, Executable>,
 }
 
 fn compile(
@@ -50,20 +50,17 @@ pub fn compile_source_with_externs(
     let contexts: Vec<Context> = context_types
         .iter()
         .map(|(name, ty)| Context {
-            name: *name,
-            namespace: None,
+            qref: QualifiedRef::root(*name),
             constraint: Constraint::Exact(ty.clone()),
         })
         .collect();
 
-    let entry_id = FunctionId::alloc();
+    let entry_qref = QualifiedRef::root(interner.intern("test"));
     let mut functions = acvus_mir::builtins::standard_builtins(interner);
     functions.push(Function {
-        id: entry_id,
-        name: interner.intern("test"),
-        namespace: None,
+        qref: entry_qref,
         kind: FnKind::Local(SourceCode {
-            name: interner.intern("test"),
+            name: entry_qref,
             source: interner.intern(source),
             kind,
         }),
@@ -75,14 +72,14 @@ pub fn compile_source_with_externs(
     });
 
     // Register ExternFns.
-    let mut extern_executables: FxHashMap<FunctionId, Executable> = FxHashMap::default();
-    let mut fn_types: FxHashMap<FunctionId, Ty> = FxHashMap::default();
+    let mut extern_executables: FxHashMap<QualifiedRef, Executable> = FxHashMap::default();
+    let mut fn_types: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
     for registry in extern_registries {
         let registered = registry.register(interner);
         for func in &registered.functions {
             // Extract Ty from constraint for fn_types map.
             if let Constraint::Exact(ty) = &func.constraint.output {
-                fn_types.insert(func.id, ty.clone());
+                fn_types.insert(func.qref, ty.clone());
             }
         }
         functions.extend(registered.functions);
@@ -90,7 +87,6 @@ pub fn compile_source_with_externs(
     }
 
     let graph = CompilationGraph {
-        namespaces: Freeze::new(vec![]),
         functions: Freeze::new(functions),
         contexts: Freeze::new(contexts),
     };
@@ -110,25 +106,25 @@ pub fn compile_source_with_externs(
     }
 
     // Collect all modules as Executable::Module.
-    let modules: FxHashMap<FunctionId, Executable> = result
+    let modules: FxHashMap<QualifiedRef, Executable> = result
         .modules
         .into_iter()
-        .map(|(id, (module, _hints))| (id, Executable::Module(module)))
+        .map(|(qref, (module, _hints))| (qref, Executable::Module(module)))
         .collect();
 
-    // Build context id → name mapping.
+    // Build context qref → name mapping.
     let context_names: FxHashMap<QualifiedRef, Astr> = graph
         .contexts
         .iter()
-        .map(|ctx| (ctx.qualified_ref(), ctx.name))
+        .map(|ctx| (ctx.qref, ctx.qref.name))
         .collect();
 
-    // Build builtin name → id mapping from the same graph functions.
-    let builtin_ids: FxHashMap<Astr, FunctionId> =
-        graph.functions.iter().map(|f| (f.name, f.id)).collect();
+    // Build builtin name → qref mapping from the same graph functions.
+    let builtin_ids: FxHashMap<Astr, QualifiedRef> =
+        graph.functions.iter().map(|f| (f.qref.name, f.qref)).collect();
 
     CompileResult {
-        entry_id,
+        entry_qref,
         modules,
         context_names,
         builtin_ids,
@@ -137,17 +133,17 @@ pub fn compile_source_with_externs(
     }
 }
 
-/// Build builtin id mapping from the graph functions.
-fn builtin_id_map(
+/// Build builtin qref mapping from the graph functions.
+fn builtin_qref_map(
     interner: &Interner,
-    modules: &FxHashMap<FunctionId, acvus_mir::ir::MirModule>,
-) -> FxHashMap<Astr, FunctionId> {
-    // Standard builtins have known names — rebuild them to get name→id.
+    modules: &FxHashMap<QualifiedRef, acvus_mir::ir::MirModule>,
+) -> FxHashMap<Astr, QualifiedRef> {
+    // Standard builtins have known names — rebuild them to get name→qref.
     let builtins = acvus_mir::builtins::standard_builtins(interner);
     builtins
         .into_iter()
-        .map(|f| (f.name, f.id))
-        .filter(|(_, id)| !modules.contains_key(id)) // builtins don't have modules
+        .map(|f| (f.qref.name, f.qref))
+        .filter(|(_, qref)| !modules.contains_key(qref)) // builtins don't have modules
         .collect()
 }
 
@@ -159,7 +155,7 @@ pub async fn run(interner: &Interner, source: &str, context: FxHashMap<Astr, Val
     let cr = compile(interner, source, &context_types);
 
     // Debug: dump entry module IR + closures
-    if let Some(Executable::Module(module)) = cr.modules.get(&cr.entry_id) {
+    if let Some(Executable::Module(module)) = cr.modules.get(&cr.entry_qref) {
         let ir = acvus_mir::printer::dump_with(interner, module);
         eprintln!("=== IR for entry ===\n{ir}");
         for (label, closure) in &module.closures {
@@ -193,7 +189,7 @@ pub async fn run(interner: &Interner, source: &str, context: FxHashMap<Astr, Val
         .with_context_names(cr.context_names);
 
     let overlay = ContextOverlay::new(Arc::new(snapshot), interner.clone());
-    let mut interp = Interpreter::new(shared, cr.entry_id, overlay);
+    let mut interp = Interpreter::new(shared, cr.entry_qref, overlay);
     let result = interp.execute().await.expect("execution failed");
 
     // Template returns a String.
@@ -241,7 +237,7 @@ pub async fn run_script(
         .with_context_names(cr.context_names);
 
     let overlay = ContextOverlay::new(Arc::new(snapshot), interner.clone());
-    let mut interp = Interpreter::new(shared, cr.entry_id, overlay);
+    let mut interp = Interpreter::new(shared, cr.entry_qref, overlay);
     let result = interp.execute().await.expect("execution failed");
     result.value
 }
@@ -284,7 +280,7 @@ pub async fn run_script_with_externs(
         .with_context_names(cr.context_names);
 
     let overlay = ContextOverlay::new(Arc::new(snapshot), interner.clone());
-    let mut interp = Interpreter::new(shared, cr.entry_id, overlay);
+    let mut interp = Interpreter::new(shared, cr.entry_qref, overlay);
     interp.execute().await.expect("execution failed")
 }
 

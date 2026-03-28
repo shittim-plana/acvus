@@ -11,7 +11,7 @@
 //! - `Cast` is the *only* instruction allowed to change a value's type.
 //! - Generic variance is invariant: inner types must match recursively.
 
-use crate::graph::FunctionId;
+use crate::graph::QualifiedRef;
 use crate::ir::{Callee, InstKind, Label, MirBody, MirModule, ValueId};
 use crate::ty::{Effect, EffectSet, EffectTarget, Origin, Ty};
 use acvus_ast::{BinOp, Literal, Span, UnaryOp};
@@ -70,7 +70,7 @@ pub enum ValidationErrorKind {
 /// Check type consistency of the entire module.  Returns all errors found.
 pub fn check_types(
     module: &MirModule,
-    fn_types: &FxHashMap<FunctionId, Ty>,
+    fn_types: &FxHashMap<QualifiedRef, Ty>,
 ) -> Vec<ValidationError> {
     let mut errors = Vec::new();
 
@@ -234,12 +234,12 @@ struct CheckCtx<'a> {
     scope_name: String,
     /// label → index in `insts` (for Jump target block param lookup)
     label_map: FxHashMap<Label, usize>,
-    /// FunctionId → Ty mapping for callee effect verification.
-    fn_types: &'a FxHashMap<FunctionId, Ty>,
+    /// QualifiedRef → Ty mapping for callee effect verification.
+    fn_types: &'a FxHashMap<QualifiedRef, Ty>,
 }
 
 impl<'a> CheckCtx<'a> {
-    fn new(scope_name: String, fn_types: &'a FxHashMap<FunctionId, Ty>) -> Self {
+    fn new(scope_name: String, fn_types: &'a FxHashMap<QualifiedRef, Ty>) -> Self {
         Self {
             scope_name,
             label_map: FxHashMap::default(),
@@ -248,7 +248,7 @@ impl<'a> CheckCtx<'a> {
     }
 
     /// Extract effect from a Direct callee's type. Returns None if pure or unknown.
-    fn callee_effect(&self, fn_id: &FunctionId) -> Option<&'a EffectSet> {
+    fn callee_effect(&self, fn_id: &QualifiedRef) -> Option<&'a EffectSet> {
         let ty = self.fn_types.get(fn_id)?;
         match ty {
             Ty::Fn {

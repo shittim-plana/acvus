@@ -4,7 +4,7 @@ use std::fmt;
 use acvus_utils::{Astr, Freeze, Interner};
 use rustc_hash::FxHashMap;
 
-use crate::graph::types::{FunctionId, QualifiedRef};
+use crate::graph::types::QualifiedRef;
 
 // ── UserDefined type system ──────────────────────────────────────────
 
@@ -47,7 +47,7 @@ pub struct TypeRegistry {
 /// CastRule {
 ///     from: Ty::UserDefined { id: ITER_ID, type_args: vec![t.clone()], effect_args: vec![e] },
 ///     to: Ty::List(Box::new(t)),
-///     fn_id: collect_fn_id,
+///     fn_ref: collect_fn_ref,
 /// }
 /// ```
 #[derive(Debug, Clone)]
@@ -57,7 +57,7 @@ pub struct CastRule {
     /// Target type pattern (Param/Var placeholders shared with `from`).
     pub to: Ty,
     /// The pure ExternFn that performs the conversion.
-    pub fn_id: FunctionId,
+    pub fn_ref: QualifiedRef,
 }
 
 /// Head constructor of a type — used for duplicate cast rule detection.
@@ -782,7 +782,7 @@ pub struct TySubstSnapshot {
     next_param: u32,
     next_origin: u32,
     next_effect: u32,
-    last_extern_cast: Option<FunctionId>,
+    last_extern_cast: Option<QualifiedRef>,
 }
 
 /// Substitution table for type unification.
@@ -796,7 +796,7 @@ pub struct TySubst {
     /// Frozen type registry — provides ExternCast rules for `try_coerce`.
     type_registry: Freeze<TypeRegistry>,
     /// Set by try_coerce when an ExternCast matches. Read by typeck.
-    pub last_extern_cast: Option<FunctionId>,
+    pub last_extern_cast: Option<QualifiedRef>,
 }
 
 impl Default for TySubst {
@@ -827,8 +827,8 @@ impl TySubst {
         }
     }
 
-    /// Take the last ExternCast FunctionId recorded by `try_coerce`.
-    pub fn take_last_extern_cast(&mut self) -> Option<FunctionId> {
+    /// Take the last ExternCast QualifiedRef recorded by `try_coerce`.
+    pub fn take_last_extern_cast(&mut self) -> Option<QualifiedRef> {
         self.last_extern_cast.take()
     }
 
@@ -1646,14 +1646,14 @@ impl TySubst {
         // Phase 2: apply the unique match (no snapshot — bindings persist).
         let idx = matched_idx.ok_or(())?;
         let rule = &rules[idx];
-        let fn_id = rule.fn_id;
+        let fn_ref = rule.fn_ref;
         let inst_from = self.instantiate(&rule.from);
         let inst_to = self.instantiate(&rule.to);
         self.unify(sub, &inst_from, Polarity::Invariant)
             .map_err(|_| ())?;
         self.unify(&inst_to, sup, Polarity::Invariant)
             .map_err(|_| ())?;
-        self.last_extern_cast = Some(fn_id);
+        self.last_extern_cast = Some(fn_ref);
         Ok(())
     }
 
@@ -4213,9 +4213,10 @@ mod tests {
     fn make_cast_subst(
         type_param_count: usize,
         build_to: impl FnOnce(&[Ty]) -> Ty,
-    ) -> (UserDefinedId, FunctionId, TySubst) {
+    ) -> (UserDefinedId, QualifiedRef, TySubst) {
         let id = UserDefinedId::alloc();
-        let fn_id = crate::graph::types::FunctionId::alloc();
+        let i = acvus_utils::Interner::new();
+        let fn_id = QualifiedRef::root(i.intern("cast_fn"));
         let mut rule_subst = TySubst::new();
         let params: Vec<Ty> = (0..type_param_count).map(|_| rule_subst.fresh_param()).collect();
         let from = Ty::UserDefined {
@@ -4231,7 +4232,7 @@ mod tests {
             type_params: vec![None; type_param_count],
             effect_params: vec![],
         });
-        reg.register_cast(CastRule { from, to, fn_id });
+        reg.register_cast(CastRule { from, to, fn_ref: fn_id });
         let subst = TySubst::with_registry(Freeze::new(reg));
         (id, fn_id, subst)
     }
@@ -4306,23 +4307,24 @@ mod tests {
     fn extern_cast_ambiguity_rejected() {
         // Bypass TypeRegistry duplicate check — inject two rules with same to head
         // directly into the type_registry to test try_extern_cast ambiguity detection.
+        let i = acvus_utils::Interner::new();
         let id = UserDefinedId::alloc();
-        let fn_id_a = FunctionId::alloc();
-        let fn_id_b = FunctionId::alloc();
+        let fn_id_a = QualifiedRef::root(i.intern("cast_a"));
+        let fn_id_b = QualifiedRef::root(i.intern("cast_b"));
 
         let mut s1 = TySubst::new();
         let t1 = s1.fresh_param();
         let rule_a = CastRule {
             from: Ty::UserDefined { id, type_args: vec![t1.clone()], effect_args: vec![] },
             to: Ty::List(Box::new(t1)),
-            fn_id: fn_id_a,
+            fn_ref: fn_id_a,
         };
         let mut s2 = TySubst::new();
         let t2 = s2.fresh_param();
         let rule_b = CastRule {
             from: Ty::UserDefined { id, type_args: vec![t2.clone()], effect_args: vec![] },
             to: Ty::List(Box::new(t2)),
-            fn_id: fn_id_b,
+            fn_ref: fn_id_b,
         };
 
         // Build registry manually (bypassing register_cast duplicate check)
@@ -4343,9 +4345,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "duplicate")]
     fn cast_registry_duplicate_panics() {
+        let i = acvus_utils::Interner::new();
         let id = UserDefinedId::alloc();
-        let fn_id_a = FunctionId::alloc();
-        let fn_id_b = FunctionId::alloc();
+        let fn_id_a = QualifiedRef::root(i.intern("cast_a"));
+        let fn_id_b = QualifiedRef::root(i.intern("cast_b"));
         let mut s = TySubst::new();
         let t = s.fresh_param();
 
@@ -4356,7 +4359,7 @@ mod tests {
         reg.register_cast(CastRule {
             from: Ty::UserDefined { id, type_args: vec![t.clone()], effect_args: vec![] },
             to: Ty::List(Box::new(t.clone())),
-            fn_id: fn_id_a,
+            fn_ref: fn_id_a,
         });
         // Same from_id + same to head (List) → panic
         let mut s2 = TySubst::new();
@@ -4364,15 +4367,16 @@ mod tests {
         reg.register_cast(CastRule {
             from: Ty::UserDefined { id, type_args: vec![t2.clone()], effect_args: vec![] },
             to: Ty::List(Box::new(t2)),
-            fn_id: fn_id_b,
+            fn_ref: fn_id_b,
         });
     }
 
     #[test]
     fn cast_registry_different_to_head_ok() {
+        let i = acvus_utils::Interner::new();
         let id = UserDefinedId::alloc();
-        let fn_id_a = FunctionId::alloc();
-        let fn_id_b = FunctionId::alloc();
+        let fn_id_a = QualifiedRef::root(i.intern("cast_a"));
+        let fn_id_b = QualifiedRef::root(i.intern("cast_b"));
 
         let mut reg = TypeRegistry::new();
         reg.register(UserDefinedDecl {
@@ -4383,7 +4387,7 @@ mod tests {
         reg.register_cast(CastRule {
             from: Ty::UserDefined { id, type_args: vec![t1.clone()], effect_args: vec![] },
             to: Ty::List(Box::new(t1)),
-            fn_id: fn_id_a,
+            fn_ref: fn_id_a,
         });
         // Different to head (Option vs List) → ok
         let mut s2 = TySubst::new();
@@ -4391,7 +4395,7 @@ mod tests {
         reg.register_cast(CastRule {
             from: Ty::UserDefined { id, type_args: vec![t2.clone()], effect_args: vec![] },
             to: Ty::Option(Box::new(t2)),
-            fn_id: fn_id_b,
+            fn_ref: fn_id_b,
         });
         assert_eq!(reg.cast_rules_for(id).count(), 2);
     }
