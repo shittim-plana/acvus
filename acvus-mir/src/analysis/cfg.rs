@@ -31,6 +31,9 @@ pub enum Terminator {
 pub struct BasicBlock {
     pub label: Option<Label>,
     pub params: Vec<ValueId>,
+    /// Instruction index of the BlockLabel (or 0 for the entry block).
+    /// This is the true start position of the block in the flat instruction list.
+    pub start_pos: usize,
     pub inst_indices: Vec<usize>,
     pub terminator: Terminator,
     pub merge_of: Option<Label>,
@@ -49,6 +52,7 @@ impl Cfg {
         let mut params: Vec<ValueId> = Vec::new();
         let mut inst_indices = Vec::new();
         let mut current_merge_of: Option<Label> = None;
+        let mut current_start_pos: usize = 0;
 
         for (i, inst) in insts.iter().enumerate() {
             match &inst.kind {
@@ -61,6 +65,7 @@ impl Cfg {
                         blocks.push(BasicBlock {
                             label: label.take(),
                             params: std::mem::take(&mut params),
+                            start_pos: current_start_pos,
                             inst_indices: std::mem::take(&mut inst_indices),
                             terminator: Terminator::Fallthrough,
                             merge_of: current_merge_of.take(),
@@ -69,6 +74,7 @@ impl Cfg {
                     label = Some(*l);
                     params = p.clone();
                     current_merge_of = *merge_of;
+                    current_start_pos = i;
                 }
                 InstKind::Jump {
                     label: target,
@@ -77,6 +83,7 @@ impl Cfg {
                     blocks.push(BasicBlock {
                         label: label.take(),
                         params: std::mem::take(&mut params),
+                        start_pos: current_start_pos,
                         inst_indices: std::mem::take(&mut inst_indices),
                         terminator: Terminator::Jump {
                             target: *target,
@@ -95,6 +102,7 @@ impl Cfg {
                     blocks.push(BasicBlock {
                         label: label.take(),
                         params: std::mem::take(&mut params),
+                        start_pos: current_start_pos,
                         inst_indices: std::mem::take(&mut inst_indices),
                         terminator: Terminator::JumpIf {
                             cond: *cond,
@@ -113,6 +121,7 @@ impl Cfg {
                     blocks.push(BasicBlock {
                         label: label.take(),
                         params: std::mem::take(&mut params),
+                        start_pos: current_start_pos,
                         inst_indices: std::mem::take(&mut inst_indices),
                         terminator: Terminator::ListStep {
                             done: *done,
@@ -125,6 +134,7 @@ impl Cfg {
                     blocks.push(BasicBlock {
                         label: label.take(),
                         params: std::mem::take(&mut params),
+                        start_pos: current_start_pos,
                         inst_indices: std::mem::take(&mut inst_indices),
                         terminator: Terminator::Return(*val),
                         merge_of: current_merge_of.take(),
@@ -140,6 +150,7 @@ impl Cfg {
             blocks.push(BasicBlock {
                 label,
                 params,
+                start_pos: current_start_pos,
                 inst_indices,
                 terminator: Terminator::Fallthrough,
                 merge_of: current_merge_of,

@@ -96,8 +96,13 @@ impl LivenessResult {
         let mut last_use: rustc_hash::FxHashMap<ValueId, usize> = rustc_hash::FxHashMap::default();
 
         for (bi, block) in cfg.blocks.iter().enumerate() {
+            // Use the block's true start position (BlockLabel instruction index).
+            // This is critical for blocks with empty inst_indices — without it,
+            // block params and live-in/live-out values get position 0, causing
+            // incorrect interval overlap and broken reg_color slot assignments.
+            let block_start = block.start_pos;
+
             // Values live-in to this block: extend their interval to the block start.
-            let block_start = block.inst_indices.first().copied().unwrap_or(0);
             for &val in &self.live_in[bi] {
                 // If val is live-in but not yet defined, its def is before this block.
                 def_pos.entry(val).or_insert(0);
@@ -106,10 +111,17 @@ impl LivenessResult {
                 *lu = (*lu).max(block_start);
             }
 
+            // Block params are defs at the block start.
+            // BlockLabel instructions are NOT in inst_indices (they're block headers),
+            // so params must be registered separately to ensure reg_color can remap them.
+            for &param in &block.params {
+                def_pos.entry(param).or_insert(block_start);
+            }
+
             // Values live-out of this block: extend their interval past the block end.
             // Terminators (Return, Jump, JumpIf) use values but are not in inst_indices,
             // so we extend to block_end + 1 to account for terminator uses.
-            let block_end = block.inst_indices.last().copied().unwrap_or(0);
+            let block_end = block.inst_indices.last().copied().unwrap_or(block_start);
             let terminator_pos = block_end + 1;
             for &val in &self.live_out[bi] {
                 let lu = last_use.entry(val).or_insert(terminator_pos);

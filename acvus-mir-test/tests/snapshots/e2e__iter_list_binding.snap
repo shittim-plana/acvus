@@ -23,24 +23,24 @@ expression: ir
     18 │   r14 = T0 + r13
     19 │   return r14
 
-    ; r0 (v19) : Int
+    ; r0 (v20) : Int
     ; r1 (@items) : List<Int>
-    ; r2 (v1) : List<Int>
-    ; r3 (v5) : Int
-    ; r4 (v7) : Int
-    ; r5 (v8) : String
-    ; r6 (v20) : Int
+    ; r2 (v2) : List<Int>
+    ; r3 (v6) : Int
+    ; r4 (v8) : Int
+    ; r5 (v9) : String
+    ; r6 (v21) : Int
     ; r7 (x) : Int
-    ; r8 (v10) : Int
+    ; r8 (v11) : Int
     ; r9 (to_string(...)) : String
-    ; r10 (v14) : String
-    ; r11 (v15) : String
-    ; r12 (v16) : String
-    ; r13 (v17) : String
-    ; r14 (v18) : String
-    ; r15 (v11) : String
-    ; r16 (@items) : List<Int>
-    ; r17 (v6) : String
-    ; r18 (v4) : List<Int>
-    ; r19 (v2) : String
-    ; r20 (x) : Int
+    ; r10 (v15) : String
+    ; r11 (v16) : String
+    ; r12 (v17) : String
+    ; r13 (v18) : String
+    ; r14 (v19) : String
+    ; r15 (v3) : String
+    ; r16 (v7) : String
+    ; r17 (v5) : List<Int>
+    ; r18 (x) : Int
+    ; r19 (v12) : String
+    ; r20 (@items) : List<Int>

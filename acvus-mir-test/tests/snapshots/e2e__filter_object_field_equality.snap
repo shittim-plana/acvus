@@ -1,6 +1,5 @@
 ---
 source: acvus-mir-test/tests/e2e.rs
-assertion_line: 1415
 expression: ir
 ---
 === literals ===
@@ -20,29 +19,29 @@ expression: ir
     12 │   r10 = r7 + r9
     13 │   return r10
 
-    ; r0 (v15) : List<{active: Bool, name: String}>
+    ; r0 (v16) : List<{active: Bool, name: String}>
     ; r1 (@users) : List<{active: Bool, name: String}>
-    ; r2 (v1) : List<{active: Bool, name: String}>
+    ; r2 (v2) : List<{active: Bool, name: String}>
     ; r3 (iter(...)) : Iterator<{active: Bool, name: String}, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
-    ; r4 (v6) : Fn({active: Bool, name: String}) -> Bool
+    ; r4 (v7) : Fn({active: Bool, name: String}) -> Bool
     ; r5 (filter(...)) : Iterator<{active: Bool, name: String}, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
     ; r6 (collect(...)) : List<{active: Bool, name: String}>
-    ; r7 (v10) : String
+    ; r7 (v11) : String
     ; r8 (len(...)) : Int
     ; r9 (to_string(...)) : String
-    ; r10 (v14) : String
-    ; r11 (x) : List<{active: Bool, name: String}>
-    ; r12 (@users) : List<{active: Bool, name: String}>
-    ; r13 (v9) : String
-    ; r14 (v4) : List<{active: Bool, name: String}>
-    ; r15 (v2) : String
+    ; r10 (v15) : String
+    ; r11 (v3) : String
+    ; r12 (x) : List<{active: Bool, name: String}>
+    ; r13 (@users) : List<{active: Bool, name: String}>
+    ; r14 (v10) : String
+    ; r15 (v5) : List<{active: Bool, name: String}>
 
 === closure L0 (ValueId(0)) ===
      0 │   r0 = undef
      1 │   r1 = r2.active
      2 │   return r1
 
-    ; r0 (v3) : {active: Bool, name: String}
+    ; r0 (v4) : {active: Bool, name: String}
     ; r1 (active) : Bool
-    ; r2 (v0) : {active: Bool, name: String}
+    ; r2 (v1) : {active: Bool, name: String}
     ; r3 (u) : {active: Bool, name: String}

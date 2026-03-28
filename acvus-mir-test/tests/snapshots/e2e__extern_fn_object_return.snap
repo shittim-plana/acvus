@@ -15,16 +15,16 @@ expression: ir
      9 │   r7 = r5 + r6
     10 │   return r7
 
-    ; r0 (v12) : {age: Int, name: String}
+    ; r0 (v13) : {age: Int, name: String}
     ; r1 (@get_user) : Fn(Int) -> {age: Int, name: String}
-    ; r2 (v1) : Fn(Int) -> {age: Int, name: String}
+    ; r2 (v2) : Fn(Int) -> {age: Int, name: String}
     ; r3 (<closure>(...)) : {age: Int, name: String}
-    ; r4 (v3) : Int
-    ; r5 (v8) : String
+    ; r4 (v4) : Int
+    ; r5 (v9) : String
     ; r6 (name) : String
-    ; r7 (v11) : String
-    ; r8 (v7) : String
-    ; r9 (v6) : Fn(Int) -> {age: Int, name: String}
-    ; r10 (v2) : String
-    ; r11 (u) : {age: Int, name: String}
-    ; r12 (@get_user) : Fn(Int) -> {age: Int, name: String}
+    ; r7 (v12) : String
+    ; r8 (v7) : Fn(Int) -> {age: Int, name: String}
+    ; r9 (v3) : String
+    ; r10 (u) : {age: Int, name: String}
+    ; r11 (@get_user) : Fn(Int) -> {age: Int, name: String}
+    ; r12 (v8) : String

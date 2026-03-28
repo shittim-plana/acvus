@@ -12,11 +12,11 @@ expression: ir
      6 │   r4 = r1 + r2
      7 │   return r4
 
-    ; r0 (v7) : Int
-    ; r1 (v3) : String
+    ; r0 (v8) : Int
+    ; r1 (v4) : String
     ; r2 (to_string(...)) : String
-    ; r3 (v1) : Int
-    ; r4 (v6) : String
-    ; r5 (v0) : String
-    ; r6 (v2) : String
-    ; r7 (x) : Int
+    ; r3 (v2) : Int
+    ; r4 (v7) : String
+    ; r5 (v3) : String
+    ; r6 (x) : Int
+    ; r7 (v1) : String

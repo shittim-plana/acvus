@@ -39,27 +39,27 @@ expression: ir
     35 │   return r14
 
     ; r0 (@level) : Int
-    ; r1 (v1) : Int
+    ; r1 (v2) : Int
     ; r2 (@role) : String
-    ; r3 (v3) : String
-    ; r4 (v7) : Bool
+    ; r3 (v4) : String
+    ; r4 (v8) : Bool
     ; r5 (@level) : Int
-    ; r6 (v10) : Int
-    ; r7 (v11) : Bool
-    ; r8 (v14) : String
-    ; r9 (v17) : String
-    ; r10 (v18) : String
-    ; r11 (v19) : String
-    ; r12 (v22) : String
-    ; r13 (v23) : String
-    ; r14 (v24) : String
-    ; r15 (v6) : String
-    ; r16 (v15) : String
-    ; r17 (v4) : String
-    ; r18 (v21) : String
-    ; r19 (v13) : String
-    ; r20 (v20) : String
-    ; r21 (v12) : String
-    ; r22 (@role) : String
-    ; r23 (v16) : String
-    ; r24 (v8) : String
+    ; r6 (v11) : Int
+    ; r7 (v12) : Bool
+    ; r8 (v15) : String
+    ; r9 (v18) : String
+    ; r10 (v19) : String
+    ; r11 (v20) : String
+    ; r12 (v23) : String
+    ; r13 (v24) : String
+    ; r14 (v25) : String
+    ; r15 (v22) : String
+    ; r16 (v14) : String
+    ; r17 (@role) : String
+    ; r18 (v9) : String
+    ; r19 (v17) : String
+    ; r20 (v7) : String
+    ; r21 (v21) : String
+    ; r22 (v13) : String
+    ; r23 (v5) : String
+    ; r24 (v16) : String

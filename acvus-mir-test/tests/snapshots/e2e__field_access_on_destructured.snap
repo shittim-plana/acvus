@@ -24,22 +24,22 @@ expression: ir
     20 │   r12 = T0 + r10
     21 │   return r12
 
-    ; r0 (v17) : {name: String}
+    ; r0 (v18) : {name: String}
     ; r1 (@pair) : ({name: String}, Int)
-    ; r2 (v1) : ({name: String}, Int)
-    ; r3 (v6) : {name: String}
-    ; r4 (v8) : Bool
-    ; r5 (v5) : Bool
-    ; r6 (v7) : Bool
+    ; r2 (v2) : ({name: String}, Int)
+    ; r3 (v7) : {name: String}
+    ; r4 (v9) : Bool
+    ; r5 (v6) : Bool
+    ; r6 (v8) : Bool
     ; r7 (obj) : {name: String}
     ; r8 (name) : String
-    ; r9 (v13) : String
-    ; r10 (v15) : String
-    ; r11 (v18) : {name: String}
-    ; r12 (v16) : String
-    ; r13 (obj) : {name: String}
-    ; r14 (@pair) : ({name: String}, Int)
-    ; r15 (v14) : String
-    ; r16 (v4) : ({name: String}, Int)
-    ; r17 (v10) : String
-    ; r18 (v2) : String
+    ; r9 (v14) : String
+    ; r10 (v16) : String
+    ; r11 (v19) : {name: String}
+    ; r12 (v17) : String
+    ; r13 (v3) : String
+    ; r14 (v11) : String
+    ; r15 (obj) : {name: String}
+    ; r16 (@pair) : ({name: String}, Int)
+    ; r17 (v15) : String
+    ; r18 (v5) : ({name: String}, Int)

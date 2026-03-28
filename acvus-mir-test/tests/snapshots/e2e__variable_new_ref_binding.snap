@@ -13,13 +13,13 @@ expression: ir
      6 │   r4 = r3 + r2
      7 │   return r4
 
-    ; r0 (v9) : String
+    ; r0 (v10) : String
     ; r1 (@name) : String
-    ; r2 (v1) : String
-    ; r3 (v6) : String
-    ; r4 (v8) : String
-    ; r5 (result) : String
-    ; r6 (@name) : String
-    ; r7 (v2) : String
-    ; r8 (v5) : String
-    ; r9 (v4) : String
+    ; r2 (v2) : String
+    ; r3 (v7) : String
+    ; r4 (v9) : String
+    ; r5 (v3) : String
+    ; r6 (v6) : String
+    ; r7 (v5) : String
+    ; r8 (result) : String
+    ; r9 (@name) : String

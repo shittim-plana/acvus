@@ -5,12 +5,14 @@ expression: ir
 === main ===
      0 │   r0 = context_project @user
      1 │   r1 = context_load r0
-     2 │   r2 = r1.name
-     3 │   return r2
+     2 │   r2 = context_project @user
+     3 │   r3 = context_load r2
+     4 │   r4 = r3.name
+     5 │   return r4
 
     ; r0 (@user) : {age: Int, name: String}
-    ; r1 (v3) : {age: Int, name: String}
-    ; r2 (name) : String
-    ; r3 (v5) : {age: Int, name: String}
-    ; r4 (make_obj(...)) : {age: Int, name: String}
-    ; r5 (@user) : {age: Int, name: String}
+    ; r1 (v4) : {age: Int, name: String}
+    ; r2 (@user) : {age: Int, name: String}
+    ; r3 (v6) : {age: Int, name: String}
+    ; r4 (name) : String
+    ; r5 (make_obj(...)) : {age: Int, name: String}

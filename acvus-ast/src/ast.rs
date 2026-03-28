@@ -8,7 +8,9 @@ impl AstId {
     pub fn alloc() -> Self {
         use std::sync::atomic::{AtomicU32, Ordering};
         static NEXT: AtomicU32 = AtomicU32::new(0);
-        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: id + 1 is always >= 1.
+        Self(unsafe { std::num::NonZero::new_unchecked(id + 1) })
     }
 }
 

@@ -1,6 +1,5 @@
 ---
 source: acvus-mir-test/tests/e2e.rs
-assertion_line: 855
 expression: ir
 ---
 === literals ===
@@ -22,24 +21,24 @@ expression: ir
     14 │   r12 = r9 + r11
     15 │   return r12
 
-    ; r0 (v17) : List<Int>
+    ; r0 (v18) : List<Int>
     ; r1 (@items) : List<Int>
-    ; r2 (v1) : List<Int>
+    ; r2 (v2) : List<Int>
     ; r3 (@threshold) : Int
-    ; r4 (v3) : Int
+    ; r4 (v4) : Int
     ; r5 (iter(...)) : Iterator<Int, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
-    ; r6 (v8) : Fn(Int) -> Bool
+    ; r6 (v9) : Fn(Int) -> Bool
     ; r7 (filter(...)) : Iterator<Int, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
     ; r8 (collect(...)) : List<Int>
-    ; r9 (v12) : String
+    ; r9 (v13) : String
     ; r10 (len(...)) : Int
     ; r11 (to_string(...)) : String
-    ; r12 (v16) : String
-    ; r13 (v11) : String
-    ; r14 (v6) : List<Int>
-    ; r15 (v4) : String
-    ; r16 (x) : List<Int>
-    ; r17 (@items) : List<Int>
+    ; r12 (v17) : String
+    ; r13 (x) : List<Int>
+    ; r14 (@items) : List<Int>
+    ; r15 (v12) : String
+    ; r16 (v7) : List<Int>
+    ; r17 (v5) : String
 
 === closure L0 (ValueId(0)) ===
      0 │   r0 = undef
@@ -48,9 +47,9 @@ expression: ir
      3 │   r3 = r4 > r2
      4 │   return r3
 
-    ; r0 (v5) : Int
+    ; r0 (v6) : Int
     ; r1 (@threshold) : Int
-    ; r2 (v3) : Int
-    ; r3 (v4) : Bool
-    ; r4 (v0) : Int
+    ; r2 (v4) : Int
+    ; r3 (v5) : Bool
+    ; r4 (v1) : Int
     ; r5 (i) : Int

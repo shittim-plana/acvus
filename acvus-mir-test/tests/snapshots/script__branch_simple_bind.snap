@@ -13,16 +13,16 @@ expression: ir
      8 │   ctx_store r7 = r5
      9 │   return r5
 
-    ; r0 (v12) : Int
+    ; r0 (v13) : Int
     ; r1 (@data) : Int
-    ; r2 (v1) : Int
+    ; r2 (v2) : Int
     ; r3 (@out) : Int
-    ; r4 (v3) : Int
-    ; r5 (v8) : Int
-    ; r6 (v7) : Int
-    ; r7 (v9) : Int
-    ; r8 (v11) : Int
+    ; r4 (v4) : Int
+    ; r5 (v9) : Int
+    ; r6 (v8) : Int
+    ; r7 (v10) : Int
+    ; r8 (x) : Int
     ; r9 (@out) : Int
     ; r10 (x) : Int
-    ; r11 (x) : Int
-    ; r12 (@data) : Int
+    ; r11 (@data) : Int
+    ; r12 (v12) : Int

@@ -24,25 +24,25 @@ expression: ir
     19 │   r15 = T0 + r14
     20 │   return r15
 
-    ; r0 (v20) : Int
+    ; r0 (v21) : Int
     ; r1 (@items) : List<Int>
-    ; r2 (v1) : List<Int>
+    ; r2 (v2) : List<Int>
     ; r3 (reverse(...)) : List<Int>
-    ; r4 (v6) : Int
-    ; r5 (v8) : Int
-    ; r6 (v9) : String
-    ; r7 (v21) : Int
+    ; r4 (v7) : Int
+    ; r5 (v9) : Int
+    ; r6 (v10) : String
+    ; r7 (v22) : Int
     ; r8 (x) : Int
-    ; r9 (v11) : Int
+    ; r9 (v12) : Int
     ; r10 (to_string(...)) : String
-    ; r11 (v15) : String
-    ; r12 (v16) : String
-    ; r13 (v17) : String
-    ; r14 (v18) : String
-    ; r15 (v19) : String
-    ; r16 (@items) : List<Int>
-    ; r17 (v7) : String
-    ; r18 (v2) : String
-    ; r19 (x) : Int
-    ; r20 (v12) : String
-    ; r21 (v4) : List<Int>
+    ; r11 (v16) : String
+    ; r12 (v17) : String
+    ; r13 (v18) : String
+    ; r14 (v19) : String
+    ; r15 (v20) : String
+    ; r16 (v3) : String
+    ; r17 (x) : Int
+    ; r18 (v5) : List<Int>
+    ; r19 (v13) : String
+    ; r20 (@items) : List<Int>
+    ; r21 (v8) : String

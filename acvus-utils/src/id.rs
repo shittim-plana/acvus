@@ -1,4 +1,5 @@
 use std::marker::PhantomData;
+use std::num::NonZero;
 
 // ── Global unique Id ─────────────────────────────────────────────────
 
@@ -7,43 +8,41 @@ use std::marker::PhantomData;
 /// `Id::new()` is the only way to create a valid Id — guaranteed unique
 /// within the process lifetime. No way to extract or forge the inner value.
 ///
+/// Internally stores index + 1 as `NonZero<usize>` for niche optimization
+/// (`Option<Id>` is the same size as `Id`).
+///
 /// ```ignore
 /// acvus_utils::declare_id!(pub NodeId);
 ///
-/// let a = NodeId::new();
-/// let b = NodeId::new();
+/// let a = NodeId::alloc();
+/// let b = NodeId::alloc();
 /// assert_ne!(a, b);
 /// ```
 #[macro_export]
 macro_rules! declare_id {
     ($vis:vis $name:ident) => {
         #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-        $vis struct $name(usize);
+        $vis struct $name(std::num::NonZero<usize>);
 
         impl $name {
-            pub const UNKNOWN: $name = $name(usize::MAX);
-
             pub fn alloc() -> Self {
                 use std::sync::atomic::{AtomicUsize, Ordering};
                 static NEXT: AtomicUsize = AtomicUsize::new(0);
                 let id = NEXT.fetch_add(1, Ordering::Relaxed);
+                // SAFETY: id + 1 is always >= 1 (id < usize::MAX by assertion).
                 assert!(id < usize::MAX, "Id space exhausted");
-                $name(id)
+                $name(unsafe { std::num::NonZero::new_unchecked(id + 1) })
             }
 
             /// Raw numeric index for display purposes only.
             pub fn index(self) -> usize {
-                self.0
+                self.0.get() - 1
             }
         }
 
         impl std::fmt::Debug for $name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                if *self == $name::UNKNOWN {
-                    write!(f, "{}(UNKNOWN)", stringify!($name))
-                } else {
-                    write!(f, "{}({})", stringify!($name), self.0)
-                }
+                write!(f, "{}({})", stringify!($name), self.0.get() - 1)
             }
         }
     };
@@ -56,6 +55,9 @@ macro_rules! declare_id {
 /// Unlike `declare_id!`, these Ids are not globally unique — they are
 /// sequential within a single `LocalFactory` instance. The factory is
 /// consumed to produce a `LocalVec` that can only be indexed by this Id type.
+///
+/// Internally stores index + 1 as `NonZero<u32>` for niche optimization
+/// (`Option<Id>` is the same size as `Id`).
 ///
 /// ```ignore
 /// acvus_utils::declare_local_id!(pub ValueId);
@@ -72,17 +74,20 @@ macro_rules! declare_id {
 macro_rules! declare_local_id {
     ($vis:vis $name:ident) => {
         #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-        $vis struct $name(u32);
+        $vis struct $name(std::num::NonZero<u32>);
 
         impl std::fmt::Debug for $name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "{}({})", stringify!($name), self.0)
+                write!(f, "{}({})", stringify!($name), self.0.get() - 1)
             }
         }
 
         impl $crate::LocalIdOps for $name {
-            fn from_raw(index: usize) -> Self { Self(index as u32) }
-            fn to_raw(self) -> usize { self.0 as usize }
+            // SAFETY: index + 1 is always >= 1 for valid indices.
+            fn from_raw(index: usize) -> Self {
+                Self(unsafe { std::num::NonZero::new_unchecked((index as u32) + 1) })
+            }
+            fn to_raw(self) -> usize { (self.0.get() - 1) as usize }
         }
     };
 }

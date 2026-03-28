@@ -1,6 +1,5 @@
 ---
 source: acvus-mir-test/tests/e2e.rs
-assertion_line: 1381
 expression: ir
 ---
 === literals ===
@@ -20,30 +19,30 @@ expression: ir
     12 │   r10 = r7 + r9
     13 │   return r10
 
-    ; r0 (v15) : List<Float>
+    ; r0 (v16) : List<Float>
     ; r1 (@vals) : List<Float>
-    ; r2 (v1) : List<Float>
+    ; r2 (v2) : List<Float>
     ; r3 (iter(...)) : Iterator<Float, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
-    ; r4 (v6) : Fn(Float) -> Float
+    ; r4 (v7) : Fn(Float) -> Float
     ; r5 (map(...)) : Iterator<Float, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
     ; r6 (collect(...)) : List<Float>
-    ; r7 (v10) : String
+    ; r7 (v11) : String
     ; r8 (len(...)) : Int
     ; r9 (to_string(...)) : String
-    ; r10 (v14) : String
-    ; r11 (x) : List<Float>
-    ; r12 (@vals) : List<Float>
-    ; r13 (v9) : String
-    ; r14 (v4) : List<Float>
-    ; r15 (v2) : String
+    ; r10 (v15) : String
+    ; r11 (v3) : String
+    ; r12 (x) : List<Float>
+    ; r13 (@vals) : List<Float>
+    ; r14 (v10) : String
+    ; r15 (v5) : List<Float>
 
 === closure L0 (ValueId(0)) ===
      0 │   r0 = undef
      2 │   r1 = r2 * 2.0 (r3)
      3 │   return r1
 
-    ; r0 (v4) : Float
-    ; r1 (v3) : Float
-    ; r2 (v0) : Float
-    ; r3 (v2) : Float
+    ; r0 (v5) : Float
+    ; r1 (v4) : Float
+    ; r2 (v1) : Float
+    ; r3 (v3) : Float
     ; r4 (v) : Float

@@ -16,21 +16,21 @@ expression: ir
     10 │   ctx_store r9 = r8
     11 │   return r8
 
-    ; r0 (v16) : Int
-    ; r1 (v17) : Int
+    ; r0 (v17) : Int
+    ; r1 (v18) : Int
     ; r2 (@a) : Int
-    ; r3 (v1) : Int
+    ; r3 (v2) : Int
     ; r4 (@b) : Int
-    ; r5 (v3) : Int
+    ; r5 (v4) : Int
     ; r6 (@out) : Int
-    ; r7 (v5) : Int
-    ; r8 (v12) : Int
-    ; r9 (v13) : Int
-    ; r10 (y) : Int
-    ; r11 (@out) : Int
-    ; r12 (@a) : Int
-    ; r13 (y) : Int
-    ; r14 (v15) : Int
-    ; r15 (x) : Int
-    ; r16 (x) : Int
-    ; r17 (@b) : Int
+    ; r7 (v6) : Int
+    ; r8 (v13) : Int
+    ; r9 (v14) : Int
+    ; r10 (x) : Int
+    ; r11 (@b) : Int
+    ; r12 (y) : Int
+    ; r13 (@out) : Int
+    ; r14 (@a) : Int
+    ; r15 (y) : Int
+    ; r16 (v16) : Int
+    ; r17 (x) : Int

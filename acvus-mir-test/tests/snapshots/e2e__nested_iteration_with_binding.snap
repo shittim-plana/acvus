@@ -34,39 +34,39 @@ expression: ir
     32 │   r26 = T0 + r25
     33 │   return r26
 
-    ; r0 (v31) : Int
-    ; r1 (v32) : List<Int>
+    ; r0 (v32) : Int
+    ; r1 (v33) : List<Int>
     ; r2 (@matrix) : List<List<Int>>
-    ; r3 (v1) : List<List<Int>>
-    ; r4 (v5) : Int
-    ; r5 (v7) : Int
-    ; r6 (v8) : String
-    ; r7 (v33) : Int
-    ; r8 (v35) : List<Int>
+    ; r3 (v2) : List<List<Int>>
+    ; r4 (v6) : Int
+    ; r5 (v8) : Int
+    ; r6 (v9) : String
+    ; r7 (v34) : Int
+    ; r8 (v36) : List<Int>
     ; r9 (row) : List<Int>
-    ; r10 (v10) : Int
-    ; r11 (v13) : Int
-    ; r12 (v15) : Int
-    ; r13 (v16) : String
-    ; r14 (v34) : Int
+    ; r10 (v11) : Int
+    ; r11 (v14) : Int
+    ; r12 (v16) : Int
+    ; r13 (v17) : String
+    ; r14 (v35) : Int
     ; r15 (x) : Int
-    ; r16 (v18) : Int
+    ; r16 (v19) : Int
     ; r17 (to_string(...)) : String
-    ; r18 (v22) : String
-    ; r19 (v23) : String
-    ; r20 (v24) : String
-    ; r21 (v25) : String
-    ; r22 (v26) : String
-    ; r23 (v27) : String
-    ; r24 (v28) : String
-    ; r25 (v29) : String
-    ; r26 (v30) : String
-    ; r27 (@matrix) : List<List<Int>>
-    ; r28 (v6) : String
-    ; r29 (v11) : String
-    ; r30 (v14) : String
+    ; r18 (v23) : String
+    ; r19 (v24) : String
+    ; r20 (v25) : String
+    ; r21 (v26) : String
+    ; r22 (v27) : String
+    ; r23 (v28) : String
+    ; r24 (v29) : String
+    ; r25 (v30) : String
+    ; r26 (v31) : String
+    ; r27 (v3) : String
+    ; r28 (v12) : String
+    ; r29 (v20) : String
+    ; r30 (v15) : String
     ; r31 (x) : Int
-    ; r32 (row) : List<Int>
-    ; r33 (v2) : String
-    ; r34 (v4) : List<List<Int>>
-    ; r35 (v19) : String
+    ; r32 (v5) : List<List<Int>>
+    ; r33 (@matrix) : List<List<Int>>
+    ; r34 (v7) : String
+    ; r35 (row) : List<Int>

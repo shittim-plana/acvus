@@ -107,9 +107,10 @@ impl SerValue {
                     .collect(),
                 checksum: d.checksum(),
             },
-            Value::Variant { tag, payload } => SerValue::Variant {
-                tag: interner.resolve(*tag).to_string(),
-                payload: payload
+            Value::Variant(v) => SerValue::Variant {
+                tag: interner.resolve(v.tag).to_string(),
+                payload: v
+                    .payload
                     .as_ref()
                     .map(|p| Box::new(SerValue::from_value(p, interner))),
             },

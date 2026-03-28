@@ -33,26 +33,26 @@ expression: ir
     29 │   r15 = T0 + r13
     30 │   return r15
 
-    ; r0 (v21) : {name: String}
+    ; r0 (v22) : {name: String}
     ; r1 (@users) : List<{name: String}>
-    ; r2 (v1) : List<{name: String}>
-    ; r3 (v5) : Bool
-    ; r4 (v6) : {name: String}
-    ; r5 (v8) : Bool
-    ; r6 (v7) : Bool
-    ; r7 (v10) : Bool
-    ; r8 (v9) : Bool
+    ; r2 (v2) : List<{name: String}>
+    ; r3 (v6) : Bool
+    ; r4 (v7) : {name: String}
+    ; r5 (v9) : Bool
+    ; r6 (v8) : Bool
+    ; r7 (v11) : Bool
+    ; r8 (v10) : Bool
     ; r9 (first) : {name: String}
     ; r10 (name) : String
-    ; r11 (v15) : String
-    ; r12 (v18) : String
-    ; r13 (v19) : String
-    ; r14 (v23) : {name: String}
-    ; r15 (v20) : String
-    ; r16 (@users) : List<{name: String}>
-    ; r17 (v17) : String
-    ; r18 (v4) : List<{name: String}>
-    ; r19 (first) : {name: String}
-    ; r20 (v2) : String
-    ; r21 (v12) : String
-    ; r22 (v16) : String
+    ; r11 (v16) : String
+    ; r12 (v19) : String
+    ; r13 (v20) : String
+    ; r14 (v24) : {name: String}
+    ; r15 (v21) : String
+    ; r16 (v3) : String
+    ; r17 (first) : {name: String}
+    ; r18 (v17) : String
+    ; r19 (v18) : String
+    ; r20 (v13) : String
+    ; r21 (@users) : List<{name: String}>
+    ; r22 (v5) : List<{name: String}>

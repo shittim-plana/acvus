@@ -17,19 +17,19 @@ expression: ir
     10 │   r8 = r6 + r7
     11 │   return r8
 
-    ; r0 (v15) : Int
+    ; r0 (v16) : Int
     ; r1 (@a) : Int
-    ; r2 (v1) : Int
+    ; r2 (v2) : Int
     ; r3 (@b) : Int
-    ; r4 (v3) : Int
-    ; r5 (v9) : Int
-    ; r6 (v11) : String
+    ; r4 (v4) : Int
+    ; r5 (v10) : Int
+    ; r6 (v12) : String
     ; r7 (to_string(...)) : String
-    ; r8 (v14) : String
-    ; r9 (v6) : Int
-    ; r10 (result) : Int
-    ; r11 (v4) : String
-    ; r12 (@b) : Int
-    ; r13 (v10) : String
-    ; r14 (@a) : Int
-    ; r15 (v8) : Int
+    ; r8 (v15) : String
+    ; r9 (v11) : String
+    ; r10 (@a) : Int
+    ; r11 (v9) : Int
+    ; r12 (v7) : Int
+    ; r13 (result) : Int
+    ; r14 (v5) : String
+    ; r15 (@b) : Int

@@ -315,9 +315,9 @@ async fn regex_find_via_extern() {
     .await;
     // regex_find returns a Variant (Some/None). Check it contains "42".
     match &result.value {
-        Value::Variant { tag, payload, .. } => {
-            assert_eq!(i.resolve(*tag), "Some");
-            let inner = payload.as_ref().expect("Some should have payload");
+        Value::Variant(v) => {
+            assert_eq!(i.resolve(v.tag), "Some");
+            let inner = v.payload.as_ref().expect("Some should have payload");
             assert_eq!(**inner, Value::string("42"));
         }
         Value::String(s) => assert_eq!(&**s, "42"),

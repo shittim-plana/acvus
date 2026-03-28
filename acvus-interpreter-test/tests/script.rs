@@ -251,5 +251,5 @@ async fn for_with_builtin_to_string() {
         c,
     )
     .await;
-    assert_eq!(result, Value::String("123".into()));
+    assert_eq!(result, Value::string("123"));
 }

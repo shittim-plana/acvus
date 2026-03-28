@@ -25,30 +25,30 @@ expression: ir
     22 │   ctx_store r20 = r17
     23 │   return r17
 
-    ; r0 (v21) : String
-    ; r1 (v22) : Int
+    ; r0 (v22) : String
+    ; r1 (v23) : Int
     ; r2 (@out) : String
-    ; r3 (v1) : String
+    ; r3 (v2) : String
     ; r4 (@user) : {age: Int, name: String}
-    ; r5 (v3) : {age: Int, name: String}
-    ; r6 (v7) : Bool
-    ; r7 (v8) : String
-    ; r8 (v10) : Bool
-    ; r9 (v6) : Bool
-    ; r10 (v9) : Bool
-    ; r11 (v11) : Bool
-    ; r12 (v12) : Int
-    ; r13 (v14) : Bool
-    ; r14 (v13) : Bool
+    ; r5 (v4) : {age: Int, name: String}
+    ; r6 (v8) : Bool
+    ; r7 (v9) : String
+    ; r8 (v11) : Bool
+    ; r9 (v7) : Bool
+    ; r10 (v10) : Bool
+    ; r11 (v12) : Bool
+    ; r12 (v13) : Int
+    ; r13 (v15) : Bool
+    ; r14 (v14) : Bool
     ; r15 (name) : String
     ; r16 (age) : Int
-    ; r17 (v23) : String
-    ; r18 (v24) : String
-    ; r19 (v25) : Int
-    ; r20 (v26) : String
-    ; r21 (name) : String
-    ; r22 (@user) : {age: Int, name: String}
-    ; r23 (v18) : String
-    ; r24 (v20) : String
-    ; r25 (v5) : {age: Int, name: String}
-    ; r26 (@out) : String
+    ; r17 (v24) : String
+    ; r18 (v25) : String
+    ; r19 (v26) : Int
+    ; r20 (v27) : String
+    ; r21 (v6) : {age: Int, name: String}
+    ; r22 (name) : String
+    ; r23 (v21) : String
+    ; r24 (@out) : String
+    ; r25 (@user) : {age: Int, name: String}
+    ; r26 (v19) : String

@@ -7,9 +7,9 @@ expression: ir
      2 │   r2 = call #0(r0)
      3 │   return r2
 
-    ; r0 (v5) : Int
-    ; r1 (v0) : Int
+    ; r0 (v6) : Int
+    ; r1 (v1) : Int
     ; r2 (to_string(...)) : String
     ; r3 ($x) : Int
-    ; r4 (double(...)) : Int
-    ; r5 ($x) : Int
+    ; r4 ($x) : Int
+    ; r5 (double(...)) : Int

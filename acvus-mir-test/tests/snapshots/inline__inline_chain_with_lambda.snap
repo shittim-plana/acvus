@@ -14,20 +14,20 @@ expression: ir
     12 │   r11 = call #3(r9, 0 (r12), r10)
     13 │   return r11
 
-    ; r0 (v3) : Deque<Int, Identity(IdentityId(0))>
-    ; r1 (v0) : Int
-    ; r2 (v1) : Int
-    ; r3 (v2) : Int
-    ; r4 (v4) : List<Int>
-    ; r5 (v9) : Iterator<?0, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
-    ; r6 (v10) : Fn(Int) -> Int
+    ; r0 (v4) : Deque<Int, Identity(IdentityId(0))>
+    ; r1 (v1) : Int
+    ; r2 (v2) : Int
+    ; r3 (v3) : Int
+    ; r4 (v5) : List<Int>
+    ; r5 (v10) : Iterator<?0, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
+    ; r6 (v11) : Fn(Int) -> Int
     ; r7 (map(...)) : Iterator<Int, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
     ; r8 (collect(...)) : List<Int>
-    ; r9 (v13) : Iterator<?0, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
-    ; r10 (v15) : Fn(Int, Int) -> Int
+    ; r9 (v14) : Iterator<?0, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
+    ; r10 (v16) : Fn(Int, Int) -> Int
     ; r11 (fold(...)) : Int
-    ; r12 (v14) : Int
-    ; r13 ($xs) : List<Int>
-    ; r14 (sum_list(...)) : Int
-    ; r15 (double_all(...)) : Iterator<Int, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
-    ; r16 ($xs) : List<Int>
+    ; r12 (v15) : Int
+    ; r13 (double_all(...)) : Iterator<Int, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
+    ; r14 ($xs) : List<Int>
+    ; r15 ($xs) : List<Int>
+    ; r16 (sum_list(...)) : Int

@@ -23,24 +23,24 @@ expression: ir
     18 │   r16 = context_load r15
     19 │   return r16
 
-    ; r0 (v17) : Int
+    ; r0 (v18) : Int
     ; r1 (@acc) : Int
-    ; r2 (v1) : Int
+    ; r2 (v2) : Int
     ; r3 (@items) : List<Int>
-    ; r4 (v3) : List<Int>
-    ; r5 (v6) : Int
-    ; r6 (v7) : Int
-    ; r7 (v18) : Int
-    ; r8 (v19) : Int
-    ; r9 (v20) : Int
+    ; r4 (v4) : List<Int>
+    ; r5 (v7) : Int
+    ; r6 (v8) : Int
+    ; r7 (v19) : Int
+    ; r8 (v20) : Int
+    ; r9 (v21) : Int
     ; r10 (x) : Int
-    ; r11 (v9) : Int
+    ; r11 (v10) : Int
     ; r12 (@acc) : Int
-    ; r13 (v11) : Int
-    ; r14 (v13) : Int
+    ; r13 (v12) : Int
+    ; r14 (v14) : Int
     ; r15 (@acc) : Int
-    ; r16 (v16) : Int
-    ; r17 (v14) : Int
-    ; r18 (@items) : List<Int>
-    ; r19 (v5) : List<Int>
+    ; r16 (v17) : Int
+    ; r17 (v6) : List<Int>
+    ; r18 (v15) : Int
+    ; r19 (@items) : List<Int>
     ; r20 (x) : Int

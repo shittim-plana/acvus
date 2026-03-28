@@ -50,10 +50,41 @@ fn run_pipeline_with_registry(
         return Err(errors.join("\n"));
     }
 
-    result
+    let mut module = result
         .module(target)
         .cloned()
-        .ok_or_else(|| "no module produced for target".to_string())
+        .ok_or_else(|| "no module produced for target".to_string())?;
+
+    // Build fn_types for SSA + validate.
+    // Include both inferred (Complete) and declared (Exact constraint) function types.
+    let mut fn_types: FxHashMap<QualifiedRef, acvus_mir::ty::Ty> = FxHashMap::default();
+    for func in graph.functions.iter() {
+        if let Constraint::Exact(ty) = &func.constraint.output {
+            fn_types.insert(func.qref, ty.clone());
+        }
+    }
+    for (qref, outcome) in &inf.outcomes {
+        if let acvus_mir::graph::infer::FnInferOutcome::Complete { meta, .. } = outcome {
+            fn_types.insert(*qref, meta.ty.clone());
+        }
+    }
+
+    // Run SSA + validate (lower now outputs pre-SSA MIR).
+    acvus_mir::optimize::ssa_pass::run(&mut module.main, &fn_types);
+    for closure in module.closures.values_mut() {
+        acvus_mir::optimize::ssa_pass::run(closure, &fn_types);
+    }
+
+    let validation_errors = acvus_mir::validate::validate(&module, &fn_types);
+    if !validation_errors.is_empty() {
+        let msgs: Vec<String> = validation_errors
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect();
+        return Err(msgs.join("\n"));
+    }
+
+    Ok(module)
 }
 
 /// Parse a template and compile to MIR via the graph pipeline, returning the printed IR.

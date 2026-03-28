@@ -12,9 +12,9 @@ expression: ir
      6 │   r3 = T0 + T0
      7 │   return r3
 
-    ; r0 (v5) : Option<Int>
-    ; r1 (v2) : Option<Int>
-    ; r2 (v1) : Int
-    ; r3 (v4) : String
-    ; r4 (v3) : String
-    ; r5 (v0) : String
+    ; r0 (v6) : Option<Int>
+    ; r1 (v3) : Option<Int>
+    ; r2 (v2) : Int
+    ; r3 (v5) : String
+    ; r4 (v1) : String
+    ; r5 (v4) : String

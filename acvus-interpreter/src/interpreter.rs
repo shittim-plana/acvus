@@ -559,17 +559,18 @@ async fn execute_inst(
         }
         InstKind::TestVariant { dst, src, tag } => {
             let matches = match frame.get(*src) {
-                Value::Variant { tag: t, .. } => t == tag,
+                Value::Variant(v) => v.tag == *tag,
                 _ => false,
             };
             frame.set(*dst, Value::bool_(matches));
         }
         InstKind::UnwrapVariant { dst, src } => {
             let val = match frame.take(*src) {
-                Value::Variant {
-                    payload: Some(p), ..
-                } => Arc::try_unwrap(p).unwrap_or_else(|arc| arc.as_ref().share()),
-                Value::Variant { payload: None, .. } => Value::Unit,
+                Value::Variant(v) if v.payload.is_some() => {
+                    let p = v.payload.unwrap();
+                    Arc::try_unwrap(p).unwrap_or_else(|arc| arc.as_ref().share())
+                }
+                Value::Variant(_) => Value::Unit,
                 other => panic!("UnwrapVariant on non-variant: {other:?}"),
             };
             frame.set(*dst, val);

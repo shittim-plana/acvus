@@ -5,10 +5,12 @@ expression: ir
 === main ===
      0 │   r0 = context_project @count
      1 │   r1 = context_load r0
-     2 │   return r1
+     2 │   r2 = context_project @count
+     3 │   r3 = context_load r2
+     4 │   return r3
 
     ; r0 (@count) : Int
-    ; r1 (v2) : Int
+    ; r1 (v3) : Int
     ; r2 (@count) : Int
-    ; r3 (get_count(...)) : Int
-    ; r4 (v4) : Int
+    ; r3 (v5) : Int
+    ; r4 (get_count(...)) : Int

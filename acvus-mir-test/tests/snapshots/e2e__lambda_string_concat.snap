@@ -1,6 +1,5 @@
 ---
 source: acvus-mir-test/tests/e2e.rs
-assertion_line: 1322
 expression: ir
 ---
 === literals ===
@@ -20,29 +19,29 @@ expression: ir
     11 │   r8 = r6 + r7
     12 │   return r8
 
-    ; r0 (v14) : Iterator<String, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
+    ; r0 (v15) : Iterator<String, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
     ; r1 (@names) : List<String>
-    ; r2 (v1) : List<String>
+    ; r2 (v2) : List<String>
     ; r3 (iter(...)) : Iterator<String, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
-    ; r4 (v6) : Fn(String) -> String
+    ; r4 (v7) : Fn(String) -> String
     ; r5 (map(...)) : Iterator<String, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
-    ; r6 (v9) : String
+    ; r6 (v10) : String
     ; r7 (join(...)) : String
-    ; r8 (v13) : String
-    ; r9 (v11) : String
-    ; r10 (@names) : List<String>
-    ; r11 (v4) : List<String>
-    ; r12 (x) : Iterator<String, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
-    ; r13 (v2) : String
-    ; r14 (v8) : String
+    ; r8 (v14) : String
+    ; r9 (v3) : String
+    ; r10 (x) : Iterator<String, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
+    ; r11 (v9) : String
+    ; r12 (v12) : String
+    ; r13 (@names) : List<String>
+    ; r14 (v5) : List<String>
 
 === closure L0 (ValueId(0)) ===
      0 │   r0 = undef
      2 │   r1 = r2 + T2
      3 │   return r1
 
-    ; r0 (v4) : String
-    ; r1 (v3) : String
-    ; r2 (v0) : String
-    ; r3 (n) : String
-    ; r4 (v2) : String
+    ; r0 (v5) : String
+    ; r1 (v4) : String
+    ; r2 (v1) : String
+    ; r3 (v3) : String
+    ; r4 (n) : String

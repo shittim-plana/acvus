@@ -40,15 +40,12 @@ pub enum Value {
     Byte(u8),
 
     // ── Shared (Arc, clone = refcount bump) ──────────────────────
-    String(Arc<str>),
+    String(Arc<String>),
     List(Arc<Vec<Value>>),
     Object(Arc<FxHashMap<Astr, Value>>),
     Tuple(Arc<Vec<Value>>),
     Deque(Arc<TrackedDeque<Value>>),
-    Variant {
-        tag: Astr,
-        payload: Option<Arc<Value>>,
-    },
+    Variant(Box<VariantValue>),
 
     // ── Boxed (rarely used, keep enum small) ─────────────────────
     Range(Box<RangeValue>),
@@ -64,6 +61,12 @@ pub enum Value {
 }
 
 // ── Satellite types ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VariantValue {
+    pub tag: Astr,
+    pub payload: Option<Arc<Value>>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RangeValue {
@@ -178,8 +181,8 @@ impl Value {
     }
 
     // Shared
-    pub fn string(s: impl Into<Arc<str>>) -> Self {
-        Value::String(s.into())
+    pub fn string(s: impl Into<String>) -> Self {
+        Value::String(Arc::new(s.into()))
     }
     pub fn list(items: Vec<Value>) -> Self {
         Value::List(Arc::new(items))
@@ -194,24 +197,24 @@ impl Value {
         Value::Deque(Arc::new(d))
     }
     pub fn variant(tag: Astr, payload: Option<Value>) -> Self {
-        Value::Variant {
+        Value::Variant(Box::new(VariantValue {
             tag,
             payload: payload.map(Arc::new),
-        }
+        }))
     }
 
     // Option (well-known variants)
     pub fn some(interner: &Interner, payload: Value) -> Self {
-        Value::Variant {
+        Value::Variant(Box::new(VariantValue {
             tag: interner.intern("Some"),
             payload: Some(Arc::new(payload)),
-        }
+        }))
     }
     pub fn none(interner: &Interner) -> Self {
-        Value::Variant {
+        Value::Variant(Box::new(VariantValue {
             tag: interner.intern("None"),
             payload: None,
-        }
+        }))
     }
 
     // Boxed
@@ -277,7 +280,7 @@ impl Value {
             Value::Object(_) => ValueKind::Object,
             Value::Tuple(_) => ValueKind::Tuple,
             Value::Deque(_) => ValueKind::Deque,
-            Value::Variant { .. } => ValueKind::Variant,
+            Value::Variant(_) => ValueKind::Variant,
             Value::Range(_) => ValueKind::Range,
             Value::Fn(_) => ValueKind::Fn,
             Value::Iterator(_) => ValueKind::Iterator,
@@ -360,7 +363,7 @@ impl Value {
 
 impl Value {
     #[inline]
-    pub fn into_string(self) -> Arc<str> {
+    pub fn into_string(self) -> Arc<String> {
         match self {
             Value::String(s) => s,
             other => panic!("expected String, got {other:?}"),
@@ -427,19 +430,10 @@ impl Value {
             }
             (Value::Deque(a), Value::Deque(b)) => slice_eq(a.as_slice(), b.as_slice()),
 
-            (
-                Value::Variant {
-                    tag: ta,
-                    payload: pa,
-                },
-                Value::Variant {
-                    tag: tb,
-                    payload: pb,
-                },
-            ) => {
-                ta == tb
-                    && match (pa, pb) {
-                        (Some(a), Some(b)) => a.structural_eq(b),
+            (Value::Variant(a), Value::Variant(b)) => {
+                a.tag == b.tag
+                    && match (&a.payload, &b.payload) {
+                        (Some(pa), Some(pb)) => pa.structural_eq(pb),
                         (None, None) => true,
                         _ => false,
                     }
@@ -471,10 +465,10 @@ impl Clone for Value {
             Value::Object(o) => Value::Object(Arc::clone(o)),
             Value::Tuple(t) => Value::Tuple(Arc::clone(t)),
             Value::Deque(d) => Value::Deque(Arc::clone(d)),
-            Value::Variant { tag, payload } => Value::Variant {
-                tag: *tag,
-                payload: payload.as_ref().map(Arc::clone),
-            },
+            Value::Variant(v) => Value::Variant(Box::new(VariantValue {
+                tag: v.tag,
+                payload: v.payload.as_ref().map(Arc::clone),
+            })),
             Value::Range(r) => Value::Range(r.clone()),
             Value::Fn(f) => Value::Fn(f.clone()),
             Value::Iterator(ih) => {
@@ -520,9 +514,9 @@ impl fmt::Debug for Value {
                 d.finish()
             }
             Value::Deque(d) => f.debug_list().entries(d.as_slice().iter()).finish(),
-            Value::Variant { tag, payload } => match payload {
-                Some(p) => write!(f, "{tag:?}({p:?})"),
-                None => write!(f, "{tag:?}"),
+            Value::Variant(v) => match &v.payload {
+                Some(p) => write!(f, "{:?}({p:?})", v.tag),
+                None => write!(f, "{:?}", v.tag),
             },
             Value::Range(r) => {
                 if r.inclusive {
@@ -740,12 +734,12 @@ impl IntoValue for String {
     }
 }
 
-impl FromValue for Arc<str> {
+impl FromValue for Arc<String> {
     fn from_value(value: Value) -> Result<Self, RuntimeError> {
         match value {
             Value::String(s) => Ok(s),
             other => Err(RuntimeError::unexpected_type(
-                "FromValue<Arc<str>>",
+                "FromValue<Arc<String>>",
                 &[crate::error::ValueKind::String],
                 other.kind(),
             )),
@@ -753,7 +747,7 @@ impl FromValue for Arc<str> {
     }
 }
 
-impl IntoValue for Arc<str> {
+impl IntoValue for Arc<String> {
     fn into_value(self) -> Value {
         Value::String(self)
     }
@@ -828,7 +822,7 @@ mod tests {
     #[test]
     fn value_size() {
         let size = std::mem::size_of::<Value>();
-        assert!(size <= 24, "Value enum is {size} bytes, expected <= 24");
+        assert!(size <= 16, "Value enum is {size} bytes, expected <= 16");
         eprintln!("Value size: {size} bytes");
     }
 

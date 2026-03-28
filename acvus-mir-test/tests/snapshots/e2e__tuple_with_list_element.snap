@@ -40,45 +40,45 @@ expression: ir
     40 │   r31 = T0 + r27
     41 │   return r31
 
-    ; r0 (v35) : Int
-    ; r1 (v36) : List<Int>
-    ; r2 (v37) : String
+    ; r0 (v36) : Int
+    ; r1 (v37) : List<Int>
+    ; r2 (v38) : String
     ; r3 (@data) : (String, List<Int>)
-    ; r4 (v1) : (String, List<Int>)
-    ; r5 (v6) : String
-    ; r6 (v8) : Bool
-    ; r7 (v5) : Bool
-    ; r8 (v7) : Bool
-    ; r9 (v9) : List<Int>
-    ; r10 (v11) : Bool
-    ; r11 (v10) : Bool
+    ; r4 (v2) : (String, List<Int>)
+    ; r5 (v7) : String
+    ; r6 (v9) : Bool
+    ; r7 (v6) : Bool
+    ; r8 (v8) : Bool
+    ; r9 (v10) : List<Int>
+    ; r10 (v12) : Bool
+    ; r11 (v11) : Bool
     ; r12 (label) : String
     ; r13 (items) : List<Int>
-    ; r14 (v16) : String
-    ; r15 (v18) : Int
-    ; r16 (v20) : Int
-    ; r17 (v21) : String
-    ; r18 (v38) : Int
+    ; r14 (v17) : String
+    ; r15 (v19) : Int
+    ; r16 (v21) : Int
+    ; r17 (v22) : String
+    ; r18 (v39) : Int
     ; r19 (x) : Int
-    ; r20 (v23) : Int
+    ; r20 (v24) : Int
     ; r21 (to_string(...)) : String
-    ; r22 (v27) : String
-    ; r23 (v28) : String
-    ; r24 (v29) : String
-    ; r25 (v30) : String
-    ; r26 (v31) : String
-    ; r27 (v33) : String
-    ; r28 (v41) : Int
-    ; r29 (v42) : List<Int>
-    ; r30 (v43) : String
-    ; r31 (v34) : String
-    ; r32 (@data) : (String, List<Int>)
-    ; r33 (x) : Int
-    ; r34 (v24) : String
-    ; r35 (v14) : String
-    ; r36 (label) : String
-    ; r37 (v2) : String
-    ; r38 (items) : List<Int>
-    ; r39 (v4) : (String, List<Int>)
-    ; r40 (v32) : String
-    ; r41 (v19) : String
+    ; r22 (v28) : String
+    ; r23 (v29) : String
+    ; r24 (v30) : String
+    ; r25 (v31) : String
+    ; r26 (v32) : String
+    ; r27 (v34) : String
+    ; r28 (v42) : Int
+    ; r29 (v43) : List<Int>
+    ; r30 (v44) : String
+    ; r31 (v35) : String
+    ; r32 (v3) : String
+    ; r33 (v25) : String
+    ; r34 (v5) : (String, List<Int>)
+    ; r35 (v33) : String
+    ; r36 (v15) : String
+    ; r37 (items) : List<Int>
+    ; r38 (v20) : String
+    ; r39 (@data) : (String, List<Int>)
+    ; r40 (x) : Int
+    ; r41 (label) : String

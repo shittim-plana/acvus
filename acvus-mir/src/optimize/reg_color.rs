@@ -112,10 +112,15 @@ fn color_body(body: &mut MirBody) {
         *v = remap(*v);
     }
 
-    // Rewrite val_types.
+    // Rewrite val_types — only migrate values that have slot assignments.
+    // Dead values (no liveness interval, not in vid_to_slot) must NOT be
+    // carried over: their old ValueIds can collide with the new factory's
+    // compacted ValueIds, overwriting correct type entries.
     let old_types = std::mem::take(&mut body.val_types);
     for (vid, ty) in old_types {
-        body.val_types.insert(remap(vid), ty);
+        if vid_to_slot.contains_key(&vid) {
+            body.val_types.insert(remap(vid), ty);
+        }
     }
 
     // Update val_factory.

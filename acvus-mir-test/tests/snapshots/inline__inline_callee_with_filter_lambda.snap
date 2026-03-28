@@ -12,14 +12,14 @@ expression: ir
      9 │   r9 = call #2(r8)
     10 │   return r9
 
-    ; r0 (v2) : Int
-    ; r1 (v1) : Int
-    ; r2 (v4) : Deque<Int, Identity(IdentityId(0))>
-    ; r3 (v0) : Int
-    ; r4 (v3) : Int
-    ; r5 (v5) : List<Int>
-    ; r6 (v9) : Iterator<?0, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
-    ; r7 (v10) : Fn(Int) -> Bool
+    ; r0 (v3) : Int
+    ; r1 (v2) : Int
+    ; r2 (v5) : Deque<Int, Identity(IdentityId(0))>
+    ; r3 (v1) : Int
+    ; r4 (v4) : Int
+    ; r5 (v6) : List<Int>
+    ; r6 (v10) : Iterator<?0, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
+    ; r7 (v11) : Fn(Int) -> Bool
     ; r8 (filter(...)) : Iterator<Int, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
     ; r9 (collect(...)) : List<Int>
     ; r10 (positives(...)) : Iterator<Int, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>

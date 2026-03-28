@@ -1,6 +1,5 @@
 ---
 source: acvus-mir-test/tests/e2e.rs
-assertion_line: 1306
 expression: ir
 ---
 === literals ===
@@ -19,21 +18,21 @@ expression: ir
     11 │   r8 = r6 + r7
     12 │   return r8
 
-    ; r0 (v14) : Iterator<String, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
+    ; r0 (v15) : Iterator<String, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
     ; r1 (@users) : List<{address: {city: String}}>
-    ; r2 (v1) : List<{address: {city: String}}>
+    ; r2 (v2) : List<{address: {city: String}}>
     ; r3 (iter(...)) : Iterator<{address: {city: String}}, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
-    ; r4 (v6) : Fn({address: {city: String}}) -> String
+    ; r4 (v7) : Fn({address: {city: String}}) -> String
     ; r5 (map(...)) : Iterator<String, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
-    ; r6 (v9) : String
+    ; r6 (v10) : String
     ; r7 (join(...)) : String
-    ; r8 (v13) : String
-    ; r9 (v11) : String
-    ; r10 (@users) : List<{address: {city: String}}>
-    ; r11 (v4) : List<{address: {city: String}}>
-    ; r12 (x) : Iterator<String, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
-    ; r13 (v2) : String
-    ; r14 (v8) : String
+    ; r8 (v14) : String
+    ; r9 (v3) : String
+    ; r10 (x) : Iterator<String, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
+    ; r11 (v9) : String
+    ; r12 (v12) : String
+    ; r13 (@users) : List<{address: {city: String}}>
+    ; r14 (v5) : List<{address: {city: String}}>
 
 === closure L0 (ValueId(0)) ===
      0 │   r0 = undef
@@ -41,8 +40,8 @@ expression: ir
      2 │   r3 = r1.city
      3 │   return r3
 
-    ; r0 (v4) : {address: {city: String}}
+    ; r0 (v5) : {address: {city: String}}
     ; r1 (address) : {city: String}
-    ; r2 (v0) : {address: {city: String}}
+    ; r2 (v1) : {address: {city: String}}
     ; r3 (city) : String
     ; r4 (u) : {address: {city: String}}

@@ -12,6 +12,6 @@ expression: ir
 
     ; r0 (len_str(...)) : Int
     ; r1 (to_string(...)) : String
-    ; r2 (v0) : String
-    ; r3 (process(...)) : String
-    ; r4 ($s) : String
+    ; r2 (v1) : String
+    ; r3 ($s) : String
+    ; r4 (process(...)) : String

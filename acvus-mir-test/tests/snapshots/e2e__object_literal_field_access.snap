@@ -15,15 +15,15 @@ expression: ir
      8 │   r6 = r4 + r5
      9 │   return r6
 
-    ; r0 (v11) : {name: String}
+    ; r0 (v12) : {name: String}
     ; r1 (@name) : String
-    ; r2 (v1) : String
-    ; r3 (v5) : {name: String}
-    ; r4 (v7) : String
+    ; r2 (v2) : String
+    ; r3 (v6) : {name: String}
+    ; r4 (v8) : String
     ; r5 (name) : String
-    ; r6 (v10) : String
-    ; r7 (@name) : String
-    ; r8 (v6) : String
-    ; r9 (v2) : String
-    ; r10 (o) : {name: String}
-    ; r11 (v4) : String
+    ; r6 (v11) : String
+    ; r7 (v7) : String
+    ; r8 (v3) : String
+    ; r9 (o) : {name: String}
+    ; r10 (v5) : String
+    ; r11 (@name) : String

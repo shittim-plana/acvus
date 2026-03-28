@@ -1,4 +1,5 @@
 use std::hash::{Hash, Hasher};
+use std::num::NonZero;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -6,7 +7,7 @@ use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 
 // ---------------------------------------------------------------------------
-// Global interner ID counter
+// Global interner ID counter (starts at 1 so NonZero is always valid)
 // ---------------------------------------------------------------------------
 
 static NEXT_INTERNER_ID: AtomicU32 = AtomicU32::new(1);
@@ -17,7 +18,7 @@ static NEXT_INTERNER_ID: AtomicU32 = AtomicU32::new(1);
 
 #[derive(Clone, Copy)]
 pub struct Astr {
-    interner_id: u32,
+    interner_id: NonZero<u32>,
     id: u32,
 }
 
@@ -90,7 +91,7 @@ impl std::fmt::Debug for AstrDisplay<'_> {
 
 impl std::fmt::Debug for Astr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Astr({}:{})", self.interner_id, self.id)
+        write!(f, "Astr({}:{})", self.interner_id.get(), self.id)
     }
 }
 
@@ -163,13 +164,15 @@ impl ShardedInner {
 
 #[derive(Clone)]
 pub struct Interner {
-    id: u32,
+    id: NonZero<u32>,
     inner: Arc<ShardedInner>,
 }
 
 impl Interner {
     pub fn new() -> Self {
         let id = NEXT_INTERNER_ID.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: NEXT_INTERNER_ID starts at 1 and only increments.
+        let id = NonZero::new(id).expect("interner ID overflow");
         Self {
             id,
             inner: Arc::new(ShardedInner::new()),
@@ -234,7 +237,7 @@ impl Interner {
 
     /// Get the interner's unique id.
     pub fn id(&self) -> u32 {
-        self.id
+        self.id.get()
     }
 }
 
@@ -315,5 +318,10 @@ mod tests {
     #[test]
     fn size_is_8_bytes() {
         assert_eq!(std::mem::size_of::<Astr>(), 8);
+    }
+
+    #[test]
+    fn option_astr_niche() {
+        assert_eq!(std::mem::size_of::<Option<Astr>>(), 8);
     }
 }

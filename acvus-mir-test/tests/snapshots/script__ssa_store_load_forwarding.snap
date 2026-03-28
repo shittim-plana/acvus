@@ -10,8 +10,8 @@ expression: ir
      5 │   return 42 (r3)
 
     ; r0 (@x) : Int
-    ; r1 (v1) : Int
-    ; r2 (v3) : Int
-    ; r3 (v2) : Int
-    ; r4 (v5) : Int
-    ; r5 (@x) : Int
+    ; r1 (v2) : Int
+    ; r2 (v4) : Int
+    ; r3 (v3) : Int
+    ; r4 (@x) : Int
+    ; r5 (v6) : Int

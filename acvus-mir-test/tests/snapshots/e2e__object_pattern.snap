@@ -29,29 +29,29 @@ expression: ir
     26 │   r19 = T0 + r16
     27 │   return r19
 
-    ; r0 (v22) : String
-    ; r1 (v23) : Int
+    ; r0 (v23) : String
+    ; r1 (v24) : Int
     ; r2 (@user) : {age: Int, email: String, name: String}
-    ; r3 (v1) : {age: Int, email: String, name: String}
-    ; r4 (v6) : Bool
-    ; r5 (v7) : String
-    ; r6 (v9) : Bool
-    ; r7 (v5) : Bool
-    ; r8 (v8) : Bool
-    ; r9 (v10) : Bool
-    ; r10 (v11) : Int
-    ; r11 (v13) : Bool
-    ; r12 (v12) : Bool
+    ; r3 (v2) : {age: Int, email: String, name: String}
+    ; r4 (v7) : Bool
+    ; r5 (v8) : String
+    ; r6 (v10) : Bool
+    ; r7 (v6) : Bool
+    ; r8 (v9) : Bool
+    ; r9 (v11) : Bool
+    ; r10 (v12) : Int
+    ; r11 (v14) : Bool
+    ; r12 (v13) : Bool
     ; r13 (name) : String
     ; r14 (age) : Int
-    ; r15 (v18) : String
-    ; r16 (v20) : String
-    ; r17 (v24) : String
-    ; r18 (v25) : Int
-    ; r19 (v21) : String
-    ; r20 (@user) : {age: Int, email: String, name: String}
-    ; r21 (name) : String
-    ; r22 (v4) : {age: Int, email: String, name: String}
-    ; r23 (v2) : String
-    ; r24 (v16) : String
-    ; r25 (v19) : String
+    ; r15 (v19) : String
+    ; r16 (v21) : String
+    ; r17 (v25) : String
+    ; r18 (v26) : Int
+    ; r19 (v22) : String
+    ; r20 (v3) : String
+    ; r21 (v17) : String
+    ; r22 (name) : String
+    ; r23 (v20) : String
+    ; r24 (@user) : {age: Int, email: String, name: String}
+    ; r25 (v5) : {age: Int, email: String, name: String}

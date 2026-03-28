@@ -7,4 +7,4 @@ expression: ir
      2 │   return r0
 
     ; r0 (to_string(...)) : String
-    ; r1 (v0) : Int
+    ; r1 (v1) : Int

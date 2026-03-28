@@ -12,8 +12,8 @@ expression: ir
      5 │   r2 = T0 + T0
      6 │   return r2
 
-    ; r0 (v4) : Option<?1>
-    ; r1 (v1) : Option<?1>
-    ; r2 (v3) : String
-    ; r3 (v0) : String
-    ; r4 (v2) : String
+    ; r0 (v5) : Option<?1>
+    ; r1 (v2) : Option<?1>
+    ; r2 (v4) : String
+    ; r3 (v1) : String
+    ; r4 (v3) : String

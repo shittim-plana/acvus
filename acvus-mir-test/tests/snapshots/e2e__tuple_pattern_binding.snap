@@ -27,27 +27,27 @@ expression: ir
     24 │   r17 = T0 + r14
     25 │   return r17
 
-    ; r0 (v20) : String
-    ; r1 (v21) : Int
+    ; r0 (v21) : String
+    ; r1 (v22) : Int
     ; r2 (@pair) : (String, Int)
-    ; r3 (v1) : (String, Int)
-    ; r4 (v6) : String
-    ; r5 (v8) : Bool
-    ; r6 (v5) : Bool
-    ; r7 (v7) : Bool
-    ; r8 (v9) : Int
-    ; r9 (v11) : Bool
-    ; r10 (v10) : Bool
+    ; r3 (v2) : (String, Int)
+    ; r4 (v7) : String
+    ; r5 (v9) : Bool
+    ; r6 (v6) : Bool
+    ; r7 (v8) : Bool
+    ; r8 (v10) : Int
+    ; r9 (v12) : Bool
+    ; r10 (v11) : Bool
     ; r11 (name) : String
     ; r12 (age) : Int
-    ; r13 (v16) : String
-    ; r14 (v18) : String
-    ; r15 (v22) : String
-    ; r16 (v23) : Int
-    ; r17 (v19) : String
-    ; r18 (@pair) : (String, Int)
-    ; r19 (v14) : String
-    ; r20 (v17) : String
-    ; r21 (name) : String
-    ; r22 (v4) : (String, Int)
-    ; r23 (v2) : String
+    ; r13 (v17) : String
+    ; r14 (v19) : String
+    ; r15 (v23) : String
+    ; r16 (v24) : Int
+    ; r17 (v20) : String
+    ; r18 (v3) : String
+    ; r19 (v15) : String
+    ; r20 (v18) : String
+    ; r21 (@pair) : (String, Int)
+    ; r22 (v5) : (String, Int)
+    ; r23 (name) : String

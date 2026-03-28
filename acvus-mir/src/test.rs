@@ -89,12 +89,42 @@ fn run_pipeline(
         return Err(errors.join("\n"));
     }
 
-    result
+    // Build fn_types for SSA + validate.
+    let fn_types: FxHashMap<QualifiedRef, Ty> = inf
+        .outcomes
+        .iter()
+        .filter_map(|(qref, outcome)| {
+            if let crate::graph::infer::FnInferOutcome::Complete { meta, .. } = outcome {
+                Some((*qref, meta.ty.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Run SSA + validate (lower now outputs pre-SSA MIR).
+    let mut pair = result
         .modules
         .into_iter()
         .find(|(id, _)| *id == target)
         .map(|(_, pair)| pair)
-        .ok_or_else(|| "no module produced for target".to_string())
+        .ok_or_else(|| "no module produced for target".to_string())?;
+
+    crate::optimize::ssa_pass::run(&mut pair.0.main, &fn_types);
+    for closure in pair.0.closures.values_mut() {
+        crate::optimize::ssa_pass::run(closure, &fn_types);
+    }
+
+    let validation_errors = crate::validate::validate(&pair.0, &fn_types);
+    if !validation_errors.is_empty() {
+        let msgs: Vec<String> = validation_errors
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect();
+        return Err(msgs.join("\n"));
+    }
+
+    Ok(pair)
 }
 
 /// Compile a template source string through the full graph pipeline.

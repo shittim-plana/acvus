@@ -5,22 +5,26 @@ expression: ir
 === main ===
      0 │   r0 = context_project @count
      1 │   r1 = context_load r0
-     3 │   r2 = context_project @count
-     4 │   r3 = context_load r2
-     5 │   r4 = 1 (r5) + r3
-     6 │   r6 = r1 + r4
-     7 │   return r6
+     2 │   r2 = context_project @count
+     3 │   r3 = context_load r2
+     5 │   r4 = context_project @count
+     6 │   r5 = context_load r4
+     7 │   r6 = context_project @count
+     8 │   r7 = context_load r6
+     9 │   r8 = 1 (r9) + r7
+    10 │   r10 = r3 + r8
+    11 │   return r10
 
     ; r0 (@count) : Int
-    ; r1 (v1) : Int
+    ; r1 (v2) : Int
     ; r2 (@count) : Int
-    ; r3 (v8) : Int
-    ; r4 (v12) : Int
-    ; r5 (v4) : Int
-    ; r6 (v6) : Int
-    ; r7 (v3) : Int
-    ; r8 (v11) : Int
-    ; r9 (@count) : Int
-    ; r10 (@count) : Int
+    ; r3 (v4) : Int
+    ; r4 (@count) : Int
+    ; r5 (v9) : Int
+    ; r6 (@count) : Int
+    ; r7 (v12) : Int
+    ; r8 (v13) : Int
+    ; r9 (v5) : Int
+    ; r10 (v7) : Int
     ; r11 ($x) : Int
     ; r12 (add_count(...)) : Int

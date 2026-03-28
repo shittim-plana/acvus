@@ -34,37 +34,37 @@ expression: ir
     33 │   r27 = T0 + r23
     34 │   return r27
 
-    ; r0 (v28) : Int
-    ; r1 (v29) : Int
-    ; r2 (v30) : String
+    ; r0 (v29) : Int
+    ; r1 (v30) : Int
+    ; r2 (v31) : String
     ; r3 (@data) : ((Int, Int), String)
-    ; r4 (v1) : ((Int, Int), String)
-    ; r5 (v6) : (Int, Int)
-    ; r6 (v8) : Int
-    ; r7 (v10) : Bool
-    ; r8 (v7) : Bool
-    ; r9 (v9) : Bool
-    ; r10 (v11) : Int
-    ; r11 (v13) : Bool
-    ; r12 (v12) : Bool
-    ; r13 (v14) : Bool
-    ; r14 (v5) : Bool
-    ; r15 (v15) : String
-    ; r16 (v17) : Bool
-    ; r17 (v16) : Bool
-    ; r18 (v18) : (Int, Int)
+    ; r4 (v2) : ((Int, Int), String)
+    ; r5 (v7) : (Int, Int)
+    ; r6 (v9) : Int
+    ; r7 (v11) : Bool
+    ; r8 (v8) : Bool
+    ; r9 (v10) : Bool
+    ; r10 (v12) : Int
+    ; r11 (v14) : Bool
+    ; r12 (v13) : Bool
+    ; r13 (v15) : Bool
+    ; r14 (v6) : Bool
+    ; r15 (v16) : String
+    ; r16 (v18) : Bool
+    ; r17 (v17) : Bool
+    ; r18 (v19) : (Int, Int)
     ; r19 (a) : Int
     ; r20 (b) : Int
     ; r21 (label) : String
-    ; r22 (v24) : String
-    ; r23 (v26) : String
-    ; r24 (v31) : Int
-    ; r25 (v32) : Int
-    ; r26 (v33) : String
-    ; r27 (v27) : String
-    ; r28 (v22) : String
-    ; r29 (@data) : ((Int, Int), String)
-    ; r30 (v25) : String
-    ; r31 (v2) : String
-    ; r32 (label) : String
-    ; r33 (v4) : ((Int, Int), String)
+    ; r22 (v25) : String
+    ; r23 (v27) : String
+    ; r24 (v32) : Int
+    ; r25 (v33) : Int
+    ; r26 (v34) : String
+    ; r27 (v28) : String
+    ; r28 (v3) : String
+    ; r29 (label) : String
+    ; r30 (v5) : ((Int, Int), String)
+    ; r31 (v23) : String
+    ; r32 (@data) : ((Int, Int), String)
+    ; r33 (v26) : String

@@ -3,17 +3,17 @@ source: acvus-mir-test/tests/inline.rs
 expression: ir
 ---
 === main ===
-     1 │   r0 = undef
-     3 │   r1 = r2 * 2 (r3)
-     5 │   r4 = r1 + 1 (r5)
-     6 │   return r4
+     2 │   r0 = 5 (r1) * 2 (r2)
+     3 │   var_store y = r0
+     4 │   r3 = var_load y
+     6 │   r4 = r3 + 1 (r5)
+     7 │   return r4
 
-    ; r0 (v8) : Int
-    ; r1 (v4) : Int
-    ; r2 ($x) : Int
-    ; r3 (v3) : Int
-    ; r4 (v7) : Int
-    ; r5 (v6) : Int
-    ; r6 (v0) : Int
-    ; r7 (y) : Int
-    ; r8 (compute(...)) : Int
+    ; r0 (v5) : Int
+    ; r1 (v1) : Int
+    ; r2 (v4) : Int
+    ; r3 (y) : Int
+    ; r4 (v8) : Int
+    ; r5 (v7) : Int
+    ; r6 ($x) : Int
+    ; r7 (compute(...)) : Int

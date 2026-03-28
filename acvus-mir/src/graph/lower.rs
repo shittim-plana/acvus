@@ -101,12 +101,6 @@ pub fn lower(
             })
             .collect();
 
-        // Build QualifiedRef → Ty map for SSA pass (callee effect resolution).
-        let fn_type_map: FxHashMap<QualifiedRef, Ty> = function_ids
-            .values()
-            .map(|(qref, ty)| (*qref, ty.clone()))
-            .collect();
-
         let lowerer = crate::lower::Lowerer::new(
             interner,
             resolution_clone.type_map,
@@ -114,38 +108,14 @@ pub fn lower(
             Freeze::new(context_ids),
             Freeze::new(function_ids),
         );
-        let (mut module, hints) = match parsed {
+        let (module, hints) = match parsed {
             ParsedSource::Script(script) => lowerer.lower_script(script),
             ParsedSource::Template(template) => lowerer.lower_template(template),
         };
 
-        // SSA pass: promote context/local variables to SSA form.
-        crate::optimize::ssa_pass::run(&mut module.main, &fn_type_map);
-        for closure in module.closures.values_mut() {
-            crate::optimize::ssa_pass::run(closure, &fn_type_map);
-        }
-
-        let validation_errors = crate::validate::validate(&module, &fn_type_map);
-        let result: Result<_, Vec<crate::error::MirError>> = if validation_errors.is_empty() {
-            Ok((module, hints))
-        } else {
-            Err(validation_errors
-                .into_iter()
-                .map(|e| e.into_mir_error())
-                .collect())
-        };
-
-        match result {
-            Ok((module, hints)) => {
-                modules.insert(func.qref, (module, hints));
-            }
-            Err(errs) => {
-                errors.push(LowerError {
-                    fn_id: func.qref,
-                    errors: errs,
-                });
-            }
-        }
+        // SSA + validate are handled by the optimize pipeline (graph/optimize.rs).
+        // Lower outputs pre-SSA MIR.
+        modules.insert(func.qref, (module, hints));
     }
 
     LowerResult { modules, errors }

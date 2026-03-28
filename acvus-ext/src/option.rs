@@ -11,22 +11,22 @@ use acvus_utils::Interner;
 
 fn h_unwrap(_: &Interner, (val,): (Value,), Uses(()): Uses<()>) -> Result<(Value, Defs<()>), RuntimeError> {
     match val {
-        Value::Variant { payload: Some(p), .. } => {
-            let inner = Arc::try_unwrap(p).unwrap_or_else(|arc| arc.as_ref().share());
+        Value::Variant(v) if v.payload.is_some() => {
+            let inner = Arc::try_unwrap(v.payload.unwrap()).unwrap_or_else(|arc| arc.as_ref().share());
             Ok((inner, Defs(())))
         }
-        Value::Variant { payload: None, .. } => panic!("unwrap: called on None"),
+        Value::Variant(_) => panic!("unwrap: called on None"),
         other => panic!("unwrap: expected Variant, got {other:?}"),
     }
 }
 
 fn h_unwrap_or(_: &Interner, (val, default): (Value, Value), Uses(()): Uses<()>) -> Result<(Value, Defs<()>), RuntimeError> {
     match val {
-        Value::Variant { payload: Some(p), .. } => {
-            let inner = Arc::try_unwrap(p).unwrap_or_else(|arc| arc.as_ref().share());
+        Value::Variant(v) if v.payload.is_some() => {
+            let inner = Arc::try_unwrap(v.payload.unwrap()).unwrap_or_else(|arc| arc.as_ref().share());
             Ok((inner, Defs(())))
         }
-        Value::Variant { payload: None, .. } => Ok((default, Defs(()))),
+        Value::Variant(_) => Ok((default, Defs(()))),
         other => panic!("unwrap_or: expected Variant, got {other:?}"),
     }
 }

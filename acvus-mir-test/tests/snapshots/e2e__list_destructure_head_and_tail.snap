@@ -37,32 +37,32 @@ expression: ir
     34 │   r21 = T0 + r18
     35 │   return r21
 
-    ; r0 (v25) : Int
-    ; r1 (v26) : Int
+    ; r0 (v26) : Int
+    ; r1 (v27) : Int
     ; r2 (@items) : List<Int>
-    ; r3 (v1) : List<Int>
-    ; r4 (v5) : Bool
-    ; r5 (v6) : Int
-    ; r6 (v8) : Bool
-    ; r7 (v7) : Bool
-    ; r8 (v9) : Int
-    ; r9 (v11) : Bool
-    ; r10 (v10) : Bool
-    ; r11 (v13) : Bool
-    ; r12 (v12) : Bool
+    ; r3 (v2) : List<Int>
+    ; r4 (v6) : Bool
+    ; r5 (v7) : Int
+    ; r6 (v9) : Bool
+    ; r7 (v8) : Bool
+    ; r8 (v10) : Int
+    ; r9 (v12) : Bool
+    ; r10 (v11) : Bool
+    ; r11 (v14) : Bool
+    ; r12 (v13) : Bool
     ; r13 (first) : Int
     ; r14 (last) : Int
     ; r15 (to_string(...)) : String
-    ; r16 (v19) : String
-    ; r17 (v22) : String
-    ; r18 (v23) : String
-    ; r19 (v29) : Int
-    ; r20 (v30) : Int
-    ; r21 (v24) : String
-    ; r22 (@items) : List<Int>
-    ; r23 (first) : Int
-    ; r24 (v20) : String
-    ; r25 (v4) : List<Int>
+    ; r16 (v20) : String
+    ; r17 (v23) : String
+    ; r18 (v24) : String
+    ; r19 (v30) : Int
+    ; r20 (v31) : Int
+    ; r21 (v25) : String
+    ; r22 (v3) : String
+    ; r23 (v22) : String
+    ; r24 (v17) : String
+    ; r25 (first) : Int
     ; r26 (v21) : String
-    ; r27 (v2) : String
-    ; r28 (v16) : String
+    ; r27 (v5) : List<Int>
+    ; r28 (@items) : List<Int>

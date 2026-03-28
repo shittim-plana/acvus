@@ -32,25 +32,25 @@ expression: ir
     28 │   r14 = T0 + r12
     29 │   return r14
 
-    ; r0 (v20) : Int
+    ; r0 (v21) : Int
     ; r1 (@opt) : Option<Int>
-    ; r2 (v1) : Option<Int>
-    ; r3 (v5) : Bool
-    ; r4 (v6) : Int
-    ; r5 (v7) : Bool
-    ; r6 (v9) : Bool
-    ; r7 (v8) : Bool
+    ; r2 (v2) : Option<Int>
+    ; r3 (v6) : Bool
+    ; r4 (v7) : Int
+    ; r5 (v8) : Bool
+    ; r6 (v10) : Bool
+    ; r7 (v9) : Bool
     ; r8 (v) : Int
     ; r9 (to_string(...)) : String
-    ; r10 (v14) : String
-    ; r11 (v17) : String
-    ; r12 (v18) : String
-    ; r13 (v22) : Int
-    ; r14 (v19) : String
-    ; r15 (v11) : String
-    ; r16 (@opt) : Option<Int>
-    ; r17 (v15) : String
-    ; r18 (v4) : Option<Int>
-    ; r19 (v2) : String
-    ; r20 (v) : Int
+    ; r10 (v15) : String
+    ; r11 (v18) : String
+    ; r12 (v19) : String
+    ; r13 (v23) : Int
+    ; r14 (v20) : String
+    ; r15 (v3) : String
+    ; r16 (v17) : String
+    ; r17 (v5) : Option<Int>
+    ; r18 (v) : Int
+    ; r19 (v12) : String
+    ; r20 (@opt) : Option<Int>
     ; r21 (v16) : String

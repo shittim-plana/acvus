@@ -7,6 +7,6 @@ expression: ir
      2 │   return r0
 
     ; r0 (fetch(...)) : String
-    ; r1 (v0) : Int
-    ; r2 (wrapper(...)) : String
-    ; r3 ($id) : Int
+    ; r1 (v1) : Int
+    ; r2 ($id) : Int
+    ; r3 (wrapper(...)) : String

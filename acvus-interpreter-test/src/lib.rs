@@ -6,10 +6,10 @@ use acvus_interpreter::{
     InterpreterContext, Registered, SequentialExecutor, Value,
 };
 use acvus_mir::graph::*;
-use acvus_mir::graph::{extract, lower as graph_lower};
+use acvus_mir::graph::{extract, lower as graph_lower, optimize as graph_optimize};
 use acvus_mir::ty::Ty;
 use acvus_utils::{Astr, Freeze, Interner};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 // ── Core pipeline ───────────────────────────────────────────────
 
@@ -121,11 +121,32 @@ pub fn compile_source_with_externs(
         panic!("compile failed:\n  {}", all_errors.join("\n  "));
     }
 
-    // Collect all modules as Executable::Module.
-    let modules: FxHashMap<QualifiedRef, Executable> = result
+    // Separate modules from hints for optimization.
+    let raw_modules: FxHashMap<QualifiedRef, acvus_mir::ir::MirModule> = result
+        .modules
+        .iter()
+        .map(|(qref, (module, _hints))| (*qref, module.clone()))
+        .collect();
+
+    // Run full optimization pipeline: SSA → Inline → SpawnSplit → Reorder → SSA → RegColor → Validate.
+    let opt_result = graph_optimize::optimize(raw_modules, &fn_types, &FxHashSet::default());
+
+    // Report validation errors from optimization.
+    for (qref, errs) in &opt_result.errors {
+        let fn_name = interner.resolve(qref.name);
+        for e in errs {
+            all_errors.push(format!("[validate:{fn_name}] {:?}", e));
+        }
+    }
+    if !all_errors.is_empty() {
+        panic!("optimize validation failed:\n  {}", all_errors.join("\n  "));
+    }
+
+    // Collect optimized modules as Executable::Module.
+    let modules: FxHashMap<QualifiedRef, Executable> = opt_result
         .modules
         .into_iter()
-        .map(|(qref, (module, _hints))| (qref, Executable::Module(module)))
+        .map(|(qref, module)| (qref, Executable::Module(module)))
         .collect();
 
     // Build context qref → name mapping.

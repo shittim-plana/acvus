@@ -9,20 +9,20 @@ expression: ir
      7 │   r6 = r5 * 2 (r7)
      8 │   return r6
 
-    ; r0 (v13) : Int
-    ; r1 (v0) : Int
-    ; r2 (v12) : Int
-    ; r3 (v16) : Int
-    ; r4 (v15) : Int
-    ; r5 (v10) : Int
-    ; r6 (v5) : Int
-    ; r7 (v4) : Int
+    ; r0 (v14) : Int
+    ; r1 (v1) : Int
+    ; r2 (v13) : Int
+    ; r3 (v17) : Int
+    ; r4 (v16) : Int
+    ; r5 (v11) : Int
+    ; r6 (v6) : Int
+    ; r7 (v5) : Int
     ; r8 ($x) : Int
-    ; r9 (b(...)) : Int
+    ; r9 ($x) : Int
     ; r10 ($x) : Int
-    ; r11 ($x) : Int
-    ; r12 (a(...)) : Int
-    ; r13 (c(...)) : Int
+    ; r11 (b(...)) : Int
+    ; r12 ($x) : Int
+    ; r13 ($x) : Int
     ; r14 (a(...)) : Int
-    ; r15 ($x) : Int
-    ; r16 ($x) : Int
+    ; r15 (c(...)) : Int
+    ; r16 (a(...)) : Int

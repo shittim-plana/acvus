@@ -20,7 +20,6 @@ pub fn defs(kind: &InstKind) -> SmallVec<[ValueId; 2]> {
         | InstKind::BinOp { dst, .. }
         | InstKind::UnaryOp { dst, .. }
         | InstKind::FieldGet { dst, .. }
-        | InstKind::FunctionCall { dst, .. }
         | InstKind::LoadFunction { dst, .. }
         | InstKind::MakeDeque { dst, .. }
         | InstKind::MakeObject { dst, .. }
@@ -41,9 +40,26 @@ pub fn defs(kind: &InstKind) -> SmallVec<[ValueId; 2]> {
         | InstKind::UnwrapVariant { dst, .. }
         | InstKind::Cast { dst, .. }
         | InstKind::Spawn { dst, .. }
-        | InstKind::Eval { dst, .. }
         | InstKind::Poison { dst }
         | InstKind::Undef { dst } => smallvec![*dst],
+
+        // FunctionCall defines dst + context_defs (new SSA values for contexts after call).
+        InstKind::FunctionCall {
+            dst, context_defs, ..
+        } => {
+            let mut d: SmallVec<[ValueId; 2]> = smallvec![*dst];
+            d.extend(context_defs.iter().map(|(_, v)| *v));
+            d
+        }
+
+        // Eval defines dst + context_defs.
+        InstKind::Eval {
+            dst, context_defs, ..
+        } => {
+            let mut d: SmallVec<[ValueId; 2]> = smallvec![*dst];
+            d.extend(context_defs.iter().map(|(_, v)| *v));
+            d
+        }
 
         InstKind::ListStep {
             dst, index_dst, ..
@@ -114,12 +130,11 @@ pub fn uses(kind: &InstKind) -> SmallVec<[ValueId; 4]> {
         // Closure
         InstKind::MakeClosure { captures, .. } => captures.iter().copied().collect(),
 
-        // Function calls
+        // Function calls — context_defs are DEFS, not uses.
         InstKind::FunctionCall {
             callee,
             args,
             context_uses,
-            context_defs,
             ..
         } => {
             let mut v: SmallVec<[ValueId; 4]> = SmallVec::new();
@@ -128,7 +143,6 @@ pub fn uses(kind: &InstKind) -> SmallVec<[ValueId; 4]> {
             }
             v.extend(args.iter().copied());
             v.extend(context_uses.iter().map(|(_, val)| *val));
-            v.extend(context_defs.iter().map(|(_, val)| *val));
             v
         }
         InstKind::Spawn {
@@ -145,13 +159,8 @@ pub fn uses(kind: &InstKind) -> SmallVec<[ValueId; 4]> {
             v.extend(context_uses.iter().map(|(_, val)| *val));
             v
         }
-        InstKind::Eval {
-            src, context_defs, ..
-        } => {
-            let mut v: SmallVec<[ValueId; 4]> = smallvec![*src];
-            v.extend(context_defs.iter().map(|(_, val)| *val));
-            v
-        }
+        // Eval — context_defs are DEFS, not uses.
+        InstKind::Eval { src, .. } => smallvec![*src],
 
         // Iterator
         InstKind::ListStep {
@@ -188,6 +197,7 @@ pub fn is_control_flow(kind: &InstKind) -> bool {
         InstKind::BlockLabel { .. }
             | InstKind::Jump { .. }
             | InstKind::JumpIf { .. }
+            | InstKind::ListStep { .. }
             | InstKind::Return(_)
     )
 }
