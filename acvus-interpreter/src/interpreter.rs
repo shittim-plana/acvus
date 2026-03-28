@@ -1462,5 +1462,10 @@ fn eval_cast(kind: CastKind, val: Value) -> Value {
             Value::Sequence(sc) => Value::iterator(sc.into_iter_handle()),
             other => panic!("SequenceToIterator on {other:?}"),
         },
+        CastKind::Extern(fn_id) => {
+            // ExternCast is lowered to a FunctionCall by the lowerer.
+            // If we reach here, the lowerer did not handle it — this is a bug.
+            panic!("ExternCast({fn_id:?}) should have been lowered to a FunctionCall")
+        }
     }
 }

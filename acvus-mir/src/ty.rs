@@ -1,10 +1,154 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use acvus_utils::{Astr, Interner};
+use acvus_utils::{Astr, Freeze, Interner};
 use rustc_hash::FxHashMap;
 
-use crate::graph::types::QualifiedRef;
+use crate::graph::types::{FunctionId, QualifiedRef};
+
+// ── UserDefined type system ──────────────────────────────────────────
+
+acvus_utils::declare_id!(pub UserDefinedId);
+
+/// Declaration of a user-defined type — the **single source of truth**
+/// for parameter count and constraints. Registered once, referenced by Id everywhere.
+#[derive(Debug, Clone)]
+pub struct UserDefinedDecl {
+    pub id: UserDefinedId,
+    pub name: String,
+    /// Type parameter constraints. `None` = unconstrained.
+    pub type_params: Vec<Option<ParamConstraint>>,
+    /// Effect parameter constraints. `None` = unconstrained.
+    pub effect_params: Vec<Option<EffectConstraint>>,
+}
+
+/// Immutable registry of all UserDefined type declarations and ExternCast rules.
+/// Built once at setup, then frozen via `Freeze<TypeRegistry>` and shared everywhere.
+///
+/// Contains:
+/// - `decls`: UserDefined type declarations (source of truth for params/constraints).
+/// - `cast_rules`: ExternCast coercion rules (UserDefined → other type).
+#[derive(Debug, Clone, Default)]
+pub struct TypeRegistry {
+    decls: FxHashMap<UserDefinedId, UserDefinedDecl>,
+    // pub(crate) for test access (ambiguity test bypasses register_cast).
+    pub(crate) cast_rules: Vec<CastRule>,
+}
+
+/// A coercion rule: `from` can be implicitly converted to `to`.
+/// Both `from` and `to` share Param/Var placeholders from the same TySubst,
+/// so instantiating them together links corresponding parameters.
+///
+/// Example: `Iterator<T, E> → List<T>`
+/// ```ignore
+/// let mut s = TySubst::new();
+/// let t = s.fresh_param();
+/// let e = s.fresh_effect_var();
+/// CastRule {
+///     from: Ty::UserDefined { id: ITER_ID, type_args: vec![t.clone()], effect_args: vec![e] },
+///     to: Ty::List(Box::new(t)),
+///     fn_id: collect_fn_id,
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct CastRule {
+    /// Source type pattern (must be UserDefined).
+    pub from: Ty,
+    /// Target type pattern (Param/Var placeholders shared with `from`).
+    pub to: Ty,
+    /// The pure ExternFn that performs the conversion.
+    pub fn_id: FunctionId,
+}
+
+/// Head constructor of a type — used for duplicate cast rule detection.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum TyHead {
+    Int, Float, String, Bool, Unit, Range, Byte,
+    List, Object, Tuple, Fn, Option, Enum,
+    Handle, Iterator, Sequence, Deque,
+    UserDefined(UserDefinedId),
+    Param, Error,
+}
+
+fn ty_head(ty: &Ty) -> TyHead {
+    match ty {
+        Ty::Int => TyHead::Int,
+        Ty::Float => TyHead::Float,
+        Ty::String => TyHead::String,
+        Ty::Bool => TyHead::Bool,
+        Ty::Unit => TyHead::Unit,
+        Ty::Range => TyHead::Range,
+        Ty::Byte => TyHead::Byte,
+        Ty::List(_) => TyHead::List,
+        Ty::Object(_) => TyHead::Object,
+        Ty::Tuple(_) => TyHead::Tuple,
+        Ty::Fn { .. } => TyHead::Fn,
+        Ty::Option(_) => TyHead::Option,
+        Ty::Enum { .. } => TyHead::Enum,
+        Ty::Handle(..) => TyHead::Handle,
+        Ty::Iterator(..) => TyHead::Iterator,
+        Ty::Sequence(..) => TyHead::Sequence,
+        Ty::Deque(..) => TyHead::Deque,
+        Ty::UserDefined { id, .. } => TyHead::UserDefined(*id),
+        Ty::Param { .. } => TyHead::Param,
+        Ty::Error(_) => TyHead::Error,
+    }
+}
+
+impl TypeRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    // ── Type declarations ───────────────────────────────────────────
+
+    /// Register a declaration. Panics on duplicate id.
+    pub fn register(&mut self, decl: UserDefinedDecl) {
+        let id = decl.id;
+        let prev = self.decls.insert(id, decl);
+        assert!(prev.is_none(), "duplicate UserDefinedId: {id:?}");
+    }
+
+    /// Look up a declaration by id. Panics if not found — missing decl is a bug.
+    pub fn get(&self, id: UserDefinedId) -> &UserDefinedDecl {
+        self.decls
+            .get(&id)
+            .unwrap_or_else(|| panic!("unknown UserDefinedId: {id:?}"))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&UserDefinedId, &UserDefinedDecl)> {
+        self.decls.iter()
+    }
+
+    // ── Cast rules ──────────────────────────────────────────────────
+
+    /// Register a cast rule. Panics on duplicate (same from_id + same to head).
+    pub fn register_cast(&mut self, rule: CastRule) {
+        let from_id = match &rule.from {
+            Ty::UserDefined { id, .. } => *id,
+            _ => panic!("CastRule from must be UserDefined"),
+        };
+        let to_head = ty_head(&rule.to);
+        for existing in &self.cast_rules {
+            let existing_from_id = match &existing.from {
+                Ty::UserDefined { id, .. } => *id,
+                _ => unreachable!(),
+            };
+            assert!(
+                !(existing_from_id == from_id && ty_head(&existing.to) == to_head),
+                "duplicate CastRule: same from UserDefined and same to head constructor"
+            );
+        }
+        self.cast_rules.push(rule);
+    }
+
+    /// Get all cast rules for a given source UserDefinedId.
+    pub fn cast_rules_for(&self, from_id: UserDefinedId) -> impl Iterator<Item = &CastRule> {
+        self.cast_rules.iter().filter(move |r| {
+            matches!(&r.from, Ty::UserDefined { id, .. } if *id == from_id)
+        })
+    }
+}
 
 // ── Effect target (Context vs Token) ────────────────────────────────
 
@@ -353,8 +497,15 @@ pub enum Ty {
         effect: Effect,
     },
     Byte,
-    /// Opaque type: user-defined, identified by name. No internal structure.
-    Opaque(std::string::String),
+    /// User-defined type, identified by `UserDefinedId`.
+    /// `type_args` and `effect_args` lengths must match the corresponding
+    /// `UserDefinedDecl` (source of truth). Initially filled with inference
+    /// variables (`Param`/`Var`), resolved to concrete types via unification.
+    UserDefined {
+        id: UserDefinedId,
+        type_args: Vec<Ty>,
+        effect_args: Vec<Effect>,
+    },
     Option(Box<Ty>),
     /// User-defined structural enum type.
     /// `name`: enum name (e.g. `Color`).
@@ -451,7 +602,7 @@ impl Ty {
             | Ty::Sequence(..)
             | Ty::Option(_)
             | Ty::Enum { .. } => Materiality::Composite,
-            Ty::Opaque(_) => Materiality::Ephemeral,
+            Ty::UserDefined { .. } => Materiality::Ephemeral,
             Ty::Param { .. } | Ty::Error(_) => Materiality::Ephemeral,
         }
     }
@@ -476,7 +627,7 @@ impl Ty {
             Ty::Fn { captures, ret, .. } => {
                 captures.iter().all(|c| c.is_pureable()) && ret.is_pureable()
             }
-            Ty::Opaque(_) => false,
+            Ty::UserDefined { .. } => false,
             Ty::Param { .. } | Ty::Error(_) => false,
         }
     }
@@ -503,7 +654,7 @@ impl Ty {
             | Ty::Sequence(_, _, _)
             | Ty::Handle(..)
             | Ty::Fn { .. }
-            | Ty::Opaque(_) => false,
+            | Ty::UserDefined { .. } => false,
             Ty::Param { .. } | Ty::Error(_) => false,
         }
     }
@@ -598,7 +749,18 @@ impl<'a> fmt::Display for TyDisplay<'a> {
                 write!(f, "Deque<{}, {}>", inner.display(self.interner), origin)
             }
             Ty::Option(inner) => write!(f, "Option<{}>", inner.display(self.interner)),
-            Ty::Opaque(name) => write!(f, "{name}"),
+            Ty::UserDefined { id, type_args, effect_args } => {
+                // Display requires TypeRegistry for name lookup.
+                // Fallback to id-based display here; TyDisplay with registry is preferred.
+                write!(f, "UserDefined({id:?}")?;
+                for arg in type_args {
+                    write!(f, ", {}", arg.display(self.interner))?;
+                }
+                for arg in effect_args {
+                    write!(f, ", {arg:?}")?;
+                }
+                write!(f, ")")
+            }
             Ty::Enum { name, .. } => write!(f, "{}", self.interner.resolve(*name)),
             Ty::Param { token: t, .. } => write!(f, "?{}", t.0),
             Ty::Error(_) => write!(f, "<error>"),
@@ -620,6 +782,7 @@ pub struct TySubstSnapshot {
     next_param: u32,
     next_origin: u32,
     next_effect: u32,
+    last_extern_cast: Option<FunctionId>,
 }
 
 /// Substitution table for type unification.
@@ -630,6 +793,10 @@ pub struct TySubst {
     next_param: u32,
     next_origin: u32,
     next_effect: u32,
+    /// Frozen type registry — provides ExternCast rules for `try_coerce`.
+    type_registry: Freeze<TypeRegistry>,
+    /// Set by try_coerce when an ExternCast matches. Read by typeck.
+    pub last_extern_cast: Option<FunctionId>,
 }
 
 impl Default for TySubst {
@@ -647,7 +814,22 @@ impl TySubst {
             next_param: 0,
             next_origin: 0,
             next_effect: 0,
+            type_registry: Freeze::default(),
+            last_extern_cast: None,
         }
+    }
+
+    /// Create a TySubst with a frozen TypeRegistry for ExternCast support.
+    pub fn with_registry(type_registry: Freeze<TypeRegistry>) -> Self {
+        Self {
+            type_registry,
+            ..Self::new()
+        }
+    }
+
+    /// Take the last ExternCast FunctionId recorded by `try_coerce`.
+    pub fn take_last_extern_cast(&mut self) -> Option<FunctionId> {
+        self.last_extern_cast.take()
     }
 
     /// Take a snapshot of the current state for later rollback.
@@ -659,6 +841,7 @@ impl TySubst {
             next_param: self.next_param,
             next_origin: self.next_origin,
             next_effect: self.next_effect,
+            last_extern_cast: self.last_extern_cast,
         }
     }
 
@@ -670,6 +853,7 @@ impl TySubst {
         self.next_param = snap.next_param;
         self.next_origin = snap.next_origin;
         self.next_effect = snap.next_effect;
+        self.last_extern_cast = snap.last_extern_cast;
     }
 
     /// Allocate a fresh origin VARIABLE for builtin signatures.
@@ -1042,6 +1226,11 @@ impl TySubst {
                     variants: resolved,
                 }
             }
+            Ty::UserDefined { id, type_args, effect_args } => Ty::UserDefined {
+                id: *id,
+                type_args: type_args.iter().map(|t| self.resolve(t)).collect(),
+                effect_args: effect_args.iter().map(|e| self.resolve_effect(e)).collect(),
+            },
             other => other.clone(),
         }
     }
@@ -1109,7 +1298,24 @@ impl TySubst {
             | (Ty::Range, Ty::Range)
             | (Ty::Byte, Ty::Byte) => Ok(()),
 
-            (Ty::Opaque(a), Ty::Opaque(b)) if a == b => Ok(()),
+            (
+                Ty::UserDefined { id: id_a, type_args: ta_args, effect_args: ea_args },
+                Ty::UserDefined { id: id_b, type_args: tb_args, effect_args: eb_args },
+            ) if id_a == id_b => {
+                // Same UserDefined type — unify args pairwise.
+                assert_eq!(ta_args.len(), tb_args.len(), "type_args length mismatch");
+                assert_eq!(ea_args.len(), eb_args.len(), "effect_args length mismatch");
+                let a_snap = a.clone();
+                let b_snap = b.clone();
+                for (a, b) in ta_args.into_iter().zip(tb_args.into_iter()) {
+                    self.unify(&a, &b, Polarity::Invariant)?;
+                }
+                for (ea, eb) in ea_args.into_iter().zip(eb_args.into_iter()) {
+                    self.unify_effects(&ea, &eb, pol)
+                        .map_err(|_| (a_snap.clone(), b_snap.clone()))?;
+                }
+                Ok(())
+            }
 
             // Structural enum unification: merge variant sets (open matching).
             (
@@ -1393,8 +1599,62 @@ impl TySubst {
                 self.unify(inner_s, inner_i, Polarity::Invariant)
                     .map_err(|_| ())
             }
+            // ExternCast: UserDefined → anything, via registered CastRule.
+            (Ty::UserDefined { id, .. }, _) => self.try_extern_cast(*id, sub, sup),
             _ => Err(()),
         }
+    }
+
+    /// Try to find a unique ExternCast rule for `from_id` that converts `sub` to `sup`.
+    /// Sets `last_extern_cast` on success for typeck to read.
+    fn try_extern_cast(
+        &mut self,
+        from_id: UserDefinedId,
+        sub: &Ty,
+        sup: &Ty,
+    ) -> Result<(), ()> {
+        // Collect matching rules (clone to avoid borrow conflict with &mut self).
+        let rules: Vec<CastRule> = self
+            .type_registry
+            .cast_rules
+            .iter()
+            .filter(|r| matches!(&r.from, Ty::UserDefined { id, .. } if *id == from_id))
+            .cloned()
+            .collect();
+
+        if rules.is_empty() {
+            return Err(());
+        }
+
+        // Phase 1: probe — find how many rules match (snapshot+rollback each).
+        let mut matched_idx = None;
+        for (i, rule) in rules.iter().enumerate() {
+            let snap = self.snapshot();
+            let inst_from = self.instantiate(&rule.from);
+            let inst_to = self.instantiate(&rule.to);
+            let ok = self.unify(sub, &inst_from, Polarity::Invariant).is_ok()
+                && self.unify(&inst_to, sup, Polarity::Invariant).is_ok();
+            self.rollback(snap);
+            if ok {
+                if matched_idx.is_some() {
+                    return Err(()); // ambiguity (Case 2)
+                }
+                matched_idx = Some(i);
+            }
+        }
+
+        // Phase 2: apply the unique match (no snapshot — bindings persist).
+        let idx = matched_idx.ok_or(())?;
+        let rule = &rules[idx];
+        let fn_id = rule.fn_id;
+        let inst_from = self.instantiate(&rule.from);
+        let inst_to = self.instantiate(&rule.to);
+        self.unify(sub, &inst_from, Polarity::Invariant)
+            .map_err(|_| ())?;
+        self.unify(&inst_to, sup, Polarity::Invariant)
+            .map_err(|_| ())?;
+        self.last_extern_cast = Some(fn_id);
+        Ok(())
     }
 
     /// Instantiate a polymorphic type: replace all `Param`, `Effect::Var`,
@@ -1618,6 +1878,15 @@ mod tests {
     use acvus_utils::Interner;
 
     use Polarity::*;
+
+    /// Test helper: create a `Ty::UserDefined` with a fresh id and no type/effect args.
+    fn test_user_defined() -> Ty {
+        Ty::UserDefined {
+            id: UserDefinedId::alloc(),
+            type_args: vec![],
+            effect_args: vec![],
+        }
+    }
 
     /// Test helper: wrap a `Ty` into a `Param` with a dummy name.
     /// Uses a thread-local interner so all dummy names share the same interner id.
@@ -3756,6 +4025,377 @@ mod tests {
         assert!(s.unify_origins(o1, o2).is_err());
     }
 
+    // ── UserDefined unification tests ───────────────────────────────
+
+    fn ud(id: UserDefinedId, type_args: Vec<Ty>, effect_args: Vec<Effect>) -> Ty {
+        Ty::UserDefined { id, type_args, effect_args }
+    }
+
+    // -- Completeness: valid UserDefined unifications --
+
+    #[test]
+    fn user_defined_same_id_empty_args_unifies() {
+        let mut s = TySubst::new();
+        let id = UserDefinedId::alloc();
+        assert!(s.unify(&ud(id, vec![], vec![]), &ud(id, vec![], vec![]), Invariant).is_ok());
+    }
+
+    #[test]
+    fn user_defined_same_id_concrete_type_args_unifies() {
+        let mut s = TySubst::new();
+        let id = UserDefinedId::alloc();
+        assert!(s.unify(
+            &ud(id, vec![Ty::Int], vec![]),
+            &ud(id, vec![Ty::Int], vec![]),
+            Invariant,
+        ).is_ok());
+    }
+
+    #[test]
+    fn user_defined_param_type_arg_resolved_via_unify() {
+        let mut s = TySubst::new();
+        let id = UserDefinedId::alloc();
+        let p = s.fresh_param();
+        assert!(s.unify(
+            &ud(id, vec![p.clone()], vec![]),
+            &ud(id, vec![Ty::Int], vec![]),
+            Invariant,
+        ).is_ok());
+        assert_eq!(s.resolve(&p), Ty::Int);
+    }
+
+    #[test]
+    fn user_defined_effect_var_resolved_via_unify() {
+        let mut s = TySubst::new();
+        let id = UserDefinedId::alloc();
+        let e = s.fresh_effect_var();
+        assert!(s.unify(
+            &ud(id, vec![], vec![e.clone()]),
+            &ud(id, vec![], vec![Effect::pure()]),
+            Covariant,
+        ).is_ok());
+        assert_eq!(s.resolve_effect(&e), Effect::pure());
+    }
+
+    #[test]
+    fn user_defined_nested_type_arg_unifies() {
+        // UserDefined<List<Param>> vs UserDefined<List<Int>> → resolves Param to Int
+        let mut s = TySubst::new();
+        let id = UserDefinedId::alloc();
+        let p = s.fresh_param();
+        assert!(s.unify(
+            &ud(id, vec![Ty::List(Box::new(p.clone()))], vec![]),
+            &ud(id, vec![Ty::List(Box::new(Ty::Int))], vec![]),
+            Invariant,
+        ).is_ok());
+        assert_eq!(s.resolve(&p), Ty::Int);
+    }
+
+    // -- Soundness: invalid UserDefined unifications --
+
+    #[test]
+    fn user_defined_different_id_fails() {
+        let mut s = TySubst::new();
+        let id_a = UserDefinedId::alloc();
+        let id_b = UserDefinedId::alloc();
+        assert!(s.unify(&ud(id_a, vec![], vec![]), &ud(id_b, vec![], vec![]), Invariant).is_err());
+    }
+
+    #[test]
+    fn user_defined_type_arg_mismatch_fails() {
+        let mut s = TySubst::new();
+        let id = UserDefinedId::alloc();
+        assert!(s.unify(
+            &ud(id, vec![Ty::Int], vec![]),
+            &ud(id, vec![Ty::String], vec![]),
+            Invariant,
+        ).is_err());
+    }
+
+    #[test]
+    fn user_defined_effect_arg_mismatch_fails() {
+        let mut s = TySubst::new();
+        let id = UserDefinedId::alloc();
+        assert!(s.unify(
+            &ud(id, vec![], vec![Effect::pure()]),
+            &ud(id, vec![], vec![Effect::io()]),
+            Invariant,
+        ).is_err());
+    }
+
+    #[test]
+    fn user_defined_vs_other_ty_fails() {
+        let mut s = TySubst::new();
+        let id = UserDefinedId::alloc();
+        assert!(s.unify(&ud(id, vec![], vec![]), &Ty::Int, Invariant).is_err());
+        assert!(s.unify(&Ty::String, &ud(id, vec![], vec![]), Invariant).is_err());
+    }
+
+    // -- Resolve --
+
+    #[test]
+    fn user_defined_resolve_substitutes_args() {
+        let mut s = TySubst::new();
+        let id = UserDefinedId::alloc();
+        let p = s.fresh_param();
+        let e = s.fresh_effect_var();
+        let ty = ud(id, vec![p.clone()], vec![e.clone()]);
+
+        // Bind via unification
+        assert!(s.unify(&p, &Ty::Int, Invariant).is_ok());
+        assert!(s.unify_effects(&e, &Effect::io(), Covariant).is_ok());
+
+        let resolved = s.resolve(&ty);
+        match resolved {
+            Ty::UserDefined { id: rid, type_args, effect_args } => {
+                assert_eq!(rid, id);
+                assert_eq!(type_args, vec![Ty::Int]);
+                assert_eq!(effect_args, vec![Effect::io()]);
+            }
+            _ => panic!("expected UserDefined, got {resolved:?}"),
+        }
+    }
+
+    #[test]
+    fn user_defined_inside_list_resolves() {
+        let mut s = TySubst::new();
+        let id = UserDefinedId::alloc();
+        let p = s.fresh_param();
+        let ty = Ty::List(Box::new(ud(id, vec![p.clone()], vec![])));
+        assert!(s.unify(&p, &Ty::Int, Invariant).is_ok());
+        match s.resolve(&ty) {
+            Ty::List(inner) => match *inner {
+                Ty::UserDefined { type_args, .. } => assert_eq!(type_args, vec![Ty::Int]),
+                other => panic!("expected UserDefined, got {other:?}"),
+            },
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    // -- TypeRegistry --
+
+    #[test]
+    fn type_registry_register_and_get() {
+        let mut reg = TypeRegistry::new();
+        let id = UserDefinedId::alloc();
+        reg.register(UserDefinedDecl {
+            id,
+            name: "TestType".into(),
+            type_params: vec![None],
+            effect_params: vec![],
+        });
+        let decl = reg.get(id);
+        assert_eq!(decl.name, "TestType");
+        assert_eq!(decl.type_params.len(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate")]
+    fn type_registry_duplicate_panics() {
+        let mut reg = TypeRegistry::new();
+        let id = UserDefinedId::alloc();
+        reg.register(UserDefinedDecl { id, name: "A".into(), type_params: vec![], effect_params: vec![] });
+        reg.register(UserDefinedDecl { id, name: "B".into(), type_params: vec![], effect_params: vec![] });
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown")]
+    fn type_registry_unknown_id_panics() {
+        let reg = TypeRegistry::new();
+        let id = UserDefinedId::alloc();
+        reg.get(id);
+    }
+
+    // ── ExternCast tests ────────────────────────────────────────────
+
+    /// Helper: create a CastRule and a TySubst with the rule registered.
+    /// Returns (from_id, fn_id, subst).
+    fn make_cast_subst(
+        type_param_count: usize,
+        build_to: impl FnOnce(&[Ty]) -> Ty,
+    ) -> (UserDefinedId, FunctionId, TySubst) {
+        let id = UserDefinedId::alloc();
+        let fn_id = crate::graph::types::FunctionId::alloc();
+        let mut rule_subst = TySubst::new();
+        let params: Vec<Ty> = (0..type_param_count).map(|_| rule_subst.fresh_param()).collect();
+        let from = Ty::UserDefined {
+            id,
+            type_args: params.clone(),
+            effect_args: vec![],
+        };
+        let to = build_to(&params);
+        let mut reg = TypeRegistry::new();
+        reg.register(UserDefinedDecl {
+            id,
+            name: "TestType".into(),
+            type_params: vec![None; type_param_count],
+            effect_params: vec![],
+        });
+        reg.register_cast(CastRule { from, to, fn_id });
+        let subst = TySubst::with_registry(Freeze::new(reg));
+        (id, fn_id, subst)
+    }
+
+    // -- Completeness: valid ExternCast coercions --
+
+    #[test]
+    fn extern_cast_basic_coercion() {
+        // UserDefined(A, [T]) → List<T>
+        let (id, fn_id, mut s) = make_cast_subst(1, |p| Ty::List(Box::new(p[0].clone())));
+
+        let from = Ty::UserDefined { id, type_args: vec![Ty::Int], effect_args: vec![] };
+        let to = Ty::List(Box::new(Ty::Int));
+        assert!(s.unify(&from, &to, Covariant).is_ok());
+        assert_eq!(s.last_extern_cast, Some(fn_id));
+    }
+
+    #[test]
+    fn extern_cast_with_param_resolution() {
+        // UserDefined(A, [T]) → List<T>, where T is a fresh param on the consumer side
+        let (id, _fn_id, mut s) = make_cast_subst(1, |p| Ty::List(Box::new(p[0].clone())));
+
+        let from = Ty::UserDefined { id, type_args: vec![Ty::Int], effect_args: vec![] };
+        let consumer_param = s.fresh_param();
+        let to = Ty::List(Box::new(consumer_param.clone()));
+        assert!(s.unify(&from, &to, Covariant).is_ok());
+        assert_eq!(s.resolve(&consumer_param), Ty::Int);
+    }
+
+    #[test]
+    fn extern_cast_no_type_params() {
+        // UserDefined(A, []) → Int
+        let (id, _fn_id, mut s) = make_cast_subst(0, |_| Ty::Int);
+
+        let from = Ty::UserDefined { id, type_args: vec![], effect_args: vec![] };
+        assert!(s.unify(&from, &Ty::Int, Covariant).is_ok());
+    }
+
+    // -- Soundness: invalid ExternCast --
+
+    #[test]
+    fn extern_cast_wrong_target_fails() {
+        // Rule: A → List<T>, but expected String
+        let (id, _fn_id, mut s) = make_cast_subst(1, |p| Ty::List(Box::new(p[0].clone())));
+
+        let from = Ty::UserDefined { id, type_args: vec![Ty::Int], effect_args: vec![] };
+        assert!(s.unify(&from, &Ty::String, Covariant).is_err());
+    }
+
+    #[test]
+    fn extern_cast_no_rule_fails() {
+        // No cast rules registered
+        let id = UserDefinedId::alloc();
+        let mut s = TySubst::new();
+
+        let from = Ty::UserDefined { id, type_args: vec![], effect_args: vec![] };
+        assert!(s.unify(&from, &Ty::Int, Covariant).is_err());
+    }
+
+    #[test]
+    fn extern_cast_invariant_not_attempted() {
+        // ExternCast only works in covariant/contravariant, not invariant
+        let (id, _fn_id, mut s) = make_cast_subst(0, |_| Ty::Int);
+
+        let from = Ty::UserDefined { id, type_args: vec![], effect_args: vec![] };
+        assert!(s.unify(&from, &Ty::Int, Invariant).is_err());
+    }
+
+    // -- Ambiguity --
+
+    #[test]
+    fn extern_cast_ambiguity_rejected() {
+        // Bypass TypeRegistry duplicate check — inject two rules with same to head
+        // directly into the type_registry to test try_extern_cast ambiguity detection.
+        let id = UserDefinedId::alloc();
+        let fn_id_a = FunctionId::alloc();
+        let fn_id_b = FunctionId::alloc();
+
+        let mut s1 = TySubst::new();
+        let t1 = s1.fresh_param();
+        let rule_a = CastRule {
+            from: Ty::UserDefined { id, type_args: vec![t1.clone()], effect_args: vec![] },
+            to: Ty::List(Box::new(t1)),
+            fn_id: fn_id_a,
+        };
+        let mut s2 = TySubst::new();
+        let t2 = s2.fresh_param();
+        let rule_b = CastRule {
+            from: Ty::UserDefined { id, type_args: vec![t2.clone()], effect_args: vec![] },
+            to: Ty::List(Box::new(t2)),
+            fn_id: fn_id_b,
+        };
+
+        // Build registry manually (bypassing register_cast duplicate check)
+        let mut reg = TypeRegistry::new();
+        reg.register(UserDefinedDecl {
+            id, name: "A".into(), type_params: vec![None], effect_params: vec![],
+        });
+        reg.cast_rules.push(rule_a);
+        reg.cast_rules.push(rule_b);
+        let mut s = TySubst::with_registry(Freeze::new(reg));
+
+        let from = Ty::UserDefined { id, type_args: vec![Ty::Int], effect_args: vec![] };
+        assert!(s.unify(&from, &Ty::List(Box::new(Ty::Int)), Covariant).is_err());
+    }
+
+    // -- TypeRegistry cast rules --
+
+    #[test]
+    #[should_panic(expected = "duplicate")]
+    fn cast_registry_duplicate_panics() {
+        let id = UserDefinedId::alloc();
+        let fn_id_a = FunctionId::alloc();
+        let fn_id_b = FunctionId::alloc();
+        let mut s = TySubst::new();
+        let t = s.fresh_param();
+
+        let mut reg = TypeRegistry::new();
+        reg.register(UserDefinedDecl {
+            id, name: "A".into(), type_params: vec![None], effect_params: vec![],
+        });
+        reg.register_cast(CastRule {
+            from: Ty::UserDefined { id, type_args: vec![t.clone()], effect_args: vec![] },
+            to: Ty::List(Box::new(t.clone())),
+            fn_id: fn_id_a,
+        });
+        // Same from_id + same to head (List) → panic
+        let mut s2 = TySubst::new();
+        let t2 = s2.fresh_param();
+        reg.register_cast(CastRule {
+            from: Ty::UserDefined { id, type_args: vec![t2.clone()], effect_args: vec![] },
+            to: Ty::List(Box::new(t2)),
+            fn_id: fn_id_b,
+        });
+    }
+
+    #[test]
+    fn cast_registry_different_to_head_ok() {
+        let id = UserDefinedId::alloc();
+        let fn_id_a = FunctionId::alloc();
+        let fn_id_b = FunctionId::alloc();
+
+        let mut reg = TypeRegistry::new();
+        reg.register(UserDefinedDecl {
+            id, name: "A".into(), type_params: vec![None], effect_params: vec![],
+        });
+        let mut s1 = TySubst::new();
+        let t1 = s1.fresh_param();
+        reg.register_cast(CastRule {
+            from: Ty::UserDefined { id, type_args: vec![t1.clone()], effect_args: vec![] },
+            to: Ty::List(Box::new(t1)),
+            fn_id: fn_id_a,
+        });
+        // Different to head (Option vs List) → ok
+        let mut s2 = TySubst::new();
+        let t2 = s2.fresh_param();
+        reg.register_cast(CastRule {
+            from: Ty::UserDefined { id, type_args: vec![t2.clone()], effect_args: vec![] },
+            to: Ty::Option(Box::new(t2)),
+            fn_id: fn_id_b,
+        });
+        assert_eq!(reg.cast_rules_for(id).count(), 2);
+    }
+
     // ── Purity tier tests ──────────────────────────────────────────────
 
     #[test]
@@ -3841,9 +4481,9 @@ mod tests {
     }
 
     #[test]
-    fn purity_opaque_is_unpure() {
+    fn purity_user_defined_is_unpure() {
         assert_eq!(
-            Ty::Opaque("HttpResponse".into()).materiality(),
+            test_user_defined().materiality(),
             Materiality::Ephemeral
         );
     }
@@ -3909,22 +4549,22 @@ mod tests {
     }
 
     #[test]
-    fn pureable_list_of_fn_with_opaque_capture() {
-        // Fn with Opaque capture → not pureable, so List<Fn> is also not pureable.
+    fn pureable_list_of_fn_with_user_defined_capture() {
+        // Fn with UserDefined capture → not pureable, so List<Fn> is also not pureable.
         let list_fn = Ty::List(Box::new(Ty::Fn {
             params: vec![tp(Ty::Int)],
             ret: Box::new(Ty::Int),
 
             effect: Effect::pure(),
-            captures: vec![Ty::Opaque("Handle".into())],
+            captures: vec![test_user_defined()],
         }));
         assert!(!list_fn.is_pureable());
     }
 
     #[test]
-    fn pureable_list_of_opaque_is_not_pureable() {
-        let list_opaque = Ty::List(Box::new(Ty::Opaque("Handle".into())));
-        assert!(!list_opaque.is_pureable());
+    fn pureable_list_of_user_defined_is_not_pureable() {
+        let list_ud = Ty::List(Box::new(test_user_defined()));
+        assert!(!list_ud.is_pureable());
     }
 
     #[test]
@@ -3949,14 +4589,14 @@ mod tests {
     }
 
     #[test]
-    fn pureable_nested_list_of_fn_opaque_capture() {
-        // List<List<Fn(Int) -> Int>> with Opaque capture — not pureable
+    fn pureable_nested_list_of_fn_user_defined_capture() {
+        // List<List<Fn(Int) -> Int>> with UserDefined capture — not pureable
         let fn_ty = Ty::Fn {
             params: vec![tp(Ty::Int)],
             ret: Box::new(Ty::Int),
 
             effect: Effect::pure(),
-            captures: vec![Ty::Opaque("X".into())],
+            captures: vec![test_user_defined()],
         };
         let nested = Ty::List(Box::new(Ty::List(Box::new(fn_ty))));
         assert!(!nested.is_pureable());
@@ -3970,10 +4610,10 @@ mod tests {
     }
 
     #[test]
-    fn pureable_deque_of_opaque() {
+    fn pureable_deque_of_user_defined() {
         let mut s = TySubst::new();
         let o = s.fresh_concrete_origin();
-        assert!(!Ty::Deque(Box::new(Ty::Opaque("X".into())), o).is_pureable());
+        assert!(!Ty::Deque(Box::new(test_user_defined()), o).is_pureable());
     }
 
     #[test]
@@ -3995,10 +4635,10 @@ mod tests {
     }
 
     #[test]
-    fn pureable_iterator_of_fn_with_opaque() {
+    fn pureable_iterator_of_fn_with_user_defined() {
         let fn_ty = Ty::Fn {
             params: vec![],
-            ret: Box::new(Ty::Opaque("X".into())),
+            ret: Box::new(test_user_defined()),
 
             effect: Effect::pure(),
             captures: vec![],
@@ -4019,8 +4659,8 @@ mod tests {
     }
 
     #[test]
-    fn pureable_option_of_opaque() {
-        assert!(!Ty::Option(Box::new(Ty::Opaque("X".into()))).is_pureable());
+    fn pureable_option_of_user_defined() {
+        assert!(!Ty::Option(Box::new(test_user_defined())).is_pureable());
     }
 
     #[test]
@@ -4042,20 +4682,20 @@ mod tests {
     }
 
     #[test]
-    fn pureable_tuple_with_fn_opaque_capture() {
+    fn pureable_tuple_with_fn_user_defined_capture() {
         let fn_ty = Ty::Fn {
             params: vec![],
             ret: Box::new(Ty::Unit),
 
             effect: Effect::pure(),
-            captures: vec![Ty::Opaque("X".into())],
+            captures: vec![test_user_defined()],
         };
         assert!(!Ty::Tuple(vec![Ty::Int, fn_ty]).is_pureable());
     }
 
     #[test]
-    fn pureable_tuple_with_opaque() {
-        assert!(!Ty::Tuple(vec![Ty::Int, Ty::Opaque("X".into())]).is_pureable());
+    fn pureable_tuple_with_user_defined() {
+        assert!(!Ty::Tuple(vec![Ty::Int, test_user_defined()]).is_pureable());
     }
 
     #[test]
@@ -4087,14 +4727,14 @@ mod tests {
     }
 
     #[test]
-    fn pureable_object_with_fn_opaque_capture() {
+    fn pureable_object_with_fn_user_defined_capture() {
         let i = Interner::new();
         let fn_ty = Ty::Fn {
             params: vec![tp(Ty::Int)],
             ret: Box::new(Ty::Int),
 
             effect: Effect::pure(),
-            captures: vec![Ty::Opaque("X".into())],
+            captures: vec![test_user_defined()],
         };
         let obj = Ty::Object(FxHashMap::from_iter([
             (i.intern("x"), Ty::Int),
@@ -4104,11 +4744,11 @@ mod tests {
     }
 
     #[test]
-    fn pureable_object_with_opaque_value() {
+    fn pureable_object_with_user_defined_value() {
         let i = Interner::new();
         let obj = Ty::Object(FxHashMap::from_iter([(
             i.intern("handle"),
-            Ty::Opaque("Handle".into()),
+            test_user_defined(),
         )]));
         assert!(!obj.is_pureable());
     }
@@ -4158,14 +4798,14 @@ mod tests {
     }
 
     #[test]
-    fn pureable_enum_with_fn_opaque_capture_payload() {
+    fn pureable_enum_with_fn_user_defined_capture_payload() {
         let i = Interner::new();
         let fn_ty = Ty::Fn {
             params: vec![],
             ret: Box::new(Ty::Unit),
 
             effect: Effect::pure(),
-            captures: vec![Ty::Opaque("X".into())],
+            captures: vec![test_user_defined()],
         };
         let enum_ty = Ty::Enum {
             name: i.intern("Wrap"),
@@ -4178,13 +4818,13 @@ mod tests {
     }
 
     #[test]
-    fn pureable_enum_with_opaque_payload() {
+    fn pureable_enum_with_user_defined_payload() {
         let i = Interner::new();
         let enum_ty = Ty::Enum {
             name: i.intern("Wrap"),
             variants: FxHashMap::from_iter([(
                 i.intern("Some"),
-                Some(Box::new(Ty::Opaque("X".into()))),
+                Some(Box::new(test_user_defined())),
             )]),
         };
         assert!(!enum_ty.is_pureable());
@@ -4204,14 +4844,14 @@ mod tests {
     }
 
     #[test]
-    fn pureable_fn_with_opaque_capture() {
-        // Fn with captures=[Opaque] → not pureable
+    fn pureable_fn_with_user_defined_capture() {
+        // Fn with captures=[UserDefined] → not pureable
         let fn_ty = Ty::Fn {
             params: vec![tp(Ty::Int)],
             ret: Box::new(Ty::Bool),
 
             effect: Effect::pure(),
-            captures: vec![Ty::Opaque("Handle".into())],
+            captures: vec![test_user_defined()],
         };
         assert!(!fn_ty.is_pureable());
     }
@@ -4237,11 +4877,11 @@ mod tests {
     }
 
     #[test]
-    fn pureable_fn_with_opaque_ret() {
-        // Fn returning Opaque → not pureable
+    fn pureable_fn_with_user_defined_ret() {
+        // Fn returning UserDefined → not pureable
         let fn_ty = Ty::Fn {
             params: vec![tp(Ty::Int)],
-            ret: Box::new(Ty::Opaque("Handle".into())),
+            ret: Box::new(test_user_defined()),
 
             effect: Effect::pure(),
             captures: vec![],
@@ -4270,7 +4910,7 @@ mod tests {
             ret: Box::new(Ty::Int),
 
             effect: Effect::pure(),
-            captures: vec![Ty::Opaque("X".into())], // inner Fn captures Opaque
+            captures: vec![test_user_defined()], // inner Fn captures UserDefined
         };
         let fn_ty = Ty::Fn {
             params: vec![],
@@ -4283,9 +4923,9 @@ mod tests {
     }
 
     #[test]
-    fn pureable_opaque_never() {
-        assert!(!Ty::Opaque("Conn".into()).is_pureable());
-        assert!(!Ty::Opaque("Handle".into()).is_pureable());
+    fn pureable_user_defined_never() {
+        assert!(!test_user_defined().is_pureable());
+        assert!(!test_user_defined().is_pureable());
     }
 
     #[test]
@@ -4300,9 +4940,9 @@ mod tests {
     }
 
     #[test]
-    fn pureable_mixed_tuple_list_opaque() {
-        // (Int, List<Opaque>) — not pureable
-        let ty = Ty::Tuple(vec![Ty::Int, Ty::List(Box::new(Ty::Opaque("X".into())))]);
+    fn pureable_mixed_tuple_list_user_defined() {
+        // (Int, List<UserDefined>) — not pureable
+        let ty = Ty::Tuple(vec![Ty::Int, Ty::List(Box::new(test_user_defined()))]);
         assert!(!ty.is_pureable());
     }
 
@@ -4315,9 +4955,9 @@ mod tests {
     }
 
     #[test]
-    fn pureable_deeply_nested_with_opaque_leaf() {
-        // List<Option<Tuple<(Int, Opaque)>>> — not pureable
-        let inner = Ty::Tuple(vec![Ty::Int, Ty::Opaque("X".into())]);
+    fn pureable_deeply_nested_with_user_defined_leaf() {
+        // List<Option<Tuple<(Int, UserDefined)>>> — not pureable
+        let inner = Ty::Tuple(vec![Ty::Int, test_user_defined()]);
         let ty = Ty::List(Box::new(Ty::Option(Box::new(inner))));
         assert!(!ty.is_pureable());
     }
@@ -4832,11 +5472,11 @@ mod tests {
         assert!(!fn_ty.is_materializable());
     }
 
-    // -- Opaque: never storable --
+    // -- UserDefined: never storable --
 
     #[test]
-    fn not_storable_opaque() {
-        assert!(!Ty::Opaque("Connection".into()).is_materializable());
+    fn not_storable_user_defined() {
+        assert!(!test_user_defined().is_materializable());
     }
 
     // -- Recursive: container with non-storable inner --
@@ -4854,8 +5494,8 @@ mod tests {
     }
 
     #[test]
-    fn not_storable_list_of_opaque() {
-        assert!(!Ty::List(Box::new(Ty::Opaque("X".into()))).is_materializable());
+    fn not_storable_list_of_user_defined() {
+        assert!(!Ty::List(Box::new(test_user_defined())).is_materializable());
     }
 
     #[test]

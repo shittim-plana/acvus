@@ -15,7 +15,7 @@ use acvus_utils::Interner;
 use serde::{Deserialize, Serialize};
 
 use crate::graph::QualifiedRef;
-use crate::ty::{Effect, EffectSet, EffectTarget, Origin, TokenId, Ty};
+use crate::ty::{Effect, EffectSet, EffectTarget, Origin, TokenId, Ty, UserDefinedId};
 
 // ── Serializable Effect (mirrors ty::Effect without Astr) ────────────
 
@@ -154,8 +154,10 @@ pub enum SerTy {
         ret: Box<SerTy>,
         effect: SerEffect,
     },
-    Opaque {
-        name: std::string::String,
+    UserDefined {
+        id: UserDefinedId,
+        type_args: Vec<SerTy>,
+        effect_args: Vec<SerEffect>,
     },
     Option {
         inner: Box<SerTy>,
@@ -213,7 +215,15 @@ impl Ty {
                 ret: Box::new(ret.to_ser(interner)),
                 effect: effect.to_ser(interner),
             },
-            Ty::Opaque(name) => SerTy::Opaque { name: name.clone() },
+            Ty::UserDefined {
+                id,
+                type_args,
+                effect_args,
+            } => SerTy::UserDefined {
+                id: *id,
+                type_args: type_args.iter().map(|t| t.to_ser(interner)).collect(),
+                effect_args: effect_args.iter().map(|e| e.to_ser(interner)).collect(),
+            },
             Ty::Option(inner) => SerTy::Option {
                 inner: Box::new(inner.to_ser(interner)),
             },
@@ -284,7 +294,15 @@ impl SerTy {
                 captures: vec![],
                 effect: effect.to_effect(interner),
             },
-            SerTy::Opaque { name } => Ty::Opaque(name.clone()),
+            SerTy::UserDefined {
+                id,
+                type_args,
+                effect_args,
+            } => Ty::UserDefined {
+                id: *id,
+                type_args: type_args.iter().map(|t| t.to_ty(interner)).collect(),
+                effect_args: effect_args.iter().map(|e| e.to_effect(interner)).collect(),
+            },
             SerTy::Option { inner } => Ty::Option(Box::new(inner.to_ty(interner))),
             SerTy::Enum { name, variants } => Ty::Enum {
                 name: interner.intern(name),

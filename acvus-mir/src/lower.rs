@@ -33,6 +33,8 @@ pub struct Lowerer<'a> {
     context_ids: Freeze<FxHashMap<QualifiedRef, Ty>>,
     /// Function name → (FunctionId, Ty).
     function_ids: Freeze<FxHashMap<Astr, (FunctionId, Ty)>>,
+    /// FunctionId → return type (for ExternCast lowering). Built once from function_ids.
+    fn_ret_types: FxHashMap<FunctionId, Ty>,
     /// ValueIds that are projections (not yet materialized values).
     /// FieldAccess on a projection produces another projection.
     /// Use `ensure_loaded` to materialize.
@@ -734,24 +736,55 @@ impl<'a> Lowerer<'a> {
     fn maybe_cast(&mut self, id: AstId, span: Span, val: ValueId) -> ValueId {
         let val = self.materialize(val, span);
         if let Some(&kind) = self.coercion_lookup.get(&id) {
-            let src_ty = self
-                .body
-                .val_types
-                .get(&val)
-                .cloned()
-                .unwrap_or(Ty::error());
-            let dst_ty = kind.result_ty(&src_ty);
-            let cast_dst = self.alloc_val();
-            self.set_val_type(cast_dst, dst_ty);
-            self.emit_inst(
-                span,
-                InstKind::Cast {
-                    dst: cast_dst,
-                    src: val,
-                    kind,
-                },
-            );
-            cast_dst
+            match kind {
+                CastKind::Extern(fn_id) => {
+                    // ExternCast → lower as FunctionCall (pure, 1 arg, no context).
+                    // Determine result type from the cast function's return type.
+                    let ret_ty = self
+                        .function_ids
+                        .values()
+                        .find(|(id, _)| *id == fn_id)
+                        .and_then(|(_, ty)| match ty {
+                            Ty::Fn { ret, .. } => Some(ret.as_ref().clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| Ty::error());
+                    let cast_dst = self.alloc_val();
+                    self.set_val_type(cast_dst, ret_ty);
+                    self.emit_inst(
+                        span,
+                        InstKind::FunctionCall {
+                            dst: cast_dst,
+                            callee: Callee::Direct(fn_id),
+                            args: vec![val],
+                            context_uses: vec![],
+                            context_defs: vec![],
+                        },
+                    );
+                    cast_dst
+                }
+                _ => {
+                    // Native cast — inline conversion.
+                    let src_ty = self
+                        .body
+                        .val_types
+                        .get(&val)
+                        .cloned()
+                        .unwrap_or(Ty::error());
+                    let dst_ty = kind.result_ty(&src_ty);
+                    let cast_dst = self.alloc_val();
+                    self.set_val_type(cast_dst, dst_ty);
+                    self.emit_inst(
+                        span,
+                        InstKind::Cast {
+                            dst: cast_dst,
+                            src: val,
+                            kind,
+                        },
+                    );
+                    cast_dst
+                }
+            }
         } else {
             val
         }

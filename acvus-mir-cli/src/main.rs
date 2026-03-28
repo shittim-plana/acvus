@@ -181,7 +181,7 @@ fn main() {
 
     // Run pipeline: extract → infer → lower.
     let ext = extract::extract(&interner, &graph);
-    let inf = infer::infer(&interner, &graph, &ext, &FxHashMap::default());
+    let inf = infer::infer(&interner, &graph, &ext, &FxHashMap::default(), Freeze::default());
     let result = graph_lower::lower(&interner, &graph, &ext, &inf);
     if result.has_errors() {
         for le in &result.errors {

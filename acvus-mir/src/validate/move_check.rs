@@ -54,8 +54,8 @@ pub fn is_move_only(ty: &Ty) -> Option<bool> {
         // Handle — always move-only (deferred computation, must be consumed exactly once)
         Ty::Handle(..) => Some(true),
 
-        // Opaque — always move-only (unknown internals)
-        Ty::Opaque(_) => Some(true),
+        // UserDefined — always move-only (unknown internals)
+        Ty::UserDefined { .. } => Some(true),
 
         // Containers — transitive
         Ty::List(inner) | Ty::Deque(inner, _) | Ty::Option(inner) => is_move_only(inner),
@@ -716,8 +716,14 @@ mod tests {
     }
 
     #[test]
-    fn opaque_is_move() {
-        assert_eq!(is_move_only(&Ty::Opaque("handle".into())), Some(true));
+    fn user_defined_is_move() {
+        use crate::ty::UserDefinedId;
+        let ty = Ty::UserDefined {
+            id: UserDefinedId::alloc(),
+            type_args: vec![],
+            effect_args: vec![],
+        };
+        assert_eq!(is_move_only(&ty), Some(true));
     }
 
     #[test]

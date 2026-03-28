@@ -156,8 +156,8 @@ fn types_match(a: &Ty, b: &Ty) -> bool {
         // Enum — same name is sufficient (variants are open/unified elsewhere)
         (Ty::Enum { name: n1, .. }, Ty::Enum { name: n2, .. }) => n1 == n2,
 
-        // Opaque — same name
-        (Ty::Opaque(a), Ty::Opaque(b)) => a == b,
+        // UserDefined — same id
+        (Ty::UserDefined { id: a, .. }, Ty::UserDefined { id: b, .. }) => a == b,
 
         _ => false,
     }

@@ -6,7 +6,7 @@ use acvus_interpreter::{Defs, Executable, ExternFn, ExternRegistry, Uses, Value}
 use acvus_interpreter_test::*;
 use acvus_mir::graph::QualifiedRef;
 use acvus_mir::ir::InstKind;
-use acvus_mir::ty::{Effect, EffectSet, EffectTarget, Ty};
+use acvus_mir::ty::{Effect, EffectSet, EffectTarget, Ty, TypeRegistry};
 use acvus_utils::Interner;
 use rustc_hash::FxHashMap;
 
@@ -251,7 +251,8 @@ async fn extern_captures_environment() {
 async fn regex_match_via_extern() {
     let i = Interner::new();
 
-    let registry = acvus_ext::regex_registry();
+    let mut tr = TypeRegistry::new();
+    let registry = acvus_ext::regex_registry(&mut tr);
     let c = ctx(&i, &[("text", Value::string("hello world 42"))]);
     let result = run_script_with_externs(
         &i,
@@ -267,7 +268,8 @@ async fn regex_match_via_extern() {
 async fn regex_find_via_extern() {
     let i = Interner::new();
 
-    let registry = acvus_ext::regex_registry();
+    let mut tr = TypeRegistry::new();
+    let registry = acvus_ext::regex_registry(&mut tr);
     let c = ctx(&i, &[("text", Value::string("price is 42 dollars"))]);
     let result = run_script_with_externs(
         &i,

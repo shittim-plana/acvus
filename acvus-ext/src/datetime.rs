@@ -1,28 +1,31 @@
 //! DateTime extension functions via ExternRegistry.
 //!
-//! Provides Opaque<DateTime> with formatting and parsing.
+//! Provides UserDefined<DateTime> with formatting and parsing.
 //! All functions are pure — DateTime is immutable.
 
 use acvus_interpreter::{
     Defs, ExternFn, ExternRegistry, FromValue, IntoValue, OpaqueValue, RuntimeError, Uses, Value,
     ValueKind,
 };
-use acvus_mir::ty::Ty;
+use acvus_mir::ty::{Ty, TypeRegistry, UserDefinedDecl, UserDefinedId};
 use acvus_utils::Interner;
 
-const OPAQUE_NAME: &str = "DateTime";
-
-fn opaque_ty() -> Ty {
-    Ty::Opaque(OPAQUE_NAME.into())
+fn user_defined_ty(id: UserDefinedId) -> Ty {
+    Ty::UserDefined {
+        id,
+        type_args: vec![],
+        effect_args: vec![],
+    }
 }
 
-/// Newtype for `chrono::DateTime<Utc>` — enables typed FromValue/IntoValue conversion.
-struct Dt(chrono::DateTime<chrono::Utc>);
+/// Newtype for `chrono::DateTime<Utc>` — carries its `UserDefinedId`.
+struct Dt(chrono::DateTime<chrono::Utc>, UserDefinedId);
 
 impl FromValue for Dt {
     fn from_value(value: Value) -> Result<Self, RuntimeError> {
         match value {
             Value::Opaque(o) => {
+                let id = o.type_id;
                 let dt = o
                     .downcast_ref::<chrono::DateTime<chrono::Utc>>()
                     .ok_or_else(|| {
@@ -32,7 +35,7 @@ impl FromValue for Dt {
                             ValueKind::Opaque,
                         )
                     })?;
-                Ok(Dt(*dt))
+                Ok(Dt(*dt, id))
             }
             other => Err(RuntimeError::unexpected_type(
                 "FromValue<Dt>",
@@ -45,12 +48,23 @@ impl FromValue for Dt {
 
 impl IntoValue for Dt {
     fn into_value(self) -> Value {
-        Value::opaque(OpaqueValue::new(OPAQUE_NAME, self.0))
+        Value::opaque(OpaqueValue::new(self.1, self.0))
     }
 }
 
-pub fn datetime_registry() -> ExternRegistry {
-    ExternRegistry::new(|_interner| {
+/// Build the datetime ExternRegistry.
+/// Registers the `DateTime` UserDefined type into `type_registry`.
+pub fn datetime_registry(type_registry: &mut TypeRegistry) -> ExternRegistry {
+    let id = UserDefinedId::alloc();
+    type_registry.register(UserDefinedDecl {
+        id,
+        name: "DateTime".into(),
+        type_params: vec![],
+        effect_params: vec![],
+    });
+
+    let ty = user_defined_ty(id);
+    ExternRegistry::new(move |_interner| {
         let mut fns = Vec::new();
 
         // now() -> DateTime  (not available on wasm — requires system clock)
@@ -58,79 +72,89 @@ pub fn datetime_registry() -> ExternRegistry {
         fns.push(
             ExternFn::build("now")
                 .params(vec![])
-                .ret(opaque_ty())
+                .ret(ty.clone())
                 .io()
-                .handler(|_interner: &Interner, (): (), Uses(()): Uses<()>| {
-                    Ok((Dt(chrono::Utc::now()), Defs(())))
+                .handler(move |_interner: &Interner, (): (), Uses(()): Uses<()>| {
+                    Ok((Dt(chrono::Utc::now(), id), Defs(())))
                 }),
         );
 
         fns.extend([
             // format_date(dt, fmt) -> String
             ExternFn::build("format_date")
-                .params(vec![opaque_ty(), Ty::String])
+                .params(vec![ty.clone(), Ty::String])
                 .ret(Ty::String)
                 .pure()
                 .handler(
-                    |_interner: &Interner, (Dt(dt), fmt): (Dt, String), Uses(()): Uses<()>| {
+                    |_interner: &Interner,
+                     (Dt(dt, _), fmt): (Dt, String),
+                     Uses(()): Uses<()>| {
                         Ok((dt.format(&fmt).to_string(), Defs(())))
                     },
                 ),
             // parse_date(s, fmt) -> DateTime
             ExternFn::build("parse_date")
                 .params(vec![Ty::String, Ty::String])
-                .ret(opaque_ty())
+                .ret(ty.clone())
                 .pure()
                 .handler(
-                    |_interner: &Interner, (s, fmt): (String, String), Uses(()): Uses<()>| {
+                    move |_interner: &Interner,
+                          (s, fmt): (String, String),
+                          Uses(()): Uses<()>| {
                         let dt = chrono::NaiveDateTime::parse_from_str(&s, &fmt)
                             .map(|ndt| ndt.and_utc())
                             .unwrap_or_else(|e| {
-                                panic!("parse_date: invalid input '{s}' with format '{fmt}': {e}")
+                                panic!(
+                                    "parse_date: invalid input '{s}' with format '{fmt}': {e}"
+                                )
                             });
-                        Ok((Dt(dt), Defs(())))
+                        Ok((Dt(dt, id), Defs(())))
                     },
                 ),
             // timestamp(dt) -> Int  (Unix epoch seconds)
             ExternFn::build("timestamp")
-                .params(vec![opaque_ty()])
+                .params(vec![ty.clone()])
                 .ret(Ty::Int)
                 .pure()
                 .handler(
-                    |_interner: &Interner, (Dt(dt),): (Dt,), Uses(()): Uses<()>| {
+                    |_interner: &Interner, (Dt(dt, _),): (Dt,), Uses(()): Uses<()>| {
                         Ok((dt.timestamp(), Defs(())))
                     },
                 ),
             // from_timestamp(epoch) -> DateTime
             ExternFn::build("from_timestamp")
                 .params(vec![Ty::Int])
-                .ret(opaque_ty())
+                .ret(ty.clone())
                 .pure()
                 .handler(
-                    |_interner: &Interner, (epoch,): (i64,), Uses(()): Uses<()>| {
+                    move |_interner: &Interner, (epoch,): (i64,), Uses(()): Uses<()>| {
                         let dt = chrono::DateTime::from_timestamp(epoch, 0)
                             .unwrap_or_else(|| panic!("from_timestamp: invalid epoch {epoch}"));
-                        Ok((Dt(dt), Defs(())))
+                        Ok((Dt(dt, id), Defs(())))
                     },
                 ),
             // add_days(dt, n) -> DateTime
             ExternFn::build("add_days")
-                .params(vec![opaque_ty(), Ty::Int])
-                .ret(opaque_ty())
+                .params(vec![ty.clone(), Ty::Int])
+                .ret(ty.clone())
                 .pure()
                 .handler(
-                    |_interner: &Interner, (Dt(dt), n): (Dt, i64), Uses(()): Uses<()>| {
-                        Ok((Dt(dt + chrono::Duration::days(n)), Defs(())))
+                    move |_interner: &Interner,
+                          (Dt(dt, _), n): (Dt, i64),
+                          Uses(()): Uses<()>| {
+                        Ok((Dt(dt + chrono::Duration::days(n), id), Defs(())))
                     },
                 ),
             // add_hours(dt, n) -> DateTime
             ExternFn::build("add_hours")
-                .params(vec![opaque_ty(), Ty::Int])
-                .ret(opaque_ty())
+                .params(vec![ty.clone(), Ty::Int])
+                .ret(ty.clone())
                 .pure()
                 .handler(
-                    |_interner: &Interner, (Dt(dt), n): (Dt, i64), Uses(()): Uses<()>| {
-                        Ok((Dt(dt + chrono::Duration::hours(n)), Defs(())))
+                    move |_interner: &Interner,
+                          (Dt(dt, _), n): (Dt, i64),
+                          Uses(()): Uses<()>| {
+                        Ok((Dt(dt + chrono::Duration::hours(n), id), Defs(())))
                     },
                 ),
         ]);
@@ -147,7 +171,8 @@ mod tests {
     #[test]
     fn registry_produces_functions() {
         let i = Interner::new();
-        let reg = datetime_registry();
+        let mut tr = TypeRegistry::new();
+        let reg = datetime_registry(&mut tr);
         let registered = reg.register(&i);
         // 6 pure functions + now() on non-wasm targets.
         assert!(registered.functions.len() >= 6);

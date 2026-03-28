@@ -55,7 +55,7 @@ pub fn compile_to_ir_with(
         contexts: Freeze::new(contexts),
     };
     let ext = extract::extract(interner, &graph);
-    let inf = infer::infer(interner, &graph, &ext, &FxHashMap::default());
+    let inf = infer::infer(interner, &graph, &ext, &FxHashMap::default(), Freeze::default());
     let result = graph_lower::lower(interner, &graph, &ext, &inf);
     if result.has_errors() {
         let errs: Vec<String> = result
@@ -138,7 +138,7 @@ pub fn compile_script_ir(
         contexts: Freeze::new(contexts),
     };
     let ext = extract::extract(interner, &graph);
-    let inf = infer::infer(interner, &graph, &ext, &FxHashMap::default());
+    let inf = infer::infer(interner, &graph, &ext, &FxHashMap::default(), Freeze::default());
     let result = graph_lower::lower(interner, &graph, &ext, &inf);
     if result.has_errors() {
         let errs: Vec<String> = result

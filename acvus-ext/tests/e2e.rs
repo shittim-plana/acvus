@@ -8,7 +8,7 @@ use acvus_interpreter::builtins::build_builtins;
 use acvus_interpreter::*;
 use acvus_mir::graph::*;
 use acvus_mir::graph::{extract, infer, lower as graph_lower};
-use acvus_mir::ty::Ty;
+use acvus_mir::ty::{CastRule, Effect, Ty, TySubst, TypeRegistry, UserDefinedDecl, UserDefinedId};
 use acvus_utils::{Astr, Freeze, Interner};
 use rustc_hash::FxHashMap;
 
@@ -18,6 +18,17 @@ async fn run_ext(
     source: &str,
     context: FxHashMap<Astr, Value>,
     registries: Vec<ExternRegistry>,
+) -> Value {
+    run_ext_with_registry(interner, source, context, registries, Freeze::default()).await
+}
+
+/// Compile + execute with a custom TypeRegistry (for ExternCast tests).
+async fn run_ext_with_registry(
+    interner: &Interner,
+    source: &str,
+    context: FxHashMap<Astr, Value>,
+    registries: Vec<ExternRegistry>,
+    type_registry: Freeze<TypeRegistry>,
 ) -> Value {
     let context_types: FxHashMap<Astr, Ty> = context
         .iter()
@@ -70,7 +81,7 @@ async fn run_ext(
 
     // Compile.
     let ext = extract::extract(interner, &graph);
-    let inf = infer::infer(interner, &graph, &ext, &FxHashMap::default());
+    let inf = infer::infer(interner, &graph, &ext, &FxHashMap::default(), type_registry);
     let result = graph_lower::lower(interner, &graph, &ext, &inf);
 
     if result.has_errors() {
@@ -137,7 +148,11 @@ fn infer_value_ty(v: &Value) -> Ty {
                 .map(|(k, v)| (*k, infer_value_ty(v)))
                 .collect(),
         ),
-        Value::Opaque(o) => Ty::Opaque(o.type_name.to_string()),
+        Value::Opaque(o) => Ty::UserDefined {
+            id: o.type_id,
+            type_args: vec![],
+            effect_args: vec![],
+        },
         _ => Ty::Unit,
     }
 }
@@ -157,11 +172,12 @@ fn ctx(i: &Interner, entries: &[(&str, Value)]) -> FxHashMap<Astr, Value> {
 async fn regex_match_true() {
     let i = Interner::new();
     let c = FxHashMap::default();
+    let mut tr = TypeRegistry::new();
     let result = run_ext(
         &i,
         r#"re = regex("\\d+"); regex_match(re, "abc123")"#,
         c,
-        vec![regex_registry()],
+        vec![regex_registry(&mut tr)],
     )
     .await;
     assert_eq!(result, Value::Bool(true));
@@ -170,11 +186,12 @@ async fn regex_match_true() {
 #[tokio::test]
 async fn regex_match_false() {
     let i = Interner::new();
+    let mut tr = TypeRegistry::new();
     let result = run_ext(
         &i,
         r#"re = regex("\\d+"); regex_match(re, "abc")"#,
         FxHashMap::default(),
-        vec![regex_registry()],
+        vec![regex_registry(&mut tr)],
     )
     .await;
     assert_eq!(result, Value::Bool(false));
@@ -183,11 +200,12 @@ async fn regex_match_false() {
 #[tokio::test]
 async fn regex_find_all_collect() {
     let i = Interner::new();
+    let mut tr = TypeRegistry::new();
     let result = run_ext(
         &i,
         r#"re = regex("\\d+"); regex_find_all(re, "a1b22c333") | collect"#,
         FxHashMap::default(),
-        vec![regex_registry()],
+        vec![regex_registry(&mut tr)],
     )
     .await;
     let Value::List(items) = result else {
@@ -202,11 +220,12 @@ async fn regex_find_all_collect() {
 #[tokio::test]
 async fn regex_replace() {
     let i = Interner::new();
+    let mut tr = TypeRegistry::new();
     let result = run_ext(
         &i,
         r#"re = regex("\\s+"); regex_replace("hello   world", re, " ")"#,
         FxHashMap::default(),
-        vec![regex_registry()],
+        vec![regex_registry(&mut tr)],
     )
     .await;
     assert_eq!(result, Value::string("hello world"));
@@ -215,11 +234,12 @@ async fn regex_replace() {
 #[tokio::test]
 async fn regex_split_collect() {
     let i = Interner::new();
+    let mut tr = TypeRegistry::new();
     let result = run_ext(
         &i,
         r#"re = regex("[,;]\\s*"); regex_split(re, "a, b;c") | collect"#,
         FxHashMap::default(),
-        vec![regex_registry()],
+        vec![regex_registry(&mut tr)],
     )
     .await;
     let Value::List(items) = result else {
@@ -268,12 +288,13 @@ async fn url_roundtrip() {
 #[tokio::test]
 async fn datetime_format_from_timestamp() {
     let i = Interner::new();
+    let mut tr = TypeRegistry::new();
     // 2024-01-01 00:00:00 UTC = epoch 1704067200
     let result = run_ext(
         &i,
         r#"dt = from_timestamp(1704067200); format_date(dt, "%Y-%m-%d")"#,
         FxHashMap::default(),
-        vec![datetime_registry()],
+        vec![datetime_registry(&mut tr)],
     )
     .await;
     assert_eq!(result, Value::string("2024-01-01"));
@@ -282,11 +303,12 @@ async fn datetime_format_from_timestamp() {
 #[tokio::test]
 async fn datetime_timestamp_roundtrip() {
     let i = Interner::new();
+    let mut tr = TypeRegistry::new();
     let result = run_ext(
         &i,
         r#"dt = from_timestamp(1704067200); timestamp(dt)"#,
         FxHashMap::default(),
-        vec![datetime_registry()],
+        vec![datetime_registry(&mut tr)],
     )
     .await;
     assert_eq!(result, Value::Int(1704067200));
@@ -295,11 +317,12 @@ async fn datetime_timestamp_roundtrip() {
 #[tokio::test]
 async fn datetime_add_days() {
     let i = Interner::new();
+    let mut tr = TypeRegistry::new();
     let result = run_ext(
         &i,
         r#"dt = from_timestamp(1704067200); dt2 = add_days(dt, 1); format_date(dt2, "%Y-%m-%d")"#,
         FxHashMap::default(),
-        vec![datetime_registry()],
+        vec![datetime_registry(&mut tr)],
     )
     .await;
     assert_eq!(result, Value::string("2024-01-02"));
@@ -308,11 +331,12 @@ async fn datetime_add_days() {
 #[tokio::test]
 async fn datetime_parse_and_format() {
     let i = Interner::new();
+    let mut tr = TypeRegistry::new();
     let result = run_ext(
         &i,
         r#"dt = parse_date("2024-06-15 12:30:00", "%Y-%m-%d %H:%M:%S"); format_date(dt, "%m/%d/%Y")"#,
         FxHashMap::default(),
-        vec![datetime_registry()],
+        vec![datetime_registry(&mut tr)],
     ).await;
     assert_eq!(result, Value::string("06/15/2024"));
 }
@@ -324,12 +348,212 @@ async fn datetime_parse_and_format() {
 #[tokio::test]
 async fn mixed_regex_and_encoding() {
     let i = Interner::new();
+    let mut tr = TypeRegistry::new();
     let result = run_ext(
         &i,
         r#"base64_encode("hello") + " " + to_string(regex_match(regex("\\d+"), "abc123"))"#,
         FxHashMap::default(),
-        vec![regex_registry(), encoding_registry()],
+        vec![regex_registry(&mut tr), encoding_registry()],
     )
     .await;
     assert_eq!(result, Value::string("aGVsbG8= true"));
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ExternCast — coercion via registered CastRule
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Build a test setup for ExternCast:
+/// - UserDefined "MyNum" (no type params)
+/// - ExternFn "make_num" → returns MyNum wrapping 42
+/// - ExternFn "to_int" → MyNum → Int (extracts inner value)
+/// - CastRule: MyNum → Int (fn = to_int)
+/// - ExternFn "double" → Int → Int (doubles the value)
+fn extern_cast_setup(tr: &mut TypeRegistry) -> Vec<ExternRegistry> {
+    let my_num_id = UserDefinedId::alloc();
+    tr.register(UserDefinedDecl {
+        id: my_num_id,
+        name: "MyNum".into(),
+        type_params: vec![],
+        effect_params: vec![],
+    });
+
+    let my_num_ty = Ty::UserDefined {
+        id: my_num_id,
+        type_args: vec![],
+        effect_args: vec![],
+    };
+
+    // We need to register ExternFns first to get FunctionIds, then register CastRule.
+    // Use ExternRegistry for the ExternFns, then find to_int's FunctionId.
+    let ty_clone = my_num_ty.clone();
+    let reg = ExternRegistry::new(move |_interner| {
+        vec![
+            // make_num() → MyNum (wrapping 42)
+            ExternFn::build("make_num")
+                .params(vec![])
+                .ret(ty_clone.clone())
+                .pure()
+                .handler(move |_interner: &acvus_utils::Interner, (): (), Uses(()): Uses<()>| {
+                    Ok((
+                        Value::opaque(OpaqueValue::new(my_num_id, 42i64)),
+                        Defs(()),
+                    ))
+                }),
+            // to_int(MyNum) → Int
+            ExternFn::build("to_int")
+                .params(vec![ty_clone.clone()])
+                .ret(Ty::Int)
+                .pure()
+                .handler(|_interner: &acvus_utils::Interner, (v,): (Value,), Uses(()): Uses<()>| {
+                    match v {
+                        Value::Opaque(o) => {
+                            let n = *o.downcast_ref::<i64>().unwrap();
+                            Ok((n, Defs(())))
+                        }
+                        _ => panic!("expected Opaque"),
+                    }
+                }),
+            // double(Int) → Int
+            ExternFn::build("double")
+                .params(vec![Ty::Int])
+                .ret(Ty::Int)
+                .pure()
+                .handler(|_interner: &acvus_utils::Interner, (n,): (i64,), Uses(()): Uses<()>| {
+                    Ok((n * 2, Defs(())))
+                }),
+        ]
+    });
+
+    // Register, find to_int's FunctionId, then register CastRule.
+    // Note: we return the registry, but CastRule needs to_int's fn_id.
+    // Problem: fn_id is allocated inside register(). We need a different approach.
+    //
+    // Solution: pre-allocate fn_id and build Function manually, OR
+    // register first, find id, then register cast rule.
+
+    // Actually, we can register the ExternFns, get the Registered, find to_int's id,
+    // and return the Registered. But ExternRegistry consumes itself in register()...
+    //
+    // Simpler: just return the vec of ExternRegistry and let the caller handle it.
+    // The caller (test) can register, find the fn_id, then add the CastRule.
+    vec![reg]
+}
+
+#[tokio::test]
+async fn extern_cast_auto_coercion() {
+    let i = Interner::new();
+    let mut tr = TypeRegistry::new();
+    let registries = extern_cast_setup(&mut tr);
+
+    // Register to get FunctionIds.
+    let registered: Vec<Registered> = registries
+        .into_iter()
+        .map(|r| r.register(&i))
+        .collect();
+
+    // Find to_int's FunctionId for the CastRule.
+    let to_int_id = registered[0]
+        .functions
+        .iter()
+        .find(|f| i.resolve(f.name) == "to_int")
+        .unwrap()
+        .id;
+
+    let my_num_id = tr.iter().next().unwrap().0;
+    let my_num_ty = Ty::UserDefined {
+        id: *my_num_id,
+        type_args: vec![],
+        effect_args: vec![],
+    };
+
+    // Register CastRule: MyNum → Int
+    tr.register_cast(CastRule {
+        from: my_num_ty,
+        to: Ty::Int,
+        fn_id: to_int_id,
+    });
+
+    let type_registry = Freeze::new(tr);
+
+    // Build graph manually (same as run_ext_with_registry but with pre-registered fns).
+    let entry_id = FunctionId::alloc();
+    let mut functions = acvus_mir::builtins::standard_builtins(&i);
+    for reg in &registered {
+        functions.extend(reg.functions.iter().cloned());
+    }
+    functions.push(Function {
+        id: entry_id,
+        name: i.intern("test"),
+        namespace: None,
+        kind: FnKind::Local(SourceCode {
+            name: i.intern("test"),
+            source: i.intern("double(make_num())"),
+            kind: SourceKind::Script,
+        }),
+        constraint: FnConstraint {
+            signature: None,
+            output: Constraint::Inferred,
+            effect: None,
+        },
+    });
+
+    let graph = CompilationGraph {
+        namespaces: Freeze::new(vec![]),
+        functions: Freeze::new(functions),
+        contexts: Freeze::new(vec![]),
+    };
+
+    // Compile.
+    let ext = extract::extract(&i, &graph);
+    let inf = infer::infer(&i, &graph, &ext, &FxHashMap::default(), type_registry);
+    let compile_result = graph_lower::lower(&i, &graph, &ext, &inf);
+
+    if compile_result.has_errors() {
+        let errs: Vec<String> = compile_result
+            .errors
+            .iter()
+            .flat_map(|e| e.errors.iter())
+            .map(|e| format!("{}", e.display(&i)))
+            .collect();
+        panic!("compile failed: {}", errs.join("; "));
+    }
+
+    // Verify: the lowered MIR should contain a FunctionCall to to_int (the cast fn).
+    let module = compile_result.module(entry_id).unwrap();
+    let has_cast_call = module.main.insts.iter().any(|inst| {
+        matches!(
+            &inst.kind,
+            acvus_mir::ir::InstKind::FunctionCall {
+                callee: acvus_mir::ir::Callee::Direct(id),
+                ..
+            } if *id == to_int_id
+        )
+    });
+    assert!(has_cast_call, "expected FunctionCall to to_int (ExternCast), got: {:#?}", module.main.insts);
+
+    // Execute.
+    let mut exec_fns: FxHashMap<FunctionId, Executable> = compile_result
+        .modules
+        .into_iter()
+        .map(|(id, (module, _))| (id, Executable::Module(module)))
+        .collect();
+
+    let builtin_ids: FxHashMap<Astr, FunctionId> =
+        graph.functions.iter().map(|f| (f.name, f.id)).collect();
+    for (id, handler) in acvus_interpreter::builtins::build_builtins(&builtin_ids, &i) {
+        exec_fns.insert(id, Executable::Builtin(handler));
+    }
+    for reg in registered {
+        exec_fns.extend(reg.executables);
+    }
+
+    let executor = Arc::new(SequentialExecutor);
+    let shared = InterpreterContext::new(&i, exec_fns, executor);
+    let overlay = ContextOverlay::new(Arc::new(HashMap::new()), i.clone());
+    let mut interp = Interpreter::new(shared, entry_id, overlay);
+    let result = interp.execute().await.expect("execution failed");
+
+    // make_num() → MyNum(42), auto-cast to_int → 42, double → 84
+    assert_eq!(result.value, Value::Int(84));
 }

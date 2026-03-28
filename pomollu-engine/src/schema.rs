@@ -458,8 +458,8 @@ pub fn ty_to_desc(interner: &Interner, ty: &Ty) -> TypeDesc {
             effect: effect_to_desc(effect),
         },
         Ty::Var(_) | Ty::Infer(_) | Ty::Error(_) => TypeDesc::Unsupported { raw: "?".into() },
-        Ty::Opaque(_) => TypeDesc::Unsupported {
-            raw: "Opaque".into(),
+        Ty::UserDefined { .. } => TypeDesc::Unsupported {
+            raw: "UserDefined".into(),
         },
     }
 }

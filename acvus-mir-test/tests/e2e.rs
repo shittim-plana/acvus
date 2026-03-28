@@ -4,7 +4,7 @@ use acvus_mir::{
     ty::{Effect, Param, Ty},
 };
 use acvus_mir_test::*;
-use acvus_utils::{Astr, Interner};
+use acvus_utils::{Astr, Freeze, Interner};
 use rustc_hash::FxHashMap;
 
 /// Helper: compile a template source via the graph pipeline (extract → resolve → lower).
@@ -68,7 +68,7 @@ fn compile_analysis(
     };
 
     let ext = extract::extract(interner, &graph);
-    let inf = infer::infer(interner, &graph, &ext, &FxHashMap::default());
+    let inf = infer::infer(interner, &graph, &ext, &FxHashMap::default(), Freeze::default());
     let result = graph_lower::lower(interner, &graph, &ext, &inf);
 
     if result.has_errors() {

@@ -33,6 +33,8 @@ pub enum CastKind {
     SequenceToIterator,
     /// `Range → Iterator<Int, Pure>` — materialise range into lazy iterator.
     RangeToIterator,
+    /// ExternCast — coercion performed by a registered pure ExternFn.
+    Extern(FunctionId),
 }
 
 impl CastKind {

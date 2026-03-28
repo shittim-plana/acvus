@@ -60,7 +60,7 @@ fn run_pipeline(
     target: FunctionId,
 ) -> Result<(MirModule, HintTable), Vec<MirError>> {
     let ext = extract::extract(interner, graph);
-    let inf = infer::infer(interner, graph, &ext, &FxHashMap::default());
+    let inf = infer::infer(interner, graph, &ext, &FxHashMap::default(), Freeze::default());
     let result = graph_lower::lower(interner, graph, &ext, &inf);
     if result.has_errors() {
         return Err(result.errors.into_iter().flat_map(|e| e.errors).collect());

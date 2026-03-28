@@ -355,13 +355,19 @@ impl<'a, 's> TypeChecker<'a, 's> {
         expected_ty: &Ty,
         coerce_id: Option<AstId>,
     ) -> Result<(), (Ty, Ty)> {
+        self.subst.last_extern_cast = None;
         let result = self.subst.unify(value_ty, expected_ty, Polarity::Covariant);
         if result.is_ok() {
             if let Some(id) = coerce_id {
-                let resolved_val = self.subst.resolve(value_ty);
-                let resolved_exp = self.subst.resolve(expected_ty);
-                if let Some(kind) = CastKind::between(&resolved_val, &resolved_exp) {
-                    self.coercion_map.push((id, kind));
+                // ExternCast takes priority — set by try_coerce.
+                if let Some(fn_id) = self.subst.take_last_extern_cast() {
+                    self.coercion_map.push((id, CastKind::Extern(fn_id)));
+                } else {
+                    let resolved_val = self.subst.resolve(value_ty);
+                    let resolved_exp = self.subst.resolve(expected_ty);
+                    if let Some(kind) = CastKind::between(&resolved_val, &resolved_exp) {
+                        self.coercion_map.push((id, kind));
+                    }
                 }
             }
         }
@@ -1828,7 +1834,7 @@ pub(crate) fn contains_var(ty: &Ty) -> bool {
         Ty::Enum { variants, .. } => variants
             .values()
             .any(|p| p.as_ref().is_some_and(|ty| contains_var(ty))),
-        Ty::Opaque(_) => false,
+        Ty::UserDefined { .. } => false,
     }
 }
 
@@ -1858,6 +1864,7 @@ fn op_str(op: BinOp) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ty::UserDefinedId;
 
     /// Test helper: create a `Param` with name "_".
     fn p(i: &Interner, ty: Ty) -> Param {
@@ -2259,16 +2266,23 @@ mod tests {
         assert!(check_with_interner(src, &ctx, &i).is_ok());
     }
 
-    // ── Unpure context load tests (Opaque — must be rejected) ──
+    // ── Unpure context load tests (UserDefined — must be rejected) ──
 
     #[test]
     fn unpure_opaque_context_load_rejected() {
-        // @conn : Opaque("Connection") — Unpure tier, rejected in non-call position.
+        // @conn : UserDefined — Unpure tier, rejected in non-call position.
         let i = Interner::new();
-        let ctx = FxHashMap::from_iter([(i.intern("conn"), Ty::Opaque("Connection".into()))]);
+        let ctx = FxHashMap::from_iter([(
+            i.intern("conn"),
+            Ty::UserDefined {
+                id: UserDefinedId::alloc(),
+                type_args: vec![],
+                effect_args: vec![],
+            },
+        )]);
         let src = "{{ x = @conn }}{{_}}{{/}}";
         let result = check_with_interner(src, &ctx, &i);
-        assert!(result.is_err(), "Opaque context load should be rejected");
+        assert!(result.is_err(), "UserDefined context load should be rejected");
         let errors = result.unwrap_err();
         assert!(
             errors
@@ -2279,15 +2293,20 @@ mod tests {
 
     #[test]
     fn unpure_opaque_in_argument_also_rejected() {
-        // @handler(@conn) — @conn is Opaque, rejected even in argument position.
+        // @handler(@conn) — @conn is UserDefined, rejected even in argument position.
         // Arguments are checked with allow_non_pure=false.
         let i = Interner::new();
+        let conn_ty = Ty::UserDefined {
+            id: UserDefinedId::alloc(),
+            type_args: vec![],
+            effect_args: vec![],
+        };
         let ctx = FxHashMap::from_iter([
-            (i.intern("conn"), Ty::Opaque("Connection".into())),
+            (i.intern("conn"), conn_ty.clone()),
             (
                 i.intern("handler"),
                 Ty::Fn {
-                    params: vec![p(&i, Ty::Opaque("Connection".into()))],
+                    params: vec![p(&i, conn_ty)],
                     ret: Box::new(Ty::String),
                     effect: Effect::pure(),
                     captures: vec![],
@@ -2296,7 +2315,7 @@ mod tests {
         ]);
         let src = "{{ @handler(@conn) }}";
         let result = check_with_interner(src, &ctx, &i);
-        assert!(result.is_err(), "Opaque in argument should be rejected");
+        assert!(result.is_err(), "UserDefined in argument should be rejected");
     }
 
     // ── Pure context load tests (scalars — always ok) ──

@@ -96,7 +96,7 @@ pub fn compile_source_with_externs(
     };
 
     let ext = extract::extract(interner, &graph);
-    let inf = infer::infer(interner, &graph, &ext, &FxHashMap::default());
+    let inf = infer::infer(interner, &graph, &ext, &FxHashMap::default(), Freeze::default());
     let result = graph_lower::lower(interner, &graph, &ext, &inf);
 
     if result.has_errors() {

@@ -3,6 +3,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use acvus_mir::ir::MirBody;
+use acvus_mir::ty::UserDefinedId;
 use acvus_utils::{Astr, Interner, TrackedDeque};
 use rustc_hash::FxHashMap;
 
@@ -112,9 +113,10 @@ impl std::fmt::Debug for HandleValue {
     }
 }
 
-/// An opaque value from extern boundary.
+/// A user-defined value from extern boundary.
+/// Identified by `UserDefinedId` (matching `Ty::UserDefined`).
 pub struct OpaqueValue {
-    pub type_name: &'static str,
+    pub type_id: UserDefinedId,
     inner: Arc<dyn Any + Send + Sync>,
 }
 
@@ -493,7 +495,7 @@ impl fmt::Debug for Value {
             Value::Iterator(_) => write!(f, "Iterator"),
             Value::Sequence(_) => write!(f, "Sequence"),
             Value::Handle(_) => write!(f, "Handle"),
-            Value::Opaque(o) => write!(f, "Opaque<{}>", o.type_name),
+            Value::Opaque(o) => write!(f, "UserDefined({:?})", o.type_id),
         }
     }
 }
@@ -515,16 +517,16 @@ impl PartialEq for FnValue {
 impl Clone for OpaqueValue {
     fn clone(&self) -> Self {
         Self {
-            type_name: self.type_name,
+            type_id: self.type_id,
             inner: Arc::clone(&self.inner),
         }
     }
 }
 
 impl OpaqueValue {
-    pub fn new<T: Any + Send + Sync>(type_name: &'static str, value: T) -> Self {
+    pub fn new<T: Any + Send + Sync>(type_id: UserDefinedId, value: T) -> Self {
         Self {
-            type_name,
+            type_id,
             inner: Arc::new(value),
         }
     }
@@ -536,7 +538,7 @@ impl OpaqueValue {
 
 impl fmt::Debug for OpaqueValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Opaque<{}>", self.type_name)
+        write!(f, "UserDefined({:?})", self.type_id)
     }
 }
 

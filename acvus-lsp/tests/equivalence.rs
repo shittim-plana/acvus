@@ -38,7 +38,7 @@ fn batch_errors(interner: &Interner, source: &str, ctx: &[(&str, Ty)]) -> Vec<St
         contexts: Freeze::new(contexts),
     };
     let ext = extract::extract(interner, &graph);
-    let inf = infer::infer(interner, &graph, &ext, &FxHashMap::default());
+    let inf = infer::infer(interner, &graph, &ext, &FxHashMap::default(), Freeze::default());
     let mut errs: Vec<String> = Vec::new();
     let result = graph_lower::lower(interner, &graph, &ext, &inf);
     for le in &result.errors {

@@ -204,7 +204,7 @@ mod tests {
         let i = Interner::new();
         let graph = make_graph_with_ctx(&i, "1 + 2", &[]);
         let ext = extract::extract(&i, &graph);
-        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default());
+        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
         let result = lower(&i, &graph, &ext, &inf);
 
         assert!(!result.has_errors(), "errors: {:?}", result.errors);
@@ -217,7 +217,7 @@ mod tests {
         let i = Interner::new();
         let graph = make_graph_with_ctx(&i, "@x + 1", &[("x", Ty::Int)]);
         let ext = extract::extract(&i, &graph);
-        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default());
+        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
         let result = lower(&i, &graph, &ext, &inf);
 
         assert!(!result.has_errors(), "errors: {:?}", result.errors);
@@ -231,7 +231,7 @@ mod tests {
         let obj_ty = Ty::Object(FxHashMap::from_iter([(i.intern("name"), Ty::String)]));
         let graph = make_graph_with_ctx(&i, "@user.name", &[("user", obj_ty)]);
         let ext = extract::extract(&i, &graph);
-        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default());
+        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
         let result = lower(&i, &graph, &ext, &inf);
 
         assert!(!result.has_errors(), "errors: {:?}", result.errors);
@@ -248,7 +248,7 @@ mod tests {
             &[("data", Ty::Int), ("out", Ty::Int)],
         );
         let ext = extract::extract(&i, &graph);
-        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default());
+        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
         let result = lower(&i, &graph, &ext, &inf);
         assert!(!result.has_errors(), "errors: {:?}", result.errors);
         let module = result.module(first_fn_id(&graph)).unwrap();
@@ -272,7 +272,7 @@ mod tests {
             &[("val", Ty::Int), ("out", Ty::Int)],
         );
         let ext = extract::extract(&i, &graph);
-        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default());
+        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
         let result = lower(&i, &graph, &ext, &inf);
         assert!(!result.has_errors(), "errors: {:?}", result.errors);
         let module = result.module(first_fn_id(&graph)).unwrap();
@@ -296,7 +296,7 @@ mod tests {
             &[("items", Ty::List(Box::new(Ty::Int))), ("sum", Ty::Int)],
         );
         let ext = extract::extract(&i, &graph);
-        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default());
+        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
         let result = lower(&i, &graph, &ext, &inf);
         assert!(!result.has_errors(), "errors: {:?}", result.errors);
         let module = result.module(first_fn_id(&graph)).unwrap();
@@ -323,7 +323,7 @@ mod tests {
             ],
         );
         let ext = extract::extract(&i, &graph);
-        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default());
+        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
         let result = lower(&i, &graph, &ext, &inf);
         assert!(!result.has_errors(), "errors: {:?}", result.errors);
         let module = result.module(first_fn_id(&graph)).unwrap();
@@ -344,7 +344,7 @@ mod tests {
         let i = Interner::new();
         let graph = make_graph_with_ctx(&i, "@x + 1", &[("x", Ty::String)]);
         let ext = extract::extract(&i, &graph);
-        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default());
+        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
         // Infer should produce Incomplete for this function (type mismatch).
         // Lower should produce no module for this unit.
         let result = lower(&i, &graph, &ext, &inf);
