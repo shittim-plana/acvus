@@ -12,7 +12,7 @@ pub trait BooleanDomain {
     fn as_definite_bool(&self) -> Option<bool>;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DataflowState<D: SemiLattice> {
     pub values: FxHashMap<ValueId, D>,
 }
@@ -183,7 +183,7 @@ where
                     }
                 }
             }
-            Terminator::Return => {}
+            Terminator::Return(_) => {}
         }
     }
 
@@ -191,6 +191,174 @@ where
         block_entry,
         block_exit,
         visited,
+    }
+}
+
+/// Backward dataflow analysis.
+///
+/// Mirror of `forward_analysis`: starts from exit blocks (Return), propagates
+/// backward through predecessors. Transfer function is applied in reverse
+/// instruction order within each block.
+///
+/// `block_exit` = state at the end of a block (before transfer, after successors).
+/// `block_entry` = state at the start of a block (after backward transfer).
+pub fn backward_analysis<D, T>(
+    cfg: &Cfg,
+    insts: &[Inst],
+    transfer: &T,
+) -> DataflowResult<D>
+where
+    D: SemiLattice,
+    T: TransferFunction<D>,
+{
+    let n = cfg.blocks.len();
+    let mut block_entry: Vec<DataflowState<D>> = (0..n).map(|_| DataflowState::new()).collect();
+    let mut block_exit: Vec<DataflowState<D>> = (0..n).map(|_| DataflowState::new()).collect();
+    let mut visited = vec![false; n];
+
+    if n == 0 {
+        return DataflowResult {
+            block_entry,
+            block_exit,
+            visited,
+        };
+    }
+
+    let preds = cfg.predecessors();
+
+    // Seed worklist with all blocks (backward analysis starts from exits).
+    let mut worklist = VecDeque::new();
+    for i in (0..n).rev() {
+        worklist.push_back(BlockIdx(i));
+    }
+
+    while let Some(idx) = worklist.pop_front() {
+        visited[idx.0] = true;
+        let block = &cfg.blocks[idx.0];
+
+        // block_exit = join of all successor block_entry states.
+        // For each successor, map the successor's block params back to
+        // the terminator's args (reverse of forward propagation).
+        let mut exit_state = DataflowState::new();
+        match &block.terminator {
+            Terminator::Jump { target, args } => {
+                if let Some(&target_idx) = cfg.label_to_block.get(target) {
+                    propagate_from_successor(
+                        &block_entry[target_idx.0],
+                        &cfg.blocks[target_idx.0].params,
+                        args,
+                        &mut exit_state,
+                    );
+                }
+            }
+            Terminator::JumpIf {
+                cond,
+                then_label,
+                then_args,
+                else_label,
+                else_args,
+            } => {
+                // cond is used by this terminator.
+                exit_state.set(*cond, D::top());
+
+                if let Some(&target_idx) = cfg.label_to_block.get(then_label) {
+                    propagate_from_successor(
+                        &block_entry[target_idx.0],
+                        &cfg.blocks[target_idx.0].params,
+                        then_args,
+                        &mut exit_state,
+                    );
+                }
+                if let Some(&target_idx) = cfg.label_to_block.get(else_label) {
+                    propagate_from_successor(
+                        &block_entry[target_idx.0],
+                        &cfg.blocks[target_idx.0].params,
+                        else_args,
+                        &mut exit_state,
+                    );
+                }
+            }
+            Terminator::ListStep { done, done_args } => {
+                // Fallthrough successor.
+                let next = idx.0 + 1;
+                if next < n {
+                    exit_state.join_from(&block_entry[next]);
+                }
+                // Done branch successor.
+                if let Some(&target_idx) = cfg.label_to_block.get(done) {
+                    propagate_from_successor(
+                        &block_entry[target_idx.0],
+                        &cfg.blocks[target_idx.0].params,
+                        done_args,
+                        &mut exit_state,
+                    );
+                }
+            }
+            Terminator::Fallthrough => {
+                let next = idx.0 + 1;
+                if next < n {
+                    exit_state.join_from(&block_entry[next]);
+                }
+            }
+            Terminator::Return(val) => {
+                // Return's value is live at the exit of this block.
+                exit_state.set(*val, D::top());
+            }
+        }
+
+        block_exit[idx.0] = exit_state;
+
+        // Apply transfer in reverse instruction order.
+        let mut state = block_exit[idx.0].clone();
+        for &inst_idx in block.inst_indices.iter().rev() {
+            transfer.transfer_inst(&insts[inst_idx], &mut state);
+        }
+
+        // Check if block_entry changed.
+        let old = &block_entry[idx.0];
+        if state != *old {
+            block_entry[idx.0] = state;
+            // Enqueue predecessors.
+            if let Some(pred_list) = preds.get(&idx) {
+                for &pred in pred_list {
+                    worklist.push_back(pred);
+                }
+            }
+        }
+    }
+
+    DataflowResult {
+        block_entry,
+        block_exit,
+        visited,
+    }
+}
+
+/// Backward propagation: map successor's live params back to this block's terminator args.
+fn propagate_from_successor<D: SemiLattice>(
+    succ_entry: &DataflowState<D>,
+    succ_params: &[ValueId],
+    term_args: &[ValueId],
+    exit_state: &mut DataflowState<D>,
+) {
+    // If a successor's param is live at its entry, the corresponding
+    // terminator arg is live at this block's exit.
+    for (param, arg) in succ_params.iter().zip(term_args.iter()) {
+        let param_val = succ_entry.get(*param);
+        if param_val != D::bottom() {
+            let entry = exit_state.values.entry(*arg).or_insert_with(D::bottom);
+            entry.join_mut(&param_val);
+        }
+    }
+
+    // Also propagate any values live at successor entry that aren't params
+    // (they flow through unchanged).
+    let param_set: rustc_hash::FxHashSet<ValueId> = succ_params.iter().copied().collect();
+    for (val, domain) in &succ_entry.values {
+        if !param_set.contains(val) {
+            let entry = exit_state.values.entry(*val).or_insert_with(D::bottom);
+            entry.join_mut(domain);
+        }
     }
 }
 

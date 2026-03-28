@@ -50,12 +50,13 @@ fn inline_module(
     all_modules: &FxHashMap<QualifiedRef, MirModule>,
     recursive_fns: &FxHashSet<QualifiedRef>,
 ) -> MirModule {
-    let body = inline_body(&module.main, all_modules, recursive_fns);
+    let body = inline_body(&module.main, all_modules, recursive_fns, &module.closures);
 
     // Inline within closures too.
     let mut closures = FxHashMap::default();
     for (label, closure) in &module.closures {
-        let mut inlined_body = inline_body(closure, all_modules, recursive_fns);
+        let mut inlined_body =
+            inline_body(closure, all_modules, recursive_fns, &module.closures);
         inlined_body.capture_regs = remap_value_ids(&closure.capture_regs, &FxHashMap::default());
         inlined_body.param_regs = remap_value_ids(&closure.param_regs, &FxHashMap::default());
         closures.insert(*label, inlined_body);
@@ -70,10 +71,15 @@ fn inline_module(
 /// Inline all eligible FunctionCall instructions within a MirBody.
 /// Iterates until no more inlining opportunities remain (handles nested calls
 /// where an inlined body itself contains calls to other local functions).
+///
+/// Handles both:
+/// - **Direct calls** to local functions (from `all_modules`)
+/// - **Indirect calls** where the callee is a known MakeClosure (devirtualization)
 fn inline_body(
     body: &MirBody,
     all_modules: &FxHashMap<QualifiedRef, MirModule>,
     recursive_fns: &FxHashSet<QualifiedRef>,
+    closures: &FxHashMap<Label, MirBody>,
 ) -> MirBody {
     let mut current = body.clone();
 
@@ -82,115 +88,144 @@ fn inline_body(
         let mut new_insts = Vec::new();
         let mut val_remap: FxHashMap<ValueId, ValueId> = FxHashMap::default();
 
+        // Build def_map for devirtualization: ValueId → instruction index.
+        let def_map: FxHashMap<ValueId, usize> = current
+            .insts
+            .iter()
+            .enumerate()
+            .flat_map(|(idx, inst)| {
+                crate::analysis::inst_info::defs(&inst.kind)
+                    .into_iter()
+                    .map(move |d| (d, idx))
+            })
+            .collect();
+
         for inst in &current.insts {
-            match &inst.kind {
+            // Try to resolve callee body for inlining.
+            let inline_target = match &inst.kind {
+                // Direct call to a local function.
                 InstKind::FunctionCall {
                     dst,
                     callee: Callee::Direct(callee_id),
                     args,
-                    context_uses: _,
-                    context_defs: _,
-                } if !recursive_fns.contains(callee_id) && all_modules.contains_key(callee_id) => {
-                    let callee_module = &all_modules[callee_id];
-                    let callee_body = &callee_module.main;
-
-                    // Apply val_remap to args: earlier inlinings may have replaced
-                    // the original dst with a new value (e.g. `double(inc(3))` —
-                    // inc's dst is remapped, double's arg must follow).
-                    let args: Vec<ValueId> = args
-                        .iter()
-                        .map(|a| remap_one(*a, &val_remap))
-                        .collect();
-
-                    // Build ValueId remap: callee's ids → fresh ids in caller.
-                    let mut callee_remap: FxHashMap<ValueId, ValueId> = FxHashMap::default();
-                    for i in 0..callee_body.val_factory.len() {
-                        let old_id = ValueId::from_raw(i);
-                        let new_id = current.val_factory.next();
-                        callee_remap.insert(old_id, new_id);
-                    }
-
-                    // Build Label remap: callee's labels → fresh labels in caller.
-                    let label_offset = current.label_count;
-                    current.label_count += callee_body.label_count;
-
-                    // Map callee params to caller args.
-                    //
-                    // Parameters are loaded via VarLoad (templates) or ParamLoad (scripts).
-                    // A parameter name may appear multiple times (e.g. `$x + $x` produces
-                    // two ParamLoads for the same `$x`). We use name-based mapping:
-                    // first occurrence of a new name → assign next arg index,
-                    // subsequent occurrences → reuse the same arg.
-                    let mut param_idx = 0;
-                    let mut param_name_to_arg: FxHashMap<acvus_utils::Astr, ValueId> =
-                        FxHashMap::default();
-
-                    // Copy callee's val_types (remapped).
-                    for (&old_val, ty) in &callee_body.val_types {
-                        if let Some(&new_val) = callee_remap.get(&old_val) {
-                            current.val_types.insert(new_val, ty.clone());
-                        }
-                    }
-
-                    // Copy callee's debug info (remapped).
-                    for (&old_val, origin) in &callee_body.debug.val_origins {
-                        if let Some(&new_val) = callee_remap.get(&old_val) {
-                            current.debug.val_origins.insert(new_val, origin.clone());
-                        }
-                    }
-
-                    // Emit callee instructions with remapped ids.
-                    for callee_inst in &callee_body.insts {
-                        match &callee_inst.kind {
-                            // VarLoad/ParamLoad = parameter load.
-                            // Map to the corresponding caller argument by name.
-                            InstKind::VarLoad { dst, name }
-                            | InstKind::ParamLoad { dst, name }
-                                if param_idx < args.len()
-                                    || param_name_to_arg.contains_key(name) =>
-                            {
-                                let arg = if let Some(&arg) = param_name_to_arg.get(name) {
-                                    arg
-                                } else {
-                                    let arg = args[param_idx];
-                                    param_name_to_arg.insert(*name, arg);
-                                    param_idx += 1;
-                                    arg
-                                };
-                                callee_remap.insert(*dst, arg);
-                            }
-
-                            // Return → map result to caller's dst.
-                            InstKind::Return(val) => {
-                                let remapped_val = remap_one(*val, &callee_remap);
-                                val_remap.insert(*dst, remapped_val);
-                                // Don't emit Return.
-                            }
-
-                            // All other instructions: remap and emit.
-                            _ => {
-                                let remapped =
-                                    remap_inst(&callee_inst.kind, &callee_remap, label_offset);
-                                new_insts.push(Inst {
-                                    span: callee_inst.span,
-                                    kind: remapped,
-                                });
-                            }
-                        }
-                    }
-
-                    changed = true;
+                    ..
+                } if !recursive_fns.contains(callee_id)
+                    && all_modules.contains_key(callee_id) =>
+                {
+                    let callee_body = &all_modules[callee_id].main;
+                    Some((*dst, callee_body, args.clone(), Vec::new()))
                 }
 
-                // Non-inlineable call or non-call instruction: emit as-is,
-                // applying any val_remap from previous inlinings.
-                _ => {
-                    let remapped = remap_inst(&inst.kind, &val_remap, 0);
-                    new_insts.push(Inst {
-                        span: inst.span,
-                        kind: remapped,
-                    });
+                // Indirect call — try devirtualization.
+                InstKind::FunctionCall {
+                    dst,
+                    callee: Callee::Indirect(callee_val),
+                    args,
+                    ..
+                } => {
+                    let callee_val = remap_one(*callee_val, &val_remap);
+                    try_devirt(&current.insts, &def_map, callee_val, closures).map(
+                        |(callee_body, captures)| (*dst, callee_body, args.clone(), captures),
+                    )
                 }
+
+                _ => None,
+            };
+
+            if let Some((dst, callee_body, args, captures)) = inline_target {
+                // Apply val_remap to args: earlier inlinings may have replaced
+                // the original dst with a new value.
+                let args: Vec<ValueId> = captures
+                    .iter()
+                    .chain(args.iter())
+                    .map(|a| remap_one(*a, &val_remap))
+                    .collect();
+
+                // Build ValueId remap: callee's ids → fresh ids in caller.
+                let mut callee_remap: FxHashMap<ValueId, ValueId> = FxHashMap::default();
+                for i in 0..callee_body.val_factory.len() {
+                    let old_id = ValueId::from_raw(i);
+                    let new_id = current.val_factory.next();
+                    callee_remap.insert(old_id, new_id);
+                }
+
+                // Build Label remap: callee's labels → fresh labels in caller.
+                let label_offset = current.label_count;
+                current.label_count += callee_body.label_count;
+
+                // Map callee params to caller args.
+                //
+                // Parameters are loaded via VarLoad (templates) or ParamLoad (scripts).
+                // A parameter name may appear multiple times (e.g. `$x + $x` produces
+                // two ParamLoads for the same `$x`). We use name-based mapping:
+                // first occurrence of a new name → assign next arg index,
+                // subsequent occurrences → reuse the same arg.
+                let mut param_idx = 0;
+                let mut param_name_to_arg: FxHashMap<acvus_utils::Astr, ValueId> =
+                    FxHashMap::default();
+
+                // Copy callee's val_types (remapped).
+                for (&old_val, ty) in &callee_body.val_types {
+                    if let Some(&new_val) = callee_remap.get(&old_val) {
+                        current.val_types.insert(new_val, ty.clone());
+                    }
+                }
+
+                // Copy callee's debug info (remapped).
+                for (&old_val, origin) in &callee_body.debug.val_origins {
+                    if let Some(&new_val) = callee_remap.get(&old_val) {
+                        current.debug.val_origins.insert(new_val, origin.clone());
+                    }
+                }
+
+                // Emit callee instructions with remapped ids.
+                for callee_inst in &callee_body.insts {
+                    match &callee_inst.kind {
+                        // VarLoad/ParamLoad = parameter load.
+                        // Map to the corresponding caller argument by name.
+                        InstKind::VarLoad { dst, name }
+                        | InstKind::ParamLoad { dst, name }
+                            if param_idx < args.len()
+                                || param_name_to_arg.contains_key(name) =>
+                        {
+                            let arg = if let Some(&arg) = param_name_to_arg.get(name) {
+                                arg
+                            } else {
+                                let arg = args[param_idx];
+                                param_name_to_arg.insert(*name, arg);
+                                param_idx += 1;
+                                arg
+                            };
+                            callee_remap.insert(*dst, arg);
+                        }
+
+                        // Return → map result to caller's dst.
+                        InstKind::Return(val) => {
+                            let remapped_val = remap_one(*val, &callee_remap);
+                            val_remap.insert(dst, remapped_val);
+                            // Don't emit Return.
+                        }
+
+                        // All other instructions: remap and emit.
+                        _ => {
+                            let remapped =
+                                remap_inst(&callee_inst.kind, &callee_remap, label_offset);
+                            new_insts.push(Inst {
+                                span: callee_inst.span,
+                                kind: remapped,
+                            });
+                        }
+                    }
+                }
+
+                changed = true;
+            } else {
+                // Non-inlineable: emit as-is, applying val_remap.
+                let remapped = remap_inst(&inst.kind, &val_remap, 0);
+                new_insts.push(Inst {
+                    span: inst.span,
+                    kind: remapped,
+                });
             }
         }
 
@@ -202,6 +237,27 @@ fn inline_body(
     }
 
     current
+}
+
+/// Try to devirtualize an indirect call: if the callee ValueId is defined by
+/// a single MakeClosure (not from a phi), return the closure's body and captures.
+fn try_devirt<'a>(
+    insts: &[Inst],
+    def_map: &FxHashMap<ValueId, usize>,
+    callee_val: ValueId,
+    closures: &'a FxHashMap<Label, MirBody>,
+) -> Option<(&'a MirBody, Vec<ValueId>)> {
+    let &def_idx = def_map.get(&callee_val)?;
+    let inst = &insts[def_idx];
+    match &inst.kind {
+        InstKind::MakeClosure {
+            body, captures, ..
+        } => {
+            let closure_body = closures.get(body)?;
+            Some((closure_body, captures.clone()))
+        }
+        _ => None,
+    }
 }
 
 /// Remap a single ValueId through a remap table. Returns original if not mapped.

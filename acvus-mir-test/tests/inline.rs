@@ -493,8 +493,8 @@ fn inline_context_effect_propagation() {
 // ═══════════════════════════════════════════════════════════════════════
 
 #[test]
-fn inline_indirect_call_preserved() {
-    // Indirect call (closure stored in variable) must not be inlined.
+fn inline_devirt_known_closure() {
+    // Indirect call to a known closure (single MakeClosure def) gets devirtualized and inlined.
     // main = { f = |x| -> x + 1; f(5) }
     let i = Interner::new();
     let ir = compile_inline_ir(

@@ -7,6 +7,7 @@ use crate::analysis::reachable_context::KnownValue;
 
 pub trait SemiLattice: Clone + PartialEq {
     fn bottom() -> Self;
+    fn top() -> Self;
     /// Least upper bound. Returns true if self changed.
     fn join_mut(&mut self, other: &Self) -> bool;
 }
@@ -71,6 +72,10 @@ pub enum FiniteSet {
 impl SemiLattice for AbstractValue {
     fn bottom() -> Self {
         AbstractValue::Bottom
+    }
+
+    fn top() -> Self {
+        AbstractValue::Top
     }
 
     fn join_mut(&mut self, other: &Self) -> bool {

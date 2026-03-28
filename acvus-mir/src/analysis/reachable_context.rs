@@ -225,7 +225,7 @@ fn compute_reach(
                     queue.push_back(next);
                 }
             }
-            Terminator::Return => {}
+            Terminator::Return(_) => {}
         }
     }
 

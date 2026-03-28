@@ -316,7 +316,7 @@ fn check_body(scope: &str, body: &MirBody, errors: &mut Vec<ValidationError>) {
                     worklist.push_back(BlockIdx(next));
                 }
             }
-            Terminator::Return => {}
+            Terminator::Return(_) => {}
         }
     }
 }

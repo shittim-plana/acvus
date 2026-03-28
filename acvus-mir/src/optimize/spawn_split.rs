@@ -19,7 +19,7 @@ use crate::ty::{Effect, Ty};
 ///
 /// `fn_types`: QualifiedRef → Ty mapping for callee effect lookup.
 pub fn run(body: &mut MirBody, fn_types: &FxHashMap<QualifiedRef, Ty>) {
-    let mut new_insts = Vec::with_capacity(body.insts.len());
+    let mut new_insts = Vec::with_capacity(body.insts.len() + 10);
 
     for inst in body.insts.drain(..) {
         match inst.kind {

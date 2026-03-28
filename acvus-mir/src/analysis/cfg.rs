@@ -23,7 +23,7 @@ pub enum Terminator {
         done: Label,
         done_args: Vec<ValueId>,
     },
-    Return,
+    Return(ValueId),
     Fallthrough,
 }
 
@@ -121,12 +121,12 @@ impl Cfg {
                         merge_of: current_merge_of.take(),
                     });
                 }
-                InstKind::Return(_) => {
+                InstKind::Return(val) => {
                     blocks.push(BasicBlock {
                         label: label.take(),
                         params: std::mem::take(&mut params),
                         inst_indices: std::mem::take(&mut inst_indices),
-                        terminator: Terminator::Return,
+                        terminator: Terminator::Return(*val),
                         merge_of: current_merge_of.take(),
                     });
                 }
@@ -207,7 +207,7 @@ impl Cfg {
                     succs.push(BlockIdx(next));
                 }
             }
-            Terminator::Return => {}
+            Terminator::Return(_) => {}
         }
         succs
     }
