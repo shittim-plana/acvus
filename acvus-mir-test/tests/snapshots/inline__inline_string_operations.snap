@@ -1,0 +1,17 @@
+---
+source: acvus-mir-test/tests/inline.rs
+expression: ir
+---
+=== literals ===
+  T0 = "world"
+  T1 = "Hello "
+
+=== main ===
+     2 │   r0 = T1 + T0
+     3 │   return r0
+
+    ; r0 (v4) : String
+    ; r1 ($name) : String
+    ; r2 (v0) : String
+    ; r3 (greet(...)) : String
+    ; r4 (v2) : String

@@ -1,0 +1,14 @@
+---
+source: acvus-mir-test/tests/inline.rs
+expression: ir
+---
+=== main ===
+     2 │   r0 = true (r1) && false (r2)
+     3 │   return r0
+
+    ; r0 (v5) : Bool
+    ; r1 (v0) : Bool
+    ; r2 (v1) : Bool
+    ; r3 ($a) : Bool
+    ; r4 ($b) : Bool
+    ; r5 (both(...)) : Bool

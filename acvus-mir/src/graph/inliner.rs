@@ -94,6 +94,14 @@ fn inline_body(
                     let callee_module = &all_modules[callee_id];
                     let callee_body = &callee_module.main;
 
+                    // Apply val_remap to args: earlier inlinings may have replaced
+                    // the original dst with a new value (e.g. `double(inc(3))` —
+                    // inc's dst is remapped, double's arg must follow).
+                    let args: Vec<ValueId> = args
+                        .iter()
+                        .map(|a| remap_one(*a, &val_remap))
+                        .collect();
+
                     // Build ValueId remap: callee's ids → fresh ids in caller.
                     let mut callee_remap: FxHashMap<ValueId, ValueId> = FxHashMap::default();
                     for i in 0..callee_body.val_factory.len() {
@@ -106,11 +114,16 @@ fn inline_body(
                     let label_offset = current.label_count;
                     current.label_count += callee_body.label_count;
 
-                    // Map callee params to caller args via VarLoad/VarStore pattern.
-                    // The callee uses VarLoad { name } to read params.
-                    // We find the first N VarLoads and map their dst to our args.
+                    // Map callee params to caller args.
+                    //
+                    // Parameters are loaded via VarLoad (templates) or ParamLoad (scripts).
+                    // A parameter name may appear multiple times (e.g. `$x + $x` produces
+                    // two ParamLoads for the same `$x`). We use name-based mapping:
+                    // first occurrence of a new name → assign next arg index,
+                    // subsequent occurrences → reuse the same arg.
                     let mut param_idx = 0;
-                    let mut param_map: FxHashMap<ValueId, ValueId> = FxHashMap::default();
+                    let mut param_name_to_arg: FxHashMap<acvus_utils::Astr, ValueId> =
+                        FxHashMap::default();
 
                     // Copy callee's val_types (remapped).
                     for (&old_val, ty) in &callee_body.val_types {
@@ -129,15 +142,22 @@ fn inline_body(
                     // Emit callee instructions with remapped ids.
                     for callee_inst in &callee_body.insts {
                         match &callee_inst.kind {
-                            // VarLoad at the start = parameter load.
-                            // Map to the corresponding argument.
-                            InstKind::VarLoad { dst, name: _ } if param_idx < args.len() => {
-                                let remapped_dst = callee_remap[dst];
-                                param_map.insert(remapped_dst, args[param_idx]);
-                                // Don't emit the VarLoad — replace with a direct binding.
-                                // Instead, remap all uses of remapped_dst to args[param_idx].
-                                callee_remap.insert(*dst, args[param_idx]);
-                                param_idx += 1;
+                            // VarLoad/ParamLoad = parameter load.
+                            // Map to the corresponding caller argument by name.
+                            InstKind::VarLoad { dst, name }
+                            | InstKind::ParamLoad { dst, name }
+                                if param_idx < args.len()
+                                    || param_name_to_arg.contains_key(name) =>
+                            {
+                                let arg = if let Some(&arg) = param_name_to_arg.get(name) {
+                                    arg
+                                } else {
+                                    let arg = args[param_idx];
+                                    param_name_to_arg.insert(*name, arg);
+                                    param_idx += 1;
+                                    arg
+                                };
+                                callee_remap.insert(*dst, arg);
                             }
 
                             // Return → map result to caller's dst.

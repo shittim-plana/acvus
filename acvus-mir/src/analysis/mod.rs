@@ -1,6 +1,7 @@
 pub mod cfg;
 pub mod dataflow;
 pub mod domain;
+pub mod inst_info;
 pub mod reachable_context;
 pub mod val_def;
 pub mod value_transfer;

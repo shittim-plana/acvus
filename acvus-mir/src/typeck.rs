@@ -181,7 +181,8 @@ pub struct TypeChecker<'a, 's> {
     /// Stack of scopes: each scope maps variable names to types.
     scopes: Vec<FxHashMap<Astr, Ty>>,
     /// Extern parameter types (`$name`, inferred at first use).
-    param_types: FxHashMap<Astr, Ty>,
+    /// SmallVec to preserve insertion order — iteration order must match Signature order.
+    param_types: smallvec::SmallVec<[(Astr, Ty); 4]>,
     /// Unification state (borrowed — may be shared across compilations).
     subst: &'s mut TySubst,
     /// Cached fresh Params for `Ty::Param` context entries.
@@ -222,7 +223,7 @@ impl<'a, 's> TypeChecker<'a, 's> {
             scopes: vec![FxHashMap::default()],
             env,
             namespace: None,
-            param_types: FxHashMap::default(),
+            param_types: smallvec::smallvec![],
             subst,
             infer_vars: FxHashMap::default(),
             type_map: TypeMap::default(),
@@ -241,7 +242,7 @@ impl<'a, 's> TypeChecker<'a, 's> {
     /// Called before typecheck to inject parameter names+types from Signature.
     pub fn with_params(mut self, params: &[Param]) -> Self {
         for param in params {
-            self.param_types.insert(param.name, param.ty.clone());
+            self.param_types.push((param.name, param.ty.clone()));
         }
         self
     }
@@ -792,8 +793,8 @@ impl<'a, 's> TypeChecker<'a, 's> {
                 span,
             } => {
                 let ty = match ref_kind {
-                    RefKind::ExternParam => match self.param_types.get(name) {
-                        Some(ty) => ty.clone(),
+                    RefKind::ExternParam => match self.param_types.iter().find(|(n, _)| n == name) {
+                        Some((_, ty)) => ty.clone(),
                         None => {
                             if self.analysis_mode {
                                 // In analysis mode, unknown $params are inferred.
@@ -807,7 +808,7 @@ impl<'a, 's> TypeChecker<'a, 's> {
                                     } else {
                                         self.subst.fresh_param()
                                     };
-                                self.param_types.insert(*name, ty.clone());
+                                self.param_types.push((*name, ty.clone()));
                                 ty
                             } else {
                                 self.error(

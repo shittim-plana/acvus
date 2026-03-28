@@ -1,0 +1,24 @@
+---
+source: acvus-mir-test/tests/inline.rs
+expression: ir
+---
+=== main ===
+     0 │   r0 = context_project @items
+     1 │   r1 = context_load r0
+     3 │   r2 = call #0(r1)
+     4 │   r3 = closure L0 []
+     5 │   r4 = call #1(r2, r3)
+     6 │   r5 = call #2(r4)
+     7 │   return r5
+
+    ; r0 (@items) : List<Int>
+    ; r1 (v1) : List<Int>
+    ; r2 (v8) : Iterator<?0, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
+    ; r3 (v9) : Fn(Int) -> Int
+    ; r4 (map(...)) : Iterator<Int, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
+    ; r5 (collect(...)) : List<Int>
+    ; r6 ($xs) : List<Int>
+    ; r7 (v3) : List<Int>
+    ; r8 (@items) : List<Int>
+    ; r9 (add_n(...)) : Iterator<Int, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
+    ; r10 (v4) : Int

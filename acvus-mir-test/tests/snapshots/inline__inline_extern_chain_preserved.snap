@@ -1,0 +1,17 @@
+---
+source: acvus-mir-test/tests/inline.rs
+expression: ir
+---
+=== literals ===
+  T0 = "hello"
+
+=== main ===
+     1 │   r0 = call #0(T0)
+     2 │   r1 = call #1(r0)
+     3 │   return r1
+
+    ; r0 (len_str(...)) : Int
+    ; r1 (to_string(...)) : String
+    ; r2 (v0) : String
+    ; r3 (process(...)) : String
+    ; r4 ($s) : String

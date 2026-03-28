@@ -1,0 +1,23 @@
+---
+source: acvus-mir-test/tests/inline.rs
+expression: ir
+---
+=== main ===
+     0 │   r0 = context_project @a
+     1 │   r1 = context_load r0
+     2 │   r2 = context_project @b
+     3 │   r3 = context_load r2
+     4 │   r4 = r1 + r3
+     5 │   return r4
+
+    ; r0 (@a) : Int
+    ; r1 (v4) : Int
+    ; r2 (@b) : Int
+    ; r3 (v8) : Int
+    ; r4 (v2) : Int
+    ; r5 (read_a(...)) : Int
+    ; r6 (v10) : Int
+    ; r7 (v6) : Int
+    ; r8 (@b) : Int
+    ; r9 (@a) : Int
+    ; r10 (read_b(...)) : Int

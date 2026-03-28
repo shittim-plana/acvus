@@ -4,7 +4,7 @@ use acvus_mir::ir::MirModule;
 use acvus_mir::printer::dump_with;
 use acvus_mir::ty::{Param, Ty};
 use acvus_utils::{Astr, Freeze, Interner};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Run extract → infer → lower, collecting errors from all passes.
 fn run_pipeline(
@@ -182,4 +182,128 @@ pub fn compile_script_ir(
     };
     let module = run_pipeline_with_registry(interner, &graph, test_qref, type_registry)?;
     Ok(dump_with(interner, &module))
+}
+
+// ── Inline pipeline ─────────────────────────────────────────────────
+
+/// Compile multiple local functions, inline, and return the printed IR for the target.
+///
+/// `target`: (name, script_source) — the function whose inlined IR is returned.
+/// `helpers`: list of (name, script_source, signature) — local functions callable from target.
+/// `contexts`: context types available to all functions.
+pub fn compile_inline_ir(
+    interner: &Interner,
+    target: (&str, &str),
+    helpers: &[(&str, &str, Option<Signature>)],
+    contexts: &[(&str, Ty)],
+) -> Result<String, String> {
+    compile_inline_ir_with(interner, target, helpers, contexts, &[])
+}
+
+/// Like `compile_inline_ir` but also accepts extern functions.
+pub fn compile_inline_ir_with(
+    interner: &Interner,
+    target: (&str, &str),
+    helpers: &[(&str, &str, Option<Signature>)],
+    contexts: &[(&str, Ty)],
+    extern_fns: &[Function],
+) -> Result<String, String> {
+    let ctx_vec: Vec<Context> = contexts
+        .iter()
+        .map(|(name, ty)| Context {
+            qref: QualifiedRef::root(interner.intern(name)),
+            constraint: Constraint::Exact(ty.clone()),
+        })
+        .collect();
+
+    let target_qref = QualifiedRef::root(interner.intern(target.0));
+    let target_ast = acvus_ast::parse_script(interner, target.1)
+        .map_err(|e| format!("parse error in target '{}': {e:?}", target.0))?;
+
+    let mut functions = vec![Function {
+        qref: target_qref,
+        kind: FnKind::Local(ParsedAst::Script(target_ast)),
+        constraint: FnConstraint {
+            signature: None,
+            output: Constraint::Inferred,
+            effect: None,
+        },
+    }];
+
+    for &(name, source, ref sig) in helpers {
+        let qref = QualifiedRef::root(interner.intern(name));
+        let ast = acvus_ast::parse_script(interner, source)
+            .map_err(|e| format!("parse error in helper '{}': {e:?}", name))?;
+        functions.push(Function {
+            qref,
+            kind: FnKind::Local(ParsedAst::Script(ast)),
+            constraint: FnConstraint {
+                signature: sig.clone(),
+                output: Constraint::Inferred,
+                effect: None,
+            },
+        });
+    }
+
+    let mut type_registry = acvus_mir::ty::TypeRegistry::new();
+    let std_regs = acvus_ext::std_registries(interner, &mut type_registry);
+    for registry in std_regs {
+        let registered = registry.register(interner);
+        functions.extend(registered.functions);
+    }
+    functions.extend_from_slice(extern_fns);
+
+    let graph = CompilationGraph {
+        functions: Freeze::new(functions),
+        contexts: Freeze::new(ctx_vec),
+    };
+
+    // Run extract → infer → lower (full pipeline).
+    let ext = extract::extract(interner, &graph);
+    let inf = infer::infer(
+        interner,
+        &graph,
+        &ext,
+        &FxHashMap::default(),
+        Freeze::new(type_registry),
+    );
+
+    let mut errors: Vec<String> = Vec::new();
+    for (qref, errs) in inf.errors() {
+        let fn_name = interner.resolve(qref.name);
+        for e in errs {
+            errors.push(format!(
+                "[infer:{}] [{}..{}] {}",
+                fn_name, e.span.start, e.span.end, e.display(interner)
+            ));
+        }
+    }
+
+    let result = graph_lower::lower(interner, &graph, &ext, &inf);
+    for e in result.errors.iter().flat_map(|le| le.errors.iter()) {
+        errors.push(format!(
+            "[lower] [{}..{}] {}",
+            e.span.start, e.span.end, e.display(interner)
+        ));
+    }
+
+    if !errors.is_empty() {
+        return Err(errors.join("\n"));
+    }
+
+    // Extract MirModules for inlining.
+    let modules: FxHashMap<QualifiedRef, MirModule> = result
+        .modules
+        .into_iter()
+        .map(|(qref, (module, _))| (qref, module))
+        .collect();
+
+    // Inline (no recursive functions in tests — pass empty set).
+    let inlined = acvus_mir::graph::inliner::inline(&modules, &FxHashSet::default());
+
+    inlined
+        .modules
+        .get(&target_qref)
+        .map(|m| dump_with(interner, m))
+        .ok_or_else(|| "no inlined module for target".to_string())
 }

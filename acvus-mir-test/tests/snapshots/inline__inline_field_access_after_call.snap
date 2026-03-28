@@ -1,0 +1,16 @@
+---
+source: acvus-mir-test/tests/inline.rs
+expression: ir
+---
+=== main ===
+     0 │   r0 = context_project @user
+     1 │   r1 = context_load r0
+     2 │   r2 = r1.name
+     3 │   return r2
+
+    ; r0 (@user) : {age: Int, name: String}
+    ; r1 (v3) : {age: Int, name: String}
+    ; r2 (name) : String
+    ; r3 (v5) : {age: Int, name: String}
+    ; r4 (make_obj(...)) : {age: Int, name: String}
+    ; r5 (@user) : {age: Int, name: String}
