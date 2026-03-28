@@ -253,13 +253,13 @@ fn sig_next(_interner: &Interner, s: &mut TySubst) -> (Vec<Ty>, Ty) {
 
 fn sig_next_seq(_interner: &Interner, s: &mut TySubst) -> (Vec<Ty>, Ty) {
     let t = s.fresh_param();
-    let o = s.fresh_origin();
+    let o = s.fresh_param();
     let e = s.fresh_effect_var();
     (
-        vec![Ty::Sequence(Box::new(t.clone()), o, e.clone())],
+        vec![Ty::Sequence(Box::new(t.clone()), Box::new(o.clone()), e.clone())],
         Ty::Option(Box::new(Ty::Tuple(vec![
             t.clone(),
-            Ty::Sequence(Box::new(t), o, e),
+            Ty::Sequence(Box::new(t), Box::new(o), e),
         ]))),
     )
 }
@@ -288,37 +288,37 @@ fn sig_unwrap_or(_interner: &Interner, s: &mut TySubst) -> (Vec<Ty>, Ty) {
 }
 
 // ---------------------------------------------------------------------------
-// Signature helpers — Deque ops (origin-preserving)
+// Signature helpers — Deque ops (identity-preserving)
 // ---------------------------------------------------------------------------
 
 fn sig_append(_interner: &Interner, s: &mut TySubst) -> (Vec<Ty>, Ty) {
     let t = s.fresh_param();
-    let o = s.fresh_origin();
+    let o = s.fresh_param();
     (
-        vec![Ty::Deque(Box::new(t.clone()), o), t.clone()],
-        Ty::Deque(Box::new(t), o),
+        vec![Ty::Deque(Box::new(t.clone()), Box::new(o.clone())), t.clone()],
+        Ty::Deque(Box::new(t), Box::new(o)),
     )
 }
 
 fn sig_extend(_interner: &Interner, s: &mut TySubst) -> (Vec<Ty>, Ty) {
     let t = s.fresh_param();
-    let o = s.fresh_origin();
+    let o = s.fresh_param();
     let e = s.fresh_effect_var();
     (
         vec![
-            Ty::Deque(Box::new(t.clone()), o),
+            Ty::Deque(Box::new(t.clone()), Box::new(o.clone())),
             Ty::Iterator(Box::new(t.clone()), e.clone()),
         ],
-        Ty::Deque(Box::new(t), o),
+        Ty::Deque(Box::new(t), Box::new(o)),
     )
 }
 
 fn sig_consume(_interner: &Interner, s: &mut TySubst) -> (Vec<Ty>, Ty) {
     let t = s.fresh_param();
-    let o = s.fresh_origin();
+    let o = s.fresh_param();
     (
-        vec![Ty::Deque(Box::new(t.clone()), o), Ty::Int],
-        Ty::Deque(Box::new(t), o),
+        vec![Ty::Deque(Box::new(t.clone()), Box::new(o.clone())), Ty::Int],
+        Ty::Deque(Box::new(t), Box::new(o)),
     )
 }
 
@@ -400,15 +400,15 @@ fn sig_chain(_interner: &Interner, s: &mut TySubst) -> (Vec<Ty>, Ty) {
 // Signature helpers — Sequence ops (lazy Deque)
 // ---------------------------------------------------------------------------
 
-// Structural ops: same origin preserved
+// Structural ops: same identity preserved
 
 fn sig_take_seq(_interner: &Interner, s: &mut TySubst) -> (Vec<Ty>, Ty) {
     let t = s.fresh_param();
-    let o = s.fresh_origin();
+    let o = s.fresh_param();
     let e = s.fresh_effect_var();
     (
-        vec![Ty::Sequence(Box::new(t.clone()), o, e.clone()), Ty::Int],
-        Ty::Sequence(Box::new(t), o, e),
+        vec![Ty::Sequence(Box::new(t.clone()), Box::new(o.clone()), e.clone()), Ty::Int],
+        Ty::Sequence(Box::new(t), Box::new(o), e),
     )
 }
 
@@ -420,14 +420,14 @@ fn sig_skip_seq(interner: &Interner, s: &mut TySubst) -> (Vec<Ty>, Ty) {
 // Second argument is Iterator (not Sequence) — chain appends from any source.
 fn sig_chain_seq(_interner: &Interner, s: &mut TySubst) -> (Vec<Ty>, Ty) {
     let t = s.fresh_param();
-    let o = s.fresh_origin();
+    let o = s.fresh_param();
     let e = s.fresh_effect_var();
     (
         vec![
-            Ty::Sequence(Box::new(t.clone()), o, e.clone()),
+            Ty::Sequence(Box::new(t.clone()), Box::new(o.clone()), e.clone()),
             Ty::Iterator(Box::new(t.clone()), e.clone()),
         ],
-        Ty::Sequence(Box::new(t), o, e),
+        Ty::Sequence(Box::new(t), Box::new(o), e),
     )
 }
 

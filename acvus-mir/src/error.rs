@@ -3,7 +3,7 @@ use std::fmt;
 use acvus_ast::Span;
 use acvus_utils::Interner;
 
-use crate::ty::{self, Ty};
+use crate::ty::Ty;
 
 #[derive(Debug, Clone)]
 pub struct MirError {
@@ -60,8 +60,8 @@ pub enum MirErrorKind {
 
     // Deque origin errors
     OriginMismatch {
-        expected: ty::Origin,
-        got: ty::Origin,
+        expected: Ty,
+        got: Ty,
     },
     DequeListCoercionForbidden,
 
@@ -207,7 +207,12 @@ impl<'a> fmt::Display for MirErrorDisplay<'a> {
                 )
             }
             MirErrorKind::OriginMismatch { expected, got } => {
-                write!(f, "deque origin mismatch: expected {expected}, got {got}")
+                write!(
+                    f,
+                    "deque origin mismatch: expected {}, got {}",
+                    expected.display(interner),
+                    got.display(interner)
+                )
             }
             MirErrorKind::DequeListCoercionForbidden => {
                 write!(

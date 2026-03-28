@@ -15,7 +15,9 @@ use acvus_utils::Interner;
 use serde::{Deserialize, Serialize};
 
 use crate::graph::QualifiedRef;
-use crate::ty::{Effect, EffectSet, EffectTarget, Origin, TokenId, Ty, UserDefinedId};
+use acvus_utils::LocalIdOps;
+
+use crate::ty::{Effect, EffectSet, EffectTarget, Identity, IdentityId, TokenId, Ty, UserDefinedId};
 
 // ── Serializable Effect (mirrors ty::Effect without Astr) ────────────
 
@@ -118,6 +120,14 @@ fn ser_to_qref(r: &SerQualifiedRef, interner: &Interner) -> QualifiedRef {
     }
 }
 
+/// Serializable mirror of [`Identity`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SerIdentity {
+    Concrete { id: u32 },
+    Fresh { id: u32 },
+}
+
 /// Serializable mirror of [`Ty`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -172,13 +182,14 @@ pub enum SerTy {
     },
     Sequence {
         elem: Box<SerTy>,
-        origin: Origin,
+        identity: Box<SerTy>,
         effect: SerEffect,
     },
     Deque {
         elem: Box<SerTy>,
-        origin: Origin,
+        identity: Box<SerTy>,
     },
+    Identity(SerIdentity),
 }
 
 impl Ty {
@@ -243,15 +254,19 @@ impl Ty {
                 elem: Box::new(elem.to_ser(interner)),
                 effect: effect.to_ser(interner),
             },
-            Ty::Sequence(elem, origin, effect) => SerTy::Sequence {
+            Ty::Sequence(elem, identity, effect) => SerTy::Sequence {
                 elem: Box::new(elem.to_ser(interner)),
-                origin: *origin,
+                identity: Box::new(identity.to_ser(interner)),
                 effect: effect.to_ser(interner),
             },
-            Ty::Deque(elem, origin) => SerTy::Deque {
+            Ty::Deque(elem, identity) => SerTy::Deque {
                 elem: Box::new(elem.to_ser(interner)),
-                origin: *origin,
+                identity: Box::new(identity.to_ser(interner)),
             },
+            Ty::Identity(id) => SerTy::Identity(match id {
+                Identity::Concrete(cid) => SerIdentity::Concrete { id: cid.to_raw() as u32 },
+                Identity::Fresh(fid) => SerIdentity::Fresh { id: fid.to_raw() as u32 },
+            }),
             Ty::Handle(..) => todo!("Handle serialization not yet implemented"),
             Ty::Param { token: p, .. } => SerTy::Param { id: p.id() },
         }
@@ -321,14 +336,20 @@ impl SerTy {
             }
             SerTy::Sequence {
                 elem,
-                origin,
+                identity,
                 effect,
             } => Ty::Sequence(
                 Box::new(elem.to_ty(interner)),
-                *origin,
+                Box::new(identity.to_ty(interner)),
                 effect.to_effect(interner),
             ),
-            SerTy::Deque { elem, origin } => Ty::Deque(Box::new(elem.to_ty(interner)), *origin),
+            SerTy::Deque { elem, identity } => {
+                Ty::Deque(Box::new(elem.to_ty(interner)), Box::new(identity.to_ty(interner)))
+            }
+            SerTy::Identity(ser_id) => Ty::Identity(match ser_id {
+                SerIdentity::Concrete { id } => Identity::Concrete(IdentityId::from_raw(*id as usize)),
+                SerIdentity::Fresh { id } => Identity::Fresh(IdentityId::from_raw(*id as usize)),
+            }),
         }
     }
 }

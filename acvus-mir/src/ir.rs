@@ -65,8 +65,8 @@ impl CastKind {
             (CastKind::DequeToIterator, Ty::Deque(elem, _)) => {
                 Ty::Iterator(elem.clone(), Effect::pure())
             }
-            (CastKind::DequeToSequence, Ty::Deque(elem, o)) => {
-                Ty::Sequence(elem.clone(), *o, Effect::pure())
+            (CastKind::DequeToSequence, Ty::Deque(elem, identity)) => {
+                Ty::Sequence(elem.clone(), identity.clone(), Effect::pure())
             }
             (CastKind::SequenceToIterator, Ty::Sequence(elem, _, e)) => {
                 Ty::Iterator(elem.clone(), e.clone())

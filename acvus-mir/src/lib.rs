@@ -588,12 +588,12 @@ mod tests {
     #[test]
     fn materiality_store_deque() {
         let i = Interner::new();
-        let o = crate::ty::TySubst::new().fresh_concrete_origin();
+        let o = crate::ty::TySubst::new().alloc_identity(false);
         assert!(
             compile_script(
                 &i,
                 "@x = [1, 2, 3]; @x",
-                &[("x", Ty::Deque(Box::new(Ty::Int), o))]
+                &[("x", Ty::Deque(Box::new(Ty::Int), Box::new(o)))]
             )
             .is_ok()
         );

@@ -847,7 +847,7 @@ async fn effect_sequence_output_ty_is_pure() {
 /// Persistence requires storable types, and Sequence<T, O, Effectful> is not storable.
 #[tokio::test]
 async fn effect_effectful_sequence_cannot_persist() {
-    use acvus_mir::ty::{Effect, Origin, Ty};
+    use acvus_mir::ty::{Effect, Ty};
     let result = NodeBuilder::new(Interner::new())
         .sequence_with_raw_ty(
             "log",

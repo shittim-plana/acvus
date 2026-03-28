@@ -1,5 +1,6 @@
 ---
 source: acvus-mir-test/tests/e2e.rs
+assertion_line: 856
 expression: ir
 ---
 === literals ===
@@ -14,7 +15,7 @@ expression: ir
     10 │   r8 = r4 + r7
     11 │   return r8
 
-    ; r0 (v4) : Deque<Int, Origin(0)>
+    ; r0 (v4) : Deque<Int, Identity(IdentityId(0))>
     ; r1 (v1) : Int
     ; r2 (v2) : Int
     ; r3 (v3) : Int
@@ -23,7 +24,7 @@ expression: ir
     ; r6 (len(...)) : Int
     ; r7 (to_string(...)) : String
     ; r8 (v11) : String
-    ; r9 (x) : Deque<Int, Origin(0)>
+    ; r9 (x) : Deque<Int, Identity(IdentityId(0))>
     ; r10 (v0) : String
     ; r11 (v5) : String
-    ; r12 (v12) : Deque<Int, Origin(0)>
+    ; r12 (v12) : Deque<Int, Identity(IdentityId(0))>

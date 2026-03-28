@@ -473,6 +473,6 @@ mod tests {
         assert_eq!(registered.executables.len(), 1);
 
         let func = &registered.functions[0];
-        assert_eq!(interner.resolve(func.name), "openai_chat");
+        assert_eq!(interner.resolve(func.qref.name), "openai_chat");
     }
 }

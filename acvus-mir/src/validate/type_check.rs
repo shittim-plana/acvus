@@ -13,7 +13,7 @@
 
 use crate::graph::QualifiedRef;
 use crate::ir::{Callee, InstKind, Label, MirBody, MirModule, ValueId};
-use crate::ty::{Effect, EffectSet, EffectTarget, Origin, Ty};
+use crate::ty::{Effect, EffectSet, EffectTarget, Ty};
 use acvus_ast::{BinOp, Literal, Span, UnaryOp};
 use acvus_utils::LocalIdOps;
 use rustc_hash::FxHashMap;
@@ -90,10 +90,12 @@ pub fn check_types(
 // Structural type equality (invariant, with Error/Param escape)
 // ---------------------------------------------------------------------------
 
-/// Returns `true` if two origins match.  `Origin::Var` (unresolved) matches anything.
-fn origins_match(a: &Origin, b: &Origin) -> bool {
+/// Returns `true` if two identity slots match.  `Ty::Param` (unresolved) matches anything,
+/// just like `Ty::Error`.  Concrete identities must be equal.
+fn identities_match(a: &Ty, b: &Ty) -> bool {
     match (a, b) {
-        (Origin::Var(_), _) | (_, Origin::Var(_)) => true,
+        (Ty::Error(_), _) | (_, Ty::Error(_)) => true,
+        (Ty::Param { .. }, _) | (_, Ty::Param { .. }) => true,
         _ => a == b,
     }
 }
@@ -117,7 +119,7 @@ fn types_match(a: &Ty, b: &Ty) -> bool {
 
         // Containers (invariant inner)
         (Ty::List(a), Ty::List(b)) => types_match(a, b),
-        (Ty::Deque(a, o1), Ty::Deque(b, o2)) => origins_match(o1, o2) && types_match(a, b),
+        (Ty::Deque(a, o1), Ty::Deque(b, o2)) => identities_match(o1, o2) && types_match(a, b),
         (Ty::Option(a), Ty::Option(b)) => types_match(a, b),
         (Ty::Tuple(a), Ty::Tuple(b)) => {
             a.len() == b.len() && a.iter().zip(b).all(|(x, y)| types_match(x, y))
@@ -129,7 +131,7 @@ fn types_match(a: &Ty, b: &Ty) -> bool {
         }
         (Ty::Iterator(a, e1), Ty::Iterator(b, e2)) => effects_match(e1, e2) && types_match(a, b),
         (Ty::Sequence(a, o1, e1), Ty::Sequence(b, o2, e2)) => {
-            origins_match(o1, o2) && effects_match(e1, e2) && types_match(a, b)
+            identities_match(o1, o2) && effects_match(e1, e2) && types_match(a, b)
         }
 
         // Functions

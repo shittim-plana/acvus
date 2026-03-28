@@ -739,8 +739,8 @@ impl<'a, 's> TypeChecker<'a, 's> {
                     Literal::List(elems) => {
                         if elems.is_empty() {
                             let elem = self.subst.fresh_param();
-                            let origin = self.subst.fresh_concrete_origin();
-                            Ty::Deque(Box::new(elem), origin)
+                            let origin = self.subst.alloc_identity(false);
+                            Ty::Deque(Box::new(elem), Box::new(origin))
                         } else {
                             let first_ty = self.literal_ty(&elems[0]);
                             for elem in &elems[1..] {
@@ -755,8 +755,8 @@ impl<'a, 's> TypeChecker<'a, 's> {
                                     );
                                 }
                             }
-                            let origin = self.subst.fresh_concrete_origin();
-                            Ty::Deque(Box::new(self.subst.resolve(&first_ty)), origin)
+                            let origin = self.subst.alloc_identity(false);
+                            Ty::Deque(Box::new(self.subst.resolve(&first_ty)), Box::new(origin))
                         }
                     }
                 };
@@ -1130,8 +1130,8 @@ impl<'a, 's> TypeChecker<'a, 's> {
                     // Empty list `[]` — element type unknown, use fresh var.
                     // If no hint resolves it, we report the error after resolve.
                     let elem = self.subst.fresh_param();
-                    let origin = self.subst.fresh_concrete_origin();
-                    let ty = Ty::Deque(Box::new(elem), origin);
+                    let origin = self.subst.alloc_identity(false);
+                    let ty = Ty::Deque(Box::new(elem), Box::new(origin));
                     return self.record_ret(*id, ty);
                 }
 
@@ -1153,8 +1153,8 @@ impl<'a, 's> TypeChecker<'a, 's> {
                     }
                 }
 
-                let origin = self.subst.fresh_concrete_origin();
-                let ty = Ty::Deque(Box::new(self.subst.resolve(&elem_ty)), origin);
+                let origin = self.subst.alloc_identity(false);
+                let ty = Ty::Deque(Box::new(self.subst.resolve(&elem_ty)), Box::new(origin));
                 self.record_ret(*id, ty)
             }
 
@@ -1553,8 +1553,8 @@ impl<'a, 's> TypeChecker<'a, 's> {
                     Ty::List(ref inner) | Ty::Deque(ref inner, _) => (**inner).clone(),
                     _ => {
                         let var = self.subst.fresh_param();
-                        let origin = self.subst.fresh_concrete_origin();
-                        let list_ty = Ty::Deque(Box::new(var.clone()), origin);
+                        let origin = self.subst.alloc_identity(false);
+                        let list_ty = Ty::Deque(Box::new(var.clone()), Box::new(origin));
                         if self.unify_covariant(source_ty, &list_ty, None).is_err() {
                             self.error(
                                 MirErrorKind::PatternTypeMismatch {
@@ -1786,10 +1786,10 @@ impl<'a, 's> TypeChecker<'a, 's> {
             Literal::Bool(_) => Ty::Bool,
             Literal::Byte(_) => Ty::Byte,
             Literal::List(elems) => {
-                let origin = self.subst.fresh_concrete_origin();
+                let origin = self.subst.alloc_identity(false);
                 match elems.first() {
-                    Some(first) => Ty::Deque(Box::new(self.literal_ty(first)), origin),
-                    None => Ty::Deque(Box::new(Ty::error()), origin),
+                    Some(first) => Ty::Deque(Box::new(self.literal_ty(first)), Box::new(origin)),
+                    None => Ty::Deque(Box::new(Ty::error()), Box::new(origin)),
                 }
             }
         }
@@ -1834,7 +1834,7 @@ pub(crate) fn contains_var(ty: &Ty) -> bool {
         Ty::Enum { variants, .. } => variants
             .values()
             .any(|p| p.as_ref().is_some_and(|ty| contains_var(ty))),
-        Ty::UserDefined { .. } => false,
+        Ty::UserDefined { .. } | Ty::Identity(_) => false,
     }
 }
 
@@ -2193,10 +2193,10 @@ mod tests {
         // @seq : Sequence<Int, O> — Lazy tier, allowed.
         let i = Interner::new();
         let mut subst = TySubst::new();
-        let o = subst.fresh_concrete_origin();
+        let o = subst.alloc_identity(false);
         let ctx = FxHashMap::from_iter([(
             i.intern("seq"),
-            Ty::Sequence(Box::new(Ty::Int), o, Effect::pure()),
+            Ty::Sequence(Box::new(Ty::Int), Box::new(o), Effect::pure()),
         )]);
         let src = "{{ x = @seq }}{{_}}{{/}}";
         assert!(check_with_interner(src, &ctx, &i).is_ok());

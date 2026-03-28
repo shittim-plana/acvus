@@ -106,6 +106,9 @@ pub fn is_move_only(ty: &Ty) -> Option<bool> {
             Some(any_move)
         }
 
+        // Identity — always copyable (just an id)
+        Ty::Identity(_) => Some(false),
+
         // Unknown — skip
         Ty::Param { .. } | Ty::Error(_) => None,
     }
