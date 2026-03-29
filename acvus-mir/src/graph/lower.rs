@@ -9,7 +9,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::error::MirError;
 use crate::hints::HintTable;
 use crate::ir::MirModule;
-use crate::ty::Ty;
+use crate::ty::{Effect, Ty};
 
 use super::extract::{ExtractResult, ParsedSource};
 use super::infer::InferResult;
@@ -71,22 +71,22 @@ pub fn lower(
             continue;
         };
 
-        // Build context_ids for this function: only contexts that this function references.
-        let fn_refs = extract.fn_refs.get(&func.qref);
-        let context_ids: FxHashMap<QualifiedRef, Ty> = match fn_refs {
-            Some(refs) => refs
-                .context_reads
-                .iter()
-                .chain(refs.context_writes.iter())
-                .map(|&qref| {
-                    let ty = infer_result
-                        .context_type(&qref)
-                        .cloned()
-                        .unwrap_or(Ty::error());
-                    (qref, ty)
-                })
-                .collect(),
-            None => FxHashMap::default(),
+        // Build context_ids from the function's resolved effect.
+        // This captures both direct references AND transitive deps via callee effects.
+        let context_ids: FxHashMap<QualifiedRef, Ty> = {
+            let mut ids = FxHashMap::default();
+            if let Effect::Resolved(ref eff) = resolution.body_effect {
+                for target in eff.reads.iter().chain(eff.writes.iter()) {
+                    if let crate::ty::EffectTarget::Context(qref) = target {
+                        let ty = infer_result
+                            .context_type(qref)
+                            .cloned()
+                            .unwrap_or(Ty::error());
+                        ids.insert(*qref, ty);
+                    }
+                }
+            }
+            ids
         };
 
         // Clone the resolution for lowering (lower consumes it).

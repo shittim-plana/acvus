@@ -481,12 +481,14 @@ fn error_emit_non_string() {
     insta::assert_snapshot!(result.unwrap_err());
 }
 
+// FnRefs removed: undeclared contexts are now handled by the typechecker's infer vars
+// in analysis mode, so @unknown no longer causes an error — it gets a fresh type var
+// that may resolve during typechecking.
 #[test]
-fn error_undefined_context() {
+fn undeclared_context_resolves_via_infer_var() {
     let i = Interner::new();
     let result = compile_to_ir(&i, "{{ @unknown | to_string }}", &FxHashMap::default());
-    assert!(result.is_err());
-    insta::assert_snapshot!(result.unwrap_err());
+    assert!(result.is_ok(), "undeclared context should resolve via infer var: {result:?}");
 }
 
 #[test]

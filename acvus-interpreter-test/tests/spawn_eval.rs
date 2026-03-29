@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use acvus_interpreter::{
-    ContextOverlay, Executable, Interpreter, InterpreterContext, SequentialExecutor, Value,
+    Executable, InMemoryContext, Interpreter, InterpreterContext, SequentialExecutor, Value,
 };
 use acvus_mir::graph::QualifiedRef;
 use acvus_mir::ir::*;
@@ -24,8 +24,8 @@ fn inst(kind: InstKind) -> Inst {
     }
 }
 
-fn empty_overlay() -> ContextOverlay {
-    ContextOverlay::new(Arc::new(HashMap::<String, Value>::new()), Interner::new())
+fn empty_page() -> InMemoryContext {
+    InMemoryContext::empty(Interner::new())
 }
 
 fn make_context(
@@ -120,8 +120,8 @@ async fn spawn_eval_basic() {
     functions.insert(callee_id, Executable::Module(callee_module));
 
     let shared = make_context(&interner, functions);
-    let overlay = empty_overlay();
-    let mut interp = Interpreter::new(shared, entry_id, overlay);
+    let page = empty_page();
+    let mut interp = Interpreter::new(shared, entry_id, page);
     let result = interp.execute().await.expect("execution failed");
 
     assert_eq!(result.value, Value::Int(42));
@@ -227,8 +227,8 @@ async fn spawn_eval_context_defs() {
     context_names.insert(ctx_id, ctx_name);
 
     let shared = make_context(&interner, functions).with_context_names(context_names);
-    let overlay = empty_overlay();
-    let mut interp = Interpreter::new(shared, entry_id, overlay);
+    let page = empty_page();
+    let mut interp = Interpreter::new(shared, entry_id, page);
     let result = interp.execute().await.expect("execution failed");
 
     // Callee wrote 99 to "counter", eval merged it, ContextLoad should read 99.
@@ -315,8 +315,8 @@ async fn spawn_eval_multi_args() {
     functions.insert(callee_id, Executable::Module(callee_module));
 
     let shared = make_context(&interner, functions);
-    let overlay = empty_overlay();
-    let mut interp = Interpreter::new(shared, entry_id, overlay);
+    let page = empty_page();
+    let mut interp = Interpreter::new(shared, entry_id, page);
     let result = interp.execute().await.expect("execution failed");
 
     assert_eq!(result.value, Value::Int(42));

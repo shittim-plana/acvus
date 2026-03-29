@@ -1,35 +1,18 @@
-//! Journal traits + ContextOverlay — context storage for the interpreter.
+//! Context — runtime context storage for the interpreter.
 //!
-//! The orchestration layer *implements* `EntryRef` (backed by a tree-shaped
-//! journal). The interpreter uses `ContextOverlay` which wraps a readonly
-//! `Arc<dyn EntryRef>` with a COW write layer.
+//! `Context` is a single snapshot of context state. Read/write via `&self`
+//! (interior mutability via RwLock). Projection-aware: `set_field` writes to
+//! a nested path directly, enabling precise diff computation without
+//! object-level dirty tracking.
+//!
+//! `ContextWrite` describes a single context mutation (diff output).
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Mutex, RwLock};
 
-use acvus_utils::{Interner, OwnedDequeDiff, TrackedDeque};
-use rustc_hash::FxHashMap;
+use acvus_utils::Interner;
 
 use crate::value::Value;
-
-// ── Entry traits ─────────────────────────────────────────────────────
-
-/// Read-only handle to a journal entry (one turn's context state).
-pub trait EntryRef: Send + Sync {
-    fn get(&self, key: &str) -> Option<&Value>;
-}
-
-/// Mutable handle to a journal entry (one turn).
-pub trait EntryMut: EntryRef {
-    fn apply_field(&mut self, key: &str, path: &[&str], value: Value);
-    fn apply_diff(&mut self, key: &str, working: TrackedDeque<Value>);
-}
-
-/// Journal lifecycle — advancing turns and forking branches.
-pub trait EntryLifecycle: EntryMut + Sized {
-    fn next(self) -> Self;
-    fn fork(self) -> Self;
-}
 
 // ── ContextWrite ─────────────────────────────────────────────────────
 
@@ -44,154 +27,111 @@ pub enum ContextWrite {
         path: Vec<String>,
         value: Value,
     },
-    /// Deque/Sequence diff (checksum-verified by journal).
-    DequeDiff {
-        key: String,
-        diff: OwnedDequeDiff<Value>,
-    },
 }
 
-// ── ContextOverlay ───────────────────────────────────────────────────
+// ── Context trait ───────────────────────────────────────────────────
 
-/// COW overlay on top of a readonly base.
+/// Single snapshot of context state. Read/write via `&self`.
 ///
-/// - `base`: shared, immutable journal snapshot (`Arc<dyn EntryRef>`)
-/// - `cache`: materialized values for read-after-write correctness
-/// - `patches`: accumulated diffs for journal writeback
-///
-/// `fork()` creates an independent copy — same base, same cache snapshot,
-/// empty patches. Used for spawn.
-pub struct ContextOverlay {
-    base: Arc<dyn EntryRef>,
-    patches: Vec<ContextWrite>,
-    cache: HashMap<String, Value>,
+/// - `get` / `get_field`: read whole value or projected field.
+/// - `set` / `set_field`: write whole value or projected field.
+/// - `fork`: create an independent copy (for Spawn).
+/// - `into_writes`: extract accumulated context mutations.
+pub trait RuntimeContext: Send + Sync + Sized {
+    fn get(&self, key: &str) -> Option<Value>;
+    fn get_field(&self, key: &str, path: &[&str]) -> Option<Value>;
+    fn set(&self, key: &str, value: Value);
+    fn set_field(&self, key: &str, path: &[&str], value: Value);
+    fn fork(&self) -> Self;
+    fn into_writes(self) -> Vec<ContextWrite>;
+}
+
+// ── InMemoryContext ─────────────────────────────────────────────────
+
+/// In-memory Context backed by RwLock<HashMap>. No persistence.
+/// Suitable for tests and the sequential executor.
+pub struct InMemoryContext {
+    data: RwLock<HashMap<String, Value>>,
+    writes: Mutex<Vec<ContextWrite>>,
     interner: Interner,
 }
 
-impl ContextOverlay {
-    pub fn new(base: Arc<dyn EntryRef>, interner: Interner) -> Self {
+impl InMemoryContext {
+    pub fn new(initial: HashMap<String, Value>, interner: Interner) -> Self {
         Self {
-            base,
-            patches: Vec::new(),
-            cache: HashMap::new(),
+            data: RwLock::new(initial),
+            writes: Mutex::new(Vec::new()),
             interner,
         }
     }
 
-    /// Fork for spawn — same base, current cache snapshot, empty patches.
-    pub fn spawn_fork(&self) -> Self {
+    pub fn empty(interner: Interner) -> Self {
+        Self::new(HashMap::new(), interner)
+    }
+}
+
+impl RuntimeContext for InMemoryContext {
+    fn get(&self, key: &str) -> Option<Value> {
+        self.data.read().unwrap().get(key).cloned()
+    }
+
+    fn get_field(&self, key: &str, path: &[&str]) -> Option<Value> {
+        let data = self.data.read().unwrap();
+        let root = data.get(key)?;
+        navigate_field(&self.interner, root, path).cloned()
+    }
+
+    fn set(&self, key: &str, value: Value) {
+        self.writes.lock().unwrap().push(ContextWrite::Set {
+            key: key.to_string(),
+            value: value.clone(),
+        });
+        self.data.write().unwrap().insert(key.to_string(), value);
+    }
+
+    fn set_field(&self, key: &str, path: &[&str], value: Value) {
+        if path.is_empty() {
+            self.set(key, value);
+            return;
+        }
+        self.writes.lock().unwrap().push(ContextWrite::FieldPatch {
+            key: key.to_string(),
+            path: path.iter().map(|s| s.to_string()).collect(),
+            value: value.clone(),
+        });
+        let mut data = self.data.write().unwrap();
+        let root = data.get(key).cloned().unwrap_or(Value::Unit);
+        let updated = deep_set_field(&self.interner, root, path, value);
+        data.insert(key.to_string(), updated);
+    }
+
+    fn fork(&self) -> Self {
         Self {
-            base: Arc::clone(&self.base),
-            patches: Vec::new(),
-            cache: self.cache.clone(),
+            data: RwLock::new(self.data.read().unwrap().clone()),
+            writes: Mutex::new(Vec::new()),
             interner: self.interner.clone(),
         }
     }
 
-    /// Take accumulated patches (consumes overlay).
-    pub fn into_patches(self) -> Vec<ContextWrite> {
-        self.patches
-    }
-
-    /// Borrow accumulated patches.
-    pub fn patches(&self) -> &[ContextWrite] {
-        &self.patches
-    }
-
-    /// Merge patches from a child (after eval).
-    pub fn merge_patches(&mut self, child_patches: Vec<ContextWrite>) {
-        for patch in child_patches {
-            // Apply to cache for read-after-write correctness.
-            match &patch {
-                ContextWrite::Set { key, value } => {
-                    self.cache.insert(key.clone(), value.clone());
-                }
-                ContextWrite::FieldPatch { key, path, value } => {
-                    let existing = self
-                        .cache
-                        .get(key.as_str())
-                        .or_else(|| self.base.get(key))
-                        .cloned()
-                        .unwrap_or(Value::Unit);
-                    let path_strs: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
-                    let updated =
-                        deep_set_field(&self.interner, existing, &path_strs, value.clone());
-                    self.cache.insert(key.clone(), updated);
-                }
-                ContextWrite::DequeDiff { key, .. } => {
-                    // Deque diffs don't update cache (read original + diff).
-                    let _ = key;
-                }
-            }
-            self.patches.push(patch);
-        }
+    fn into_writes(self) -> Vec<ContextWrite> {
+        self.writes.into_inner().unwrap()
     }
 }
 
-impl EntryRef for ContextOverlay {
-    fn get(&self, key: &str) -> Option<&Value> {
-        // Overlay first, then base.
-        self.cache.get(key).or_else(|| self.base.get(key))
-    }
-}
+// ── Helpers ─────────────────────────────────────────────────────────
 
-impl EntryMut for ContextOverlay {
-    fn apply_field(&mut self, key: &str, path: &[&str], value: Value) {
-        if path.is_empty() {
-            self.cache.insert(key.to_string(), value.clone());
-            self.patches.push(ContextWrite::Set {
-                key: key.to_string(),
-                value,
-            });
-        } else {
-            // Deep-set: read existing object, update nested field, write back.
-            let existing = self
-                .cache
-                .get(key)
-                .or_else(|| self.base.get(key))
-                .cloned()
-                .unwrap_or(Value::Unit);
-            let updated = deep_set_field(&self.interner, existing, path, value.clone());
-            self.cache.insert(key.to_string(), updated);
-            self.patches.push(ContextWrite::FieldPatch {
-                key: key.to_string(),
-                path: path.iter().map(|s| s.to_string()).collect(),
-                value,
-            });
+/// Navigate into a nested field of a Value.
+fn navigate_field<'a>(interner: &Interner, root: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    if path.is_empty() {
+        return Some(root);
+    }
+    match root {
+        Value::Object(arc_map) => {
+            let field_key = interner.intern(path[0]);
+            let child = arc_map.get(&field_key)?;
+            navigate_field(interner, child, &path[1..])
         }
-    }
-
-    fn apply_diff(&mut self, key: &str, working: TrackedDeque<Value>) {
-        // Compute diff against base.
-        let base_val = self.base.get(key);
-        let origin = base_val.and_then(|v| match v {
-            Value::Deque(d) => Some(d.as_ref()),
-            _ => None,
-        });
-
-        let diff = match origin {
-            Some(origin_deque) => {
-                let (squashed, diff) = working.into_diff(origin_deque);
-                self.cache.insert(key.to_string(), Value::deque(squashed));
-                diff
-            }
-            None => {
-                // First write — entire content is "pushed".
-                let items = working.as_slice().to_vec();
-                let diff = OwnedDequeDiff {
-                    consumed: 0,
-                    removed_back: 0,
-                    pushed: items,
-                };
-                self.cache.insert(key.to_string(), Value::deque(working));
-                diff
-            }
-        };
-
-        self.patches.push(ContextWrite::DequeDiff {
-            key: key.to_string(),
-            diff,
-        });
+        _ => None,
     }
 }
 
@@ -201,18 +141,15 @@ fn deep_set_field(interner: &Interner, root: Value, path: &[&str], value: Value)
     debug_assert!(!path.is_empty());
 
     if path.len() == 1 {
-        // Base case: set field directly on root object.
         if let Value::Object(ref arc_map) = root {
             let mut map = (**arc_map).clone();
             let field_key = interner.intern(path[0]);
             map.insert(field_key, value);
             return Value::object(map);
         }
-        // Not an object — replace entirely (best-effort).
         return value;
     }
 
-    // Recursive case: navigate into nested object.
     if let Value::Object(ref arc_map) = root {
         let mut map = (**arc_map).clone();
         let field_key = interner.intern(path[0]);
@@ -222,51 +159,212 @@ fn deep_set_field(interner: &Interner, root: Value, path: &[&str], value: Value)
         return Value::object(map);
     }
 
-    // Not navigable — replace entirely.
     value
 }
 
-impl EntryLifecycle for ContextOverlay {
-    fn next(self) -> Self {
-        // Next turn: keep base + cache (accumulated state), clear patches.
-        Self {
-            base: self.base,
-            patches: Vec::new(),
-            cache: self.cache,
-            interner: self.interner,
-        }
+// ── Tests ───────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acvus_utils::Interner;
+    use rustc_hash::FxHashMap;
+
+    fn make_ctx(pairs: &[(&str, Value)]) -> InMemoryContext {
+        let i = Interner::new();
+        let data: HashMap<String, Value> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect();
+        InMemoryContext::new(data, i)
     }
 
-    fn fork(self) -> Self {
-        // Fork: same base, snapshot of cache, empty patches.
-        Self {
-            base: Arc::clone(&self.base),
-            patches: Vec::new(),
-            cache: self.cache.clone(),
-            interner: self.interner.clone(),
-        }
+    // ── get / set ──────────────────────────────────────────────
+
+    #[test]
+    fn get_returns_stored_value() {
+        let ctx = make_ctx(&[("x", Value::int(42))]);
+        assert_eq!(ctx.get("x"), Some(Value::int(42)));
     }
-}
 
-// ── Journal trait ────────────────────────────────────────────────────
+    #[test]
+    fn get_missing_returns_none() {
+        let ctx = make_ctx(&[]);
+        assert_eq!(ctx.get("x"), None);
+    }
 
-pub trait Journal {
-    type Ref<'a>: EntryRef
-    where
-        Self: 'a;
-    type Mut<'a>: EntryMut
-    where
-        Self: 'a;
+    #[test]
+    fn set_overwrites_value() {
+        let ctx = make_ctx(&[("x", Value::int(1))]);
+        ctx.set("x", Value::int(2));
+        assert_eq!(ctx.get("x"), Some(Value::int(2)));
+    }
 
-    fn entry_ref(&self, id: uuid::Uuid) -> Self::Ref<'_>;
-    fn entry_mut(&mut self, id: uuid::Uuid) -> Self::Mut<'_>;
-    fn contains(&self, id: uuid::Uuid) -> bool;
-}
+    #[test]
+    fn set_records_write() {
+        let ctx = make_ctx(&[]);
+        ctx.set("x", Value::int(42));
+        let writes = ctx.into_writes();
+        assert_eq!(writes.len(), 1);
+        assert!(matches!(&writes[0], ContextWrite::Set { key, .. } if key == "x"));
+    }
 
-// ── Simple in-memory EntryRef (testing) ──────────────────────────────
+    // ── get_field / set_field ──────────────────────────────────
 
-impl EntryRef for HashMap<String, Value> {
-    fn get(&self, key: &str) -> Option<&Value> {
-        HashMap::get(self, key)
+    #[test]
+    fn get_field_navigates_object() {
+        let i = Interner::new();
+        let obj = Value::object(FxHashMap::from_iter([
+            (i.intern("name"), Value::string("alice")),
+            (i.intern("age"), Value::int(30)),
+        ]));
+        let ctx = InMemoryContext::new(
+            HashMap::from([("user".to_string(), obj)]),
+            i,
+        );
+        assert_eq!(ctx.get_field("user", &["name"]), Some(Value::string("alice")));
+        assert_eq!(ctx.get_field("user", &["age"]), Some(Value::int(30)));
+    }
+
+    #[test]
+    fn get_field_nested() {
+        let i = Interner::new();
+        let inner = Value::object(FxHashMap::from_iter([
+            (i.intern("city"), Value::string("seoul")),
+        ]));
+        let outer = Value::object(FxHashMap::from_iter([
+            (i.intern("address"), inner),
+        ]));
+        let ctx = InMemoryContext::new(
+            HashMap::from([("user".to_string(), outer)]),
+            i,
+        );
+        assert_eq!(
+            ctx.get_field("user", &["address", "city"]),
+            Some(Value::string("seoul"))
+        );
+    }
+
+    #[test]
+    fn get_field_missing_returns_none() {
+        let ctx = make_ctx(&[("x", Value::int(42))]);
+        assert_eq!(ctx.get_field("x", &["name"]), None);
+    }
+
+    #[test]
+    fn set_field_updates_nested() {
+        let i = Interner::new();
+        let obj = Value::object(FxHashMap::from_iter([
+            (i.intern("name"), Value::string("alice")),
+            (i.intern("age"), Value::int(30)),
+        ]));
+        let ctx = InMemoryContext::new(
+            HashMap::from([("user".to_string(), obj)]),
+            i,
+        );
+        ctx.set_field("user", &["name"], Value::string("bob"));
+        assert_eq!(ctx.get_field("user", &["name"]), Some(Value::string("bob")));
+        // age unchanged
+        assert_eq!(ctx.get_field("user", &["age"]), Some(Value::int(30)));
+    }
+
+    #[test]
+    fn set_field_records_field_patch() {
+        let i = Interner::new();
+        let obj = Value::object(FxHashMap::from_iter([
+            (i.intern("name"), Value::string("alice")),
+        ]));
+        let ctx = InMemoryContext::new(
+            HashMap::from([("user".to_string(), obj)]),
+            i,
+        );
+        ctx.set_field("user", &["name"], Value::string("bob"));
+        let writes = ctx.into_writes();
+        assert_eq!(writes.len(), 1);
+        assert!(matches!(
+            &writes[0],
+            ContextWrite::FieldPatch { key, path, .. }
+            if key == "user" && path == &["name"]
+        ));
+    }
+
+    #[test]
+    fn set_field_deep_nested() {
+        let i = Interner::new();
+        let inner = Value::object(FxHashMap::from_iter([
+            (i.intern("city"), Value::string("seoul")),
+        ]));
+        let outer = Value::object(FxHashMap::from_iter([
+            (i.intern("address"), inner),
+        ]));
+        let ctx = InMemoryContext::new(
+            HashMap::from([("user".to_string(), outer)]),
+            i,
+        );
+        ctx.set_field("user", &["address", "city"], Value::string("busan"));
+        assert_eq!(
+            ctx.get_field("user", &["address", "city"]),
+            Some(Value::string("busan"))
+        );
+    }
+
+    #[test]
+    fn set_field_empty_path_is_set() {
+        let ctx = make_ctx(&[("x", Value::int(1))]);
+        ctx.set_field("x", &[], Value::int(2));
+        assert_eq!(ctx.get("x"), Some(Value::int(2)));
+        let writes = ctx.into_writes();
+        // Empty path → ContextWrite::Set, not FieldPatch.
+        assert!(matches!(&writes[0], ContextWrite::Set { .. }));
+    }
+
+    // ── fork ───────────────────────────────────────────────────
+
+    #[test]
+    fn fork_creates_independent_copy() {
+        let ctx = make_ctx(&[("x", Value::int(1))]);
+        let forked = ctx.fork();
+        // Forked sees same value.
+        assert_eq!(forked.get("x"), Some(Value::int(1)));
+        // Mutate forked — original unchanged.
+        forked.set("x", Value::int(2));
+        assert_eq!(forked.get("x"), Some(Value::int(2)));
+        assert_eq!(ctx.get("x"), Some(Value::int(1)));
+    }
+
+    #[test]
+    fn fork_has_empty_writes() {
+        let ctx = make_ctx(&[("x", Value::int(1))]);
+        ctx.set("x", Value::int(2)); // parent has a write
+        let forked = ctx.fork();
+        let writes = forked.into_writes();
+        assert!(writes.is_empty(), "forked context should have empty writes");
+    }
+
+    // ── concurrent read/write ──────────────────────────────────
+
+    #[test]
+    fn concurrent_read_write() {
+        use std::thread;
+        let ctx = make_ctx(&[("counter", Value::int(0))]);
+        let ctx_ref = &ctx;
+
+        thread::scope(|s| {
+            // Writer thread
+            s.spawn(|| {
+                for i in 1..=100 {
+                    ctx_ref.set("counter", Value::int(i));
+                }
+            });
+            // Reader thread
+            s.spawn(|| {
+                for _ in 0..100 {
+                    let _ = ctx_ref.get("counter");
+                }
+            });
+        });
+
+        // Final value should be 100.
+        assert_eq!(ctx.get("counter"), Some(Value::int(100)));
     }
 }

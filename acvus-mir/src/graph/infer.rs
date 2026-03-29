@@ -412,6 +412,8 @@ pub struct SccInferResult {
     pub fn_params: FxHashMap<QualifiedRef, Vec<InferredParam>>,
     /// Function name → resolved Ty::Fn (for passing to next SCC).
     pub resolved_types: FxHashMap<Astr, Ty>,
+    /// Per-function direct effects from typechecker (before call-graph propagation).
+    pub fn_direct_effects: FxHashMap<QualifiedRef, EffectSet>,
 }
 
 /// Infer types for a single SCC.
@@ -422,7 +424,6 @@ pub fn infer_scc(
     interner: &Interner,
     scc: &[QualifiedRef],
     fn_by_id: &FxHashMap<QualifiedRef, &Function>,
-    extract_refs: &FxHashMap<QualifiedRef, super::extract::FnRefs>,
     extract_parsed: &FxHashMap<QualifiedRef, &ParsedSource>,
     known_ctx: &FxHashMap<QualifiedRef, Ty>,
     resolved_fn_types: &FxHashMap<Astr, Ty>,
@@ -470,28 +471,12 @@ pub fn infer_scc(
     // Typecheck each function in this SCC.
     for &fid in scc {
         let func = fn_by_id[&fid];
-        let Some(fn_ref) = extract_refs.get(&fid) else {
-            continue;
-        };
         let Some(parsed) = extract_parsed.get(&fid) else {
             continue;
         };
 
-        let mut ctx_types: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
-        let mut unknown_vars: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
-
-        for r in &fn_ref.context_reads {
-            if let Some(ty) = known_ctx.get(r) {
-                ctx_types.insert(*r, ty.clone());
-            } else {
-                let var = subst.fresh_param();
-                unknown_vars.insert(*r, var.clone());
-                ctx_types.insert(*r, var);
-            }
-        }
-
         let env = crate::ty::TypeEnv {
-            contexts: ctx_types,
+            contexts: known_ctx.clone(),
             functions: env_functions.clone(),
         };
 
@@ -528,14 +513,8 @@ pub fn infer_scc(
             fn_bind_params.insert(fid, bind);
         }
 
-        let params: Vec<InferredParam> = unknown_vars
-            .into_iter()
-            .map(|(name, var)| InferredParam {
-                name,
-                ty: subst.resolve(&var),
-            })
-            .collect();
-        fn_params.insert(fid, params);
+        // All contexts are now known — no unknown context params to infer.
+        fn_params.insert(fid, vec![]);
     }
 
     // Resolve all functions in this SCC.
@@ -582,6 +561,7 @@ pub fn infer_scc(
         fn_metas,
         fn_params,
         resolved_types,
+        fn_direct_effects,
     }
 }
 
@@ -711,26 +691,13 @@ pub fn infer(
         // Typecheck each function in this SCC.
         for &fid in scc {
             let func = fn_by_id[&fid];
-            let Some(fn_ref) = extract.fn_refs.get(&fid) else {
-                continue;
-            };
             let Some(parsed) = extract.parsed.get(&fid) else {
                 continue;
             };
 
-            // Build context types.
-            let mut ctx_types: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
-            let mut unknown_vars: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
-
-            for r in &fn_ref.context_reads {
-                if let Some(ty) = known_ctx.get(r) {
-                    ctx_types.insert(*r, ty.clone());
-                } else {
-                    let var = subst.fresh_param();
-                    unknown_vars.insert(*r, var.clone());
-                    ctx_types.insert(*r, var);
-                }
-            }
+            // All graph contexts are available — typeck discovers actual usage
+            // via direct reference + callee effect propagation.
+            let ctx_types: FxHashMap<QualifiedRef, Ty> = known_ctx.clone();
 
             let env = crate::ty::TypeEnv {
                 contexts: ctx_types,
@@ -778,14 +745,8 @@ pub fn infer(
                 }
             }
 
-            let params: Vec<InferredParam> = unknown_vars
-                .into_iter()
-                .map(|(name, var)| InferredParam {
-                    name,
-                    ty: subst.resolve(&var),
-                })
-                .collect();
-            fn_params.insert(fid, params);
+            // All contexts are now known — no unknown context params to infer.
+            fn_params.insert(fid, vec![]);
         }
 
         // SCC complete: resolve all functions in this SCC and add to resolved_fn_types.
@@ -1100,76 +1061,30 @@ mod tests {
 
     // -- Completeness: correct types inferred --
 
+    // FnRefs removed: context param inference no longer produces InferredParam for
+    // undeclared contexts. All contexts are now passed via known_ctx; undeclared
+    // context references are handled by the typechecker directly.
+
     #[test]
-    fn infer_int_from_arithmetic() {
+    fn infer_no_unknown_context_params() {
         let i = Interner::new();
+        // Undeclared contexts no longer produce InferredParam entries.
         let graph = make_graph(&i, "@x + 1");
         let ext = extract::extract(&i, &graph);
         let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
 
-        assert_eq!(result.all_params.len(), 1);
-        assert_eq!(result.all_params[0].name, QualifiedRef::root(i.intern("x")));
-        assert_eq!(result.all_params[0].ty, Ty::Int);
+        assert_eq!(result.all_params.len(), 0);
     }
 
     #[test]
-    fn infer_string_from_concat() {
-        let i = Interner::new();
-        let graph = make_graph(&i, r#"@x + "hello""#);
-        let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
-
-        assert_eq!(result.all_params.len(), 1);
-        assert_eq!(result.all_params[0].ty, Ty::String);
-    }
-
-    #[test]
-    fn infer_multiple_params_with_literal() {
-        let i = Interner::new();
-        // @a + @b + 1 — the literal 1 forces both to Int.
-        let graph = make_graph(&i, "@a + @b + 1");
-        let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
-
-        assert_eq!(result.all_params.len(), 2);
-        for p in &result.all_params {
-            assert_eq!(p.ty, Ty::Int);
-        }
-    }
-
-    #[test]
-    fn infer_unknown_remains_var() {
-        let i = Interner::new();
-        // @a + @b — no literal, type cannot be fully resolved.
-        let graph = make_graph(&i, "@a + @b");
-        let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
-
-        assert_eq!(result.all_params.len(), 2);
-        // At least one should still be a Param (unresolved).
-        let has_param = result
-            .all_params
-            .iter()
-            .any(|p| matches!(p.ty, Ty::Param { .. }));
-        assert!(
-            has_param,
-            "without a literal, type should remain unresolved"
-        );
-    }
-
-    // -- Completeness: known context not re-inferred --
-
-    #[test]
-    fn infer_skips_known_context() {
+    fn infer_known_context_not_in_params() {
         let i = Interner::new();
         let graph = make_graph_with_ctx(&i, "@x + @y", &[("x", Ty::Int)]);
         let ext = extract::extract(&i, &graph);
         let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
 
-        // Only @y should be inferred, @x is already known.
-        assert_eq!(result.all_params.len(), 1);
-        assert_eq!(result.all_params[0].name, QualifiedRef::root(i.intern("y")));
-        assert_eq!(result.all_params[0].ty, Ty::Int);
+        // No context params inferred — all contexts are known or handled by typechecker.
+        assert_eq!(result.all_params.len(), 0);
     }
 
     // -- Soundness: no false inferences --
@@ -3288,12 +3203,11 @@ mod tests {
 
         let fid = graph.functions[0].qref;
         let params = &result.fn_params[&fid];
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0].name, QualifiedRef::root(i.intern("x")));
-        assert_eq!(params[0].ty, Ty::Int);
+        // FnRefs removed: undeclared contexts no longer produce InferredParam.
+        assert_eq!(params.len(), 0);
     }
 
-    /// Multiple contexts — both extracted.
+    /// Multiple contexts — fn_params is empty without FnRefs.
     #[test]
     fn context_extract_multiple() {
         let i = Interner::new();
@@ -3301,10 +3215,8 @@ mod tests {
         let ext = extract::extract(&i, &graph);
         let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
 
-        assert_eq!(result.all_params.len(), 2);
-        let names: FxHashSet<QualifiedRef> = result.all_params.iter().map(|p| p.name).collect();
-        assert!(names.contains(&QualifiedRef::root(i.intern("x"))));
-        assert!(names.contains(&QualifiedRef::root(i.intern("y"))));
+        // FnRefs removed: undeclared contexts no longer produce InferredParam.
+        assert_eq!(result.all_params.len(), 0);
     }
 
     /// Context store — writes tracked in effect.
@@ -3330,8 +3242,8 @@ mod tests {
         let ext = extract::extract(&i, &graph);
         let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
 
-        assert_eq!(result.all_params.len(), 1);
-        assert_eq!(result.all_params[0].name, QualifiedRef::root(i.intern("x")));
+        // FnRefs removed: undeclared contexts no longer produce InferredParam.
+        assert_eq!(result.all_params.len(), 0);
     }
 
     // context_extract_in_lambda: migrated to acvus-mir-test (depends on ExternFn `map`, `collect`)
@@ -3389,19 +3301,21 @@ mod tests {
         assert_eq!(*result.context_type(&qref).unwrap(), Ty::Int);
     }
 
-    /// Undeclared context (not in graph at all) → Incomplete.
+    /// Undeclared context — typechecker creates fresh infer var in analysis mode.
+    /// FnRefs removed: undeclared contexts no longer cause Incomplete via fn_params;
+    /// they are handled by the typechecker's infer_vars and may resolve.
     #[test]
-    fn context_undeclared_is_incomplete() {
+    fn context_undeclared_resolves_via_infer_var() {
         let i = Interner::new();
-        // No contexts declared, but source uses @x.
+        // No contexts declared, but source uses @x. Typechecker infers @x : Int.
         let graph = make_graph(&i, "@x + 1");
         let ext = extract::extract(&i, &graph);
         let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
 
         let fid = graph.functions[0].qref;
         assert!(
-            !result.outcomes[&fid].is_complete(),
-            "undeclared context should be Incomplete"
+            result.outcomes[&fid].is_complete(),
+            "undeclared context with resolvable type should be Complete"
         );
     }
 

@@ -78,6 +78,7 @@ pub(crate) fn try_extract_known(
         builtin_map,
         coercion_map,
         acvus_mir::build_context_ids(registry.merged()),
+        rustc_hash::FxHashSet::default(),
     );
     let (module, _hints) = lowerer.lower_script(&script);
     // Look for a Const or MakeVariant instruction in the main body
@@ -182,6 +183,7 @@ pub async fn evaluate(options: Ts<EvaluateOptions>) -> Result<JsValue, JsError> 
                     builtin_map,
                     coercion_map,
                     acvus_mir::build_context_ids(full_reg.merged()),
+                    rustc_hash::FxHashSet::default(),
                 );
                 let (module, _) = lowerer.lower_template(&ast);
                 module
@@ -224,6 +226,7 @@ pub async fn evaluate(options: Ts<EvaluateOptions>) -> Result<JsValue, JsError> 
                     builtin_map,
                     coercion_map,
                     acvus_mir::build_context_ids(full_reg.merged()),
+                    rustc_hash::FxHashSet::default(),
                 );
                 let (module, _) = lowerer.lower_script(&script);
                 module

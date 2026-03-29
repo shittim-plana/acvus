@@ -141,7 +141,8 @@ impl Session {
     /// `entry`: mutable journal entry for context read/write.
     pub async fn execute_turn(
         &self,
-        _entry: &mut dyn acvus_interpreter::journal::EntryMut,
+        // TODO: takes a Page — pending orchestration migration
+        _page: &acvus_interpreter::InMemoryPage,
     ) -> TurnResult {
         // TODO: find entrypoint, create interpreter, execute
         todo!("execute_turn")
@@ -153,7 +154,8 @@ impl Session {
     /// `range`: which history items to render (start..end).
     pub async fn display_history(
         &self,
-        _entry: &dyn acvus_interpreter::journal::EntryRef,
+        // TODO: takes a Page — pending orchestration migration
+        _page: &acvus_interpreter::InMemoryPage,
         _range: Range<usize>,
     ) -> Vec<String> {
         // TODO: get history display function, execute with range

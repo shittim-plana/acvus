@@ -8,16 +8,15 @@ use acvus_utils::{Astr, Interner};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::error::MirError;
-use crate::ty::{EffectSet, EffectTarget, Ty};
+use crate::ty::{EffectSet, Ty};
 
-use super::extract::{ExtractResult, FnRefs, ParsedSource, extract_one};
+use super::extract::{ExtractResult, ParsedSource, extract_one};
 use super::infer::{InferredParam, SccInferResult, extract_call_edges, infer_scc, tarjan_scc};
 use super::types::*;
 
 // ── Cached entries ──────────────────────────────────────────────────
 
 struct ExtractEntry {
-    refs: FnRefs,
     parsed: ParsedSource,
 }
 
@@ -281,7 +280,7 @@ impl IncrementalGraph {
         };
 
         // Run extract.
-        if let Some((refs, parsed)) = extract_one(&self.interner, func) {
+        if let Some(parsed) = extract_one(&self.interner, func) {
             // Update call edges.
             // TODO: qualified call edges once AST supports ns:func() syntax.
             // For now, only unqualified (root) names are resolved.
@@ -300,7 +299,7 @@ impl IncrementalGraph {
 
             self.extract_cache.insert(
                 qref,
-                ExtractEntry { refs, parsed },
+                ExtractEntry { parsed },
             );
         } else {
             // Parse failed — clear caches.
@@ -359,11 +358,6 @@ impl IncrementalGraph {
             .map(|(&qref, f)| (qref, f))
             .collect();
 
-        let extract_refs: FxHashMap<QualifiedRef, &FnRefs> = self
-            .extract_cache
-            .iter()
-            .map(|(&qref, e)| (qref, &e.refs))
-            .collect();
         let extract_parsed: FxHashMap<QualifiedRef, &ParsedSource> = self
             .extract_cache
             .iter()
@@ -380,10 +374,6 @@ impl IncrementalGraph {
                 continue;
             }
 
-            let refs_owned: FxHashMap<QualifiedRef, FnRefs> = scc
-                .iter()
-                .filter_map(|fid| extract_refs.get(fid).map(|r| (*fid, (*r).clone())))
-                .collect();
             let parsed_owned: FxHashMap<QualifiedRef, &ParsedSource> = scc
                 .iter()
                 .filter_map(|fid| extract_parsed.get(fid).map(|p| (*fid, *p)))
@@ -393,7 +383,6 @@ impl IncrementalGraph {
                 &self.interner,
                 scc,
                 &fn_by_id,
-                &refs_owned,
                 &parsed_owned,
                 &known_ctx,
                 &resolved_fn_types,
@@ -426,11 +415,6 @@ impl IncrementalGraph {
             .map(|(&qref, f)| (qref, f))
             .collect();
 
-        let extract_refs: FxHashMap<QualifiedRef, FnRefs> = self
-            .extract_cache
-            .iter()
-            .map(|(&qref, e)| (qref, e.refs.clone()))
-            .collect();
         let extract_parsed: FxHashMap<QualifiedRef, &ParsedSource> = self
             .extract_cache
             .iter()
@@ -462,10 +446,6 @@ impl IncrementalGraph {
                 .as_ref()
                 .map(|r| r.resolved_types.clone());
 
-            let refs_for_scc: FxHashMap<QualifiedRef, FnRefs> = scc
-                .iter()
-                .filter_map(|fid| extract_refs.get(fid).map(|r| (*fid, r.clone())))
-                .collect();
             let parsed_for_scc: FxHashMap<QualifiedRef, &ParsedSource> = scc
                 .iter()
                 .filter_map(|fid| extract_parsed.get(fid).map(|p| (*fid, *p)))
@@ -475,7 +455,6 @@ impl IncrementalGraph {
                 &self.interner,
                 scc,
                 &fn_by_id,
-                &refs_for_scc,
                 &parsed_for_scc,
                 &known_ctx,
                 &resolved_fn_types,
@@ -511,16 +490,7 @@ impl IncrementalGraph {
     }
 
     fn propagate_effects(&mut self) {
-        // TODO: namespace-aware context resolution once AST supports @ns:name.
-        // For now, only root contexts are resolved by name.
-        let known_ctx_names: FxHashSet<Astr> = self
-            .contexts
-            .iter()
-            .filter(|(qref, _)| qref.namespace.is_none())
-            .map(|(qref, _)| qref.name)
-            .collect();
-
-        // Collect direct reads/writes from extract cache.
+        // Seed fn_metas with direct effects computed by the typechecker during infer.
         for scc_idx in 0..self.scc_order.len() {
             let scc = &self.scc_order[scc_idx];
             let Some(ref mut scc_result) = self.infer_cache[scc_idx] else {
@@ -528,32 +498,10 @@ impl IncrementalGraph {
             };
 
             for &fid in scc {
-                let Some(extract_entry) = self.extract_cache.get(&fid) else {
-                    continue;
-                };
-                let reads = extract_entry
-                    .refs
-                    .context_reads
-                    .iter()
-                    .filter(|r| known_ctx_names.contains(&r.name))
-                    .copied()
-                    .map(EffectTarget::Context)
-                    .collect();
-                let writes = extract_entry
-                    .refs
-                    .context_writes
-                    .iter()
-                    .filter(|r| known_ctx_names.contains(&r.name))
-                    .copied()
-                    .map(EffectTarget::Context)
-                    .collect();
-                if let Some(meta) = scc_result.fn_metas.get_mut(&fid) {
-                    meta.effect = EffectSet {
-                        reads,
-                        writes,
-                        io: false,
-                        self_modifying: false,
-                    };
+                if let Some(direct) = scc_result.fn_direct_effects.get(&fid) {
+                    if let Some(meta) = scc_result.fn_metas.get_mut(&fid) {
+                        meta.effect = direct.clone();
+                    }
                 }
             }
         }
@@ -624,14 +572,10 @@ impl IncrementalGraph {
 
     /// Build a snapshot ExtractResult for compatibility with batch APIs.
     pub fn extract_result(&self) -> ExtractResult {
-        let mut fn_refs = FxHashMap::default();
         let parsed = FxHashMap::default();
-        for (&qref, entry) in &self.extract_cache {
-            fn_refs.insert(qref, entry.refs.clone());
-            // ParsedSource is not Clone — we need to handle this.
-            // For now, skip parsed in snapshot (batch lower can re-extract if needed).
-        }
-        ExtractResult { fn_refs, parsed }
+        // ParsedSource is not Clone — we need to handle this.
+        // For now, skip parsed in snapshot (batch lower can re-extract if needed).
+        ExtractResult { parsed }
     }
 
     /// Build a snapshot InferResult for compatibility with batch APIs.

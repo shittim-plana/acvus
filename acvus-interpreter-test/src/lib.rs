@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use acvus_interpreter::{
-    ContextOverlay, ExecResult, Executable, ExternFn, ExternRegistry, Interpreter,
+    ExecResult, Executable, ExternFn, ExternRegistry, InMemoryContext, Interpreter,
     InterpreterContext, Registered, SequentialExecutor, Value,
 };
 use acvus_mir::graph::*;
@@ -214,7 +214,7 @@ pub async fn run(interner: &Interner, source: &str, context: FxHashMap<Astr, Val
         functions.insert(id, exec);
     }
 
-    // Build context snapshot for overlay.
+    // Build context snapshot for page.
     let snapshot: HashMap<String, Value> = context
         .into_iter()
         .map(|(k, v)| (interner.resolve(k).to_string(), v))
@@ -225,8 +225,8 @@ pub async fn run(interner: &Interner, source: &str, context: FxHashMap<Astr, Val
         .with_fn_types(cr.fn_types)
         .with_context_names(cr.context_names);
 
-    let overlay = ContextOverlay::new(Arc::new(snapshot), interner.clone());
-    let mut interp = Interpreter::new(shared, cr.entry_qref, overlay);
+    let page = InMemoryContext::new(snapshot, interner.clone());
+    let mut interp = Interpreter::new(shared, cr.entry_qref, page);
     let result = interp.execute().await.expect("execution failed");
 
     // Template returns a String.
@@ -273,8 +273,8 @@ pub async fn run_script(
         .with_fn_types(cr.fn_types)
         .with_context_names(cr.context_names);
 
-    let overlay = ContextOverlay::new(Arc::new(snapshot), interner.clone());
-    let mut interp = Interpreter::new(shared, cr.entry_qref, overlay);
+    let page = InMemoryContext::new(snapshot, interner.clone());
+    let mut interp = Interpreter::new(shared, cr.entry_qref, page);
     let result = interp.execute().await.expect("execution failed");
     result.value
 }
@@ -317,8 +317,8 @@ pub async fn run_script_with_externs(
         .with_fn_types(cr.fn_types)
         .with_context_names(cr.context_names);
 
-    let overlay = ContextOverlay::new(Arc::new(snapshot), interner.clone());
-    let mut interp = Interpreter::new(shared, cr.entry_qref, overlay);
+    let page = InMemoryContext::new(snapshot, interner.clone());
+    let mut interp = Interpreter::new(shared, cr.entry_qref, page);
     interp.execute().await.expect("execution failed")
 }
 

@@ -1,5 +1,3 @@
-pub mod blob;
-pub mod blob_journal;
 pub mod builtins;
 pub mod error;
 pub mod executor;
@@ -9,7 +7,6 @@ pub mod iter;
 pub mod journal;
 mod value;
 
-pub use blob::{BlobHash, BlobStore, MemBlobStore};
 pub use error::{RuntimeError, RuntimeErrorKind, ValueKind};
 pub use executor::{Executor, SequentialExecutor};
 pub use extern_fn::{
@@ -20,7 +17,7 @@ pub use interpreter::{
     SyncBuiltinFn, exec_next,
 };
 pub use iter::{IterHandle, SequenceChain};
-pub use journal::{ContextOverlay, ContextWrite, EntryLifecycle, EntryMut, EntryRef, Journal};
+pub use journal::{RuntimeContext, ContextWrite, InMemoryContext};
 pub use value::{
     FnValue, FromValue, FromValues, HandleValue, IntoValue, IntoValues, OpaqueValue, RangeValue,
     Value,

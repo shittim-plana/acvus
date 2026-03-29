@@ -120,8 +120,8 @@ async fn run_ext_with_registry(
     let executor = Arc::new(SequentialExecutor);
     let shared =
         InterpreterContext::new(interner, exec_fns, executor).with_context_names(context_names);
-    let overlay = ContextOverlay::new(Arc::new(snapshot), interner.clone());
-    let mut interp = Interpreter::new(shared, entry_qref, overlay);
+    let page = InMemoryContext::new(snapshot, interner.clone());
+    let mut interp = Interpreter::new(shared, entry_qref, page);
     interp.execute().await.expect("execution failed").value
 }
 
@@ -550,8 +550,8 @@ async fn extern_cast_auto_coercion() {
 
     let executor = Arc::new(SequentialExecutor);
     let shared = InterpreterContext::new(&i, exec_fns, executor);
-    let overlay = ContextOverlay::new(Arc::new(HashMap::new()), i.clone());
-    let mut interp = Interpreter::new(shared, entry_qref, overlay);
+    let page = InMemoryContext::new(HashMap::new(), i.clone());
+    let mut interp = Interpreter::new(shared, entry_qref, page);
     let result = interp.execute().await.expect("execution failed");
 
     // make_num() → MyNum(42), auto-cast to_int → 42, double → 84

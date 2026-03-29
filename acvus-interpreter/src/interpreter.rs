@@ -149,7 +149,7 @@ enum ApplyResult {
     Expand(Vec<Value>),
 }
 
-use crate::journal::{ContextOverlay, ContextWrite, EntryMut, EntryRef};
+use crate::journal::{InMemoryContext, ContextWrite, RuntimeContext};
 
 // ── Public types ────────────────────────────────────────────────────
 
@@ -218,7 +218,7 @@ impl InterpreterContext {
 /// Per-execution mutable state passed through the run_loop call chain.
 struct RunContext {
     shared: InterpreterContext,
-    overlay: ContextOverlay,
+    page: InMemoryContext,
     variables: FxHashMap<Astr, Value>,
 }
 
@@ -235,100 +235,34 @@ fn resolve_context_key(
     Ok(shared.interner.resolve(*name).to_string())
 }
 
+/// Collect context values from SSA context_uses.
+/// context_uses is authoritative — if empty, the function doesn't read context.
 fn collect_context_uses(
-    shared: &InterpreterContext,
-    overlay: &ContextOverlay,
     context_uses: &[(QualifiedRef, ValueId)],
-    fn_id: &QualifiedRef,
     frame: &Frame,
-) -> Result<Vec<Value>, RuntimeError> {
-    if !context_uses.is_empty() {
-        Ok(context_uses
-            .iter()
-            .map(|(_, vid)| frame.share(*vid))
-            .collect())
-    } else {
-        collect_uses_from_type(shared, overlay, fn_id)
-    }
-}
-
-fn collect_uses_from_type(
-    shared: &InterpreterContext,
-    overlay: &ContextOverlay,
-    fn_id: &QualifiedRef,
-) -> Result<Vec<Value>, RuntimeError> {
-    let Some(fn_ty) = shared.fn_types.get(fn_id) else {
-        return Ok(vec![]);
-    };
-    let Ty::Fn {
-        effect: Effect::Resolved(eff),
-        ..
-    } = fn_ty
-    else {
-        return Ok(vec![]);
-    };
-    eff.reads
+) -> Vec<Value> {
+    context_uses
         .iter()
-        .filter_map(|t| match t {
-            acvus_mir::ty::EffectTarget::Context(qref) => Some(qref),
-            acvus_mir::ty::EffectTarget::Token(_) => None,
-        })
-        .map(|qref| {
-            let key = resolve_context_key(shared, qref)?;
-            overlay
-                .get(&key)
-                .cloned()
-                .ok_or_else(|| RuntimeError::internal(format!("undefined context '{key}'")))
-        })
+        .map(|(_, vid)| frame.share(*vid))
         .collect()
 }
 
+/// Apply context defs from SSA context_defs.
+/// context_defs is authoritative — if empty, the function doesn't write context.
 fn apply_context_defs(
     shared: &InterpreterContext,
-    overlay: &mut ContextOverlay,
+    page: &InMemoryContext,
     context_defs: &[(QualifiedRef, ValueId)],
-    fn_id: &QualifiedRef,
     defs: Vec<Value>,
     frame: &mut Frame,
     projection_map: &mut FxHashMap<ValueId, QualifiedRef>,
 ) -> Result<(), RuntimeError> {
-    if !context_defs.is_empty() {
-        for ((ctx_id, vid), def_value) in context_defs.iter().zip(defs) {
-            let key = resolve_context_key(shared, ctx_id)?;
-            let for_overlay = def_value.share();
-            frame.set(*vid, def_value);
-            overlay.apply_field(&key, &[], for_overlay);
-            projection_map.insert(*vid, *ctx_id);
-        }
-    } else {
-        apply_defs_from_type(shared, overlay, fn_id, defs)?;
-    }
-    Ok(())
-}
-
-fn apply_defs_from_type(
-    shared: &InterpreterContext,
-    overlay: &mut ContextOverlay,
-    fn_id: &QualifiedRef,
-    defs: Vec<Value>,
-) -> Result<(), RuntimeError> {
-    let Some(fn_ty) = shared.fn_types.get(fn_id) else {
-        return Ok(());
-    };
-    let Ty::Fn {
-        effect: Effect::Resolved(eff),
-        ..
-    } = fn_ty
-    else {
-        return Ok(());
-    };
-    for (target, def_value) in eff.writes.iter().zip(defs) {
-        let qref = match target {
-            acvus_mir::ty::EffectTarget::Context(qref) => qref,
-            acvus_mir::ty::EffectTarget::Token(_) => continue,
-        };
-        let key = resolve_context_key(shared, qref)?;
-        overlay.apply_field(&key, &[], def_value);
+    for ((ctx_id, vid), def_value) in context_defs.iter().zip(defs) {
+        let key = resolve_context_key(shared, ctx_id)?;
+        let for_page = def_value.share();
+        frame.set(*vid, def_value);
+        page.set(&key, for_page);
+        projection_map.insert(*vid, *ctx_id);
     }
     Ok(())
 }
@@ -451,10 +385,9 @@ async fn execute_inst(
                 .unwrap_or_else(|| panic!("context load: no name for {:?}", ctx_id));
             let key = ctx.shared.interner.resolve(*name);
             let val = ctx
-                .overlay
+                .page
                 .get(key)
-                .unwrap_or_else(|| panic!("context load: undefined context '{}'", key))
-                .clone();
+                .unwrap_or_else(|| panic!("context load: undefined context '{}'", key));
             frame.set(*dst, val);
         }
         InstKind::ContextStore { dst, value, .. } => {
@@ -466,7 +399,7 @@ async fn execute_inst(
                 .unwrap_or_else(|| panic!("context store: no name for {:?}", ctx_id));
             let key = ctx.shared.interner.resolve(*name);
             let val = frame.share(*value);
-            ctx.overlay.apply_field(key, &[], val);
+            ctx.page.set(key, val);
         }
 
         // ── Arithmetic / Logic ───────────────────────────
@@ -545,7 +478,7 @@ async fn execute_inst(
                 *dst,
                 Value::closure(FnValue {
                     shared: ctx.shared.clone(),
-                    overlay: ctx.overlay.spawn_fork(),
+                    page: ctx.page.fork(),
                     body: Arc::new(closure_body.clone()),
                     captures: captured.into(),
                 }),
@@ -715,7 +648,7 @@ async fn execute_inst(
                         let arg_vals: Vec<Value> =
                             args.iter().map(|a| frame.use_val(*a, val_types)).collect();
                         let uses =
-                            collect_context_uses(&ctx.shared, &ctx.overlay, context_uses, id, frame)?;
+                            collect_context_uses(context_uses, frame);
 
                         let output = match &handler {
                             crate::extern_fn::ExternHandler::Sync(f) => {
@@ -729,9 +662,8 @@ async fn execute_inst(
 
                         apply_context_defs(
                             &ctx.shared,
-                            &mut ctx.overlay,
+                            &ctx.page,
                             context_defs,
-                            id,
                             output.defs,
                             frame,
                             projection_map,
@@ -766,7 +698,7 @@ async fn execute_inst(
             let handle = if is_extern {
                 let spawn_args: Vec<Value> = args.iter().map(|a| frame.share(*a)).collect();
                 let uses =
-                    collect_context_uses(&ctx.shared, &ctx.overlay, context_uses, &callee_id, frame)?;
+                    collect_context_uses(context_uses, frame);
                 let handler = match lookup_function(&ctx.shared, &callee_id) {
                     Executable::Extern(h) => h.clone(),
                     _ => unreachable!(),
@@ -802,7 +734,7 @@ async fn execute_inst(
                 let child = Interpreter {
                     shared: ctx.shared.clone(),
                     entry: callee_id,
-                    overlay: ctx.overlay.spawn_fork(),
+                    page: ctx.page.fork(),
                     variables: FxHashMap::default(),
                     spawn_args,
                 };
@@ -821,17 +753,23 @@ async fn execute_inst(
             };
             let result = ctx.shared.executor.eval(handle).await?;
 
-            if !result.writes.is_empty() {
-                ctx.overlay.merge_patches(result.writes);
+            for w in result.writes {
+                match w {
+                    ContextWrite::Set { key, value } => ctx.page.set(&key, value),
+                    ContextWrite::FieldPatch { key, path, value } => {
+                        let path_refs: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
+                        ctx.page.set_field(&key, &path_refs, value);
+                    }
+                }
             }
 
             let defs = result.defs;
             let defs_count = defs.len();
             for ((ctx_id, vid), def_value) in context_defs.iter().zip(defs) {
                 let key = resolve_context_key(&ctx.shared, ctx_id)?;
-                let for_overlay = def_value.share();
+                let for_page = def_value.share();
                 frame.set(*vid, def_value);
-                ctx.overlay.apply_field(&key, &[], for_overlay);
+                ctx.page.set(&key, for_page);
                 projection_map.insert(*vid, *ctx_id);
             }
 
@@ -960,7 +898,7 @@ pub async fn fn_value_call(
 ) -> Result<Value, RuntimeError> {
     let mut closure_ctx = RunContext {
         shared: f.shared.clone(),
-        overlay: f.overlay.spawn_fork(),
+        page: f.page.fork(),
         variables: FxHashMap::default(),
     };
 
@@ -1220,17 +1158,17 @@ async fn apply_ops(
 pub struct Interpreter {
     shared: InterpreterContext,
     entry: QualifiedRef,
-    overlay: ContextOverlay,
+    page: InMemoryContext,
     variables: FxHashMap<Astr, Value>,
     spawn_args: Vec<Value>,
 }
 
 impl Interpreter {
-    pub fn new(shared: InterpreterContext, entry: QualifiedRef, overlay: ContextOverlay) -> Self {
+    pub fn new(shared: InterpreterContext, entry: QualifiedRef, page: InMemoryContext) -> Self {
         Self {
             shared,
             entry,
-            overlay,
+            page,
             variables: FxHashMap::default(),
             spawn_args: Vec::new(),
         }
@@ -1240,7 +1178,7 @@ impl Interpreter {
         Self {
             shared: self.shared.clone(),
             entry,
-            overlay: self.overlay.spawn_fork(),
+            page: self.page.fork(),
             variables: FxHashMap::default(),
             spawn_args: args,
         }
@@ -1253,27 +1191,22 @@ impl Interpreter {
 
         let mut run_ctx = RunContext {
             shared: self.shared.clone(),
-            overlay: std::mem::replace(
-                &mut self.overlay,
-                ContextOverlay::new(
-                    Arc::new(std::collections::HashMap::new()),
-                    self.shared.interner.clone(),
-                ),
+            page: std::mem::replace(
+                &mut self.page,
+                InMemoryContext::empty(self.shared.interner.clone()),
             ),
             variables: std::mem::take(&mut self.variables),
         };
 
         let value = execute_function(&mut run_ctx, &entry, &args).await?;
 
-        let writes = run_ctx.overlay.into_patches();
+        let writes = run_ctx.page.into_writes();
         Ok(ExecResult {
             value,
             writes,
             defs: Vec::new(),
         })
     }
-
-
 }
 
 // ── Literal → Value ──────────────────────────────────────────────────

@@ -9,7 +9,7 @@ use rustc_hash::FxHashMap;
 
 use crate::error::RuntimeError;
 use crate::interpreter::InterpreterContext;
-use crate::journal::ContextOverlay;
+use crate::journal::{InMemoryContext, RuntimeContext};
 pub use crate::iter::{IterHandle, SequenceChain};
 
 // ── Value ────────────────────────────────────────────────────────────
@@ -81,7 +81,7 @@ pub struct RangeValue {
 /// `call()` executes the body in an independent RunContext — no Interpreter needed.
 pub struct FnValue {
     pub shared: InterpreterContext,
-    pub overlay: ContextOverlay,
+    pub page: InMemoryContext,
     pub body: Arc<MirBody>,
     pub captures: Arc<[Value]>,
 }
@@ -90,7 +90,7 @@ impl Clone for FnValue {
     fn clone(&self) -> Self {
         Self {
             shared: self.shared.clone(),
-            overlay: self.overlay.spawn_fork(),
+            page: self.page.fork(),
             body: Arc::clone(&self.body),
             captures: Arc::clone(&self.captures),
         }

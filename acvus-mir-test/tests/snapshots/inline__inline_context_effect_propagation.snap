@@ -7,20 +7,24 @@ expression: ir
      1 │   r1 = context_load r0
      2 │   r2 = context_project @counter
      3 │   r3 = context_load r2
-     5 │   r4 = r3 + 1 (r5)
-     6 │   r6 = context_project @counter
-     7 │   ctx_store r6 = r4
-     8 │   r7 = context_project @counter
-     9 │   r8 = context_load r7
-    10 │   return r8
+     4 │   r4 = context_project @counter
+     5 │   r5 = context_load r4
+     7 │   r6 = r5 + 1 (r7)
+     8 │   r8 = context_project @counter
+     9 │   ctx_store r8 = r6
+    10 │   r9 = context_project @counter
+    11 │   r10 = context_load r9
+    12 │   return r10
 
     ; r0 (@counter) : Int
-    ; r1 (v3) : Int
+    ; r1 (v2) : Int
     ; r2 (@counter) : Int
     ; r3 (v5) : Int
-    ; r4 (v7) : Int
-    ; r5 (v6) : Int
-    ; r6 (v8) : Int
-    ; r7 (@counter) : Int
+    ; r4 (@counter) : Int
+    ; r5 (v7) : Int
+    ; r6 (v9) : Int
+    ; r7 (v8) : Int
     ; r8 (v10) : Int
-    ; r9 (inc_and_get(...)) : Int
+    ; r9 (@counter) : Int
+    ; r10 (v12) : Int
+    ; r11 (inc_and_get(...)) : Int
