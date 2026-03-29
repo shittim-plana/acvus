@@ -24,6 +24,54 @@ A single expression like `@users | filter(active) | map(name) | join(", ")` comp
 
 ---
 
+## ExternFn: First-Class SSA Citizens
+
+External functions in acvus are not black boxes. They are **first-class citizens of the SSA graph**, indistinguishable from built-in operations at the IR level.
+
+### What "first-class" means concretely
+
+When a Rust function is registered as an ExternFn, it declares its full type signature and effect. From that point on, the SSA sees it as just another node in the dataflow graph:
+
+- **Uses** — SSA values flow *into* the ExternFn as arguments.
+- **Defs** — SSA values flow *out* as results.
+
+There is no marshalling, no serialization, no opaque boundary. Values enter and exit through the same SSA value channels as any other instruction.
+
+### What this enables
+
+Because ExternFns participate fully in the SSA dataflow, every standard optimization applies to them:
+
+- **Dead code elimination** — If nobody uses a Defs result, the call is removed.
+- **Common subexpression elimination** — Two calls with identical Uses to a pure ExternFn are deduplicated.
+- **Constant folding** — If all Uses are constants and the function is pure, the compiler can evaluate the call at compile time and replace it with the result. This is compile-time evaluation of *external* functions — something no other language does, because in other languages external functions are opaque.
+- **Fusion** — A chain of pure ExternFns (`filter | map | collect`) can be fused into a single call, eliminating intermediate allocations and dispatch overhead.
+
+### Why this is possible
+
+The all-or-nothing boundary. An ExternFn either hasn't entered the system (just a Rust function), or it has fully entered — with type, effect, and purity known to the compiler. There is no intermediate state where a function is "partially known." This is unlike FFI in other languages, where external functions cross the boundary but remain opaque.
+
+### Compile-time evaluation of external functions
+
+This deserves emphasis because it is, to our knowledge, unique. In C++ (`constexpr`), Zig (`comptime`), and Rust (`const fn`), compile-time evaluation is restricted to functions written in the language itself. External/plugin functions cannot participate.
+
+In acvus, a pure ExternFn with constant inputs can be evaluated at compile time. The compiler simply calls the Rust function, captures the result, and folds it into a constant. This is sound because:
+
+1. Purity is declared at registration and enforced by the Uses/Defs contract — the function can only access values through its SSA inputs.
+2. The Rust type system (`Send + Sync`, no `unsafe`) prevents hidden side effects.
+3. The result flows back through Defs into the SSA graph like any other value.
+
+### Safety guarantees
+
+ExternFn authors cannot violate SSA invariants. The Uses/Defs interface ensures:
+
+- No hidden reads (all inputs come through Uses)
+- No hidden writes (all outputs go through Defs)
+- No hidden state (no mutable references escape the handler closure)
+
+Combined with Rust's memory safety (`Send + Sync`, lifetime tracking, no aliasing), ExternFn handlers are safe by construction. No sandbox needed.
+
+---
+
 ## The Pipeline and Why It's Split This Way
 
 ```
