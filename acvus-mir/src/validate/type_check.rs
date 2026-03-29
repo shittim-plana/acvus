@@ -11,7 +11,7 @@
 //! - `Cast` is the *only* instruction allowed to change a value's type.
 //! - Generic variance is invariant: inner types must match recursively.
 
-use crate::graph::QualifiedRef;
+use crate::graph::{ContextPolicy, QualifiedRef};
 use crate::ir::{Callee, InstKind, Label, MirBody, MirModule, ValueId};
 use crate::ty::{Effect, EffectSet, EffectTarget, Ty};
 use acvus_ast::{BinOp, Literal, Span, UnaryOp};
@@ -71,6 +71,7 @@ pub enum ValidationErrorKind {
 pub fn check_types(
     module: &MirModule,
     fn_types: &FxHashMap<QualifiedRef, Ty>,
+    _policies: &FxHashMap<QualifiedRef, ContextPolicy>,
 ) -> Vec<ValidationError> {
     let mut errors = Vec::new();
 
@@ -1351,7 +1352,7 @@ mod tests {
             })],
             vt,
         );
-        let errors = check_types(&module, &FxHashMap::default());
+        let errors = check_types(&module, &FxHashMap::default(), &FxHashMap::default());
         assert!(errors.is_empty());
     }
 
@@ -1368,7 +1369,7 @@ mod tests {
             })],
             vt,
         );
-        let errors = check_types(&module, &FxHashMap::default());
+        let errors = check_types(&module, &FxHashMap::default(), &FxHashMap::default());
         assert!(!errors.is_empty(), "type mismatch should be caught");
     }
 
@@ -1391,7 +1392,7 @@ mod tests {
             })],
             vt,
         );
-        let errors = check_types(&module, &FxHashMap::default());
+        let errors = check_types(&module, &FxHashMap::default(), &FxHashMap::default());
         assert!(errors.is_empty(), "Cast should be skipped by type checker");
     }
 
@@ -1414,7 +1415,7 @@ mod tests {
             })],
             vt,
         );
-        let errors = check_types(&module, &FxHashMap::default());
+        let errors = check_types(&module, &FxHashMap::default(), &FxHashMap::default());
         assert!(!errors.is_empty(), "BinOp type mismatch should be caught");
     }
 
@@ -1433,7 +1434,7 @@ mod tests {
             })], // only 1
             vt,
         );
-        let errors = check_types(&module, &FxHashMap::default());
+        let errors = check_types(&module, &FxHashMap::default(), &FxHashMap::default());
         assert!(!errors.is_empty(), "tuple arity mismatch should be caught");
     }
 
@@ -1460,7 +1461,7 @@ mod tests {
             ],
             vt,
         );
-        let errors = check_types(&module, &FxHashMap::default());
+        let errors = check_types(&module, &FxHashMap::default(), &FxHashMap::default());
         assert!(
             errors.is_empty(),
             "matching jump arg types should pass: {errors:?}"

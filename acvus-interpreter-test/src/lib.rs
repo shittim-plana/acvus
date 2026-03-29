@@ -93,7 +93,7 @@ pub fn compile_source_with_externs(
     };
 
     let ext = extract::extract(interner, &graph);
-    let inf = infer::infer(interner, &graph, &ext, &FxHashMap::default(), Freeze::new(type_registry));
+    let inf = infer::infer(interner, &graph, &ext, &FxHashMap::default(), Freeze::new(type_registry), &FxHashMap::default());
 
     // Collect all errors: infer (unresolved functions) + lower.
     let mut all_errors: Vec<String> = Vec::new();
@@ -110,7 +110,7 @@ pub fn compile_source_with_externs(
         }
     }
 
-    let result = graph_lower::lower(interner, &graph, &ext, &inf, &FxHashSet::default());
+    let result = graph_lower::lower(interner, &graph, &ext, &inf, &FxHashMap::default());
 
     // Report lower-level errors.
     for e in result.errors.iter().flat_map(|e| e.errors.iter()) {

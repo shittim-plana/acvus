@@ -4,7 +4,7 @@
 //! Reuses the existing MIR lowerer — this is just the orchestration layer.
 
 use acvus_utils::{Astr, Freeze, Interner};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
 use crate::error::MirError;
 use crate::hints::HintTable;
@@ -47,14 +47,13 @@ impl LowerResult {
 
 /// Run Phase 3: lower each Complete function to MIR.
 ///
-/// `volatile_contexts`: contexts whose loads/stores must not be elided by SSA
-/// (externally observable — e.g. Display-observed journals).
+/// `policies`: external constraints on contexts (volatile, read_only, etc.).
 pub fn lower(
     interner: &Interner,
     graph: &CompilationGraph,
     extract: &ExtractResult,
     infer_result: &InferResult,
-    volatile_contexts: &FxHashSet<QualifiedRef>,
+    policies: &FxHashMap<QualifiedRef, ContextPolicy>,
 ) -> LowerResult {
     let mut modules = FxHashMap::default();
     let mut errors = Vec::new();
@@ -111,7 +110,7 @@ pub fn lower(
             resolution_clone.coercion_map,
             Freeze::new(context_ids),
             Freeze::new(function_ids),
-            volatile_contexts.clone(),
+            policies.clone(),
         );
         let (module, hints) = match parsed {
             ParsedSource::Script(script) => lowerer.lower_script(script),
@@ -174,8 +173,8 @@ mod tests {
         let i = Interner::new();
         let graph = make_graph_with_ctx(&i, "1 + 2", &[]);
         let ext = extract::extract(&i, &graph);
-        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
-        let result = lower(&i, &graph, &ext, &inf, &FxHashSet::default());
+        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = lower(&i, &graph, &ext, &inf, &FxHashMap::default());
 
         assert!(!result.has_errors(), "errors: {:?}", result.errors);
         let uid = first_fn_ref(&graph);
@@ -187,8 +186,8 @@ mod tests {
         let i = Interner::new();
         let graph = make_graph_with_ctx(&i, "@x + 1", &[("x", Ty::Int)]);
         let ext = extract::extract(&i, &graph);
-        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
-        let result = lower(&i, &graph, &ext, &inf, &FxHashSet::default());
+        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = lower(&i, &graph, &ext, &inf, &FxHashMap::default());
 
         assert!(!result.has_errors(), "errors: {:?}", result.errors);
         let uid = first_fn_ref(&graph);
@@ -201,8 +200,8 @@ mod tests {
         let obj_ty = Ty::Object(FxHashMap::from_iter([(i.intern("name"), Ty::String)]));
         let graph = make_graph_with_ctx(&i, "@user.name", &[("user", obj_ty)]);
         let ext = extract::extract(&i, &graph);
-        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
-        let result = lower(&i, &graph, &ext, &inf, &FxHashSet::default());
+        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = lower(&i, &graph, &ext, &inf, &FxHashMap::default());
 
         assert!(!result.has_errors(), "errors: {:?}", result.errors);
     }
@@ -218,8 +217,8 @@ mod tests {
             &[("data", Ty::Int), ("out", Ty::Int)],
         );
         let ext = extract::extract(&i, &graph);
-        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
-        let result = lower(&i, &graph, &ext, &inf, &FxHashSet::default());
+        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = lower(&i, &graph, &ext, &inf, &FxHashMap::default());
         assert!(!result.has_errors(), "errors: {:?}", result.errors);
         let module = result.module(first_fn_ref(&graph)).unwrap();
         // Irrefutable match-bind should NOT generate JumpIf.
@@ -242,8 +241,8 @@ mod tests {
             &[("val", Ty::Int), ("out", Ty::Int)],
         );
         let ext = extract::extract(&i, &graph);
-        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
-        let result = lower(&i, &graph, &ext, &inf, &FxHashSet::default());
+        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = lower(&i, &graph, &ext, &inf, &FxHashMap::default());
         assert!(!result.has_errors(), "errors: {:?}", result.errors);
         let module = result.module(first_fn_ref(&graph)).unwrap();
         // Refutable match-bind MUST generate JumpIf.
@@ -266,8 +265,8 @@ mod tests {
             &[("items", Ty::List(Box::new(Ty::Int))), ("sum", Ty::Int)],
         );
         let ext = extract::extract(&i, &graph);
-        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
-        let result = lower(&i, &graph, &ext, &inf, &FxHashSet::default());
+        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = lower(&i, &graph, &ext, &inf, &FxHashMap::default());
         assert!(!result.has_errors(), "errors: {:?}", result.errors);
         let module = result.module(first_fn_ref(&graph)).unwrap();
         // Iterate must generate ListStep.
@@ -293,8 +292,8 @@ mod tests {
             ],
         );
         let ext = extract::extract(&i, &graph);
-        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
-        let result = lower(&i, &graph, &ext, &inf, &FxHashSet::default());
+        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = lower(&i, &graph, &ext, &inf, &FxHashMap::default());
         assert!(!result.has_errors(), "errors: {:?}", result.errors);
         let module = result.module(first_fn_ref(&graph)).unwrap();
         // Nested iterate: two ListStep instructions.
@@ -314,10 +313,10 @@ mod tests {
         let i = Interner::new();
         let graph = make_graph_with_ctx(&i, "@x + 1", &[("x", Ty::String)]);
         let ext = extract::extract(&i, &graph);
-        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default());
+        let inf = crate::graph::infer::infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
         // Infer should produce Incomplete for this function (type mismatch).
         // Lower should produce no module for this unit.
-        let result = lower(&i, &graph, &ext, &inf, &FxHashSet::default());
+        let result = lower(&i, &graph, &ext, &inf, &FxHashMap::default());
         let uid = first_fn_ref(&graph);
         assert!(result.module(uid).is_none());
     }

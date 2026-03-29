@@ -64,7 +64,7 @@ pub fn optimize(
         }
 
         // Validate on MirBody — after demote, catches demotion bugs.
-        let errors = validate::validate(&module, fn_types);
+        let errors = validate::validate(&module, fn_types, &FxHashMap::default());
         if !errors.is_empty() {
             all_errors.push((qref, errors));
         }

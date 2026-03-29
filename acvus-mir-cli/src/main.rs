@@ -6,7 +6,7 @@ use acvus_mir::graph::{extract, infer, lower as graph_lower};
 use acvus_mir::printer::dump;
 use acvus_mir::ty::{Effect, Param, Ty};
 use acvus_utils::{Freeze, Interner};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use serde::Deserialize;
 
 #[derive(Deserialize, Default)]
@@ -190,8 +190,8 @@ fn main() {
 
     // Run pipeline: extract → infer → lower.
     let ext = extract::extract(&interner, &graph);
-    let inf = infer::infer(&interner, &graph, &ext, &FxHashMap::default(), Freeze::new(type_registry));
-    let result = graph_lower::lower(&interner, &graph, &ext, &inf, &FxHashSet::default());
+    let inf = infer::infer(&interner, &graph, &ext, &FxHashMap::default(), Freeze::new(type_registry), &FxHashMap::default());
+    let result = graph_lower::lower(&interner, &graph, &ext, &inf, &FxHashMap::default());
     if result.has_errors() {
         for le in &result.errors {
             for e in &le.errors {

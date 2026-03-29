@@ -4,7 +4,7 @@
 //! Real callers should use the graph phases directly.
 
 use acvus_utils::{Freeze, Interner};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
 use crate::graph::*;
 use crate::graph::{extract, infer, lower as graph_lower};
@@ -56,7 +56,7 @@ fn run_pipeline(
     target: QualifiedRef,
 ) -> Result<(MirModule, HintTable), String> {
     let ext = extract::extract(interner, graph);
-    let inf = infer::infer(interner, graph, &ext, &FxHashMap::default(), Freeze::default());
+    let inf = infer::infer(interner, graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
 
     // Collect infer errors.
     let mut errors: Vec<String> = Vec::new();
@@ -73,7 +73,7 @@ fn run_pipeline(
         }
     }
 
-    let result = graph_lower::lower(interner, graph, &ext, &inf, &FxHashSet::default());
+    let result = graph_lower::lower(interner, graph, &ext, &inf, &FxHashMap::default());
 
     // Collect lower errors.
     for e in result.errors.iter().flat_map(|le| le.errors.iter()) {
@@ -121,7 +121,7 @@ fn run_pipeline(
         *closure = crate::cfg::demote(cfg_body);
     }
 
-    let validation_errors = crate::validate::validate(&pair.0, &fn_types);
+    let validation_errors = crate::validate::validate(&pair.0, &fn_types, &FxHashMap::default());
     if !validation_errors.is_empty() {
         let msgs: Vec<String> = validation_errors
             .iter()

@@ -20,7 +20,7 @@ fn compile_analysis(
     };
     use acvus_mir::graph::{extract, lower as graph_lower};
     use acvus_utils::Freeze;
-    use rustc_hash::FxHashSet;
+    use rustc_hash::{FxHashMap, FxHashSet};
 
     // Build contexts from declared types.
     let mut contexts: Vec<Context> = ctx
@@ -68,7 +68,7 @@ fn compile_analysis(
     };
 
     let ext = extract::extract(interner, &graph);
-    let inf = infer::infer(interner, &graph, &ext, &FxHashMap::default(), Freeze::new(type_registry));
+    let inf = infer::infer(interner, &graph, &ext, &FxHashMap::default(), Freeze::new(type_registry), &FxHashMap::default());
 
     // Collect infer errors.
     let mut errors: Vec<String> = Vec::new();
@@ -82,7 +82,7 @@ fn compile_analysis(
         }
     }
 
-    let result = graph_lower::lower(interner, &graph, &ext, &inf, &FxHashSet::default());
+    let result = graph_lower::lower(interner, &graph, &ext, &inf, &FxHashMap::default());
 
     // Collect lower errors.
     for e in result.errors.iter().flat_map(|le| le.errors.iter()) {

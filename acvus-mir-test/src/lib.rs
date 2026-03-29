@@ -23,7 +23,7 @@ fn run_pipeline_with_registry(
     type_registry: acvus_mir::ty::TypeRegistry,
 ) -> Result<MirModule, String> {
     let ext = extract::extract(interner, graph);
-    let inf = infer::infer(interner, graph, &ext, &FxHashMap::default(), Freeze::new(type_registry));
+    let inf = infer::infer(interner, graph, &ext, &FxHashMap::default(), Freeze::new(type_registry), &FxHashMap::default());
 
     // Collect infer errors.
     let mut errors: Vec<String> = Vec::new();
@@ -37,7 +37,7 @@ fn run_pipeline_with_registry(
         }
     }
 
-    let result = graph_lower::lower(interner, graph, &ext, &inf, &FxHashSet::default());
+    let result = graph_lower::lower(interner, graph, &ext, &inf, &FxHashMap::default());
 
     // Collect lower errors.
     for e in result.errors.iter().flat_map(|le| le.errors.iter()) {
@@ -81,7 +81,7 @@ fn run_pipeline_with_registry(
         *closure = cfg::demote(cfg_closure);
     }
 
-    let validation_errors = acvus_mir::validate::validate(&module, &fn_types);
+    let validation_errors = acvus_mir::validate::validate(&module, &fn_types, &FxHashMap::default());
     if !validation_errors.is_empty() {
         let msgs: Vec<String> = validation_errors
             .iter() 
@@ -303,6 +303,7 @@ pub fn compile_inline_ir_with(
         &ext,
         &FxHashMap::default(),
         Freeze::new(type_registry),
+        &FxHashMap::default(),
     );
 
     let mut errors: Vec<String> = Vec::new();
@@ -316,7 +317,7 @@ pub fn compile_inline_ir_with(
         }
     }
 
-    let result = graph_lower::lower(interner, &graph, &ext, &inf, &FxHashSet::default());
+    let result = graph_lower::lower(interner, &graph, &ext, &inf, &FxHashMap::default());
     for e in result.errors.iter().flat_map(|le| le.errors.iter()) {
         errors.push(format!(
             "[lower] [{}..{}] {}",
