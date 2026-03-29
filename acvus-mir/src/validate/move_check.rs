@@ -17,7 +17,7 @@ use acvus_ast::Span;
 use acvus_utils::{Astr, LocalIdOps};
 use rustc_hash::FxHashMap;
 
-use crate::analysis::cfg::{BlockIdx, Cfg, Terminator};
+use crate::cfg::{BlockIdx, Terminator, promote};
 use crate::ir::{Callee, Inst, InstKind, MirBody, MirModule, ValueId};
 use crate::ty::Ty;
 
@@ -211,7 +211,7 @@ pub fn check_moves(module: &MirModule) -> Vec<ValidationError> {
 }
 
 fn check_body(scope: &str, body: &MirBody, errors: &mut Vec<ValidationError>) {
-    let cfg = Cfg::build(&body.insts);
+    let cfg = promote(body.clone());
     if cfg.blocks.is_empty() {
         return;
     }
@@ -230,12 +230,12 @@ fn check_body(scope: &str, body: &MirBody, errors: &mut Vec<ValidationError>) {
         let mut state = block_entry[idx.0].clone();
 
         // Process instructions in this block
-        for &inst_idx in &block.inst_indices {
+        for (i, inst) in block.insts.iter().enumerate() {
             process_inst(
                 scope,
-                inst_idx,
-                &body.insts[inst_idx],
-                &body.val_types,
+                i,
+                inst,
+                &cfg.val_types,
                 &mut state,
                 errors,
             );
@@ -245,15 +245,14 @@ fn check_body(scope: &str, body: &MirBody, errors: &mut Vec<ValidationError>) {
 
         // Propagate to successors
         match &block.terminator {
-            Terminator::Jump { target, args } => {
-                if let Some(&target_idx) = cfg.label_to_block.get(target) {
+            Terminator::Jump { label, args } => {
+                if let Some(&target_idx) = cfg.label_to_block.get(label) {
                     propagate_args(
                         scope,
                         &block_exit[idx.0],
                         args,
                         &cfg.blocks[target_idx.0].params,
-                        &body.val_types,
-                        &body.insts,
+                        &cfg.val_types,
                         errors,
                         &mut block_entry[target_idx.0],
                     );
@@ -276,8 +275,7 @@ fn check_body(scope: &str, body: &MirBody, errors: &mut Vec<ValidationError>) {
                             &block_exit[idx.0],
                             args,
                             &cfg.blocks[target_idx.0].params,
-                            &body.val_types,
-                            &body.insts,
+                            &cfg.val_types,
                             errors,
                             &mut block_entry[target_idx.0],
                         );
@@ -287,7 +285,12 @@ fn check_body(scope: &str, body: &MirBody, errors: &mut Vec<ValidationError>) {
                     }
                 }
             }
-            Terminator::ListStep { done, done_args } => {
+            Terminator::ListStep { dst, index_dst, done, done_args, .. } => {
+                // ListStep defines dst (element) and index_dst (new index).
+                // list is borrowed (not consumed), index_src is Int (copyable).
+                block_exit[idx.0].set_value(*dst, Liveness::Alive);
+                block_exit[idx.0].set_value(*index_dst, Liveness::Alive);
+
                 // Fallthrough.
                 let next = idx.0 + 1;
                 if next < n && propagate_state(&block_exit[idx.0], &mut block_entry[next]) {
@@ -300,8 +303,7 @@ fn check_body(scope: &str, body: &MirBody, errors: &mut Vec<ValidationError>) {
                         &block_exit[idx.0],
                         done_args,
                         &cfg.blocks[target_idx.0].params,
-                        &body.val_types,
-                        &body.insts,
+                        &cfg.val_types,
                         errors,
                         &mut block_entry[target_idx.0],
                     );
@@ -331,7 +333,6 @@ fn propagate_args(
     args: &[ValueId],
     params: &[ValueId],
     val_types: &FxHashMap<ValueId, Ty>,
-    _insts: &[Inst],
     _errors: &mut Vec<ValidationError>,
     target_entry: &mut MoveState,
 ) {

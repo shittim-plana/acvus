@@ -11,6 +11,7 @@
 
 use rustc_hash::FxHashMap;
 
+use crate::cfg::CfgBody;
 use crate::graph::QualifiedRef;
 use crate::ir::*;
 use crate::ty::{Effect, Ty};
@@ -18,53 +19,55 @@ use crate::ty::{Effect, Ty};
 /// Split IO FunctionCalls into Spawn + Eval pairs, in-place.
 ///
 /// `fn_types`: QualifiedRef → Ty mapping for callee effect lookup.
-pub fn run(body: &mut MirBody, fn_types: &FxHashMap<QualifiedRef, Ty>) {
-    let mut new_insts = Vec::with_capacity(body.insts.len() + 10);
+pub fn run(cfg: &mut CfgBody, fn_types: &FxHashMap<QualifiedRef, Ty>) {
+    for block in &mut cfg.blocks {
+        let mut new_insts = Vec::with_capacity(block.insts.len() + 4);
 
-    for inst in body.insts.drain(..) {
-        match inst.kind {
-            InstKind::FunctionCall {
-                dst,
-                callee: Callee::Direct(ref callee_id),
-                ref args,
-                ref context_uses,
-                ref context_defs,
-            } if is_io_call(fn_types, callee_id) => {
-                // Allocate a Handle ValueId.
-                let handle = body.val_factory.next();
+        for inst in block.insts.drain(..) {
+            match inst.kind {
+                InstKind::FunctionCall {
+                    dst,
+                    callee: Callee::Direct(ref callee_id),
+                    ref args,
+                    ref context_uses,
+                    ref context_defs,
+                } if is_io_call(fn_types, callee_id) => {
+                    // Allocate a Handle ValueId.
+                    let handle = cfg.val_factory.next();
 
-                // Register Handle type: Handle<ReturnTy, Effect>.
-                if let Some(Ty::Fn { ret, effect, .. }) = fn_types.get(callee_id) {
-                    body.val_types
-                        .insert(handle, Ty::Handle(ret.clone(), effect.clone()));
+                    // Register Handle type: Handle<ReturnTy, Effect>.
+                    if let Some(Ty::Fn { ret, effect, .. }) = fn_types.get(callee_id) {
+                        cfg.val_types
+                            .insert(handle, Ty::Handle(ret.clone(), effect.clone()));
+                    }
+
+                    new_insts.push(Inst {
+                        span: inst.span,
+                        kind: InstKind::Spawn {
+                            dst: handle,
+                            callee: Callee::Direct(*callee_id),
+                            args: args.clone(),
+                            context_uses: context_uses.clone(),
+                        },
+                    });
+                    new_insts.push(Inst {
+                        span: inst.span,
+                        kind: InstKind::Eval {
+                            dst,
+                            src: handle,
+                            context_defs: context_defs.clone(),
+                        },
+                    });
                 }
-
-                new_insts.push(Inst {
-                    span: inst.span,
-                    kind: InstKind::Spawn {
-                        dst: handle,
-                        callee: Callee::Direct(*callee_id),
-                        args: args.clone(),
-                        context_uses: context_uses.clone(),
-                    },
-                });
-                new_insts.push(Inst {
-                    span: inst.span,
-                    kind: InstKind::Eval {
-                        dst,
-                        src: handle,
-                        context_defs: context_defs.clone(),
-                    },
-                });
-            }
-            // Everything else: pass through.
-            _ => {
-                new_insts.push(inst);
+                // Everything else: pass through.
+                _ => {
+                    new_insts.push(inst);
+                }
             }
         }
-    }
 
-    body.insts = new_insts;
+        block.insts = new_insts;
+    }
 }
 
 /// Check if a Direct callee has IO effect.
@@ -85,6 +88,7 @@ fn is_io_call(fn_types: &FxHashMap<QualifiedRef, Ty>, callee: &QualifiedRef) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cfg::promote;
     use crate::ty::{Effect, EffectSet, Param};
     use acvus_utils::{Interner, LocalFactory, LocalIdOps};
 
@@ -92,14 +96,14 @@ mod tests {
         ValueId::from_raw(n)
     }
 
-    fn make_body(insts: Vec<InstKind>, val_count: usize) -> MirBody {
+    fn make_cfg(insts: Vec<InstKind>, val_count: usize) -> CfgBody {
         let mut factory = LocalFactory::<ValueId>::new();
         let mut val_types = FxHashMap::default();
         for _ in 0..val_count {
             let vid = factory.next();
             val_types.insert(vid, Ty::Int);
         }
-        MirBody {
+        promote(MirBody {
             insts: insts
                 .into_iter()
                 .map(|kind| Inst {
@@ -113,7 +117,7 @@ mod tests {
             debug: DebugInfo::new(),
             val_factory: factory,
             label_count: 0,
-        }
+        })
     }
 
     fn io_effect() -> Effect {
@@ -125,6 +129,11 @@ mod tests {
 
     fn pure_effect() -> Effect {
         Effect::Resolved(EffectSet::default())
+    }
+
+    /// Collect all instructions from all blocks (flattened).
+    fn all_insts(cfg: &CfgBody) -> Vec<&Inst> {
+        cfg.blocks.iter().flat_map(|b| b.insts.iter()).collect()
     }
 
     #[test]
@@ -143,7 +152,7 @@ mod tests {
             },
         );
 
-        let mut body = make_body(
+        let mut cfg = make_cfg(
             vec![
                 InstKind::Const {
                     dst: v(0),
@@ -161,16 +170,17 @@ mod tests {
             2,
         );
 
-        run(&mut body, &fn_types);
+        run(&mut cfg, &fn_types);
 
-        // Should be: Const, Spawn, Eval, Return (4 instructions).
-        assert_eq!(body.insts.len(), 4);
-        assert!(matches!(body.insts[1].kind, InstKind::Spawn { .. }));
-        assert!(matches!(body.insts[2].kind, InstKind::Eval { .. }));
+        // Should be: Const, Spawn, Eval in block insts (Return is terminator).
+        let insts = all_insts(&cfg);
+        assert_eq!(insts.len(), 3);
+        assert!(matches!(insts[1].kind, InstKind::Spawn { .. }));
+        assert!(matches!(insts[2].kind, InstKind::Eval { .. }));
 
         // Verify Spawn dst → Eval src chain.
         if let (InstKind::Spawn { dst: handle, .. }, InstKind::Eval { src, dst, .. }) =
-            (&body.insts[1].kind, &body.insts[2].kind)
+            (&insts[1].kind, &insts[2].kind)
         {
             assert_eq!(handle, src, "Eval.src must reference Spawn.dst");
             assert_eq!(*dst, v(1), "Eval.dst must be original FunctionCall.dst");
@@ -179,8 +189,8 @@ mod tests {
         }
 
         // Handle should have Handle type.
-        if let InstKind::Spawn { dst: handle, .. } = &body.insts[1].kind {
-            let handle_ty = body.val_types.get(handle).unwrap();
+        if let InstKind::Spawn { dst: handle, .. } = &insts[1].kind {
+            let handle_ty = cfg.val_types.get(handle).unwrap();
             assert!(
                 matches!(handle_ty, Ty::Handle(..)),
                 "Spawn dst must have Handle type"
@@ -207,7 +217,7 @@ mod tests {
             },
         );
 
-        let mut body = make_body(
+        let mut cfg = make_cfg(
             vec![InstKind::FunctionCall {
                 dst: v(0),
                 callee: Callee::Direct(add_id),
@@ -218,17 +228,18 @@ mod tests {
             3,
         );
 
-        run(&mut body, &fn_types);
+        run(&mut cfg, &fn_types);
 
         // Pure call should NOT be split.
-        assert_eq!(body.insts.len(), 1);
-        assert!(matches!(body.insts[0].kind, InstKind::FunctionCall { .. }));
+        let insts = all_insts(&cfg);
+        assert_eq!(insts.len(), 1);
+        assert!(matches!(insts[0].kind, InstKind::FunctionCall { .. }));
     }
 
     #[test]
     fn indirect_call_unchanged() {
         // Indirect calls are never split (no QualifiedRef to look up).
-        let mut body = make_body(
+        let mut cfg = make_cfg(
             vec![InstKind::FunctionCall {
                 dst: v(0),
                 callee: Callee::Indirect(v(1)),
@@ -239,10 +250,11 @@ mod tests {
             2,
         );
 
-        run(&mut body, &FxHashMap::default());
+        run(&mut cfg, &FxHashMap::default());
 
-        assert_eq!(body.insts.len(), 1);
-        assert!(matches!(body.insts[0].kind, InstKind::FunctionCall { .. }));
+        let insts = all_insts(&cfg);
+        assert_eq!(insts.len(), 1);
+        assert!(matches!(insts[0].kind, InstKind::FunctionCall { .. }));
     }
 
     #[test]
@@ -263,7 +275,7 @@ mod tests {
             },
         );
 
-        let mut body = make_body(
+        let mut cfg = make_cfg(
             vec![InstKind::FunctionCall {
                 dst: v(0),
                 callee: Callee::Direct(fetch_id),
@@ -274,19 +286,20 @@ mod tests {
             3,
         );
 
-        run(&mut body, &fn_types);
+        run(&mut cfg, &fn_types);
 
-        assert_eq!(body.insts.len(), 2);
+        let insts = all_insts(&cfg);
+        assert_eq!(insts.len(), 2);
 
         // Spawn gets context_uses, Eval gets context_defs.
-        if let InstKind::Spawn { context_uses, .. } = &body.insts[0].kind {
+        if let InstKind::Spawn { context_uses, .. } = &insts[0].kind {
             assert_eq!(context_uses.len(), 1);
             assert_eq!(context_uses[0].0, ctx_a);
         } else {
             panic!("expected Spawn");
         }
 
-        if let InstKind::Eval { context_defs, .. } = &body.insts[1].kind {
+        if let InstKind::Eval { context_defs, .. } = &insts[1].kind {
             assert_eq!(context_defs.len(), 1);
             assert_eq!(context_defs[0].0, ctx_b);
         } else {
@@ -313,7 +326,7 @@ mod tests {
             );
         }
 
-        let mut body = make_body(
+        let mut cfg = make_cfg(
             vec![
                 InstKind::FunctionCall {
                     dst: v(0),
@@ -340,18 +353,17 @@ mod tests {
             3,
         );
 
-        run(&mut body, &fn_types);
+        run(&mut cfg, &fn_types);
 
-        // 2 calls → 2 Spawn + 2 Eval + BinOp + Return = 6
-        assert_eq!(body.insts.len(), 6);
+        // 2 calls → 2 Spawn + 2 Eval + BinOp = 5 (Return is terminator)
+        let insts = all_insts(&cfg);
+        assert_eq!(insts.len(), 5);
 
-        let spawn_count = body
-            .insts
+        let spawn_count = insts
             .iter()
             .filter(|i| matches!(i.kind, InstKind::Spawn { .. }))
             .count();
-        let eval_count = body
-            .insts
+        let eval_count = insts
             .iter()
             .filter(|i| matches!(i.kind, InstKind::Eval { .. }))
             .count();

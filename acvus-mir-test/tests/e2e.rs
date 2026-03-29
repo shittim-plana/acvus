@@ -1746,9 +1746,7 @@ fn pruned_context_keys_in_dead_catch_all() {
     // Outer match on @Impersonation with catch_all containing @Pov.
     // When Impersonation=NoPersona is known, catch_all is dead,
     // so @Pov should appear in partition.pruned.
-    use acvus_mir::AnalysisPass;
     use acvus_mir::analysis::reachable_context::{KnownValue, partition_context_keys};
-    use acvus_mir::analysis::val_def::ValDefMapAnalysis;
     use acvus_mir::graph::QualifiedRef;
     use acvus_mir::ir::InstKind;
 
@@ -1773,7 +1771,6 @@ fn pruned_context_keys_in_dead_catch_all() {
     let impersonation_id = name_to_qref["Impersonation"];
     let pov_id = name_to_qref["Pov"];
 
-    let val_def = ValDefMapAnalysis.run(&module, ());
     let mut known = FxHashMap::default();
     known.insert(
         impersonation_id,
@@ -1782,7 +1779,7 @@ fn pruned_context_keys_in_dead_catch_all() {
             payload: None,
         },
     );
-    let partition = partition_context_keys(&module, &known, &val_def);
+    let partition = partition_context_keys(&module, &known);
 
     eprintln!("eager: {:?}", partition.eager);
     eprintln!("lazy: {:?}", partition.lazy);

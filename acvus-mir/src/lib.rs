@@ -1,12 +1,12 @@
 pub mod analysis;
 pub mod builtins;
+pub mod cfg;
 pub mod error;
 pub mod graph;
 pub mod hints;
 pub mod ir;
 pub mod lower;
 pub mod optimize;
-pub mod pass;
 pub mod printer;
 pub mod ser_ty;
 pub mod ty;
@@ -16,8 +16,6 @@ pub mod variant;
 
 #[cfg(test)]
 pub(crate) mod test;
-
-pub use pass::AnalysisPass;
 
 use acvus_utils::Astr;
 use rustc_hash::FxHashMap;

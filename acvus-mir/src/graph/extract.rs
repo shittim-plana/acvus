@@ -8,10 +8,9 @@
 use acvus_utils::{Astr, Freeze, Interner};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::analysis::val_def::{ValDefMap, ValDefMapAnalysis};
+use crate::analysis::val_def::{self, ValDefMap};
 use crate::ir::{InstKind, MirModule};
 use crate::lower::Lowerer;
-use crate::pass::AnalysisPass;
 
 use super::types::*;
 
@@ -111,7 +110,7 @@ pub fn extract(interner: &Interner, graph: &CompilationGraph) -> ExtractResult {
 
 /// Analyze skeleton MIR to extract reads and writes with projection chain tracing.
 fn analyze_refs(module: &MirModule, qref_to_name: &FxHashMap<QualifiedRef, Astr>) -> FnRefs {
-    let val_def = ValDefMapAnalysis.run(module, ());
+    let val_def = val_def::build(module);
     let insts = &module.main.insts;
 
     let mut reads = FxHashSet::default();
@@ -145,7 +144,7 @@ fn analyze_refs(module: &MirModule, qref_to_name: &FxHashMap<QualifiedRef, Astr>
                 main: closure.clone(),
                 closures: FxHashMap::default(),
             };
-            ValDefMapAnalysis.run(&closure_module, ())
+            val_def::build(&closure_module)
         };
         let closure_insts = &closure.insts;
 

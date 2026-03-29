@@ -1,36 +1,54 @@
+//! Context key reachability analysis.
+//!
+//! Determines which `@context` keys a MIR module actually needs at runtime,
+//! partitioned by confidence:
+//!
+//! - **eager**: on unconditionally reachable paths — safe to pre-fetch.
+//! - **lazy**: behind unknown branch conditions — resolve on-demand.
+//! - **pruned**: in dead branches (known-false conditions) — type-inject only.
+//!
+//! # Algorithm (two-pass forward analysis)
+//!
+//! 1. **Value domain** (`forward_analysis` + `ValueDomainTransfer`):
+//!    propagate abstract values through the CFG, evaluating branch conditions
+//!    where context values are known. This determines which branches are
+//!    definitely taken, definitely dead, or unknown.
+//!
+//! 2. **Reachability** (forward BFS over CFG successors):
+//!    propagate `Reach` levels using the value domain's branch verdicts.
+//!    Unconditional edges carry the parent's reach; unknown branches
+//!    downgrade to `Conditional`; known-dead branches are not followed.
+//!
+//! Context keys are then collected per-block based on their block's reach level.
+
 use std::collections::VecDeque;
 
+use crate::cfg::{BlockIdx, CfgBody, Terminator, promote};
+use crate::analysis::dataflow::{DataflowResult, DataflowState, forward_analysis};
+use crate::analysis::domain::AbstractValue;
+use crate::analysis::value_transfer::ValueDomainTransfer;
 use crate::graph::QualifiedRef;
-use crate::ir::{InstKind, Label, MirModule, ValueId};
+use crate::ir::{InstKind, MirModule, ValueId};
 use acvus_ast::Literal;
 use acvus_utils::Astr;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::analysis::cfg::{Cfg, Terminator};
-use crate::analysis::dataflow::{BooleanDomain, DataflowState, forward_analysis};
-use crate::analysis::domain::AbstractValue;
-use crate::analysis::val_def::ValDefMap;
-use crate::analysis::value_transfer::ValueDomainTransfer;
+// ── Public types ───────────────────────────────────────────────────
 
 /// Context keys partitioned by reachability confidence.
 #[derive(Debug, Clone, Default)]
 pub struct ContextKeyPartition {
-    /// Keys on unconditionally reachable paths -- fetch upfront.
+    /// Keys on unconditionally reachable paths — safe to pre-fetch.
     pub eager: FxHashSet<QualifiedRef>,
-    /// Keys behind unknown branch conditions -- resolve lazily via coroutine.
+    /// Keys behind unknown branch conditions — resolve on-demand.
     pub lazy: FxHashSet<QualifiedRef>,
-    /// Known keys that appear on reachable (non-dead) paths.
-    /// These are excluded from eager/lazy (already resolved for orchestration)
-    /// but tracked separately for UI discovery.
+    /// Known keys on reachable paths (already resolved, tracked for UI discovery).
     pub reachable_known: FxHashSet<QualifiedRef>,
-    /// Keys in dead (pruned) branches -- not needed at runtime, but the
-    /// typechecker still sees these references and needs their types injected.
-    /// Callers should include these in type injection but NOT in unresolved params.
+    /// Keys in dead branches — type-inject but don't fetch.
     pub pruned: FxHashSet<QualifiedRef>,
 }
 
 /// A known context value for branch pruning.
-/// Extends `Literal` to also cover variant (tagged union) values.
 #[derive(Debug, Clone)]
 pub enum KnownValue {
     Literal(Literal),
@@ -40,50 +58,31 @@ pub enum KnownValue {
     },
 }
 
-/// Determine which context keys are actually needed by a MIR module,
-/// given a set of already-known context values.
-///
-/// Performs forward reachability from the entry block, evaluating branch
-/// conditions where possible (when the condition depends on a known context
-/// value). Dead branches are pruned, and only `ContextLoad` instructions
-/// on live paths are collected.
-///
-/// Returns context keys that are referenced on live paths and are NOT
-/// already in `known`.
+// ── Public API ─────────────────────────────────────────────────────
+
+/// All context keys needed at runtime (eager ∪ lazy).
 pub fn reachable_context_keys(
     module: &MirModule,
     known: &FxHashMap<QualifiedRef, KnownValue>,
-    val_def: &ValDefMap,
 ) -> FxHashSet<QualifiedRef> {
-    let p = partition_context_keys(module, known, val_def);
+    let p = partition_context_keys(module, known);
     let mut all = p.eager;
     all.extend(p.lazy);
     all
 }
 
-/// Partition context keys into eager (definitely needed) and lazy
-/// (conditionally needed behind unknown branches).
-///
-/// - **eager**: on paths reachable through unconditional jumps or known
-///   branch conditions -- safe to pre-fetch.
-/// - **lazy**: on paths reachable only through unknown branch conditions
-///   -- resolve on-demand via coroutine.
+/// Partition context keys into eager / lazy / pruned.
 pub fn partition_context_keys(
     module: &MirModule,
     known: &FxHashMap<QualifiedRef, KnownValue>,
-    val_def: &ValDefMap,
 ) -> ContextKeyPartition {
     let mut partition = ContextKeyPartition::default();
 
-    partition_from_body(
-        &module.main.insts,
-        &module.main.val_types,
-        known,
-        val_def,
-        &mut partition,
-    );
+    // Main body: full reachability analysis.
+    analyze_body(&module.main, known, &mut partition);
 
     // Closures: conservatively treat all context loads as lazy
+    // (closures may be called from any reachable point).
     for closure in module.closures.values() {
         for inst in &closure.insts {
             if let InstKind::ContextProject { ctx, .. } = &inst.kind {
@@ -96,14 +95,17 @@ pub fn partition_context_keys(
         }
     }
 
-    // eager wins over lazy
+    // Eager wins over lazy (if a key is on an unconditional path, don't defer it).
     partition.lazy.retain(|k| !partition.eager.contains(k));
     partition
 }
 
-/// Reachability level for a block.
+// ── Reachability level ─────────────────────────────────────────────
+
+/// How confidently a block is reachable from the entry.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Reach {
+    /// Not reachable (dead branch).
     Unreachable,
     /// Reachable only through unknown branch conditions.
     Conditional,
@@ -111,131 +113,106 @@ enum Reach {
     Definite,
 }
 
-fn partition_from_body(
-    insts: &[crate::ir::Inst],
-    val_types: &FxHashMap<ValueId, crate::ty::Ty>,
+// ── Core analysis ──────────────────────────────────────────────────
+
+fn analyze_body(
+    body: &crate::ir::MirBody,
     known: &FxHashMap<QualifiedRef, KnownValue>,
-    _val_def: &ValDefMap,
     partition: &mut ContextKeyPartition,
 ) {
-    let cfg = Cfg::build(insts);
+    let cfg = promote(body.clone());
     if cfg.blocks.is_empty() {
         return;
     }
 
-    // Run dataflow analysis
-    let transfer = ValueDomainTransfer {
-        val_types,
-        known_context: known,
+    // Pass 1: Value domain — evaluate branch conditions.
+    let value_result = {
+        let transfer = ValueDomainTransfer {
+            val_types: &cfg.val_types,
+            known_context: known,
+        };
+        forward_analysis(&cfg, &transfer, DataflowState::new())
     };
-    let dataflow = forward_analysis(&cfg, insts, &transfer, DataflowState::new());
 
-    // Compute reach levels using dataflow results
-    let reach = compute_reach(&cfg, &dataflow);
+    // Pass 2: Reachability — propagate Reach levels using branch verdicts.
+    let reach = compute_reach(&cfg, &value_result);
 
-    // Collect ContextLoads by reach level
-    for (i, block) in cfg.blocks.iter().enumerate() {
-        let block_reach = reach[i];
-        for &inst_idx in &block.inst_indices {
-            if let InstKind::ContextProject { ctx, .. } = &insts[inst_idx].kind {
-                match block_reach {
-                    Reach::Unreachable => {
-                        partition.pruned.insert(*ctx);
-                    }
-                    _ => {
-                        if known.contains_key(ctx) {
-                            partition.reachable_known.insert(*ctx);
-                        } else {
-                            match block_reach {
-                                Reach::Definite => partition.eager.insert(*ctx),
-                                Reach::Conditional => partition.lazy.insert(*ctx),
-                                Reach::Unreachable => unreachable!(),
-                            };
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // Collect: classify context keys by their block's reach level.
+    collect_context_keys(&cfg, &reach, known, partition);
 }
 
+/// Forward BFS: propagate `Reach` levels through CFG edges.
+///
+/// Uses `value_result.block_exit` to evaluate JumpIf conditions:
+/// - Definite true/false → follow only the taken branch (same reach).
+/// - Unknown → follow both branches (downgrade to Conditional).
 fn compute_reach(
-    cfg: &Cfg,
-    dataflow: &crate::analysis::dataflow::DataflowResult<AbstractValue>,
+    cfg: &CfgBody,
+    value_result: &DataflowResult<ValueId, AbstractValue>,
 ) -> Vec<Reach> {
     let n = cfg.blocks.len();
     let mut reach = vec![Reach::Unreachable; n];
     let mut queue = VecDeque::new();
 
     reach[0] = Reach::Definite;
-    queue.push_back(0);
+    queue.push_back(0usize);
 
     while let Some(idx) = queue.pop_front() {
         let block = &cfg.blocks[idx];
-        let mut block_reach = reach[idx];
-
-        // Merge point upgrade: the match structure guarantees this block
-        // is reached whenever the first arm's test block is reached.
-        if let Some(source_label) = block.merge_of
-            && let Some(&source_idx) = cfg.label_to_block.get(&source_label)
-            && reach[source_idx.0] > block_reach
-        {
-            block_reach = reach[source_idx.0];
-            reach[idx] = block_reach;
-        }
+        let block_reach = resolve_merge_upgrade(idx, block, cfg, &mut reach);
 
         match &block.terminator {
-            Terminator::Jump { target, .. } => {
-                enqueue_reach(*target, block_reach, cfg, &mut reach, &mut queue);
-            }
-            Terminator::JumpIf {
-                cond,
-                then_label,
-                else_label,
-                ..
-            } => {
-                let cond_val = dataflow.block_exit[idx].get(*cond);
-                match cond_val.as_definite_bool() {
-                    Some(true) => {
-                        enqueue_reach(*then_label, block_reach, cfg, &mut reach, &mut queue);
-                    }
-                    Some(false) => {
-                        enqueue_reach(*else_label, block_reach, cfg, &mut reach, &mut queue);
-                    }
+            Terminator::JumpIf { cond, then_label, else_label, .. } => {
+                let verdict = value_result.block_exit[idx].get(*cond).as_definite_bool();
+                match verdict {
+                    Some(true) => propagate_to(*then_label, block_reach, cfg, &mut reach, &mut queue),
+                    Some(false) => propagate_to(*else_label, block_reach, cfg, &mut reach, &mut queue),
                     None => {
-                        enqueue_reach(*then_label, Reach::Conditional, cfg, &mut reach, &mut queue);
-                        enqueue_reach(*else_label, Reach::Conditional, cfg, &mut reach, &mut queue);
+                        propagate_to(*then_label, Reach::Conditional, cfg, &mut reach, &mut queue);
+                        propagate_to(*else_label, Reach::Conditional, cfg, &mut reach, &mut queue);
                     }
                 }
             }
-            Terminator::ListStep { done, .. } => {
-                // Fallthrough.
-                let next = idx + 1;
-                if next < n && block_reach > reach[next] {
-                    reach[next] = block_reach;
-                    queue.push_back(next);
-                }
-                // Done branch.
-                enqueue_reach(*done, block_reach, cfg, &mut reach, &mut queue);
-            }
-            Terminator::Fallthrough => {
-                let next = idx + 1;
-                if next < n && block_reach > reach[next] {
-                    reach[next] = block_reach;
-                    queue.push_back(next);
+            // All other terminators: propagate to every successor at the same reach level.
+            _ => {
+                for succ in cfg.successors(BlockIdx(idx)) {
+                    if block_reach > reach[succ.0] {
+                        reach[succ.0] = block_reach;
+                        queue.push_back(succ.0);
+                    }
                 }
             }
-            Terminator::Return(_) => {}
         }
     }
 
     reach
 }
 
-fn enqueue_reach(
-    label: Label,
+/// Merge-point upgrade: a block marked `merge_of` inherits the reach level
+/// of the block that started the match, since the match structure guarantees
+/// the merge is reached whenever the first arm's test block is reached.
+fn resolve_merge_upgrade(
+    idx: usize,
+    block: &crate::cfg::Block,
+    cfg: &CfgBody,
+    reach: &mut [Reach],
+) -> Reach {
+    let mut block_reach = reach[idx];
+    if let Some(source_label) = block.merge_of
+        && let Some(&source_idx) = cfg.label_to_block.get(&source_label)
+        && reach[source_idx.0] > block_reach
+    {
+        block_reach = reach[source_idx.0];
+        reach[idx] = block_reach;
+    }
+    block_reach
+}
+
+/// Propagate reach level to a labeled successor block.
+fn propagate_to(
+    label: crate::ir::Label,
     new_reach: Reach,
-    cfg: &Cfg,
+    cfg: &CfgBody,
     reach: &mut [Reach],
     queue: &mut VecDeque<usize>,
 ) {
@@ -247,6 +224,41 @@ fn enqueue_reach(
     }
 }
 
+// ── Context key collection ─────────────────────────────────────────
+
+/// Walk all blocks, classify each ContextProject by its block's reach level.
+fn collect_context_keys(
+    cfg: &CfgBody,
+    reach: &[Reach],
+    known: &FxHashMap<QualifiedRef, KnownValue>,
+    partition: &mut ContextKeyPartition,
+) {
+    for (bi, block) in cfg.blocks.iter().enumerate() {
+        let block_reach = reach[bi];
+
+        for inst in &block.insts {
+            let InstKind::ContextProject { ctx, .. } = &inst.kind else {
+                continue;
+            };
+
+            match block_reach {
+                Reach::Unreachable => {
+                    partition.pruned.insert(*ctx);
+                }
+                Reach::Definite | Reach::Conditional => {
+                    if known.contains_key(ctx) {
+                        partition.reachable_known.insert(*ctx);
+                    } else if block_reach == Reach::Definite {
+                        partition.eager.insert(*ctx);
+                    } else {
+                        partition.lazy.insert(*ctx);
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -255,7 +267,7 @@ fn enqueue_reach(
 mod tests {
     use super::*;
     use crate::graph::QualifiedRef;
-    use crate::ir::{DebugInfo, Inst, MirBody};
+    use crate::ir::{DebugInfo, Inst, Label, MirBody};
     use crate::ty::Ty;
     use acvus_ast::{Literal, RangeKind, Span};
     use acvus_utils::{Interner, LocalFactory};
@@ -280,12 +292,6 @@ mod tests {
             span: Span::new(0, 0),
             kind,
         }
-    }
-
-    fn build_val_def(module: &MirModule) -> ValDefMap {
-        use crate::analysis::val_def::ValDefMapAnalysis;
-        use crate::pass::AnalysisPass;
-        ValDefMapAnalysis.run(module, ())
     }
 
     /// Shared interner for tests.
@@ -316,8 +322,7 @@ mod tests {
             inst(InstKind::ContextProject { dst: v0, ctx: id0 }),
             inst(InstKind::ContextProject { dst: v1, ctx: id1 }),
         ]);
-        let val_def = build_val_def(&module);
-        let needed = reachable_context_keys(&module, &FxHashMap::default(), &val_def);
+        let needed = reachable_context_keys(&module, &FxHashMap::default());
         assert_eq!(needed, FxHashSet::from_iter([id0, id1]));
     }
 
@@ -333,10 +338,9 @@ mod tests {
             inst(InstKind::ContextProject { dst: v0, ctx: id0 }),
             inst(InstKind::ContextProject { dst: v1, ctx: id1 }),
         ]);
-        let val_def = build_val_def(&module);
         let known =
             FxHashMap::from_iter([(id0, KnownValue::Literal(Literal::String("alice".into())))]);
-        let needed = reachable_context_keys(&module, &known, &val_def);
+        let needed = reachable_context_keys(&module, &known);
         assert_eq!(needed, FxHashSet::from_iter([id1]));
     }
 
@@ -381,10 +385,9 @@ mod tests {
             inst(InstKind::Return(v3)),
         ]);
 
-        let val_def = build_val_def(&module);
         let known =
             FxHashMap::from_iter([(id0, KnownValue::Literal(Literal::String("search".into())))]);
-        let needed = reachable_context_keys(&module, &known, &val_def);
+        let needed = reachable_context_keys(&module, &known);
 
         assert!(needed.contains(&id1));
         assert!(!needed.contains(&id2));
@@ -432,10 +435,9 @@ mod tests {
             inst(InstKind::Return(v3)),
         ]);
 
-        let val_def = build_val_def(&module);
         let known =
             FxHashMap::from_iter([(id0, KnownValue::Literal(Literal::String("other".into())))]);
-        let needed = reachable_context_keys(&module, &known, &val_def);
+        let needed = reachable_context_keys(&module, &known);
 
         assert!(!needed.contains(&id1));
         assert!(needed.contains(&id2));
@@ -482,9 +484,8 @@ mod tests {
             inst(InstKind::Return(v3)),
         ]);
 
-        let val_def = build_val_def(&module);
         // mode is NOT known -> can't evaluate condition
-        let needed = reachable_context_keys(&module, &FxHashMap::default(), &val_def);
+        let needed = reachable_context_keys(&module, &FxHashMap::default());
 
         assert!(needed.contains(&id0));
         assert!(needed.contains(&id1));
@@ -543,10 +544,9 @@ mod tests {
             }),
         ]);
 
-        let val_def = build_val_def(&module);
         let known =
             FxHashMap::from_iter([(id0, KnownValue::Literal(Literal::String("admin".into())))]);
-        let needed = reachable_context_keys(&module, &known, &val_def);
+        let needed = reachable_context_keys(&module, &known);
 
         assert!(needed.contains(&id1));
         assert!(!needed.contains(&id2));
@@ -595,9 +595,8 @@ mod tests {
             inst(InstKind::Return(v3)),
         ]);
 
-        let val_def = build_val_def(&module);
         let known = FxHashMap::from_iter([(id0, KnownValue::Literal(Literal::Int(5)))]);
-        let needed = reachable_context_keys(&module, &known, &val_def);
+        let needed = reachable_context_keys(&module, &known);
 
         assert!(needed.contains(&id1));
         assert!(!needed.contains(&id2));
@@ -685,10 +684,9 @@ mod tests {
             }),
         ]);
 
-        let val_def = build_val_def(&module);
         let known =
             FxHashMap::from_iter([(id0, KnownValue::Literal(Literal::String("user".into())))]);
-        let needed = reachable_context_keys(&module, &known, &val_def);
+        let needed = reachable_context_keys(&module, &known);
 
         assert!(!needed.contains(&id1));
         assert!(needed.contains(&id2));
@@ -786,8 +784,7 @@ mod tests {
             val_types,
         );
 
-        let val_def = build_val_def(&module);
-        let needed = reachable_context_keys(&module, &FxHashMap::default(), &val_def);
+        let needed = reachable_context_keys(&module, &FxHashMap::default());
 
         assert!(needed.contains(&id0));
         assert!(needed.contains(&id2));
@@ -852,8 +849,7 @@ mod tests {
             val_types,
         );
 
-        let val_def = build_val_def(&module);
-        let p = partition_context_keys(&module, &FxHashMap::default(), &val_def);
+        let p = partition_context_keys(&module, &FxHashMap::default());
 
         // then_data is eager (single variant -> always matches)
         assert!(p.eager.contains(&id1));
@@ -970,8 +966,7 @@ mod tests {
             val_types,
         );
 
-        let val_def = build_val_def(&module);
-        let p = partition_context_keys(&module, &FxHashMap::default(), &val_def);
+        let p = partition_context_keys(&module, &FxHashMap::default());
 
         // src is eager (before any branch)
         assert!(p.eager.contains(&id0));
@@ -1089,8 +1084,7 @@ mod tests {
             val_types,
         );
 
-        let val_def = build_val_def(&module);
-        let p = partition_context_keys(&module, &FxHashMap::default(), &val_def);
+        let p = partition_context_keys(&module, &FxHashMap::default());
 
         // src is eager
         assert!(p.eager.contains(&id0));
@@ -1175,8 +1169,7 @@ mod tests {
             val_types,
         );
 
-        let val_def = build_val_def(&module);
-        let p = partition_context_keys(&module, &FxHashMap::default(), &val_def);
+        let p = partition_context_keys(&module, &FxHashMap::default());
 
         // pre and src are eager (before branch)
         assert!(p.eager.contains(&id10));
@@ -1276,8 +1269,7 @@ mod tests {
             val_types,
         );
 
-        let val_def = build_val_def(&module);
-        let p = partition_context_keys(&module, &FxHashMap::default(), &val_def);
+        let p = partition_context_keys(&module, &FxHashMap::default());
 
         // "post_match" should be eager (Definite) because the merge point
         // inherits reachability from the first test block (Label(1) = Definite).
@@ -1405,8 +1397,7 @@ mod tests {
             val_types,
         );
 
-        let val_def = build_val_def(&module);
-        let p = partition_context_keys(&module, &FxHashMap::default(), &val_def);
+        let p = partition_context_keys(&module, &FxHashMap::default());
 
         // Label(1) is Conditional (reached via unknown branch on "flag").
         // The merge point Label(99) inherits Conditional from Label(1).
@@ -1501,7 +1492,6 @@ mod tests {
             val_types,
         );
 
-        let val_def = build_val_def(&module);
         // Output is known to be OOC -> Normal arm should be pruned
         let known = FxHashMap::from_iter([(
             id0,
@@ -1510,7 +1500,7 @@ mod tests {
                 payload: None,
             },
         )]);
-        let p = partition_context_keys(&module, &known, &val_def);
+        let p = partition_context_keys(&module, &known);
 
         // Output is known -> goes to reachable_known
         assert!(p.reachable_known.contains(&id0));
@@ -1629,12 +1619,11 @@ mod tests {
             }),
         ]);
 
-        let val_def = build_val_def(&module);
         let known = FxHashMap::from_iter([
             (id0, KnownValue::Literal(Literal::String("user".into()))),
             (id1, KnownValue::Literal(Literal::Int(5))),
         ]);
-        let needed = reachable_context_keys(&module, &known, &val_def);
+        let needed = reachable_context_keys(&module, &known);
 
         // admin_data is dead (role != "admin")
         assert!(!needed.contains(&id2));
@@ -1705,12 +1694,11 @@ mod tests {
             inst(InstKind::Return(v6)),
         ]);
 
-        let val_def = build_val_def(&module);
         let known = FxHashMap::from_iter([
             (id0, KnownValue::Literal(Literal::String("alice".into()))),
             (id1, KnownValue::Literal(Literal::Int(80))),
         ]);
-        let needed = reachable_context_keys(&module, &known, &val_def);
+        let needed = reachable_context_keys(&module, &known);
 
         assert!(!needed.contains(&id2));
         assert!(needed.contains(&id3));

@@ -9,7 +9,7 @@ use rustc_hash::FxHashMap;
 use crate::graph::*;
 use crate::graph::{extract, infer, lower as graph_lower};
 use crate::hints::HintTable;
-use crate::ir::MirModule;
+use crate::ir::{MirBody, MirModule};
 use crate::ty::Ty;
 
 /// Build a single-unit CompilationGraph for testing.
@@ -110,9 +110,15 @@ fn run_pipeline(
         .map(|(_, pair)| pair)
         .ok_or_else(|| "no module produced for target".to_string())?;
 
-    crate::optimize::ssa_pass::run(&mut pair.0.main, &fn_types);
+    {
+        let mut cfg_body = crate::cfg::promote(std::mem::replace(&mut pair.0.main, MirBody::new()));
+        crate::optimize::ssa_pass::run(&mut cfg_body, &fn_types);
+        pair.0.main = crate::cfg::demote(cfg_body);
+    }
     for closure in pair.0.closures.values_mut() {
-        crate::optimize::ssa_pass::run(closure, &fn_types);
+        let mut cfg_body = crate::cfg::promote(std::mem::replace(closure, MirBody::new()));
+        crate::optimize::ssa_pass::run(&mut cfg_body, &fn_types);
+        *closure = crate::cfg::demote(cfg_body);
     }
 
     let validation_errors = crate::validate::validate(&pair.0, &fn_types);

@@ -1,47 +1,74 @@
 //! SSA Pass (mem2reg for context and local variables)
 //!
 //! Promotes ContextProject/ContextLoad/ContextStore and VarStore/VarLoad/ParamLoad to SSA form.
-//! Self-contained: inserts initial loads, computes PHIs, patches instructions.
 //!
-//! Write-back model (context only): branch-internal ContextStores are removed;
-//! a single write-back ContextStore is inserted after each merge block.
-//! Local variables do NOT need write-back — they exist only in SSA form.
+//! ## Pipeline
+//!
+//! 1. **Collect SSA info** (`collect_ssa_info`): scan all blocks for context ops
+//!    (ContextProject/ContextLoad/ContextStore) and local variable ops
+//!    (VarStore/VarLoad/ParamLoad). Records entry defs, written sets, and per-block ops.
+//!
+//! 2. **SSA builder** (`run_ssa_builder`): insert PHI nodes at merge points via
+//!    the standard SSA construction algorithm. Produces `var_subst` (VarLoad/ParamLoad
+//!    → SSA value) and `phi_insertions` (block params + jump args + write-back stores).
+//!
+//! 3. **Forward context values** (`forward_context_values`): dominator-tree-scoped
+//!    store-load forwarding for context variables. Eliminates redundant ContextLoads
+//!    and populates `context_uses`/`context_defs` on FunctionCall instructions.
+//!    At merge points (>1 predecessor), written contexts are cleared from the
+//!    forwarding state; unwritten (immutable) contexts remain forwarded.
+//!
+//! 4. **Apply var substitutions** (`apply_var_subst`): rewrite all VarLoad/ParamLoad
+//!    uses with their SSA values, chained through the forwarding subst, then remove
+//!    dead VarLoad/VarStore/ParamLoad instructions.
+//!
+//! ## Write-back model (context only)
+//!
+//! Branch-internal ContextStores are removed; a single write-back ContextStore is
+//! inserted after each merge block. Local variables do NOT need write-back — they
+//! exist only in SSA form.
 
 use acvus_utils::Astr;
 use rustc_hash::{FxHashMap, FxHashSet};
+use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::analysis::cfg::{BlockIdx, Cfg, Terminator};
+use crate::analysis::domtree::DomTree;
+use crate::cfg::{BlockIdx, CfgBody, Terminator};
 use crate::graph::QualifiedRef;
-use crate::ir::{Callee, Inst, InstKind, Label, MirBody, ValueId};
+use crate::ir::{Callee, Inst, InstKind, Label, ValueId};
 use super::ssa::{ENTRY_BLOCK, SSABuilder, SsaVar};
 use crate::ty::{Effect, Ty};
 
-/// Run the SSA context pass on a MirBody.
+/// Run the SSA context pass on a CfgBody.
 ///
 /// `fn_types` maps FunctionId → Ty for resolving callee effects
 /// (which contexts a function reads/writes). Used to populate
 /// `context_uses`/`context_defs` on FunctionCall/Spawn instructions.
-pub fn run(body: &mut MirBody, fn_types: &FxHashMap<QualifiedRef, Ty>) {
-    // Step 1: Build CFG + collect context + local variable ops.
-    let cfg = Cfg::build(&body.insts);
+pub fn run(cfg: &mut CfgBody, fn_types: &FxHashMap<QualifiedRef, Ty>) {
+    // Step 1: Collect context + local variable ops.
     if cfg.blocks.is_empty() {
         return;
     }
-    let ssa_info = collect_ssa_info(&cfg, &body.insts, &body.val_types);
+    let ssa_info = collect_ssa_info(cfg);
 
     // Step 2: Run SSABuilder + patch PHIs (only if there are writes + merge points).
     let var_subst = if !ssa_info.written_contexts.is_empty() || !ssa_info.written_vars.is_empty() {
         let preds = cfg.predecessors();
+        // Precompute all successors before borrow-splitting into blocks/val_factory/val_types.
+        let all_successors: Vec<SmallVec<[BlockIdx; 2]>> = (0..cfg.blocks.len())
+            .map(|i| cfg.successors(BlockIdx(i)))
+            .collect();
         let (phi_insertions, var_subst, undef_defs) = run_ssa_builder(
-            &cfg,
+            &cfg.blocks,
+            &all_successors,
             &preds,
             &ssa_info,
-            &mut body.val_factory,
-            &mut body.val_types,
+            &mut cfg.val_factory,
+            &mut cfg.val_types,
         );
         if !phi_insertions.is_empty() {
-            patch_instructions(body, &cfg, &phi_insertions, &ssa_info);
+            patch_instructions(cfg, &phi_insertions, &ssa_info);
         }
         // Emit Undef instructions at the start of the entry block for SSA initial values.
         if !undef_defs.is_empty() {
@@ -52,7 +79,7 @@ pub fn run(body: &mut MirBody, fn_types: &FxHashMap<QualifiedRef, Ty>) {
                     kind: InstKind::Undef { dst },
                 })
                 .collect();
-            body.insts.splice(0..0, undef_insts);
+            cfg.blocks[0].insts.splice(0..0, undef_insts);
         }
         var_subst
     } else {
@@ -60,7 +87,7 @@ pub fn run(body: &mut MirBody, fn_types: &FxHashMap<QualifiedRef, Ty>) {
     };
 
     // Step 3: Forward context values — eliminate redundant loads + populate call context bindings.
-    let fwd_subst = forward_context_values(body, fn_types);
+    let fwd_subst = forward_context_values(cfg, fn_types, &ssa_info.written_contexts);
 
     // Step 4: Apply VarLoad/ParamLoad substitutions and remove var instructions.
     // Chain var_subst through forward's subst: if var_subst maps r10→r5 and
@@ -73,146 +100,240 @@ pub fn run(body: &mut MirBody, fn_types: &FxHashMap<QualifiedRef, Ty>) {
                 (from, final_target)
             })
             .collect();
-        apply_var_subst(body, &chained);
+        apply_var_subst(cfg, &chained);
     }
 }
 
-/// Store-load forwarding for context variables.
+/// Store-load forwarding for context variables, scoped by the dominator tree.
 ///
-/// Tracks the "current SSA value" of each context. When a ContextLoad
-/// follows a ContextStore to the same context (with no intervening branch),
-/// the load is replaced by the stored value.
+/// Walks blocks in dominator-tree preorder (DFS), inheriting the context
+/// forwarding state from the dominator parent. At merge points (>1 predecessor),
+/// written contexts are cleared — the SSA builder inserted PHIs for those.
+/// Unwritten (immutable) contexts are safe to forward across all blocks.
 ///
-/// Also eliminates the initial entry load if the context is never read
-/// before it's written (dead initial load).
+/// Two phases:
+///   1. **Collect** — read `cfg.blocks`, allocate new ValueIds via `val_factory`,
+///      produce substitution map + removal set + call patches.
+///   2. **Apply** — mutate `cfg.blocks` with the collected results.
 fn forward_context_values(
-    body: &mut MirBody,
+    cfg: &mut CfgBody,
     fn_types: &FxHashMap<QualifiedRef, Ty>,
+    written_contexts: &BTreeSet<QualifiedRef>,
 ) -> FxHashMap<ValueId, ValueId> {
-    // Map: projection ValueId → QualifiedRef.
+    let num_blocks = cfg.blocks.len();
+    if num_blocks == 0 {
+        return FxHashMap::default();
+    }
+
+    // Build dominator tree and predecessors for merge-point detection.
+    let domtree = DomTree::build(cfg);
+    let preds = cfg.predecessors();
+
+    // Split val_factory out of cfg to allow simultaneous read of cfg.blocks
+    // and mutable allocation of new ValueIds during the collect phase.
+    let mut val_factory = std::mem::replace(
+        &mut cfg.val_factory,
+        acvus_utils::LocalFactory::new(),
+    );
+
+    // ── Collect phase: walk dominator tree, gather forwarding results ──
+
+    // Global state: projection ValueId → QualifiedRef (accumulated across all blocks).
     let mut val_to_ctx: FxHashMap<ValueId, QualifiedRef> = FxHashMap::default();
-    // Current known value per context (from entry load or store).
-    let mut current_val: FxHashMap<QualifiedRef, ValueId> = FxHashMap::default();
-    // ValueId substitutions: old → new.
+    // Collected results.
     let mut subst: FxHashMap<ValueId, ValueId> = FxHashMap::default();
-    // Instructions to remove (dead loads + their preceding projects).
-    let mut remove: FxHashSet<usize> = FxHashSet::default();
-    // Deferred patches: (inst_index, new context_uses, new context_defs).
+    let mut remove: FxHashSet<(usize, usize)> = FxHashSet::default();
     let mut call_patches: Vec<(
+        usize,
         usize,
         Vec<(QualifiedRef, ValueId)>,
         Vec<(QualifiedRef, ValueId)>,
     )> = Vec::new();
 
-    for (i, inst) in body.insts.iter().enumerate() {
-        match &inst.kind {
-            InstKind::ContextProject { dst, ctx, .. } => {
-                val_to_ctx.insert(*dst, *ctx);
-            }
-            InstKind::ContextLoad { dst, src } => {
-                let src_resolved = subst.get(src).copied().unwrap_or(*src);
-                if let Some(&ctx_id) = val_to_ctx.get(&src_resolved) {
-                    if let Some(&known_val) = current_val.get(&ctx_id) {
-                        // We already know this context's value — substitute.
-                        subst.insert(*dst, known_val);
-                        remove.insert(i);
-                        // Also remove the preceding ContextProject if it was just for this load.
-                        if i > 0
-                            && matches!(body.insts[i - 1].kind, InstKind::ContextProject { dst: proj_dst, .. } if proj_dst == src_resolved)
-                        {
-                            remove.insert(i - 1);
-                        }
-                    } else {
-                        // First load of this context — record it.
-                        current_val.insert(ctx_id, *dst);
-                    }
-                }
-            }
-            InstKind::ContextStore { dst, value } => {
-                let dst_resolved = subst.get(dst).copied().unwrap_or(*dst);
-                let value_resolved = subst.get(value).copied().unwrap_or(*value);
-                if let Some(&ctx_id) = val_to_ctx.get(&dst_resolved) {
-                    current_val.insert(ctx_id, value_resolved);
-                }
-            }
-
-            // FunctionCall with Direct callee: populate context_uses/context_defs from effect.
-            InstKind::FunctionCall {
-                callee: Callee::Direct(fn_id),
-                context_uses,
-                context_defs,
-                ..
-            } if context_uses.is_empty() && context_defs.is_empty() => {
-                if let Some(reads_writes) = extract_effect_refs(fn_types, fn_id) {
-                    let (reads, writes) = reads_writes;
-                    // Populate context_uses: bind current SSA value for each read.
-                    let mut uses = Vec::new();
-                    for qref in &reads {
-                        if let Some(&val) = current_val.get(qref) {
-                            uses.push((*qref, val));
-                        }
-                    }
-                    // Populate context_defs: allocate new ValueId for each write.
-                    let mut defs = Vec::new();
-                    for qref in &writes {
-                        let new_val = body.val_factory.next();
-                        // Copy type from current SSA value (if known).
-                        if let Some(&current) = current_val.get(qref) {
-                            if let Some(ty) = body.val_types.get(&current) {
-                                body.val_types.insert(new_val, ty.clone());
-                            }
-                        }
-                        defs.push((*qref, new_val));
-                        // Update current_val — subsequent loads see the new value.
-                        current_val.insert(*qref, new_val);
-                    }
-                    if !uses.is_empty() || !defs.is_empty() {
-                        call_patches.push((i, uses, defs));
-                    }
-                }
-            }
-
-            // Branch/merge: invalidate tracked values (conservative).
-            InstKind::BlockLabel { .. } | InstKind::Jump { .. } | InstKind::JumpIf { .. } => {
-                current_val.clear();
-            }
-            _ => {}
+    // Precompute dominator tree children for each block.
+    let mut dom_children: Vec<SmallVec<[usize; 4]>> = vec![SmallVec::new(); num_blocks];
+    for child in 1..num_blocks {
+        if let Some(parent) = domtree.idom(BlockIdx(child)) {
+            dom_children[parent.0].push(child);
         }
     }
+
+    // Recursive DFS over the dominator tree.
+    //
+    // Each block inherits its dominator parent's ctx_state. At merge points
+    // (>1 predecessor), written contexts are cleared. After processing a
+    // block's subtree, ctx_state is restored for sibling processing.
+    type CtxState = FxHashMap<QualifiedRef, ValueId>;
+
+    /// Collected results from the dominator-tree walk.
+    struct CollectState<'a> {
+        blocks: &'a [crate::cfg::Block],
+        val_types: &'a mut FxHashMap<ValueId, Ty>,
+        fn_types: &'a FxHashMap<QualifiedRef, Ty>,
+        preds: &'a FxHashMap<BlockIdx, SmallVec<[BlockIdx; 2]>>,
+        written_contexts: &'a BTreeSet<QualifiedRef>,
+        dom_children: &'a [SmallVec<[usize; 4]>],
+        val_to_ctx: &'a mut FxHashMap<ValueId, QualifiedRef>,
+        val_factory: &'a mut acvus_utils::LocalFactory<ValueId>,
+        subst: &'a mut FxHashMap<ValueId, ValueId>,
+        remove: &'a mut FxHashSet<(usize, usize)>,
+        call_patches: &'a mut Vec<(
+            usize,
+            usize,
+            Vec<(QualifiedRef, ValueId)>,
+            Vec<(QualifiedRef, ValueId)>,
+        )>,
+    }
+
+    fn walk_dom_tree(bi: usize, ctx_state: &mut CtxState, st: &mut CollectState<'_>) {
+        let saved = ctx_state.clone();
+
+        // At merge points, clear written contexts — they may differ across paths.
+        let is_merge = st.preds.get(&BlockIdx(bi)).map_or(false, |p| p.len() > 1);
+        if is_merge {
+            for ctx in st.written_contexts.iter() {
+                ctx_state.remove(ctx);
+            }
+        }
+
+        // Process instructions in this block.
+        let block = &st.blocks[bi];
+        for (ii, inst) in block.insts.iter().enumerate() {
+            match &inst.kind {
+                InstKind::ContextProject { dst, ctx, .. } => {
+                    st.val_to_ctx.insert(*dst, *ctx);
+                }
+                InstKind::ContextLoad { dst, src } => {
+                    let src_resolved = st.subst.get(src).copied().unwrap_or(*src);
+                    if let Some(&ctx_id) = st.val_to_ctx.get(&src_resolved) {
+                        if let Some(&known_val) = ctx_state.get(&ctx_id) {
+                            // Known value — substitute and mark for removal.
+                            st.subst.insert(*dst, known_val);
+                            st.remove.insert((bi, ii));
+                            // Also remove the preceding ContextProject if it exists for this load.
+                            if ii > 0
+                                && matches!(block.insts[ii - 1].kind, InstKind::ContextProject { dst: proj_dst, .. } if proj_dst == src_resolved)
+                            {
+                                st.remove.insert((bi, ii - 1));
+                            }
+                        } else {
+                            // First load of this context in this dom-tree path — record it.
+                            ctx_state.insert(ctx_id, *dst);
+                        }
+                    }
+                }
+                InstKind::FieldGet { dst, object, .. } => {
+                    // Propagate context identity through field access.
+                    if let Some(&ctx_id) = st.val_to_ctx.get(object) {
+                        st.val_to_ctx.insert(*dst, ctx_id);
+                    }
+                }
+                InstKind::ContextStore { dst, value } => {
+                    let dst_resolved = st.subst.get(dst).copied().unwrap_or(*dst);
+                    let value_resolved = st.subst.get(value).copied().unwrap_or(*value);
+                    if let Some(&ctx_id) = st.val_to_ctx.get(&dst_resolved) {
+                        ctx_state.insert(ctx_id, value_resolved);
+                    }
+                }
+
+                // FunctionCall with Direct callee: populate context_uses/context_defs.
+                InstKind::FunctionCall {
+                    callee: Callee::Direct(fn_id),
+                    context_uses,
+                    context_defs,
+                    ..
+                } if context_uses.is_empty() && context_defs.is_empty() => {
+                    if let Some((reads, writes)) = extract_effect_refs(st.fn_types, fn_id) {
+                        let mut uses = Vec::new();
+                        for qref in &reads {
+                            if let Some(&val) = ctx_state.get(qref) {
+                                uses.push((*qref, val));
+                            }
+                        }
+                        let mut defs = Vec::new();
+                        for qref in &writes {
+                            let new_val = st.val_factory.next();
+                            if let Some(&current) = ctx_state.get(qref) {
+                                if let Some(ty) = st.val_types.get(&current) {
+                                    st.val_types.insert(new_val, ty.clone());
+                                }
+                            }
+                            defs.push((*qref, new_val));
+                            ctx_state.insert(*qref, new_val);
+                        }
+                        if !uses.is_empty() || !defs.is_empty() {
+                            st.call_patches.push((bi, ii, uses, defs));
+                        }
+                    }
+                }
+
+                _ => {}
+            }
+        }
+
+        // Recurse into dominated children, then restore state for siblings.
+        for &child in &st.dom_children[bi] {
+            walk_dom_tree(child, ctx_state, st);
+        }
+
+        *ctx_state = saved;
+    }
+
+    let mut ctx_state: CtxState = FxHashMap::default();
+    let mut state = CollectState {
+        blocks: &cfg.blocks,
+        val_types: &mut cfg.val_types,
+        fn_types,
+        preds: &preds,
+        written_contexts,
+        dom_children: &dom_children,
+        val_to_ctx: &mut val_to_ctx,
+        val_factory: &mut val_factory,
+        subst: &mut subst,
+        remove: &mut remove,
+        call_patches: &mut call_patches,
+    };
+    walk_dom_tree(0, &mut ctx_state, &mut state);
+
+    // Restore val_factory back to cfg.
+    cfg.val_factory = val_factory;
 
     if remove.is_empty() && subst.is_empty() && call_patches.is_empty() {
         return subst;
     }
 
-    // Apply call patches (context_uses/context_defs population).
-    let patch_map: FxHashMap<usize, _> = call_patches
+    // ── Apply phase: mutate cfg.blocks with collected results ──
+
+    let patch_map: FxHashMap<(usize, usize), _> = call_patches
         .into_iter()
-        .map(|(i, u, d)| (i, (u, d)))
+        .map(|(bi, ii, u, d)| ((bi, ii), (u, d)))
         .collect();
 
-    // Apply substitutions, patches, and remove dead instructions.
-    let old_insts = std::mem::take(&mut body.insts);
-    body.insts = old_insts
-        .into_iter()
-        .enumerate()
-        .filter(|(i, _)| !remove.contains(i))
-        .map(|(i, mut inst)| {
-            apply_subst(&mut inst.kind, &subst);
-            // Apply context_uses/context_defs patches.
-            if let Some((uses, defs)) = patch_map.get(&i) {
-                if let InstKind::FunctionCall {
-                    context_uses,
-                    context_defs,
-                    ..
-                } = &mut inst.kind
-                {
-                    *context_uses = uses.clone();
-                    *context_defs = defs.clone();
+    for (bi, block) in cfg.blocks.iter_mut().enumerate() {
+        let old_insts = std::mem::take(&mut block.insts);
+        block.insts = old_insts
+            .into_iter()
+            .enumerate()
+            .filter(|(ii, _)| !remove.contains(&(bi, *ii)))
+            .map(|(ii, mut inst)| {
+                apply_subst(&mut inst.kind, &subst);
+                if let Some((uses, defs)) = patch_map.get(&(bi, ii)) {
+                    if let InstKind::FunctionCall {
+                        context_uses,
+                        context_defs,
+                        ..
+                    } = &mut inst.kind
+                    {
+                        *context_uses = uses.clone();
+                        *context_defs = defs.clone();
+                    }
                 }
-            }
-            inst
-        })
-        .collect();
+                inst
+            })
+            .collect();
+
+        apply_subst_terminator(&mut block.terminator, &subst);
+    }
 
     subst
 }
@@ -351,6 +472,8 @@ fn apply_subst(kind: &mut InstKind, subst: &FxHashMap<ValueId, ValueId>) {
         }
         InstKind::TestVariant { src, .. } => s(src),
         InstKind::UnwrapVariant { src, .. } => s(src),
+        // BlockLabel, Jump, JumpIf, Return are terminators in CfgBody, not instructions.
+        // But they may still exist as InstKind variants for demoted code paths.
         InstKind::BlockLabel { params, .. } => params.iter_mut().for_each(&s),
         InstKind::Jump { args, .. } => args.iter_mut().for_each(&s),
         InstKind::JumpIf {
@@ -368,18 +491,58 @@ fn apply_subst(kind: &mut InstKind, subst: &FxHashMap<ValueId, ValueId>) {
     }
 }
 
+/// Apply value substitutions to a block terminator's operands.
+fn apply_subst_terminator(term: &mut Terminator, subst: &FxHashMap<ValueId, ValueId>) {
+    let s = |v: &mut ValueId| {
+        if let Some(&new) = subst.get(v) {
+            *v = new;
+        }
+    };
+    match term {
+        Terminator::Jump { args, .. } => args.iter_mut().for_each(&s),
+        Terminator::JumpIf {
+            cond,
+            then_args,
+            else_args,
+            ..
+        } => {
+            s(cond);
+            then_args.iter_mut().for_each(&s);
+            else_args.iter_mut().for_each(&s);
+        }
+        Terminator::ListStep {
+            dst,
+            list,
+            index_src,
+            index_dst,
+            done_args,
+            ..
+        } => {
+            s(dst);
+            s(list);
+            s(index_src);
+            s(index_dst);
+            done_args.iter_mut().for_each(&s);
+        }
+        Terminator::Return(v) => s(v),
+        Terminator::Fallthrough => {}
+    }
+}
+
 // ── Step 1: SSA info collection ──────────────────────────────────────
 
 /// A single SSA-relevant operation, recorded in instruction order.
 #[derive(Debug, Clone)]
 enum SsaOp {
     CtxStore {
-        inst_idx: usize,
+        /// Position within the CfgBody, used by `patch_instructions` to locate
+        /// and remove ContextStore instructions superseded by PHI write-back.
+        block_idx: usize,
+        local_idx: usize,
         ctx: QualifiedRef,
         value: ValueId,
     },
     VarStore {
-        inst_idx: usize,
         name: Astr,
         value: ValueId,
     },
@@ -419,7 +582,7 @@ struct SsaInfo {
     block_ops: FxHashMap<BlockIdx, BlockOps>,
 }
 
-fn collect_ssa_info(cfg: &Cfg, insts: &[Inst], val_types: &FxHashMap<ValueId, Ty>) -> SsaInfo {
+fn collect_ssa_info(cfg: &CfgBody) -> SsaInfo {
     let mut val_to_ctx: FxHashMap<ValueId, QualifiedRef> = FxHashMap::default();
     let mut written_contexts = BTreeSet::default();
     let mut block_ops: FxHashMap<BlockIdx, BlockOps> = FxHashMap::default();
@@ -433,12 +596,11 @@ fn collect_ssa_info(cfg: &Cfg, insts: &[Inst], val_types: &FxHashMap<ValueId, Ty
     for (bi, block) in cfg.blocks.iter().enumerate() {
         let ops = block_ops.entry(BlockIdx(bi)).or_default();
 
-        for &inst_i in &block.inst_indices {
-            let inst = &insts[inst_i];
+        for (ii, inst) in block.insts.iter().enumerate() {
             match &inst.kind {
                 InstKind::ContextProject { dst, ctx } => {
                     val_to_ctx.insert(*dst, *ctx);
-                    if let Some(ty) = val_types.get(dst) {
+                    if let Some(ty) = cfg.val_types.get(dst) {
                         ctx_types.entry(*ctx).or_insert_with(|| ty.clone());
                     }
                 }
@@ -453,7 +615,8 @@ fn collect_ssa_info(cfg: &Cfg, insts: &[Inst], val_types: &FxHashMap<ValueId, Ty
                 InstKind::ContextStore { dst, value } => {
                     if let Some(&ctx_id) = val_to_ctx.get(dst) {
                         ops.ops.push(SsaOp::CtxStore {
-                            inst_idx: inst_i,
+                            block_idx: bi,
+                            local_idx: ii,
                             ctx: ctx_id,
                             value: *value,
                         });
@@ -467,12 +630,11 @@ fn collect_ssa_info(cfg: &Cfg, insts: &[Inst], val_types: &FxHashMap<ValueId, Ty
                 }
                 InstKind::VarStore { name, src } => {
                     ops.ops.push(SsaOp::VarStore {
-                        inst_idx: inst_i,
                         name: *name,
                         value: *src,
                     });
                     written_vars.insert(*name);
-                    if let Some(ty) = val_types.get(src) {
+                    if let Some(ty) = cfg.val_types.get(src) {
                         var_types.entry(*name).or_insert_with(|| ty.clone());
                     }
                 }
@@ -510,8 +672,9 @@ fn collect_ssa_info(cfg: &Cfg, insts: &[Inst], val_types: &FxHashMap<ValueId, Ty
 // ── Step 2: SSABuilder execution ────────────────────────────────────
 
 fn run_ssa_builder(
-    cfg: &Cfg,
-    preds: &FxHashMap<BlockIdx, smallvec::SmallVec<[BlockIdx; 2]>>,
+    blocks: &[crate::cfg::Block],
+    all_successors: &[SmallVec<[BlockIdx; 2]>],
+    preds: &FxHashMap<BlockIdx, SmallVec<[BlockIdx; 2]>>,
     ssa_info: &SsaInfo,
     val_factory: &mut acvus_utils::LocalFactory<ValueId>,
     val_types: &mut FxHashMap<ValueId, Ty>,
@@ -522,21 +685,21 @@ fn run_ssa_builder(
         if bi.0 == 0 {
             ENTRY_BLOCK
         } else {
-            cfg.blocks[bi.0].label.unwrap_or(Label(bi.0 as u32))
+            blocks[bi.0].label.unwrap_or(Label(bi.0 as u32))
         }
     };
 
-    // Detect loop headers (backedge target: succ index <= current index).
+    // ── Detect loop headers (backedge target: succ index <= current index) ──
     let mut loop_headers: BTreeSet<BlockIdx> = BTreeSet::default();
-    for (bi, _) in cfg.blocks.iter().enumerate() {
-        for succ in cfg.successors(BlockIdx(bi)) {
+    for (bi, _) in blocks.iter().enumerate() {
+        for &succ in &all_successors[bi] {
             if succ.0 <= bi {
                 loop_headers.insert(succ);
             }
         }
     }
 
-    // Register predecessors.
+    // ── Register predecessors ──
     for (block_idx, block_preds) in preds {
         let label = block_label(*block_idx);
         for pred in block_preds {
@@ -544,10 +707,8 @@ fn run_ssa_builder(
         }
     }
 
-    // Seal entry block.
+    // ── Define initial values in entry block ──
     ssa.seal_block(ENTRY_BLOCK, &mut || val_factory.next());
-
-    // Define initial values in entry block.
     let mut undef_defs: Vec<ValueId> = Vec::new();
 
     // Context entry defs (from ContextLoad in entry region).
@@ -584,11 +745,12 @@ fn run_ssa_builder(
         }
     }
 
-    // Process blocks: define stores in instruction order.
+    // ── Process blocks: define stores in instruction order ──
+    //
     // VarLoad/ParamLoad substitutions are deferred until all blocks are sealed,
     // because use_var on an unsealed block returns a pending phi placeholder
     // that may be resolved to a different value after sealing.
-    for (bi, _) in cfg.blocks.iter().enumerate() {
+    for (bi, _) in blocks.iter().enumerate() {
         let block_idx = BlockIdx(bi);
         let label = block_label(block_idx);
 
@@ -612,12 +774,12 @@ fn run_ssa_builder(
         }
     }
 
-    // Seal loop headers.
+    // ── Seal loop headers (deferred because backedge predecessors aren't known yet) ──
     for &header in &loop_headers {
         ssa.seal_block(block_label(header), &mut || val_factory.next());
     }
 
-    // Trigger PHIs at merge points (sorted for deterministic ValueId allocation).
+    // ── Trigger PHIs at merge points (sorted for deterministic ValueId allocation) ──
     let mut merge_blocks: Vec<_> = preds.iter().filter(|(_, p)| p.len() > 1).collect();
     merge_blocks.sort_by_key(|(idx, _)| *idx);
     for (block_idx, _) in merge_blocks {
@@ -632,12 +794,13 @@ fn run_ssa_builder(
         }
     }
 
-    // Build var_subst: resolve VarLoad/ParamLoad to SSA values.
+    // ── Build var_subst: resolve VarLoad/ParamLoad to SSA values ──
+    //
     // Two mechanisms:
     //   1. Intra-block: VarStore in same block before VarLoad → direct forwarding.
     //   2. Inter-block: use_var on sealed SSA builder → predecessor lookup.
     let mut var_subst: FxHashMap<ValueId, ValueId> = FxHashMap::default();
-    for (bi, _) in cfg.blocks.iter().enumerate() {
+    for (bi, _) in blocks.iter().enumerate() {
         let block_idx = BlockIdx(bi);
         let label = block_label(block_idx);
         // Track last VarStore value per name within this block.
@@ -673,8 +836,7 @@ fn run_ssa_builder(
 // ── Step 3: Patch instructions ──────────────────────────────────────
 
 fn patch_instructions(
-    body: &mut MirBody,
-    cfg: &Cfg,
+    cfg: &mut CfgBody,
     phi_insertions: &[super::ssa::PhiInsertion],
     ssa_info: &SsaInfo,
 ) {
@@ -707,11 +869,12 @@ fn patch_instructions(
         })
         .collect();
     let merge_labels: FxHashSet<Label> = block_phis.keys().copied().collect();
-    let mut remove_indices: FxHashSet<usize> = FxHashSet::default();
+    // Set of (block_idx, inst_idx_within_block) to remove.
+    let mut remove_positions: FxHashSet<(usize, usize)> = FxHashSet::default();
 
     for (bi, block) in cfg.blocks.iter().enumerate() {
         let jumps_to_merge = match &block.terminator {
-            Terminator::Jump { target, .. } => merge_labels.contains(target),
+            Terminator::Jump { label, .. } => merge_labels.contains(label),
             Terminator::JumpIf {
                 then_label,
                 else_label,
@@ -723,17 +886,17 @@ fn patch_instructions(
         if jumps_to_merge {
             if let Some(ops) = ssa_info.block_ops.get(&BlockIdx(bi)) {
                 for op in &ops.ops {
-                    if let SsaOp::CtxStore { inst_idx, ctx, .. } = op {
+                    if let SsaOp::CtxStore { block_idx, local_idx, ctx, .. } = op {
                         if phi_contexts.contains(ctx) {
-                            remove_indices.insert(*inst_idx);
+                            remove_positions.insert((*block_idx, *local_idx));
                             // Remove preceding ContextProject if it exists.
-                            if *inst_idx > 0
+                            if *local_idx > 0
                                 && matches!(
-                                    body.insts[*inst_idx - 1].kind,
+                                    cfg.blocks[*block_idx].insts[*local_idx - 1].kind,
                                     InstKind::ContextProject { .. }
                                 )
                             {
-                                remove_indices.insert(*inst_idx - 1);
+                                remove_positions.insert((*block_idx, *local_idx - 1));
                             }
                         }
                     }
@@ -742,108 +905,128 @@ fn patch_instructions(
         }
     }
 
-    // Rebuild instruction list.
-    let old_insts = std::mem::take(&mut body.insts);
-    let mut new_insts = Vec::with_capacity(old_insts.len());
-    let mut current_label = ENTRY_BLOCK;
-
-    for (i, mut inst) in old_insts.into_iter().enumerate() {
-        if remove_indices.contains(&i) {
-            continue;
+    // Remove marked instructions per block.
+    for (bi, block) in cfg.blocks.iter_mut().enumerate() {
+        let has_removals = remove_positions.iter().any(|(b, _)| *b == bi);
+        if has_removals {
+            let old_insts = std::mem::take(&mut block.insts);
+            block.insts = old_insts
+                .into_iter()
+                .enumerate()
+                .filter(|(ii, _)| !remove_positions.contains(&(bi, *ii)))
+                .map(|(_, inst)| inst)
+                .collect();
         }
+    }
 
-        match &mut inst.kind {
-            InstKind::BlockLabel { label, params, .. } => {
-                current_label = *label;
-                let phis_here = block_phis.get(label);
-                if let Some(phis) = phis_here {
-                    for phi in phis {
-                        params.push(phi.result);
-                    }
-                }
-                let span = inst.span;
-                new_insts.push(inst);
+    // Add PHI params to block params + insert write-back ContextStores.
+    for (&label, phis) in &block_phis {
+        if let Some(&block_idx) = cfg.label_to_block.get(&label) {
+            let block = &mut cfg.blocks[block_idx.0];
 
-                // Write-back ContextStores for context PHI values.
-                // Local variable PHIs do NOT need write-back.
-                if let Some(phis) = phis_here {
-                    for phi in phis {
-                        let ctx = match phi.var {
-                            SsaVar::Context(ctx) => ctx,
-                            SsaVar::Local(name) => {
-                                // For local PHIs, just set the type on the result value.
-                                if let Some(ty) = ssa_info.var_types.get(&name) {
-                                    body.val_types.insert(phi.result, ty.clone());
-                                }
-                                continue;
-                            }
-                        };
-                        let ty = ssa_info
-                            .ctx_types
-                            .get(&ctx)
-                            .expect("missing ty for context in PHI write-back")
-                            .clone();
-                        // Set type for PHI result value.
-                        body.val_types.insert(phi.result, ty.clone());
-                        let proj = body.val_factory.next();
-                        body.val_types.insert(proj, ty.clone());
-                        new_insts.push(Inst {
-                            span,
-                            kind: InstKind::ContextProject { dst: proj, ctx },
-                        });
-                        new_insts.push(Inst {
-                            span,
-                            kind: InstKind::ContextStore {
-                                dst: proj,
-                                value: phi.result,
-                            },
-                        });
-                    }
-                }
-                continue;
+            for phi in phis {
+                block.params.push(phi.result);
             }
-            InstKind::Jump { label, args } => {
-                if let Some(extra) = jump_extra_args.get(&(current_label, *label)) {
+
+            // Write-back ContextStores for context PHI values.
+            // Local variable PHIs do NOT need write-back.
+            let mut write_back_insts: Vec<Inst> = Vec::new();
+            for phi in phis {
+                let ctx = match phi.var {
+                    SsaVar::Context(ctx) => ctx,
+                    SsaVar::Local(name) => {
+                        // For local PHIs, just set the type on the result value.
+                        if let Some(ty) = ssa_info.var_types.get(&name) {
+                            cfg.val_types.insert(phi.result, ty.clone());
+                        }
+                        continue;
+                    }
+                };
+                let ty = ssa_info
+                    .ctx_types
+                    .get(&ctx)
+                    .expect("missing ty for context in PHI write-back")
+                    .clone();
+                // Set type for PHI result value.
+                cfg.val_types.insert(phi.result, ty.clone());
+                let proj = cfg.val_factory.next();
+                cfg.val_types.insert(proj, ty.clone());
+                write_back_insts.push(Inst {
+                    span: acvus_ast::Span::ZERO,
+                    kind: InstKind::ContextProject { dst: proj, ctx },
+                });
+                write_back_insts.push(Inst {
+                    span: acvus_ast::Span::ZERO,
+                    kind: InstKind::ContextStore {
+                        dst: proj,
+                        value: phi.result,
+                    },
+                });
+            }
+
+            if !write_back_insts.is_empty() {
+                let block = &mut cfg.blocks[block_idx.0];
+                block.insts.splice(0..0, write_back_insts);
+            }
+        }
+    }
+
+    // Add jump args to terminators of predecessor blocks.
+    for (bi, block) in cfg.blocks.iter_mut().enumerate() {
+        let pred_label = if bi == 0 {
+            ENTRY_BLOCK
+        } else {
+            block.label.unwrap_or(Label(bi as u32))
+        };
+
+        match &mut block.terminator {
+            Terminator::Jump { label, args } => {
+                if let Some(extra) = jump_extra_args.get(&(pred_label, *label)) {
                     args.extend_from_slice(extra);
                 }
             }
-            InstKind::JumpIf {
+            Terminator::JumpIf {
                 then_label,
                 then_args,
                 else_label,
                 else_args,
                 ..
             } => {
-                if let Some(extra) = jump_extra_args.get(&(current_label, *then_label)) {
+                if let Some(extra) = jump_extra_args.get(&(pred_label, *then_label)) {
                     then_args.extend_from_slice(extra);
                 }
-                if let Some(extra) = jump_extra_args.get(&(current_label, *else_label)) {
+                if let Some(extra) = jump_extra_args.get(&(pred_label, *else_label)) {
                     else_args.extend_from_slice(extra);
+                }
+            }
+            Terminator::ListStep { done, done_args, .. } => {
+                if let Some(extra) = jump_extra_args.get(&(pred_label, *done)) {
+                    done_args.extend_from_slice(extra);
                 }
             }
             _ => {}
         }
-        new_insts.push(inst);
     }
-
-    body.insts = new_insts;
 }
 
 // ── Step 4: Apply var substitutions + remove VarLoad/VarStore/ParamLoad ──
 
-fn apply_var_subst(body: &mut MirBody, var_subst: &FxHashMap<ValueId, ValueId>) {
-    // Apply substitutions to all instruction operands.
-    for inst in &mut body.insts {
-        apply_subst(&mut inst.kind, var_subst);
-    }
+fn apply_var_subst(cfg: &mut CfgBody, var_subst: &FxHashMap<ValueId, ValueId>) {
+    // Apply substitutions to all instruction operands and terminators.
+    for block in &mut cfg.blocks {
+        for inst in &mut block.insts {
+            apply_subst(&mut inst.kind, var_subst);
+        }
+        apply_subst_terminator(&mut block.terminator, var_subst);
 
-    // Remove VarLoad/VarStore/ParamLoad instructions (now dead).
-    body.insts.retain(|inst| {
-        !matches!(
-            inst.kind,
-            InstKind::VarLoad { .. } | InstKind::VarStore { .. } | InstKind::ParamLoad { .. }
-        )
-    });
+        // Remove VarLoad/VarStore/ParamLoad instructions (now dead).
+        block.insts.retain(|inst| {
+            !matches!(
+                inst.kind,
+                InstKind::VarLoad { .. } | InstKind::VarStore { .. } | InstKind::ParamLoad { .. }
+            )
+        });
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -851,6 +1034,8 @@ fn apply_var_subst(body: &mut MirBody, var_subst: &FxHashMap<ValueId, ValueId>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cfg::{self, CfgBody, Block, Terminator};
+    use crate::ir::MirBody;
     use crate::test::{compile_script, compile_template};
     use crate::ty::{EffectSet, EffectTarget, Ty};
     use acvus_utils::Interner;
@@ -861,18 +1046,19 @@ mod tests {
         FxHashMap::default()
     }
 
-    fn count_phi_blocks(body: &MirBody) -> usize {
-        body.insts
+    fn count_phi_blocks(cfg_body: &CfgBody) -> usize {
+        cfg_body
+            .blocks
             .iter()
-            .filter(
-                |i| matches!(&i.kind, InstKind::BlockLabel { params, .. } if !params.is_empty()),
-            )
+            .filter(|b| !b.params.is_empty())
             .count()
     }
 
-    fn count_context_stores(body: &MirBody) -> usize {
-        body.insts
+    fn count_context_stores(cfg_body: &CfgBody) -> usize {
+        cfg_body
+            .blocks
             .iter()
+            .flat_map(|b| &b.insts)
             .filter(|i| matches!(&i.kind, InstKind::ContextStore { .. }))
             .count()
     }
@@ -888,13 +1074,14 @@ mod tests {
             &[("x", Ty::Int), ("name", Ty::String)],
         )
         .unwrap();
-        run(&mut module.main, &no_fn_types());
+        let mut cfg_body = cfg::promote(module.main);
+        run(&mut cfg_body, &no_fn_types());
         assert!(
-            count_phi_blocks(&module.main) >= 1,
+            count_phi_blocks(&cfg_body) >= 1,
             "merge should have PHI for @x"
         );
         assert!(
-            count_context_stores(&module.main) >= 1,
+            count_context_stores(&cfg_body) >= 1,
             "should have write-back ContextStore"
         );
     }
@@ -908,8 +1095,9 @@ mod tests {
             &[("x", Ty::Int), ("name", Ty::String)],
         )
         .unwrap();
-        run(&mut module.main, &no_fn_types());
-        assert!(count_phi_blocks(&module.main) >= 1);
+        let mut cfg_body = cfg::promote(module.main);
+        run(&mut cfg_body, &no_fn_types());
+        assert!(count_phi_blocks(&cfg_body) >= 1);
     }
 
     #[test]
@@ -921,9 +1109,10 @@ mod tests {
             &[("items", Ty::List(Box::new(Ty::Int))), ("sum", Ty::Int)],
         )
         .unwrap();
-        run(&mut module.main, &no_fn_types());
+        let mut cfg_body = cfg::promote(module.main);
+        run(&mut cfg_body, &no_fn_types());
         assert!(
-            count_phi_blocks(&module.main) >= 1,
+            count_phi_blocks(&cfg_body) >= 1,
             "loop header should have PHI for @sum"
         );
     }
@@ -939,25 +1128,27 @@ mod tests {
             &[("name", Ty::String)],
         )
         .unwrap();
-        let stores_before = count_context_stores(&module.main);
-        run(&mut module.main, &no_fn_types());
-        assert_eq!(count_context_stores(&module.main), stores_before);
+        let mut cfg_body = cfg::promote(module.main);
+        let stores_before = count_context_stores(&cfg_body);
+        run(&mut cfg_body, &no_fn_types());
+        assert_eq!(count_context_stores(&cfg_body), stores_before);
     }
 
     #[test]
     fn straight_line_write_preserved() {
         let i = Interner::new();
         let (mut module, _) = compile_script(&i, "@x = 42; @x", &[("x", Ty::Int)]).unwrap();
-        let stores_before = count_context_stores(&module.main);
-        run(&mut module.main, &no_fn_types());
-        assert_eq!(count_context_stores(&module.main), stores_before);
+        let mut cfg_body = cfg::promote(module.main);
+        let stores_before = count_context_stores(&cfg_body);
+        run(&mut cfg_body, &no_fn_types());
+        assert_eq!(count_context_stores(&cfg_body), stores_before);
     }
 
     // ── Script regression: entry loads + nested loops ──
 
     #[test]
     fn script_entry_loads_all_contexts() {
-        // All contexts must have ContextProject + ContextLoad in entry (before first BlockLabel).
+        // All contexts must have ContextProject + ContextLoad in entry block.
         let i = Interner::new();
         let (module, _) = compile_script(
             &i,
@@ -965,18 +1156,17 @@ mod tests {
             &[("items", Ty::List(Box::new(Ty::Int))), ("sum", Ty::Int)],
         )
         .unwrap();
+        let cfg_body = cfg::promote(module.main);
 
-        let first_label = module
-            .main
+        // Entry block is blocks[0].
+        let entry = &cfg_body.blocks[0];
+        let entry_projects: Vec<_> = entry
             .insts
-            .iter()
-            .position(|i| matches!(i.kind, InstKind::BlockLabel { .. }))
-            .unwrap_or(module.main.insts.len());
-        let entry_projects: Vec<_> = module.main.insts[..first_label]
             .iter()
             .filter(|i| matches!(i.kind, InstKind::ContextProject { .. }))
             .collect();
-        let entry_loads: Vec<_> = module.main.insts[..first_label]
+        let entry_loads: Vec<_> = entry
+            .insts
             .iter()
             .filter(|i| matches!(i.kind, InstKind::ContextLoad { .. }))
             .collect();
@@ -1004,9 +1194,10 @@ mod tests {
             ],
         )
         .unwrap();
+        let cfg_body = cfg::promote(module.main);
         // Must have PHI for @sum (written in inner loop).
         assert!(
-            count_phi_blocks(&module.main) >= 1,
+            count_phi_blocks(&cfg_body) >= 1,
             "nested loop should produce PHI for @sum"
         );
     }
@@ -1021,15 +1212,16 @@ mod tests {
             &[("items", Ty::List(Box::new(Ty::Int))), ("count", Ty::Int)],
         )
         .unwrap();
+        let cfg_body = cfg::promote(module.main);
         assert!(
-            count_phi_blocks(&module.main) >= 1,
+            count_phi_blocks(&cfg_body) >= 1,
             "loop + branch should produce PHI"
         );
     }
 
     // ── FunctionCall context_uses/context_defs population ──
 
-    /// Build a minimal MirBody with a FunctionCall to a callee that reads and writes @ctx.
+    /// Build a minimal CfgBody with a FunctionCall to a callee that reads and writes @ctx.
     /// Before SSA pass: context_uses/context_defs are empty.
     /// After SSA pass: they should be populated.
     #[test]
@@ -1056,7 +1248,7 @@ mod tests {
             },
         );
 
-        // Build MIR manually:
+        // Build MIR manually then promote:
         // v0 = ContextProject @ctx
         // v1 = ContextLoad v0        (entry load)
         // v2 = FunctionCall callee() uses[] defs[]   ← SSA pass should fill
@@ -1093,12 +1285,14 @@ mod tests {
             kind: InstKind::Return(v2),
         });
 
-        run(&mut body, &fn_types);
+        let mut cfg_body = cfg::promote(body);
+        run(&mut cfg_body, &fn_types);
 
         // Find the FunctionCall and verify context_uses/context_defs are populated.
-        let call_inst = body
-            .insts
+        let call_inst = cfg_body
+            .blocks
             .iter()
+            .flat_map(|b| &b.insts)
             .find(|i| matches!(i.kind, InstKind::FunctionCall { .. }));
         assert!(call_inst.is_some(), "FunctionCall should exist");
 
@@ -1163,11 +1357,13 @@ mod tests {
             kind: InstKind::Return(v0),
         });
 
-        run(&mut body, &fn_types);
+        let mut cfg_body = cfg::promote(body);
+        run(&mut cfg_body, &fn_types);
 
-        let call_inst = body
-            .insts
+        let call_inst = cfg_body
+            .blocks
             .iter()
+            .flat_map(|b| &b.insts)
             .find(|i| matches!(i.kind, InstKind::FunctionCall { .. }))
             .unwrap();
         if let InstKind::FunctionCall {
@@ -1259,12 +1455,14 @@ mod tests {
             kind: InstKind::Return(v4),
         });
 
-        run(&mut body, &fn_types);
+        let mut cfg_body = cfg::promote(body);
+        run(&mut cfg_body, &fn_types);
 
         // The second ContextLoad (v4) should be eliminated — replaced by the def from the call.
-        let remaining_loads: Vec<_> = body
-            .insts
+        let remaining_loads: Vec<_> = cfg_body
+            .blocks
             .iter()
+            .flat_map(|b| &b.insts)
             .filter(|i| matches!(i.kind, InstKind::ContextLoad { .. }))
             .collect();
         // Only the entry load should remain; the second should be forwarded.
@@ -1289,8 +1487,9 @@ mod tests {
             ],
         )
         .unwrap();
+        let cfg_body = cfg::promote(module.main);
         // Both loops write @sum — SSA pass must handle this.
-        assert!(count_context_stores(&module.main) >= 1);
+        assert!(count_context_stores(&cfg_body) >= 1);
     }
 
     // ── Token/Context soundness tests ──────────────────────────────
@@ -1357,22 +1556,25 @@ mod tests {
             kind: InstKind::Return(v2),
         });
 
-        run(&mut body, &fn_types);
+        let mut cfg_body = cfg::promote(body);
+        run(&mut cfg_body, &fn_types);
 
         // context_uses should have exactly 1 entry (the Context), NOT 2.
-        for inst in &body.insts {
-            if let InstKind::FunctionCall {
-                callee: Callee::Direct(ref fid),
-                ref context_uses,
-                ..
-            } = inst.kind
-            {
-                if fid == &callee_id {
-                    assert_eq!(
-                        context_uses.len(),
-                        1,
-                        "Token must NOT appear in context_uses; only Context should"
-                    );
+        for block in &cfg_body.blocks {
+            for inst in &block.insts {
+                if let InstKind::FunctionCall {
+                    callee: Callee::Direct(ref fid),
+                    ref context_uses,
+                    ..
+                } = inst.kind
+                {
+                    if fid == &callee_id {
+                        assert_eq!(
+                            context_uses.len(),
+                            1,
+                            "Token must NOT appear in context_uses; only Context should"
+                        );
+                    }
                 }
             }
         }
@@ -1438,21 +1640,24 @@ mod tests {
             kind: InstKind::Return(v2),
         });
 
-        run(&mut body, &fn_types);
+        let mut cfg_body = cfg::promote(body);
+        run(&mut cfg_body, &fn_types);
 
-        for inst in &body.insts {
-            if let InstKind::FunctionCall {
-                callee: Callee::Direct(ref fid),
-                ref context_defs,
-                ..
-            } = inst.kind
-            {
-                if fid == &callee_id {
-                    assert_eq!(
-                        context_defs.len(),
-                        1,
-                        "Token must NOT appear in context_defs; only Context should"
-                    );
+        for block in &cfg_body.blocks {
+            for inst in &block.insts {
+                if let InstKind::FunctionCall {
+                    callee: Callee::Direct(ref fid),
+                    ref context_defs,
+                    ..
+                } = inst.kind
+                {
+                    if fid == &callee_id {
+                        assert_eq!(
+                            context_defs.len(),
+                            1,
+                            "Token must NOT appear in context_defs; only Context should"
+                        );
+                    }
                 }
             }
         }
@@ -1521,30 +1726,33 @@ mod tests {
             kind: InstKind::Return(v2),
         });
 
-        run(&mut body, &fn_types);
+        let mut cfg_body = cfg::promote(body);
+        run(&mut cfg_body, &fn_types);
 
-        for inst in &body.insts {
-            if let InstKind::FunctionCall {
-                callee: Callee::Direct(ref fid),
-                ref context_uses,
-                ref context_defs,
-                ..
-            } = inst.kind
-            {
-                if fid == &callee_id {
-                    assert_eq!(
-                        context_uses.len(),
-                        1,
-                        "only Context(@ctx) should be in context_uses, not Token"
-                    );
-                    assert_eq!(
-                        context_defs.len(),
-                        1,
-                        "only Context(@ctx) should be in context_defs, not Token"
-                    );
-                    // Verify the actual QualifiedRef is correct.
-                    assert_eq!(context_uses[0].0, qref);
-                    assert_eq!(context_defs[0].0, qref);
+        for block in &cfg_body.blocks {
+            for inst in &block.insts {
+                if let InstKind::FunctionCall {
+                    callee: Callee::Direct(ref fid),
+                    ref context_uses,
+                    ref context_defs,
+                    ..
+                } = inst.kind
+                {
+                    if fid == &callee_id {
+                        assert_eq!(
+                            context_uses.len(),
+                            1,
+                            "only Context(@ctx) should be in context_uses, not Token"
+                        );
+                        assert_eq!(
+                            context_defs.len(),
+                            1,
+                            "only Context(@ctx) should be in context_defs, not Token"
+                        );
+                        // Verify the actual QualifiedRef is correct.
+                        assert_eq!(context_uses[0].0, qref);
+                        assert_eq!(context_defs[0].0, qref);
+                    }
                 }
             }
         }

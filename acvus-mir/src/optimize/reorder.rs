@@ -1,23 +1,30 @@
-//! Reorder pass: dependency-preserving instruction reordering.
+//! Reorder pass: dependency-preserving instruction scheduling.
 //!
-//! After spawn_split, IO calls are expressed as Spawn + Eval pairs.
-//! This pass reorders instructions so that:
-//! - Spawns are scheduled as early as possible (latency hiding)
-//! - Evals are scheduled as late as possible (just before first use)
-//! - Independent instructions fill the gap between Spawn and Eval
+//! After spawn_split, IO calls are Spawn (async start) + Eval (blocking wait).
+//! This pass reorders instructions within each basic block to maximize the
+//! distance between Spawn and Eval, hiding IO latency.
 //!
-//! Dependency constraints:
-//! - SSA use-def: instruction B uses value defined by A → A before B
-//! - Token ordering: instructions sharing the same TokenId must preserve
-//!   their original relative order
+//! # Scheduling strategy
 //!
-//! Control flow boundaries (BlockLabel, Jump, JumpIf, Return) are pinned
-//! and act as barriers — reordering happens only within each basic block.
+//! - **Spawn**: as early as possible (fire async work before anything blocks).
+//! - **Eval**: just before its result's first use (not unconditionally last).
+//!   This prevents one Eval from blocking another Eval's consumer.
+//! - **Normal**: original order (stability for non-IO instructions).
+//!
+//! # Dependency constraints (soundness)
+//!
+//! - SSA use-def: B uses value from A → A before B.
+//! - Token ordering: instructions sharing a TokenId preserve original order.
+//! - ContextStore ordering: stores to the same context preserve original order.
+//!
+//! These constraints are edges in a dependency graph. The scheduler picks from
+//! the ready set (zero in-degree) ordered by priority.
 
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
 use crate::analysis::inst_info;
+use crate::cfg::CfgBody;
 use crate::graph::QualifiedRef;
 use crate::ir::*;
 use crate::ty::{Effect, EffectTarget, Ty, TokenId};
@@ -25,93 +32,29 @@ use crate::ty::{Effect, EffectTarget, Ty, TokenId};
 /// Reorder instructions within each basic block for optimal Spawn/Eval scheduling.
 ///
 /// `fn_types`: QualifiedRef → Ty for looking up callee effects (Token extraction).
-pub fn run(body: &mut MirBody, fn_types: &FxHashMap<QualifiedRef, Ty>) {
-    // Split instructions into basic blocks (separated by control flow).
-    let blocks = split_into_blocks(&body.insts);
-    let mut new_insts = Vec::with_capacity(body.insts.len());
-
-    for block in blocks {
-        let reordered = reorder_block(block, &body.val_types, fn_types);
-        new_insts.extend(reordered);
+pub fn run(cfg: &mut CfgBody, fn_types: &FxHashMap<QualifiedRef, Ty>) {
+    for block in &mut cfg.blocks {
+        reorder_block(&mut block.insts, &cfg.val_types, fn_types);
     }
-
-    body.insts = new_insts;
-}
-
-/// A contiguous run of instructions within a basic block.
-/// Control flow instructions (BlockLabel at start, Jump/JumpIf/Return at end)
-/// are pinned and not reordered.
-struct Block {
-    /// Pinned instructions at the start (BlockLabel, if any).
-    header: Vec<Inst>,
-    /// Reorderable instructions in the middle.
-    body: Vec<Inst>,
-    /// Pinned instructions at the end (Jump/JumpIf/Return, if any).
-    footer: Vec<Inst>,
-}
-
-/// Split a flat instruction list into basic blocks.
-fn split_into_blocks(insts: &[Inst]) -> Vec<Block> {
-    let mut blocks = Vec::new();
-    let mut header = Vec::new();
-    let mut body = Vec::new();
-    let mut footer = Vec::new();
-
-    for inst in insts {
-        if inst_info::is_control_flow(&inst.kind) {
-            match &inst.kind {
-                // BlockLabel starts a new block.
-                InstKind::BlockLabel { .. } => {
-                    // Flush previous block if there's anything.
-                    if !header.is_empty() || !body.is_empty() || !footer.is_empty() {
-                        blocks.push(Block {
-                            header: std::mem::take(&mut header),
-                            body: std::mem::take(&mut body),
-                            footer: std::mem::take(&mut footer),
-                        });
-                    }
-                    header.push(inst.clone());
-                }
-                // Jump/JumpIf/Return ends the current block.
-                _ => {
-                    footer.push(inst.clone());
-                    blocks.push(Block {
-                        header: std::mem::take(&mut header),
-                        body: std::mem::take(&mut body),
-                        footer: std::mem::take(&mut footer),
-                    });
-                }
-            }
-        } else {
-            body.push(inst.clone());
-        }
-    }
-
-    // Flush any remaining instructions (block without terminator).
-    if !header.is_empty() || !body.is_empty() || !footer.is_empty() {
-        blocks.push(Block { header, body, footer });
-    }
-
-    blocks
 }
 
 /// Priority for scheduling. Lower value = scheduled earlier.
+///
+/// Spawn goes first (fire-and-forget, maximizes async overlap).
+/// Normal instructions keep their original order.
+/// Eval is placed just before the first use of its result —
+/// not at the end of the block, so independent Evals don't
+/// block each other's consumers.
+///
+/// The `sub` field breaks ties at the same position:
+/// `0` (Eval) sorts before `1` (Normal), so an Eval lands
+/// right before the instruction that consumes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Priority {
     /// Spawn — schedule as early as possible.
     Spawn,
-    /// Normal instruction.
-    Normal(usize),
-    /// Eval — schedule as late as possible.
-    Eval,
-}
-
-fn classify(inst: &InstKind, original_index: usize) -> Priority {
-    match inst {
-        InstKind::Spawn { .. } => Priority::Spawn,
-        InstKind::Eval { .. } => Priority::Eval,
-        _ => Priority::Normal(original_index),
-    }
+    /// Scheduled at a position. (desired_position, 0=eval-before / 1=normal).
+    Scheduled(usize, u8),
 }
 
 /// Extract TokenIds from a FunctionCall/Spawn/Eval's effect.
@@ -156,65 +99,70 @@ fn token_deps(
         .collect()
 }
 
-/// Reorder instructions within a single basic block.
+/// Reorder instructions within a single basic block, in-place.
 fn reorder_block(
-    block: Block,
+    insts: &mut Vec<Inst>,
     val_types: &FxHashMap<ValueId, Ty>,
     fn_types: &FxHashMap<QualifiedRef, Ty>,
-) -> Vec<Inst> {
-    let n = block.body.len();
+) {
+    let n = insts.len();
     if n <= 1 {
-        // Nothing to reorder.
-        let mut result = block.header;
-        result.extend(block.body);
-        result.extend(block.footer);
-        return result;
+        return;
     }
 
-    // Build dependency edges: deps[i] = set of instruction indices that must come before i.
+    let deps = build_dependency_graph(insts, val_types, fn_types);
+    let priorities = compute_priorities(insts);
+
+    *insts = priority_topo_sort(insts, &deps, &priorities);
+}
+
+// ── Dependency graph ───────────────────────────────────────────────
+
+/// Build dependency edges: `deps[i]` = instructions that must execute before `i`.
+fn build_dependency_graph(
+    insts: &[Inst],
+    val_types: &FxHashMap<ValueId, Ty>,
+    fn_types: &FxHashMap<QualifiedRef, Ty>,
+) -> Vec<SmallVec<[usize; 4]>> {
+    let n = insts.len();
     let mut deps: Vec<SmallVec<[usize; 4]>> = vec![SmallVec::new(); n];
 
-    // 1. SSA use-def dependencies.
-    // def_map: ValueId → instruction index within this block.
+    // def_map: ValueId → defining instruction index in this block.
     let mut def_map: FxHashMap<ValueId, usize> = FxHashMap::default();
-    for (i, inst) in block.body.iter().enumerate() {
+    for (i, inst) in insts.iter().enumerate() {
         for d in inst_info::defs(&inst.kind) {
             def_map.insert(d, i);
         }
     }
-    for (i, inst) in block.body.iter().enumerate() {
+
+    // SSA use-def: if B uses a value defined by A, then A → B.
+    for (i, inst) in insts.iter().enumerate() {
         for u in inst_info::uses(&inst.kind) {
             if let Some(&def_idx) = def_map.get(&u) {
                 if def_idx != i {
                     deps[i].push(def_idx);
                 }
             }
-            // If use is defined outside this block, no intra-block dependency.
         }
     }
 
-    // 2. Token ordering: instructions sharing the same TokenId preserve original order.
+    // Token ordering: instructions sharing a TokenId preserve original order.
     let mut last_token_user: FxHashMap<TokenId, usize> = FxHashMap::default();
-    for (i, inst) in block.body.iter().enumerate() {
-        let tokens = token_deps(&inst.kind, val_types, fn_types);
-        for tid in &tokens {
-            if let Some(&prev) = last_token_user.get(tid) {
+    for (i, inst) in insts.iter().enumerate() {
+        for tid in token_deps(&inst.kind, val_types, fn_types) {
+            if let Some(&prev) = last_token_user.get(&tid) {
                 deps[i].push(prev);
             }
-            last_token_user.insert(*tid, i);
+            last_token_user.insert(tid, i);
         }
     }
 
-    // 3. ContextStore ordering: stores to the same context preserve original order.
-    // context_load→context_store is already handled by SSA use-def,
-    // but store→store to the same context needs explicit ordering.
+    // ContextStore ordering: stores to the same context preserve original order.
     let mut last_ctx_store: FxHashMap<QualifiedRef, usize> = FxHashMap::default();
-    for (i, inst) in block.body.iter().enumerate() {
+    for (i, inst) in insts.iter().enumerate() {
         if let InstKind::ContextStore { dst, .. } = &inst.kind {
-            // dst is a context_project value; we need the context QualifiedRef.
-            // Look up what dst was defined as.
             if let Some(&def_idx) = def_map.get(dst) {
-                if let InstKind::ContextProject { ctx, .. } = &block.body[def_idx].kind {
+                if let InstKind::ContextProject { ctx, .. } = &insts[def_idx].kind {
                     if let Some(&prev) = last_ctx_store.get(ctx) {
                         if prev != i {
                             deps[i].push(prev);
@@ -226,8 +174,48 @@ fn reorder_block(
         }
     }
 
-    // Priority-based topological sort.
-    // Compute in-degree from deps.
+    deps
+}
+
+// ── Priority assignment ────────────────────────────────────────────
+
+/// Assign scheduling priority to each instruction.
+fn compute_priorities(insts: &[Inst]) -> Vec<Priority> {
+    // For each value, the earliest instruction that uses it.
+    let mut first_use_of: FxHashMap<ValueId, usize> = FxHashMap::default();
+    for (i, inst) in insts.iter().enumerate() {
+        for u in inst_info::uses(&inst.kind) {
+            first_use_of.entry(u).or_insert(i);
+        }
+    }
+
+    insts
+        .iter()
+        .enumerate()
+        .map(|(i, inst)| match &inst.kind {
+            InstKind::Spawn { .. } => Priority::Spawn,
+            InstKind::Eval { dst, .. } => {
+                let pos = first_use_of.get(dst).copied().unwrap_or(usize::MAX);
+                Priority::Scheduled(pos, 0) // just before consumer
+            }
+            _ => Priority::Scheduled(i, 1), // original position
+        })
+        .collect()
+}
+
+// ── Topological sort ───────────────────────────────────────────────
+
+/// Priority-driven topological sort. Picks the highest-priority ready
+/// instruction (lowest Priority value) at each step.
+fn priority_topo_sort(
+    insts: &[Inst],
+    deps: &[SmallVec<[usize; 4]>],
+    priorities: &[Priority],
+) -> Vec<Inst> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+
+    let n = insts.len();
     let mut in_degree = vec![0u32; n];
     let mut rdeps: Vec<SmallVec<[usize; 4]>> = vec![SmallVec::new(); n];
     for (i, d) in deps.iter().enumerate() {
@@ -237,18 +225,6 @@ fn reorder_block(
         }
     }
 
-    // Priority queue: ready instructions sorted by priority.
-    // Use a BinaryHeap with Reverse for min-heap behavior.
-    use std::cmp::Reverse;
-    use std::collections::BinaryHeap;
-
-    let priorities: Vec<Priority> = block
-        .body
-        .iter()
-        .enumerate()
-        .map(|(i, inst)| classify(&inst.kind, i))
-        .collect();
-
     let mut ready: BinaryHeap<Reverse<(Priority, usize)>> = BinaryHeap::new();
     for i in 0..n {
         if in_degree[i] == 0 {
@@ -256,34 +232,29 @@ fn reorder_block(
         }
     }
 
-    let mut result = Vec::with_capacity(block.header.len() + n + block.footer.len());
-    result.extend(block.header);
-
-    let mut emitted = 0;
+    let mut result = Vec::with_capacity(n);
     while let Some(Reverse((_, idx))) = ready.pop() {
-        result.push(block.body[idx].clone());
-        emitted += 1;
-
-        for &successor in &rdeps[idx] {
-            in_degree[successor] -= 1;
-            if in_degree[successor] == 0 {
-                ready.push(Reverse((priorities[successor], successor)));
+        result.push(insts[idx].clone());
+        for &succ in &rdeps[idx] {
+            in_degree[succ] -= 1;
+            if in_degree[succ] == 0 {
+                ready.push(Reverse((priorities[succ], succ)));
             }
         }
     }
 
     assert_eq!(
-        emitted, n,
-        "reorder: cycle detected in dependency graph ({emitted} emitted, {n} total)"
+        result.len(), n,
+        "reorder: cycle in dependency graph ({} emitted, {n} total)", result.len()
     );
 
-    result.extend(block.footer);
     result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cfg::{self, CfgBody};
     use crate::ty::{Effect, EffectSet, Param};
     use acvus_utils::{Interner, LocalFactory, LocalIdOps};
 
@@ -291,14 +262,14 @@ mod tests {
         ValueId::from_raw(n)
     }
 
-    fn make_body(insts: Vec<InstKind>, val_count: usize) -> MirBody {
+    fn make_cfg(insts: Vec<InstKind>, val_count: usize) -> CfgBody {
         let mut factory = LocalFactory::<ValueId>::new();
         let mut val_types = FxHashMap::default();
         for _ in 0..val_count {
             let vid = factory.next();
             val_types.insert(vid, Ty::Int);
         }
-        MirBody {
+        cfg::promote(MirBody {
             insts: insts
                 .into_iter()
                 .map(|kind| Inst {
@@ -312,7 +283,7 @@ mod tests {
             debug: DebugInfo::new(),
             val_factory: factory,
             label_count: 0,
-        }
+        })
     }
 
     fn io_fn_type(i: &Interner, name: &str) -> (QualifiedRef, Ty) {
@@ -329,14 +300,14 @@ mod tests {
         (qref, ty)
     }
 
-    /// Collect instruction kinds from a body (ignoring span).
-    fn kinds(body: &MirBody) -> Vec<&InstKind> {
-        body.insts.iter().map(|i| &i.kind).collect()
+    /// Collect all instructions from all blocks (flattened).
+    fn all_insts(cfg: &CfgBody) -> Vec<&Inst> {
+        cfg.blocks.iter().flat_map(|b| b.insts.iter()).collect()
     }
 
-    /// Find the index of the first instruction matching a predicate.
-    fn find_idx(body: &MirBody, pred: impl Fn(&InstKind) -> bool) -> Option<usize> {
-        body.insts.iter().position(|i| pred(&i.kind))
+    /// Find the index of the first instruction matching a predicate (across all blocks).
+    fn find_idx(cfg: &CfgBody, pred: impl Fn(&InstKind) -> bool) -> Option<usize> {
+        all_insts(cfg).iter().position(|i| pred(&i.kind))
     }
 
     // ── Basic: Spawn moves before Eval ──────────────────────────────
@@ -357,7 +328,7 @@ mod tests {
         // h0 = spawn fetch_a(); r0 = eval h0;
         // h1 = spawn fetch_b(); r1 = eval h1;
         // r2 = r0 + r1; return r2
-        let mut body = make_body(
+        let mut cfg = make_cfg(
             vec![
                 InstKind::Spawn {
                     dst: v(0),
@@ -392,7 +363,7 @@ mod tests {
             5,
         );
         // Set Handle types for eval.
-        body.val_types.insert(
+        cfg.val_types.insert(
             v(0),
             Ty::Handle(
                 Box::new(Ty::String),
@@ -402,7 +373,7 @@ mod tests {
                 }),
             ),
         );
-        body.val_types.insert(
+        cfg.val_types.insert(
             v(2),
             Ty::Handle(
                 Box::new(Ty::String),
@@ -413,13 +384,13 @@ mod tests {
             ),
         );
 
-        run(&mut body, &fn_types);
+        run(&mut cfg, &fn_types);
 
         // Both spawns should come before both evals.
-        let spawn_a = find_idx(&body, |k| matches!(k, InstKind::Spawn { dst, .. } if *dst == v(0))).unwrap();
-        let spawn_b = find_idx(&body, |k| matches!(k, InstKind::Spawn { dst, .. } if *dst == v(2))).unwrap();
-        let eval_a = find_idx(&body, |k| matches!(k, InstKind::Eval { src, .. } if *src == v(0))).unwrap();
-        let eval_b = find_idx(&body, |k| matches!(k, InstKind::Eval { src, .. } if *src == v(2))).unwrap();
+        let spawn_a = find_idx(&cfg, |k| matches!(k, InstKind::Spawn { dst, .. } if *dst == v(0))).unwrap();
+        let spawn_b = find_idx(&cfg, |k| matches!(k, InstKind::Spawn { dst, .. } if *dst == v(2))).unwrap();
+        let eval_a = find_idx(&cfg, |k| matches!(k, InstKind::Eval { src, .. } if *src == v(0))).unwrap();
+        let eval_b = find_idx(&cfg, |k| matches!(k, InstKind::Eval { src, .. } if *src == v(2))).unwrap();
 
         assert!(spawn_a < eval_a, "spawn_a must come before eval_a");
         assert!(spawn_b < eval_b, "spawn_b must come before eval_b");
@@ -436,7 +407,7 @@ mod tests {
         let mut fn_types = FxHashMap::default();
         fn_types.insert(fa, fa_ty);
 
-        let mut body = make_body(
+        let mut cfg = make_cfg(
             vec![
                 InstKind::Spawn {
                     dst: v(0),
@@ -453,15 +424,15 @@ mod tests {
             ],
             2,
         );
-        body.val_types.insert(
+        cfg.val_types.insert(
             v(0),
             Ty::Handle(Box::new(Ty::String), Effect::Resolved(EffectSet { io: true, ..Default::default() })),
         );
 
-        run(&mut body, &fn_types);
+        run(&mut cfg, &fn_types);
 
-        let spawn_idx = find_idx(&body, |k| matches!(k, InstKind::Spawn { .. })).unwrap();
-        let eval_idx = find_idx(&body, |k| matches!(k, InstKind::Eval { .. })).unwrap();
+        let spawn_idx = find_idx(&cfg, |k| matches!(k, InstKind::Spawn { .. })).unwrap();
+        let eval_idx = find_idx(&cfg, |k| matches!(k, InstKind::Eval { .. })).unwrap();
         assert!(spawn_idx < eval_idx);
     }
 
@@ -476,7 +447,7 @@ mod tests {
         let mut fn_types = FxHashMap::default();
         fn_types.insert(fa, fa_ty);
 
-        let mut body = make_body(
+        let mut cfg = make_cfg(
             vec![
                 InstKind::Const {
                     dst: v(5),
@@ -507,15 +478,15 @@ mod tests {
             ],
             8,
         );
-        body.val_types.insert(
+        cfg.val_types.insert(
             v(0),
             Ty::Handle(Box::new(Ty::String), Effect::Resolved(EffectSet { io: true, ..Default::default() })),
         );
 
-        run(&mut body, &fn_types);
+        run(&mut cfg, &fn_types);
 
-        let spawn_idx = find_idx(&body, |k| matches!(k, InstKind::Spawn { .. })).unwrap();
-        let eval_idx = find_idx(&body, |k| matches!(k, InstKind::Eval { .. })).unwrap();
+        let spawn_idx = find_idx(&cfg, |k| matches!(k, InstKind::Spawn { .. })).unwrap();
+        let eval_idx = find_idx(&cfg, |k| matches!(k, InstKind::Eval { .. })).unwrap();
 
         // Spawn should be early, eval should be late.
         // BinOp(v5+v6) is independent of spawn/eval, can go between.
@@ -549,7 +520,7 @@ mod tests {
             );
         }
 
-        let mut body = make_body(
+        let mut cfg = make_cfg(
             vec![
                 InstKind::Spawn {
                     dst: v(0),
@@ -577,16 +548,16 @@ mod tests {
             ],
             4,
         );
-        body.val_types.insert(v(0), Ty::Handle(Box::new(Ty::Unit), token_effect.clone()));
-        body.val_types.insert(v(2), Ty::Handle(Box::new(Ty::Unit), token_effect.clone()));
+        cfg.val_types.insert(v(0), Ty::Handle(Box::new(Ty::Unit), token_effect.clone()));
+        cfg.val_types.insert(v(2), Ty::Handle(Box::new(Ty::Unit), token_effect.clone()));
 
-        run(&mut body, &fn_types);
+        run(&mut cfg, &fn_types);
 
         // With shared token: spawn_a must come before spawn_b (original order preserved).
-        let spawn_a = find_idx(&body, |k| matches!(k, InstKind::Spawn { dst, .. } if *dst == v(0))).unwrap();
-        let spawn_b = find_idx(&body, |k| matches!(k, InstKind::Spawn { dst, .. } if *dst == v(2))).unwrap();
-        let eval_a = find_idx(&body, |k| matches!(k, InstKind::Eval { src, .. } if *src == v(0))).unwrap();
-        let eval_b = find_idx(&body, |k| matches!(k, InstKind::Eval { src, .. } if *src == v(2))).unwrap();
+        let spawn_a = find_idx(&cfg, |k| matches!(k, InstKind::Spawn { dst, .. } if *dst == v(0))).unwrap();
+        let spawn_b = find_idx(&cfg, |k| matches!(k, InstKind::Spawn { dst, .. } if *dst == v(2))).unwrap();
+        let eval_a = find_idx(&cfg, |k| matches!(k, InstKind::Eval { src, .. } if *src == v(0))).unwrap();
+        let eval_b = find_idx(&cfg, |k| matches!(k, InstKind::Eval { src, .. } if *src == v(2))).unwrap();
 
         // Token forces sequential: a before b entirely.
         assert!(spawn_a < spawn_b, "token: spawn_a before spawn_b");
@@ -597,7 +568,7 @@ mod tests {
 
     #[test]
     fn no_spawns_preserves_order() {
-        let mut body = make_body(
+        let mut cfg = make_cfg(
             vec![
                 InstKind::Const {
                     dst: v(0),
@@ -618,9 +589,9 @@ mod tests {
             3,
         );
 
-        let original: Vec<_> = body.insts.iter().map(|i| std::mem::discriminant(&i.kind)).collect();
-        run(&mut body, &FxHashMap::default());
-        let after: Vec<_> = body.insts.iter().map(|i| std::mem::discriminant(&i.kind)).collect();
+        let original: Vec<_> = all_insts(&cfg).iter().map(|i| std::mem::discriminant(&i.kind)).collect();
+        run(&mut cfg, &FxHashMap::default());
+        let after: Vec<_> = all_insts(&cfg).iter().map(|i| std::mem::discriminant(&i.kind)).collect();
 
         assert_eq!(original, after, "no spawns → order unchanged");
     }
@@ -631,7 +602,7 @@ mod tests {
     fn use_def_prevents_reorder() {
         // r0 = const 1; r1 = r0 + r0; return r1
         // r0 must come before r1 (use-def).
-        let mut body = make_body(
+        let mut cfg = make_cfg(
             vec![
                 InstKind::Const {
                     dst: v(0),
@@ -648,10 +619,10 @@ mod tests {
             2,
         );
 
-        run(&mut body, &FxHashMap::default());
+        run(&mut cfg, &FxHashMap::default());
 
-        let const_idx = find_idx(&body, |k| matches!(k, InstKind::Const { .. })).unwrap();
-        let binop_idx = find_idx(&body, |k| matches!(k, InstKind::BinOp { .. })).unwrap();
+        let const_idx = find_idx(&cfg, |k| matches!(k, InstKind::Const { .. })).unwrap();
+        let binop_idx = find_idx(&cfg, |k| matches!(k, InstKind::BinOp { .. })).unwrap();
         assert!(const_idx < binop_idx);
     }
 }

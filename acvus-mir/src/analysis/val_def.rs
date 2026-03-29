@@ -2,31 +2,21 @@ use crate::hints::InstIdx;
 use crate::ir::{InstKind, MirModule, ValueId};
 use rustc_hash::FxHashMap;
 
-use crate::pass::AnalysisPass;
-
 /// Maps each Val to the instruction index that defines it.
 #[derive(Debug, Clone)]
 pub struct ValDefMap(pub FxHashMap<ValueId, InstIdx>);
 
-pub struct ValDefMapAnalysis;
-
-impl AnalysisPass for ValDefMapAnalysis {
-    type Required<'a> = ();
-    type Output = ValDefMap;
-
-    fn run(&self, module: &MirModule, _: ()) -> ValDefMap {
-        let mut map = FxHashMap::default();
-        for (idx, inst) in module.main.insts.iter().enumerate() {
-            if let Some(dst) = dst_of(&inst.kind) {
-                map.insert(dst, idx);
-            }
-            // Some instructions define multiple vals
-            for extra in extra_dsts(&inst.kind) {
-                map.insert(extra, idx);
-            }
+pub fn build(module: &MirModule) -> ValDefMap {
+    let mut map = FxHashMap::default();
+    for (idx, inst) in module.main.insts.iter().enumerate() {
+        if let Some(dst) = dst_of(&inst.kind) {
+            map.insert(dst, idx);
         }
-        ValDefMap(map)
+        for extra in extra_dsts(&inst.kind) {
+            map.insert(extra, idx);
+        }
     }
+    ValDefMap(map)
 }
 
 /// Primary destination Val of an instruction, if any.
@@ -129,7 +119,7 @@ mod tests {
             inst(InstKind::ContextProject { dst: v0, ctx: id0 }),
             inst(InstKind::ContextLoad { dst: v1, src: v0 }),
         ]);
-        let result = ValDefMapAnalysis.run(&module, ());
+        let result = super::build(&module);
         assert_eq!(result.0[&v0], 0); // ContextProject defines v0
         assert_eq!(result.0[&v1], 1); // ContextLoad defines v1
     }
@@ -143,7 +133,7 @@ mod tests {
             dst: v0,
             name: i.intern("count"),
         })]);
-        let result = ValDefMapAnalysis.run(&module, ());
+        let result = super::build(&module);
         assert_eq!(result.0[&v0], 0);
     }
 
@@ -169,7 +159,7 @@ mod tests {
                 right: v1,
             }),
         ]);
-        let result = ValDefMapAnalysis.run(&module, ());
+        let result = super::build(&module);
         assert_eq!(result.0[&v0], 0);
         assert_eq!(result.0[&v1], 1);
         assert_eq!(result.0[&v2], 2);
@@ -185,7 +175,7 @@ mod tests {
             params: vec![v0, v1],
             merge_of: None,
         })]);
-        let result = ValDefMapAnalysis.run(&module, ());
+        let result = super::build(&module);
         assert_eq!(result.0[&v0], 0);
         assert_eq!(result.0[&v1], 0);
     }
@@ -208,7 +198,7 @@ mod tests {
             }),
             inst(InstKind::Nop),
         ]);
-        let result = ValDefMapAnalysis.run(&module, ());
+        let result = super::build(&module);
         assert!(result.0.is_empty());
     }
 }

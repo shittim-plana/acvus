@@ -1,10 +1,12 @@
 use crate::graph::QualifiedRef;
-use crate::ir::{InstKind, ValueId};
+use crate::ir::{Inst, InstKind, ValueId};
 use crate::ty::Ty;
 use acvus_ast::{BinOp, UnaryOp};
 use rustc_hash::FxHashMap;
 
-use crate::analysis::dataflow::{DataflowState, TransferFunction};
+use crate::analysis::dataflow::{
+    value_propagate_forward, DataflowAnalysis, DataflowState,
+};
 use crate::analysis::domain::{AbstractValue, FiniteSet, abstract_and, abstract_not, abstract_or};
 use crate::analysis::reachable_context::KnownValue;
 use smallvec::SmallVec;
@@ -14,8 +16,11 @@ pub struct ValueDomainTransfer<'a> {
     pub known_context: &'a FxHashMap<QualifiedRef, KnownValue>,
 }
 
-impl<'a> TransferFunction<AbstractValue> for ValueDomainTransfer<'a> {
-    fn transfer_inst(&self, inst: &crate::ir::Inst, state: &mut DataflowState<AbstractValue>) {
+impl<'a> DataflowAnalysis for ValueDomainTransfer<'a> {
+    type Key = ValueId;
+    type Domain = AbstractValue;
+
+    fn transfer_inst(&self, inst: &Inst, state: &mut DataflowState<ValueId, AbstractValue>) {
         match &inst.kind {
             InstKind::Const { dst, value } => {
                 state.set(*dst, AbstractValue::from_literal(value));
@@ -31,7 +36,6 @@ impl<'a> TransferFunction<AbstractValue> for ValueDomainTransfer<'a> {
             }
 
             InstKind::ContextLoad { dst, src } => {
-                // Copy the abstract value from the projection source.
                 state.set(*dst, state.get(*src));
             }
 
@@ -52,7 +56,6 @@ impl<'a> TransferFunction<AbstractValue> for ValueDomainTransfer<'a> {
             }
 
             InstKind::TestVariant { dst, src, tag } => {
-                // Type-based pruning first
                 if let Some(ty) = self.val_types.get(src) {
                     match ty {
                         Ty::Enum { variants, .. } => {
@@ -75,14 +78,11 @@ impl<'a> TransferFunction<AbstractValue> for ValueDomainTransfer<'a> {
                                 return;
                             }
                         }
-                        Ty::Option(_) => {
-                            // No pruning from type alone for Option
-                        }
+                        Ty::Option(_) => {}
                         _ => {}
                     }
                 }
 
-                // Value-based test
                 let src_val = state.get(*src);
                 state.set(*dst, src_val.test_variant(*tag));
             }
@@ -167,12 +167,10 @@ impl<'a> TransferFunction<AbstractValue> for ValueDomainTransfer<'a> {
             }
 
             InstKind::BinOp { dst, .. } => {
-                // Other BinOps (Add, Sub, Eq, Lt, etc.) -> Top for now
                 state.set(*dst, AbstractValue::Top);
             }
 
             InstKind::UnaryOp { dst, .. } => {
-                // Other UnaryOps -> Top
                 state.set(*dst, AbstractValue::Top);
             }
 
@@ -185,5 +183,33 @@ impl<'a> TransferFunction<AbstractValue> for ValueDomainTransfer<'a> {
             | InstKind::BlockLabel { .. }
             | InstKind::Nop => {}
         }
+    }
+
+    fn eval_branch_cond(
+        &self,
+        exit_state: &DataflowState<ValueId, AbstractValue>,
+        cond: &ValueId,
+    ) -> Option<bool> {
+        exit_state.get(*cond).as_definite_bool()
+    }
+
+    fn propagate_forward(
+        &self,
+        source_exit: &DataflowState<ValueId, AbstractValue>,
+        params: &[ValueId],
+        args: &[ValueId],
+        target_entry: &mut DataflowState<ValueId, AbstractValue>,
+    ) -> bool {
+        value_propagate_forward(source_exit, params, args, target_entry)
+    }
+
+    fn propagate_backward(
+        &self,
+        _succ_entry: &DataflowState<ValueId, AbstractValue>,
+        _succ_params: &[ValueId],
+        _term_args: &[ValueId],
+        _exit_state: &mut DataflowState<ValueId, AbstractValue>,
+    ) {
+        unreachable!("value domain transfer is forward-only")
     }
 }

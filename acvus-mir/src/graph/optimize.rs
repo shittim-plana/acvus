@@ -3,17 +3,20 @@
 //! Runs the full optimization pipeline on lowered MIR modules.
 //!
 //! Pass 1 (cross-module): SSA → Inline
-//! Pass 2 (per-module):   SpawnSplit → Reorder → SSA → RegColor → Validate
+//! Pass 2 (per-module):   SpawnSplit → CodeMotion → Reorder → SSA → RegColor → Validate
+//!
+//! Each body is promoted to CfgBody once, all passes run, then demoted once.
+//! Validate runs on MirBody (after demote) to catch demotion bugs.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::cfg::{self, CfgBody};
 use crate::graph::inliner;
 use crate::graph::QualifiedRef;
 use crate::ir::MirModule;
-use crate::optimize::{self, FnTypes, ValidateResult};
-use crate::pass::PassContext;
+use crate::optimize;
 use crate::ty::Ty;
-use crate::validate::ValidationError;
+use crate::validate::{self, ValidationError};
 
 /// Result of the optimization pipeline.
 pub struct OptimizeResult {
@@ -34,39 +37,73 @@ pub fn optimize(
     recursive_fns: &FxHashSet<QualifiedRef>,
 ) -> OptimizeResult {
     // ── Pass 1: SSA (per-module) → Inline (cross-module) ────────────
+    //
+    // SSA runs on CfgBody, then demotes back for cross-module inlining.
 
     let mut ssa_modules = modules;
     for module in ssa_modules.values_mut() {
-        optimize::ssa_pass::run(&mut module.main, fn_types);
+        run_pass1_body(&mut module.main, fn_types);
         for closure in module.closures.values_mut() {
-            optimize::ssa_pass::run(closure, fn_types);
+            run_pass1_body(closure, fn_types);
         }
     }
 
     let inlined = inliner::inline(&ssa_modules, recursive_fns);
 
-    // ── Pass 2: Optimize + Validate (per-module via PassManager) ────
+    // ── Pass 2: Optimize + Validate (per-module, direct calls) ──────
+    //
+    // promote once → all passes on CfgBody → demote once → validate on MirBody.
 
-    let manager = optimize::pass2_manager();
     let mut result_modules = FxHashMap::default();
     let mut all_errors = Vec::new();
 
-    for (qref, module) in inlined.modules {
-        let mut ctx = PassContext::new();
-        ctx.insert(FnTypes(fn_types.clone()));
-
-        let (optimized, ctx) = manager.run_with_context(module, ctx);
-        let validation = ctx.get::<ValidateResult>();
-
-        if !validation.0.is_empty() {
-            all_errors.push((qref, validation.0.clone()));
+    for (qref, mut module) in inlined.modules {
+        run_pass2_body(&mut module.main, fn_types);
+        for closure in module.closures.values_mut() {
+            run_pass2_body(closure, fn_types);
         }
 
-        result_modules.insert(qref, optimized);
+        // Validate on MirBody — after demote, catches demotion bugs.
+        let errors = validate::validate(&module, fn_types);
+        if !errors.is_empty() {
+            all_errors.push((qref, errors));
+        }
+
+        result_modules.insert(qref, module);
     }
 
     OptimizeResult {
         modules: result_modules,
         errors: all_errors,
     }
+}
+
+/// Pass 1: SSA on a single body (promote → ssa → demote).
+fn run_pass1_body(
+    body: &mut crate::ir::MirBody,
+    fn_types: &FxHashMap<QualifiedRef, Ty>,
+) {
+    let mut cfg = cfg::promote(std::mem::take(body));
+    optimize::ssa_pass::run(&mut cfg, fn_types);
+    *body = cfg::demote(cfg);
+}
+
+/// Pass 2: Full optimization pipeline on a single body.
+/// promote once → all passes → demote once.
+fn run_pass2_body(
+    body: &mut crate::ir::MirBody,
+    fn_types: &FxHashMap<QualifiedRef, Ty>,
+) {
+    let mut cfg = cfg::promote(std::mem::take(body));
+    run_pass2(&mut cfg, fn_types);
+    *body = cfg::demote(cfg);
+}
+
+/// Pass 2 pipeline on CfgBody: SpawnSplit → CodeMotion → Reorder → SSA → RegColor.
+fn run_pass2(cfg: &mut CfgBody, fn_types: &FxHashMap<QualifiedRef, Ty>) {
+    optimize::spawn_split::run(cfg, fn_types);
+    optimize::code_motion::run(cfg, fn_types);
+    optimize::reorder::run(cfg, fn_types);
+    optimize::ssa_pass::run(cfg, fn_types);
+    optimize::reg_color::color_body(cfg);
 }
