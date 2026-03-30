@@ -45,6 +45,18 @@ pub enum Token {
     #[token("None", priority = 3)]
     None,
 
+    // ── Script mode keywords ──
+    #[token("let", priority = 3)]
+    Let,
+    #[token("if", priority = 3)]
+    If,
+    #[token("else", priority = 3)]
+    Else,
+    #[token("for", priority = 3)]
+    For,
+    #[token("while", priority = 3)]
+    While,
+
     // ── Identifiers ──
     #[regex(r"[\p{L}_][\p{L}\p{N}_]*", |lex| lex.extras.intern(lex.slice()), priority = 2)]
     Ident(Astr),
@@ -154,6 +166,11 @@ impl fmt::Display for Token {
             Token::Underscore => write!(f, "_"),
             Token::Some => write!(f, "Some"),
             Token::None => write!(f, "None"),
+            Token::Let => write!(f, "let"),
+            Token::If => write!(f, "if"),
+            Token::Else => write!(f, "else"),
+            Token::For => write!(f, "for"),
+            Token::While => write!(f, "while"),
             Token::DoubleColon => write!(f, "::"),
             Token::Plus => write!(f, "+"),
             Token::Minus => write!(f, "-"),

@@ -3112,3 +3112,94 @@ fn field_store_then_load_passes() {
     let ir = compile_script_ir(&i, "@a = { x: 0, }; @a.y = 1; @a.y | to_string", &FxHashMap::default()).unwrap();
     insta::assert_snapshot!(ir);
 }
+
+// ── Script mode tests ──────────────────────────────────────────────
+
+fn script_mode(i: &Interner, source: &str) -> String {
+    compile_script_mode_raw(i, source, &FxHashMap::default()).unwrap()
+}
+
+fn script_mode_ctx(i: &Interner, source: &str, ctx: &FxHashMap<Astr, Ty>) -> String {
+    compile_script_mode_raw(i, source, ctx).unwrap()
+}
+
+#[test]
+fn script_let_bind() {
+    let i = Interner::new();
+    let ir = script_mode(&i, "let x = 1; x");
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn script_let_assign() {
+    let i = Interner::new();
+    let ir = script_mode(&i, "let x = 1; x = 2; x");
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn script_let_shadowing() {
+    let i = Interner::new();
+    let ir = script_mode(&i, "let x = 1; let x = x + 1; x");
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn script_if_expr() {
+    let i = Interner::new();
+    let ir = script_mode(&i, "let x = if true { 1 } else { 2 }; x");
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn script_if_else_if() {
+    let i = Interner::new();
+    let ir = script_mode(&i, "let x = if false { 1 } else if true { 2 } else { 3 }; x");
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn script_if_no_else() {
+    let i = Interner::new();
+    // if without else → side effect only, used as statement
+    let ir = script_mode(&i, "let x = 0; if true { x = 1; }; x");
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn script_for_loop() {
+    let i = Interner::new();
+    let ctx = ctx(&i, &[("sum", Ty::Int)]);
+    let ir = script_mode_ctx(&i, "for item in [1, 2, 3] { @sum = @sum + item; }", &ctx);
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn script_while_loop() {
+    let i = Interner::new();
+    let ctx = ctx(&i, &[("n", Ty::Int)]);
+    let ir = script_mode_ctx(&i, "while @n > 0 { @n = @n - 1; }", &ctx);
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn script_while_let() {
+    let i = Interner::new();
+    let ir = script_mode(&i, r#"
+        let x = Some(1);
+        let result = 0;
+        while let Some(v) = x {
+            result = v;
+            x = None;
+        }
+        result
+    "#);
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn script_if_let_expr() {
+    let i = Interner::new();
+    let ir = script_mode(&i, "let x = if let Some(v) = Some(42) { v } else { 0 }; x");
+    insta::assert_snapshot!(ir);
+}

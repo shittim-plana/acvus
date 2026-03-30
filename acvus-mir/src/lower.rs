@@ -1,7 +1,7 @@
 use acvus_ast::{
-    AstId, BinOp, Expr, IndentModifier, IterBlock, Literal, MatchBlock, Node, ObjectExprField,
-    ObjectPatternField, Pattern, RefKind, Script, Span, Stmt, Template, TupleElem,
-    TuplePatternElem,
+    AstId, BinOp, ElseBranch, Expr, IndentModifier, IterBlock, Literal, MatchBlock, Node,
+    ObjectExprField, ObjectPatternField, Pattern, RefKind, Script, Span, Stmt, Template,
+    TupleElem, TuplePatternElem,
 };
 use acvus_utils::{Astr, Freeze, Interner};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -254,6 +254,64 @@ impl<'a> Lowerer<'a> {
             } => {
                 self.lower_stmt_iterate(pattern, source, body, *span);
             }
+
+            // ── Script mode statements ──────────────────────────────
+
+            Stmt::LetBind {
+                name, expr, span, ..
+            } => {
+                let val = self.lower_expr(expr);
+                let ty = self
+                    .body
+                    .val_types
+                    .get(&val)
+                    .cloned()
+                    .unwrap_or(Ty::error());
+                let slot = self.var_slot(*name);
+                self.set_origin(slot, ValOrigin::Named(*name));
+                self.emit_ref_store(*span, RefTarget::Var(slot), vec![], val);
+                self.define_var(*name, ty);
+            }
+            Stmt::LetUninit { id, name, span, .. } => {
+                let slot = self.var_slot(*name);
+                self.set_origin(slot, ValOrigin::Named(*name));
+                // Type from typeck (fresh variable, unified later).
+                let ty = self.type_of_id(*id);
+                self.set_val_type(slot, ty.clone());
+                self.define_var(*name, ty);
+                // No store — init_check tracks this as uninit.
+            }
+            Stmt::Assign {
+                name, expr, span, ..
+            } => {
+                let val = self.lower_expr(expr);
+                let slot = self.lookup_var_slot(*name)
+                    .expect("Assign to undefined variable — should have been caught by typeck");
+                self.emit_ref_store(*span, RefTarget::Var(slot), vec![], val);
+            }
+            Stmt::For {
+                pattern,
+                source,
+                body,
+                span,
+                ..
+            } => {
+                self.lower_stmt_iterate(pattern, source, body, *span);
+            }
+            Stmt::While {
+                cond, body, span, ..
+            } => {
+                self.lower_while(cond, body, *span);
+            }
+            Stmt::WhileLet {
+                pattern,
+                source,
+                body,
+                span,
+                ..
+            } => {
+                self.lower_while_let(pattern, source, body, *span);
+            }
         }
     }
 
@@ -484,6 +542,306 @@ impl<'a> Lowerer<'a> {
                 merge_of: None,
             },
         );
+    }
+
+    /// Lower `while cond { body }`.
+    ///
+    /// loop_label:
+    ///   cond = lower(cond)
+    ///   JumpIf cond → body_label, end_label
+    /// body_label:
+    ///   body...
+    ///   Jump loop_label
+    /// end_label:
+    fn lower_while(&mut self, cond: &Expr, body: &[Stmt], span: Span) {
+        let loop_label = self.alloc_label();
+        let body_label = self.alloc_label();
+        let end_label = self.alloc_label();
+
+        self.emit_inst(span, InstKind::Jump { label: loop_label, args: vec![] });
+        self.emit_label(span, loop_label);
+
+        let cond_val = self.lower_expr(cond);
+        self.emit_inst(
+            span,
+            InstKind::JumpIf {
+                cond: cond_val,
+                then_label: body_label,
+                then_args: vec![],
+                else_label: end_label,
+                else_args: vec![],
+            },
+        );
+
+        self.emit_label(span, body_label);
+        self.push_scope();
+        for s in body {
+            self.lower_stmt(s);
+        }
+        self.pop_scope();
+        self.emit_inst(span, InstKind::Jump { label: loop_label, args: vec![] });
+
+        self.emit_label(span, end_label);
+    }
+
+    /// Lower `while let pattern = source { body }`.
+    ///
+    /// loop_label:
+    ///   src = lower(source)
+    ///   matched = test(pattern, src)
+    ///   JumpIf matched → body_label, end_label
+    /// body_label:
+    ///   bind(pattern, src)
+    ///   body...
+    ///   Jump loop_label
+    /// end_label:
+    fn lower_while_let(
+        &mut self,
+        pattern: &Pattern,
+        source: &Expr,
+        body: &[Stmt],
+        span: Span,
+    ) {
+        let loop_label = self.alloc_label();
+        let body_label = self.alloc_label();
+        let end_label = self.alloc_label();
+
+        self.emit_inst(span, InstKind::Jump { label: loop_label, args: vec![] });
+        self.emit_label(span, loop_label);
+
+        let src = self.lower_expr(source);
+        let matched = self.lower_pattern_test(pattern, src, span);
+        self.emit_inst(
+            span,
+            InstKind::JumpIf {
+                cond: matched,
+                then_label: body_label,
+                then_args: vec![],
+                else_label: end_label,
+                else_args: vec![],
+            },
+        );
+
+        self.emit_label(span, body_label);
+        self.push_scope();
+        self.lower_pattern_bind(pattern, src, span);
+        for s in body {
+            self.lower_stmt(s);
+        }
+        self.pop_scope();
+        self.emit_inst(span, InstKind::Jump { label: loop_label, args: vec![] });
+
+        self.emit_label(span, end_label);
+    }
+
+    /// Lower `if cond { body; tail } else { ... }` as an expression.
+    fn lower_if_expr(
+        &mut self,
+        id: AstId,
+        cond: &Expr,
+        then_body: &[Stmt],
+        then_tail: &Option<Box<Expr>>,
+        else_branch: &Option<Box<ElseBranch>>,
+        span: Span,
+    ) -> ValueId {
+        let result_ty = self.type_of_id(id);
+        let then_label = self.alloc_label();
+        let merge_label = self.alloc_label();
+
+        let cond_val = self.lower_expr(cond);
+
+        match else_branch {
+            Some(eb) => {
+                let else_label = self.alloc_label();
+                self.emit_inst(
+                    span,
+                    InstKind::JumpIf {
+                        cond: cond_val,
+                        then_label,
+                        then_args: vec![],
+                        else_label,
+                        else_args: vec![],
+                    },
+                );
+
+                // Then branch.
+                self.emit_label(span, then_label);
+                self.push_scope();
+                for s in then_body {
+                    self.lower_stmt(s);
+                }
+                let then_val = match then_tail {
+                    Some(tail) => self.lower_expr(tail),
+                    None => self.emit_unit(span),
+                };
+                self.pop_scope();
+                self.emit_inst(span, InstKind::Jump { label: merge_label, args: vec![then_val] });
+
+                // Else branch.
+                self.emit_label(span, else_label);
+                let else_val = self.lower_else_branch(eb, span, merge_label);
+                self.emit_inst(span, InstKind::Jump { label: merge_label, args: vec![else_val] });
+
+                // Merge.
+                let result = self.alloc_val();
+                self.set_val_type(result, result_ty);
+                self.emit_inst(
+                    span,
+                    InstKind::BlockLabel {
+                        label: merge_label,
+                        params: vec![result],
+                        merge_of: None,
+                    },
+                );
+                result
+            }
+            None => {
+                // No else: then branch stores to a var slot, else path skips.
+                // The result is Unit (no value merge needed).
+                self.emit_inst(
+                    span,
+                    InstKind::JumpIf {
+                        cond: cond_val,
+                        then_label,
+                        then_args: vec![],
+                        else_label: merge_label,
+                        else_args: vec![],
+                    },
+                );
+
+                self.emit_label(span, then_label);
+                self.push_scope();
+                for s in then_body {
+                    self.lower_stmt(s);
+                }
+                if let Some(tail) = then_tail {
+                    self.lower_expr(tail); // value discarded
+                }
+                self.pop_scope();
+                self.emit_inst(span, InstKind::Jump { label: merge_label, args: vec![] });
+
+                self.emit_label(span, merge_label);
+                self.emit_unit(span)
+            }
+        }
+    }
+
+    /// Lower `if let pattern = source { body; tail } else { ... }` as an expression.
+    fn lower_if_let_expr(
+        &mut self,
+        id: AstId,
+        pattern: &Pattern,
+        source: &Expr,
+        then_body: &[Stmt],
+        then_tail: &Option<Box<Expr>>,
+        else_branch: &Option<Box<ElseBranch>>,
+        span: Span,
+    ) -> ValueId {
+        let result_ty = self.type_of_id(id);
+        let src = self.lower_expr(source);
+        let matched = self.lower_pattern_test(pattern, src, span);
+
+        let then_label = self.alloc_label();
+        let merge_label = self.alloc_label();
+
+        match else_branch {
+            Some(eb) => {
+                let else_label = self.alloc_label();
+                self.emit_inst(
+                    span,
+                    InstKind::JumpIf {
+                        cond: matched,
+                        then_label,
+                        then_args: vec![],
+                        else_label,
+                        else_args: vec![],
+                    },
+                );
+
+                // Then branch.
+                self.emit_label(span, then_label);
+                self.push_scope();
+                self.lower_pattern_bind(pattern, src, span);
+                for s in then_body {
+                    self.lower_stmt(s);
+                }
+                let then_val = match then_tail {
+                    Some(tail) => self.lower_expr(tail),
+                    None => self.emit_unit(span),
+                };
+                self.pop_scope();
+                self.emit_inst(span, InstKind::Jump { label: merge_label, args: vec![then_val] });
+
+                // Else branch.
+                self.emit_label(span, else_label);
+                let else_val = self.lower_else_branch(eb, span, merge_label);
+                self.emit_inst(span, InstKind::Jump { label: merge_label, args: vec![else_val] });
+
+                // Merge.
+                let result = self.alloc_val();
+                self.set_val_type(result, result_ty);
+                self.emit_inst(
+                    span,
+                    InstKind::BlockLabel {
+                        label: merge_label,
+                        params: vec![result],
+                        merge_of: None,
+                    },
+                );
+                result
+            }
+            None => {
+                self.emit_inst(
+                    span,
+                    InstKind::JumpIf {
+                        cond: matched,
+                        then_label,
+                        then_args: vec![],
+                        else_label: merge_label,
+                        else_args: vec![],
+                    },
+                );
+
+                self.emit_label(span, then_label);
+                self.push_scope();
+                self.lower_pattern_bind(pattern, src, span);
+                for s in then_body {
+                    self.lower_stmt(s);
+                }
+                if let Some(tail) = then_tail {
+                    self.lower_expr(tail);
+                }
+                self.pop_scope();
+                self.emit_inst(span, InstKind::Jump { label: merge_label, args: vec![] });
+
+                self.emit_label(span, merge_label);
+                self.emit_unit(span)
+            }
+        }
+    }
+
+    /// Lower an else branch, returning the value it produces.
+    fn lower_else_branch(
+        &mut self,
+        eb: &ElseBranch,
+        span: Span,
+        _merge_label: Label,
+    ) -> ValueId {
+        match eb {
+            ElseBranch::ElseIf(expr) => self.lower_expr(expr),
+            ElseBranch::Else { body, tail, .. } => {
+                self.push_scope();
+                for s in body {
+                    self.lower_stmt(s);
+                }
+                let val = match tail {
+                    Some(tail) => self.lower_expr(tail),
+                    None => self.emit_unit(span),
+                };
+                self.pop_scope();
+                val
+            }
+        }
     }
 
     fn build_module(self) -> (MirModule, HintTable) {
@@ -725,6 +1083,10 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Get or create a storage slot ValueId for the given variable name.
+    fn lookup_var_slot(&self, name: Astr) -> Option<ValueId> {
+        self.var_slots.get(&name).copied()
+    }
+
     fn var_slot(&mut self, name: Astr) -> ValueId {
         if let Some(&slot) = self.var_slots.get(&name) {
             slot
@@ -884,6 +1246,13 @@ impl<'a> Lowerer<'a> {
             },
         );
         result_param
+    }
+
+    fn emit_unit(&mut self, span: Span) -> ValueId {
+        let dst = self.alloc_val();
+        self.set_val_type(dst, Ty::Unit);
+        self.emit_inst(span, InstKind::MakeTuple { dst, elements: vec![] });
+        dst
     }
 
     fn emit_const_bool(&mut self, span: Span, value: bool) -> ValueId {
@@ -1603,6 +1972,25 @@ impl<'a> Lowerer<'a> {
                 self.pop_scope();
                 val
             }
+
+            Expr::If {
+                id,
+                cond,
+                then_body,
+                then_tail,
+                else_branch,
+                span,
+            } => self.lower_if_expr(*id, cond, then_body, then_tail, else_branch, *span),
+
+            Expr::IfLet {
+                id,
+                pattern,
+                source,
+                then_body,
+                then_tail,
+                else_branch,
+                span,
+            } => self.lower_if_let_expr(*id, pattern, source, then_body, then_tail, else_branch, *span),
         }
     }
 
@@ -2447,8 +2835,26 @@ impl<'a> Lowerer<'a> {
                 Stmt::ContextStore { expr, .. } | Stmt::VarFieldStore { expr, .. } | Stmt::Expr(expr) => {
                     self.collect_free_vars(expr, bound, free, seen);
                 }
-                Stmt::MatchBind { source, body, .. } | Stmt::Iterate { source, body, .. } => {
+                Stmt::MatchBind { source, body, .. }
+                | Stmt::Iterate { source, body, .. }
+                | Stmt::For { source, body, .. }
+                | Stmt::WhileLet { source, body, .. } => {
                     self.collect_free_vars(source, bound, free, seen);
+                    let mut inner = bound.clone();
+                    self.collect_free_vars_stmts(body, &mut inner, free, seen);
+                }
+                Stmt::LetBind { name, expr, .. } => {
+                    self.collect_free_vars(expr, bound, free, seen);
+                    bound.insert(*name);
+                }
+                Stmt::Assign { expr, .. } => {
+                    self.collect_free_vars(expr, bound, free, seen);
+                }
+                Stmt::LetUninit { name, .. } => {
+                    bound.insert(*name);
+                }
+                Stmt::While { cond, body, .. } => {
+                    self.collect_free_vars(cond, bound, free, seen);
                     let mut inner = bound.clone();
                     self.collect_free_vars_stmts(body, &mut inner, free, seen);
                 }
@@ -2560,6 +2966,59 @@ impl<'a> Lowerer<'a> {
                 let mut inner_bound = bound.clone();
                 self.collect_free_vars_stmts(stmts, &mut inner_bound, free, seen);
                 self.collect_free_vars(tail, &inner_bound, free, seen);
+            }
+            Expr::If {
+                cond,
+                then_body,
+                then_tail,
+                else_branch,
+                ..
+            } => {
+                self.collect_free_vars(cond, bound, free, seen);
+                let mut inner = bound.clone();
+                self.collect_free_vars_stmts(then_body, &mut inner, free, seen);
+                if let Some(tail) = then_tail {
+                    self.collect_free_vars(tail, &inner, free, seen);
+                }
+                if let Some(eb) = else_branch {
+                    self.collect_free_vars_else_branch(eb, bound, free, seen);
+                }
+            }
+            Expr::IfLet {
+                source,
+                then_body,
+                then_tail,
+                else_branch,
+                ..
+            } => {
+                self.collect_free_vars(source, bound, free, seen);
+                let mut inner = bound.clone();
+                self.collect_free_vars_stmts(then_body, &mut inner, free, seen);
+                if let Some(tail) = then_tail {
+                    self.collect_free_vars(tail, &inner, free, seen);
+                }
+                if let Some(eb) = else_branch {
+                    self.collect_free_vars_else_branch(eb, bound, free, seen);
+                }
+            }
+        }
+    }
+
+    fn collect_free_vars_else_branch(
+        &self,
+        eb: &ElseBranch,
+        bound: &FxHashSet<Astr>,
+        free: &mut Vec<(Astr, AstId, Span)>,
+        seen: &mut FxHashSet<Astr>,
+    ) {
+        match eb {
+            ElseBranch::ElseIf(expr) => self.collect_free_vars(expr, bound, free, seen),
+            ElseBranch::Else { body, tail, .. } => {
+                let mut inner = bound.clone();
+                self.collect_free_vars_stmts(body, &mut inner, free, seen);
+                if let Some(tail) = tail {
+                    self.collect_free_vars(tail, &inner, free, seen);
+                }
             }
         }
     }

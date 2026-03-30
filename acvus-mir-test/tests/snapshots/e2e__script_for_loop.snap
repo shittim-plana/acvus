@@ -1,0 +1,43 @@
+---
+source: acvus-mir-test/tests/e2e.rs
+expression: ir
+---
+=== main ===
+     0 │   r0 = ref @sum
+     1 │   r1 = load r0
+     5 │   r2 = list [1 (r3), 2 (r4), 3 (r5)]
+     6 │   r6 = cast DequeToList r2
+     8 │   jump L0(0 (r7))
+     9 │ L0(r8: Int):
+    10 │   list_step r9, r10 = r6[r8] else L1()
+    11 │ L2:
+    12 │   r11 = ref item
+    13 │   store r11 = r9
+    14 │   r12 = ref @sum
+    15 │   r13 = load r12
+    16 │   r14 = ref item
+    17 │   r15 = load r14
+    18 │   r16 = r13 + r15
+    19 │   r17 = ref @sum
+    20 │   store r17 = r16
+    21 │   jump L0(r10)
+    22 │ L1:
+
+    ; r0 (@sum) : Ref<Int>
+    ; r1 (@sum) : Int
+    ; r2 (v6) : Deque<Int, Identity(IdentityId(0))>
+    ; r3 (v3) : Int
+    ; r4 (v4) : Int
+    ; r5 (v5) : Int
+    ; r6 (v7) : List<Int>
+    ; r7 (v8) : Int
+    ; r8 (v9) : Int
+    ; r9 (item) : Int
+    ; r10 (v11) : Int
+    ; r11 (v13) : Ref<Int>
+    ; r12 (@sum) : Ref<Int>
+    ; r13 (v15) : Int
+    ; r14 (v16) : Ref<Int>
+    ; r15 (item) : Int
+    ; r16 (v18) : Int
+    ; r17 (@sum) : Ref<Int>

@@ -252,6 +252,49 @@ fn sub_expr(expr: Expr, subs: &FxHashMap<Astr, SubstValue>) -> Expr {
             payload: payload.map(|p| Box::new(sub_expr(*p, subs))),
             span,
         },
+        Expr::If {
+            cond,
+            then_body,
+            then_tail,
+            else_branch,
+            span,
+            ..
+        } => Expr::If {
+            id: AstId::alloc(),
+            cond: Box::new(sub_expr(*cond, subs)),
+            then_body: then_body.into_iter().map(|s| sub_stmt(s, subs)).collect(),
+            then_tail: then_tail.map(|e| Box::new(sub_expr(*e, subs))),
+            else_branch: else_branch.map(|eb| Box::new(sub_else_branch(*eb, subs))),
+            span,
+        },
+        Expr::IfLet {
+            pattern,
+            source,
+            then_body,
+            then_tail,
+            else_branch,
+            span,
+            ..
+        } => Expr::IfLet {
+            id: AstId::alloc(),
+            pattern,
+            source: Box::new(sub_expr(*source, subs)),
+            then_body: then_body.into_iter().map(|s| sub_stmt(s, subs)).collect(),
+            then_tail: then_tail.map(|e| Box::new(sub_expr(*e, subs))),
+            else_branch: else_branch.map(|eb| Box::new(sub_else_branch(*eb, subs))),
+            span,
+        },
+    }
+}
+
+fn sub_else_branch(eb: ElseBranch, subs: &FxHashMap<Astr, SubstValue>) -> ElseBranch {
+    match eb {
+        ElseBranch::ElseIf(expr) => ElseBranch::ElseIf(sub_expr(expr, subs)),
+        ElseBranch::Else { body, tail, span } => ElseBranch::Else {
+            body: body.into_iter().map(|s| sub_stmt(s, subs)).collect(),
+            tail: tail.map(|e| Box::new(sub_expr(*e, subs))),
+            span,
+        },
     }
 }
 
@@ -368,6 +411,62 @@ fn sub_stmt(stmt: Stmt, subs: &FxHashMap<Astr, SubstValue>) -> Stmt {
             span,
             ..
         } => Stmt::Iterate {
+            id: AstId::alloc(),
+            pattern,
+            source: sub_expr(source, subs),
+            body: body.into_iter().map(|s| sub_stmt(s, subs)).collect(),
+            span,
+        },
+        // Script mode statements
+        Stmt::LetBind {
+            name, expr, span, ..
+        } => Stmt::LetBind {
+            id: AstId::alloc(),
+            name,
+            expr: sub_expr(expr, subs),
+            span,
+        },
+        Stmt::LetUninit { name, span, .. } => Stmt::LetUninit {
+            id: AstId::alloc(),
+            name,
+            span,
+        },
+        Stmt::Assign {
+            name, expr, span, ..
+        } => Stmt::Assign {
+            id: AstId::alloc(),
+            name,
+            expr: sub_expr(expr, subs),
+            span,
+        },
+        Stmt::For {
+            pattern,
+            source,
+            body,
+            span,
+            ..
+        } => Stmt::For {
+            id: AstId::alloc(),
+            pattern,
+            source: sub_expr(source, subs),
+            body: body.into_iter().map(|s| sub_stmt(s, subs)).collect(),
+            span,
+        },
+        Stmt::While {
+            cond, body, span, ..
+        } => Stmt::While {
+            id: AstId::alloc(),
+            cond: sub_expr(cond, subs),
+            body: body.into_iter().map(|s| sub_stmt(s, subs)).collect(),
+            span,
+        },
+        Stmt::WhileLet {
+            pattern,
+            source,
+            body,
+            span,
+            ..
+        } => Stmt::WhileLet {
             id: AstId::alloc(),
             pattern,
             source: sub_expr(source, subs),
@@ -552,6 +651,60 @@ fn validate_splice_expr(
                 validate_splice_expr(p, false, splice_names, errors);
             }
         }
+        Expr::If {
+            cond,
+            then_body,
+            then_tail,
+            else_branch,
+            ..
+        } => {
+            validate_splice_expr(cond, false, splice_names, errors);
+            for s in then_body {
+                validate_splice_stmt(s, splice_names, errors);
+            }
+            if let Some(tail) = then_tail {
+                validate_splice_expr(tail, false, splice_names, errors);
+            }
+            if let Some(eb) = else_branch {
+                validate_splice_else_branch(eb, splice_names, errors);
+            }
+        }
+        Expr::IfLet {
+            source,
+            then_body,
+            then_tail,
+            else_branch,
+            ..
+        } => {
+            validate_splice_expr(source, false, splice_names, errors);
+            for s in then_body {
+                validate_splice_stmt(s, splice_names, errors);
+            }
+            if let Some(tail) = then_tail {
+                validate_splice_expr(tail, false, splice_names, errors);
+            }
+            if let Some(eb) = else_branch {
+                validate_splice_else_branch(eb, splice_names, errors);
+            }
+        }
+    }
+}
+
+fn validate_splice_else_branch(
+    eb: &ElseBranch,
+    splice_names: &[Astr],
+    errors: &mut Vec<(Astr, Span)>,
+) {
+    match eb {
+        ElseBranch::ElseIf(expr) => validate_splice_expr(expr, false, splice_names, errors),
+        ElseBranch::Else { body, tail, .. } => {
+            for s in body {
+                validate_splice_stmt(s, splice_names, errors);
+            }
+            if let Some(tail) = tail {
+                validate_splice_expr(tail, false, splice_names, errors);
+            }
+        }
     }
 }
 
@@ -571,6 +724,23 @@ fn validate_splice_stmt(stmt: &Stmt, splice_names: &[Astr], errors: &mut Vec<(As
         }
         Stmt::Iterate { source, body, .. } => {
             validate_splice_expr(source, false, splice_names, errors);
+            for s in body {
+                validate_splice_stmt(s, splice_names, errors);
+            }
+        }
+        // Script mode statements
+        Stmt::LetBind { expr, .. } | Stmt::Assign { expr, .. } => {
+            validate_splice_expr(expr, false, splice_names, errors);
+        }
+        Stmt::LetUninit { .. } => {}
+        Stmt::For { source, body, .. } | Stmt::WhileLet { source, body, .. } => {
+            validate_splice_expr(source, false, splice_names, errors);
+            for s in body {
+                validate_splice_stmt(s, splice_names, errors);
+            }
+        }
+        Stmt::While { cond, body, .. } => {
+            validate_splice_expr(cond, false, splice_names, errors);
             for s in body {
                 validate_splice_stmt(s, splice_names, errors);
             }

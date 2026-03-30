@@ -66,6 +66,52 @@ pub enum Stmt {
         body: Vec<Stmt>,
         span: Span,
     },
+
+    // ── Script mode statements ──────────────────────────────────────
+
+    /// `let x = expr;` — new binding (Script mode).
+    LetBind {
+        id: AstId,
+        name: Astr,
+        expr: Expr,
+        span: Span,
+    },
+    /// `let x;` — uninitialized binding (Script mode).
+    LetUninit {
+        id: AstId,
+        name: Astr,
+        span: Span,
+    },
+    /// `x = expr;` — reassignment to existing binding (Script mode).
+    Assign {
+        id: AstId,
+        name: Astr,
+        expr: Expr,
+        span: Span,
+    },
+    /// `for pattern in source { body }` — iteration (Script mode).
+    For {
+        id: AstId,
+        pattern: Pattern,
+        source: Expr,
+        body: Vec<Stmt>,
+        span: Span,
+    },
+    /// `while cond { body }` — conditional loop (Script mode).
+    While {
+        id: AstId,
+        cond: Expr,
+        body: Vec<Stmt>,
+        span: Span,
+    },
+    /// `while let pattern = source { body }` — pattern loop (Script mode).
+    WhileLet {
+        id: AstId,
+        pattern: Pattern,
+        source: Expr,
+        body: Vec<Stmt>,
+        span: Span,
+    },
 }
 
 /// A parsed template.
@@ -266,6 +312,41 @@ pub enum Expr {
         payload: Option<Box<Expr>>,
         span: Span,
     },
+
+    // ── Script mode expressions ─────────────────────────────────────
+
+    /// `if cond { body; tail } else { ... }` — conditional expression (Script mode).
+    If {
+        id: AstId,
+        cond: Box<Expr>,
+        then_body: Vec<Stmt>,
+        then_tail: Option<Box<Expr>>,
+        else_branch: Option<Box<ElseBranch>>,
+        span: Span,
+    },
+    /// `if let pattern = source { body; tail } else { ... }` — pattern match expression (Script mode).
+    IfLet {
+        id: AstId,
+        pattern: Pattern,
+        source: Box<Expr>,
+        then_body: Vec<Stmt>,
+        then_tail: Option<Box<Expr>>,
+        else_branch: Option<Box<ElseBranch>>,
+        span: Span,
+    },
+}
+
+/// An else branch in an `if` / `if let` expression.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ElseBranch {
+    /// `else if ...` or `else if let ...` — chains to another conditional.
+    ElseIf(Expr),
+    /// `else { body; tail }` — terminal else block.
+    Else {
+        body: Vec<Stmt>,
+        tail: Option<Box<Expr>>,
+        span: Span,
+    },
 }
 
 /// An element in a tuple expression: either a real expression or a wildcard `_`.
@@ -294,7 +375,9 @@ impl Expr {
             | Expr::Tuple { id, .. }
             | Expr::ContextRef { id, .. }
             | Expr::Variant { id, .. }
-            | Expr::Block { id, .. } => *id,
+            | Expr::Block { id, .. }
+            | Expr::If { id, .. }
+            | Expr::IfLet { id, .. } => *id,
         }
     }
 
@@ -316,7 +399,9 @@ impl Expr {
             | Expr::Tuple { span, .. }
             | Expr::ContextRef { span, .. }
             | Expr::Variant { span, .. }
-            | Expr::Block { span, .. } => *span,
+            | Expr::Block { span, .. }
+            | Expr::If { span, .. }
+            | Expr::IfLet { span, .. } => *span,
         }
     }
 }
@@ -558,6 +643,29 @@ fn walk_stmts(stmts: &[Stmt], refs: &mut rustc_hash::FxHashSet<QualifiedRef>) {
                 walk_expr(source, refs);
                 walk_stmts(body, refs);
             }
+            // Script mode statements
+            Stmt::LetBind { expr, .. } | Stmt::Assign { expr, .. } => walk_expr(expr, refs),
+            Stmt::LetUninit { .. } => {}
+            Stmt::For {
+                pattern,
+                source,
+                body,
+                ..
+            }
+            | Stmt::WhileLet {
+                pattern,
+                source,
+                body,
+                ..
+            } => {
+                walk_pattern(pattern, refs);
+                walk_expr(source, refs);
+                walk_stmts(body, refs);
+            }
+            Stmt::While { cond, body, .. } => {
+                walk_expr(cond, refs);
+                walk_stmts(body, refs);
+            }
         }
     }
 }
@@ -689,6 +797,52 @@ fn walk_expr(expr: &Expr, refs: &mut rustc_hash::FxHashSet<QualifiedRef>) {
         Expr::Block { stmts, tail, .. } => {
             walk_stmts(stmts, refs);
             walk_expr(tail, refs);
+        }
+        Expr::If {
+            cond,
+            then_body,
+            then_tail,
+            else_branch,
+            ..
+        } => {
+            walk_expr(cond, refs);
+            walk_stmts(then_body, refs);
+            if let Some(tail) = then_tail {
+                walk_expr(tail, refs);
+            }
+            if let Some(eb) = else_branch {
+                walk_else_branch(eb, refs);
+            }
+        }
+        Expr::IfLet {
+            pattern,
+            source,
+            then_body,
+            then_tail,
+            else_branch,
+            ..
+        } => {
+            walk_pattern(pattern, refs);
+            walk_expr(source, refs);
+            walk_stmts(then_body, refs);
+            if let Some(tail) = then_tail {
+                walk_expr(tail, refs);
+            }
+            if let Some(eb) = else_branch {
+                walk_else_branch(eb, refs);
+            }
+        }
+    }
+}
+
+fn walk_else_branch(eb: &ElseBranch, refs: &mut rustc_hash::FxHashSet<QualifiedRef>) {
+    match eb {
+        ElseBranch::ElseIf(expr) => walk_expr(expr, refs),
+        ElseBranch::Else { body, tail, .. } => {
+            walk_stmts(body, refs);
+            if let Some(tail) = tail {
+                walk_expr(tail, refs);
+            }
         }
     }
 }

@@ -3,7 +3,7 @@ use lalrpop_util::ParseError as LalrpopError;
 
 use crate::ast::*;
 use crate::error::{ParseError, ParseErrorKind};
-use crate::grammar::{ExprParser, ScriptParser, TagContentParser};
+use crate::grammar::{ExprParser, ScriptModeParser, ScriptParser, TagContentParser};
 use crate::lexer::{ExprTokenizer, Segment, scan_template};
 use crate::span::Span;
 use crate::token::Token;
@@ -22,6 +22,14 @@ pub fn parse_expr(interner: &Interner, source: &str) -> Result<Expr, ParseError>
 pub fn parse_script(interner: &Interner, source: &str) -> Result<Script, ParseError> {
     let tokenizer = ExprTokenizer::new(source, 0, interner);
     ScriptParser::new()
+        .parse(interner, tokenizer)
+        .map_err(|e| convert_lalrpop_error(e, 0, source.len()))
+}
+
+/// Parse a script mode source string (keyword-based: let, if, else, for, while).
+pub fn parse_script_mode(interner: &Interner, source: &str) -> Result<Script, ParseError> {
+    let tokenizer = ExprTokenizer::new(source, 0, interner);
+    ScriptModeParser::new()
         .parse(interner, tokenizer)
         .map_err(|e| convert_lalrpop_error(e, 0, source.len()))
 }

@@ -686,6 +686,110 @@ impl<'a, 's> TypeChecker<'a, 's> {
                 }
                 self.pop_scope();
             }
+
+            // ── Script mode statements ──────────────────────────────
+
+            acvus_ast::Stmt::LetBind {
+                id,
+                name,
+                expr,
+                span: _,
+            } => {
+                let ty = self.check_expr(false, expr);
+                self.define_var(*name, ty.clone());
+                self.record(*id, ty);
+            }
+            acvus_ast::Stmt::LetUninit {
+                id,
+                name,
+                span: _,
+            } => {
+                let ty = self.subst.fresh_param();
+                self.define_var(*name, ty.clone());
+                self.record(*id, ty);
+            }
+            acvus_ast::Stmt::Assign {
+                id,
+                name,
+                expr,
+                span,
+            } => {
+                let ty = self.check_expr(false, expr);
+                let var_ty = self.lookup_var(*name).unwrap_or_else(|| {
+                    self.error(MirErrorKind::UndefinedVariable(self.interner.resolve(*name).to_string()), *span);
+                    Ty::error()
+                });
+                if self.subst.unify(&ty, &var_ty, Polarity::Invariant).is_err() {
+                    self.error(
+                        MirErrorKind::UnificationFailure {
+                            expected: var_ty,
+                            got: ty.clone(),
+                        },
+                        *span,
+                    );
+                }
+                self.record(*id, ty);
+            }
+            acvus_ast::Stmt::For {
+                pattern,
+                source,
+                body,
+                span,
+                ..
+            } => {
+                let source_ty = self.check_expr(false, source);
+                let resolved = self.subst.resolve(&source_ty);
+                let elem_ty = match &resolved {
+                    Ty::List(inner) | Ty::Deque(inner, _) => inner.as_ref().clone(),
+                    Ty::Range => Ty::Int,
+                    Ty::Error(_) => Ty::error(),
+                    _ => {
+                        self.error(MirErrorKind::SourceNotIterable { actual: resolved }, *span);
+                        return;
+                    }
+                };
+                self.push_scope();
+                self.check_pattern(pattern, &elem_ty, *span);
+                for s in body {
+                    self.check_stmt(s);
+                }
+                self.pop_scope();
+            }
+            acvus_ast::Stmt::While {
+                cond, body, span, ..
+            } => {
+                let cond_ty = self.check_expr(false, cond);
+                if self.subst.unify(&cond_ty, &Ty::Bool, Polarity::Invariant).is_err() {
+                    self.error(
+                        MirErrorKind::UnificationFailure {
+                            expected: Ty::Bool,
+                            got: cond_ty,
+                        },
+                        *span,
+                    );
+                }
+                self.push_scope();
+                for s in body {
+                    self.check_stmt(s);
+                }
+                self.pop_scope();
+            }
+            acvus_ast::Stmt::WhileLet {
+                pattern,
+                source,
+                body,
+                span,
+                ..
+            } => {
+                let source_ty = self.check_expr(false, source);
+                let resolved = self.subst.resolve(&source_ty);
+                self.push_scope();
+                self.check_pattern(pattern, &resolved, *span);
+                for s in body {
+                    self.check_stmt(s);
+                }
+                self.pop_scope();
+            }
         }
     }
 
@@ -1412,6 +1516,110 @@ impl<'a, 's> TypeChecker<'a, 's> {
                 let ty = self.check_expr(false, tail);
                 self.pop_scope();
                 self.record_ret(*id, ty)
+            }
+
+            Expr::If {
+                id,
+                cond,
+                then_body,
+                then_tail,
+                else_branch,
+                span,
+            } => {
+                let cond_ty = self.check_expr(false, cond);
+                if self.subst.unify(&cond_ty, &Ty::Bool, Polarity::Invariant).is_err() {
+                    self.error(
+                        MirErrorKind::UnificationFailure {
+                            expected: Ty::Bool,
+                            got: cond_ty,
+                        },
+                        *span,
+                    );
+                }
+                self.push_scope();
+                for s in then_body {
+                    self.check_stmt(s);
+                }
+                let then_ty = match then_tail {
+                    Some(tail) => self.check_expr(false, tail),
+                    None => Ty::Unit,
+                };
+                self.pop_scope();
+                let result_ty = match else_branch {
+                    Some(eb) => {
+                        let else_ty = self.check_else_branch(eb);
+                        if self.subst.unify(&then_ty, &else_ty, Polarity::Covariant).is_err() {
+                            self.error(
+                                MirErrorKind::UnificationFailure {
+                                    expected: then_ty.clone(),
+                                    got: else_ty,
+                                },
+                                *span,
+                            );
+                        }
+                        then_ty
+                    }
+                    None => then_ty,
+                };
+                self.record_ret(*id, result_ty)
+            }
+
+            Expr::IfLet {
+                id,
+                pattern,
+                source,
+                then_body,
+                then_tail,
+                else_branch,
+                span,
+            } => {
+                let source_ty = self.check_expr(false, source);
+                let resolved = self.subst.resolve(&source_ty);
+                self.push_scope();
+                self.check_pattern(pattern, &resolved, *span);
+                for s in then_body {
+                    self.check_stmt(s);
+                }
+                let then_ty = match then_tail {
+                    Some(tail) => self.check_expr(false, tail),
+                    None => Ty::Unit,
+                };
+                self.pop_scope();
+                let result_ty = match else_branch {
+                    Some(eb) => {
+                        let else_ty = self.check_else_branch(eb);
+                        if self.subst.unify(&then_ty, &else_ty, Polarity::Covariant).is_err() {
+                            self.error(
+                                MirErrorKind::UnificationFailure {
+                                    expected: then_ty.clone(),
+                                    got: else_ty,
+                                },
+                                *span,
+                            );
+                        }
+                        then_ty
+                    }
+                    None => then_ty,
+                };
+                self.record_ret(*id, result_ty)
+            }
+        }
+    }
+
+    fn check_else_branch(&mut self, eb: &acvus_ast::ElseBranch) -> Ty {
+        match eb {
+            acvus_ast::ElseBranch::ElseIf(expr) => self.check_expr(false, expr),
+            acvus_ast::ElseBranch::Else { body, tail, .. } => {
+                self.push_scope();
+                for s in body {
+                    self.check_stmt(s);
+                }
+                let ty = match tail {
+                    Some(tail) => self.check_expr(false, tail),
+                    None => Ty::Unit,
+                };
+                self.pop_scope();
+                ty
             }
         }
     }

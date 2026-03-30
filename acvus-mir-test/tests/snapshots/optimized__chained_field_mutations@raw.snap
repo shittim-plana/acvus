@@ -1,0 +1,51 @@
+---
+source: acvus-mir-test/tests/optimized.rs
+expression: raw
+---
+=== main ===
+     0 │   r0 = ref @state
+     1 │   r1 = load r0
+     2 │   r2 = ref @state.step
+     3 │   r3 = load r2
+     5 │   r4 = r3 + 1 (r5)
+     6 │   r6 = ref @state.step
+     7 │   store r6 = r4
+     8 │   r7 = ref @state.value
+     9 │   r8 = load r7
+    10 │   r9 = ref @state.multiplier
+    11 │   r10 = load r9
+    12 │   r11 = r8 * r10
+    13 │   r12 = ref @state.value
+    14 │   store r12 = r11
+    15 │   r13 = ref @state.step
+    16 │   r14 = load r13
+    17 │   r15 = ref @state.max_steps
+    18 │   r16 = load r15
+    19 │   r17 = r14 >= r16
+    20 │   r18 = ref @state.done
+    21 │   store r18 = r17
+    22 │   r19 = ref @state
+    23 │   r20 = load r19
+    24 │   return r20
+
+    ; r0 (@state) : Ref<{done: Bool, max_steps: Int, multiplier: Int, step: Int, value: Int}>
+    ; r1 (@state) : {done: Bool, max_steps: Int, multiplier: Int, step: Int, value: Int}
+    ; r2 (@state.step) : Ref<Int>
+    ; r3 (v4) : Int
+    ; r4 (v6) : Int
+    ; r5 (v5) : Int
+    ; r6 (@state) : Ref<Int>
+    ; r7 (@state.value) : Ref<Int>
+    ; r8 (v9) : Int
+    ; r9 (@state.multiplier) : Ref<Int>
+    ; r10 (v11) : Int
+    ; r11 (v12) : Int
+    ; r12 (@state) : Ref<Int>
+    ; r13 (@state.step) : Ref<Int>
+    ; r14 (v15) : Int
+    ; r15 (@state.max_steps) : Ref<Int>
+    ; r16 (v17) : Int
+    ; r17 (v18) : Bool
+    ; r18 (@state) : Ref<Bool>
+    ; r19 (@state) : Ref<{done: Bool, max_steps: Int, multiplier: Int, step: Int, value: Int}>
+    ; r20 (v21) : {done: Bool, max_steps: Int, multiplier: Int, step: Int, value: Int}

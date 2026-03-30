@@ -319,6 +319,77 @@ pub fn compile_script_raw(
     Ok(dump_with(interner, module))
 }
 
+/// Compile a **script mode** source (keyword-based: let/if/else/for/while).
+/// Returns printed IR of the pre-SSA module.
+pub fn compile_script_mode_raw(
+    interner: &Interner,
+    source: &str,
+    context: &FxHashMap<Astr, Ty>,
+) -> Result<String, String> {
+    let contexts: Vec<Context> = context
+        .iter()
+        .map(|(name, ty)| Context {
+            qref: QualifiedRef::root(*name),
+            constraint: Constraint::Exact(ty.clone()),
+        })
+        .collect();
+    let test_qref = QualifiedRef::root(interner.intern("test"));
+    let ast = match acvus_ast::parse_script_mode(interner, source) {
+        Ok(ast) => ast,
+        Err(e) => return Err(format!("parse error: {e:?}")),
+    };
+    let mut functions = vec![Function {
+        qref: test_qref,
+        kind: FnKind::Local(ParsedAst::Script(ast)),
+        constraint: FnConstraint {
+            signature: None,
+            output: Constraint::Inferred,
+            effect: None,
+        },
+    }];
+    let mut type_registry = acvus_mir::ty::TypeRegistry::new();
+    let std_regs = acvus_ext::std_registries(interner, &mut type_registry);
+    for registry in std_regs {
+        let registered = registry.register(interner);
+        functions.extend(registered.functions);
+    }
+    let graph = CompilationGraph {
+        functions: Freeze::new(functions),
+        contexts: Freeze::new(contexts),
+    };
+
+    let ext = extract::extract(interner, &graph);
+    let inf = infer::infer(
+        interner,
+        &graph,
+        &ext,
+        &FxHashMap::default(),
+        Freeze::new(type_registry),
+        &FxHashMap::default(),
+    );
+
+    let mut errors: Vec<String> = Vec::new();
+    for (qref, errs) in inf.errors() {
+        let fn_name = interner.resolve(qref.name);
+        for e in errs {
+            errors.push(format!("[infer:{}] {}", fn_name, e.display(interner)));
+        }
+    }
+
+    let result = graph_lower::lower(interner, &graph, &ext, &inf, &FxHashMap::default());
+    for e in result.errors.iter().flat_map(|le| le.errors.iter()) {
+        errors.push(format!("[lower] {}", e.display(interner)));
+    }
+    if !errors.is_empty() {
+        return Err(errors.join("\n"));
+    }
+
+    let module = result
+        .module(test_qref)
+        .ok_or_else(|| "no module produced for target".to_string())?;
+    Ok(dump_with(interner, module))
+}
+
 /// Compile a **script** with the **full optimization pipeline** (SROA → SSA → Inline → Pass2).
 /// Returns printed IR of the optimized module.
 pub fn compile_script_optimized(

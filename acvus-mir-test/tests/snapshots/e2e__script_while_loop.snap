@@ -1,0 +1,33 @@
+---
+source: acvus-mir-test/tests/e2e.rs
+expression: ir
+---
+=== main ===
+     0 │   r0 = ref @n
+     1 │   r1 = load r0
+     2 │   jump L0
+     3 │ L0:
+     4 │   r2 = ref @n
+     5 │   r3 = load r2
+     7 │   r4 = r3 > 0 (r5)
+     8 │   jump_if r4 then L1 else L2
+     9 │ L1:
+    10 │   r6 = ref @n
+    11 │   r7 = load r6
+    13 │   r8 = r7 - 1 (r9)
+    14 │   r10 = ref @n
+    15 │   store r10 = r8
+    16 │   jump L0
+    17 │ L2:
+
+    ; r0 (@n) : Ref<Int>
+    ; r1 (@n) : Int
+    ; r2 (@n) : Ref<Int>
+    ; r3 (v4) : Int
+    ; r4 (v6) : Bool
+    ; r5 (v5) : Int
+    ; r6 (@n) : Ref<Int>
+    ; r7 (v8) : Int
+    ; r8 (v10) : Int
+    ; r9 (v9) : Int
+    ; r10 (@n) : Ref<Int>

@@ -191,8 +191,19 @@ fn collect_value_refs_stmts(stmts: &[acvus_ast::Stmt], refs: &mut Vec<Astr>) {
                 collect_value_refs_expr(expr, refs);
             }
             Stmt::Expr(expr) => collect_value_refs_expr(expr, refs),
-            Stmt::MatchBind { source, body, .. } | Stmt::Iterate { source, body, .. } => {
+            Stmt::MatchBind { source, body, .. }
+            | Stmt::Iterate { source, body, .. }
+            | Stmt::For { source, body, .. }
+            | Stmt::WhileLet { source, body, .. } => {
                 collect_value_refs_expr(source, refs);
+                collect_value_refs_stmts(body, refs);
+            }
+            Stmt::LetBind { expr, .. } | Stmt::Assign { expr, .. } => {
+                collect_value_refs_expr(expr, refs);
+            }
+            Stmt::LetUninit { .. } => {}
+            Stmt::While { cond, body, .. } => {
+                collect_value_refs_expr(cond, refs);
                 collect_value_refs_stmts(body, refs);
             }
         }
@@ -305,6 +316,50 @@ fn collect_value_refs_expr(expr: &acvus_ast::Expr, refs: &mut Vec<Astr>) {
         Expr::Block { stmts, tail, .. } => {
             collect_value_refs_stmts(stmts, refs);
             collect_value_refs_expr(tail, refs);
+        }
+        Expr::If {
+            cond,
+            then_body,
+            then_tail,
+            else_branch,
+            ..
+        } => {
+            collect_value_refs_expr(cond, refs);
+            collect_value_refs_stmts(then_body, refs);
+            if let Some(tail) = then_tail {
+                collect_value_refs_expr(tail, refs);
+            }
+            if let Some(eb) = else_branch {
+                collect_value_refs_else_branch(eb, refs);
+            }
+        }
+        Expr::IfLet {
+            source,
+            then_body,
+            then_tail,
+            else_branch,
+            ..
+        } => {
+            collect_value_refs_expr(source, refs);
+            collect_value_refs_stmts(then_body, refs);
+            if let Some(tail) = then_tail {
+                collect_value_refs_expr(tail, refs);
+            }
+            if let Some(eb) = else_branch {
+                collect_value_refs_else_branch(eb, refs);
+            }
+        }
+    }
+}
+
+fn collect_value_refs_else_branch(eb: &acvus_ast::ElseBranch, refs: &mut Vec<Astr>) {
+    match eb {
+        acvus_ast::ElseBranch::ElseIf(expr) => collect_value_refs_expr(expr, refs),
+        acvus_ast::ElseBranch::Else { body, tail, .. } => {
+            collect_value_refs_stmts(body, refs);
+            if let Some(tail) = tail {
+                collect_value_refs_expr(tail, refs);
+            }
         }
     }
 }
