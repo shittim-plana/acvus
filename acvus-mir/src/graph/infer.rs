@@ -461,6 +461,8 @@ pub struct SccInferResult {
     pub resolved_types: FxHashMap<QualifiedRef, Ty>,
     /// Per-function direct effects from typechecker (before call-graph propagation).
     pub fn_direct_effects: FxHashMap<QualifiedRef, EffectSet>,
+    /// Per-function type errors from typechecker.
+    pub errors: FxHashMap<QualifiedRef, Vec<crate::error::MirError>>,
 }
 
 /// Infer types for a single SCC.
@@ -480,6 +482,7 @@ pub fn infer_scc(
     let mut fn_ret_vars: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
     let mut fn_effect_vars: FxHashMap<QualifiedRef, Effect> = FxHashMap::default();
     let mut fn_direct_effects: FxHashMap<QualifiedRef, EffectSet> = FxHashMap::default();
+    let mut fn_errors: FxHashMap<QualifiedRef, Vec<crate::error::MirError>> = FxHashMap::default();
 
     // Build Ty::Fn for functions in this SCC (with fresh ret/effect vars).
     let mut scc_fn_types: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
@@ -542,23 +545,25 @@ pub fn infer_scc(
             ParsedSource::Template(template) => checker.check_template(template),
         };
 
-        if let Ok(ref unchecked) = result {
-            if let Some(effect_var) = fn_effect_vars.get(&fid) {
-                let _ = subst.unify_effect(effect_var, &unchecked.body_effect);
+        match result {
+            Ok(ref unchecked) => {
+                if let Some(effect_var) = fn_effect_vars.get(&fid) {
+                    let _ = subst.unify_effect(effect_var, &unchecked.body_effect);
+                }
+                if let Effect::Resolved(ref effect_set) = unchecked.body_effect {
+                    fn_direct_effects.insert(fid, effect_set.clone());
+                }
+                let bind: Vec<Param> = unchecked
+                    .extern_params
+                    .iter()
+                    .map(|(name, ty)| Param::new(*name, subst.resolve(ty)))
+                    .collect();
+                fn_bind_params.insert(fid, bind);
             }
-            // Extract direct effects from body_effect.
-            if let Effect::Resolved(ref effect_set) = unchecked.body_effect {
-                fn_direct_effects.insert(fid, effect_set.clone());
+            Err(errors) => {
+                fn_errors.insert(fid, errors);
             }
-
-            let bind: Vec<Param> = unchecked
-                .extern_params
-                .iter()
-                .map(|(name, ty)| Param::new(*name, subst.resolve(ty)))
-                .collect();
-            fn_bind_params.insert(fid, bind);
         }
-
     }
 
     // Resolve all functions in this SCC.
@@ -605,6 +610,7 @@ pub fn infer_scc(
         fn_metas,
         resolved_types,
         fn_direct_effects,
+        errors: fn_errors,
     }
 }
 

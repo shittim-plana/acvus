@@ -90,6 +90,7 @@ name = "acvus-lsp"
 version = "0.1.0"
 dependencies = [
  "acvus-ast",
+ "acvus-ext",
  "acvus-mir",
  "acvus-utils",
  "rustc-hash",

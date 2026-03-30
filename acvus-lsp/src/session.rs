@@ -62,6 +62,7 @@ pub struct LspSession {
     graph: IncrementalGraph,
     doc_to_fn: FxHashMap<DocId, QualifiedRef>,
     fn_to_doc: FxHashMap<QualifiedRef, DocId>,
+    doc_sources: FxHashMap<DocId, String>,
     next_doc_id: u32,
 }
 
@@ -71,6 +72,7 @@ impl LspSession {
             graph: IncrementalGraph::new(interner),
             doc_to_fn: FxHashMap::default(),
             fn_to_doc: FxHashMap::default(),
+            doc_sources: FxHashMap::default(),
             next_doc_id: 0,
         }
     }
@@ -163,6 +165,7 @@ impl LspSession {
         self.graph.add_function(func);
         self.doc_to_fn.insert(doc_id, qref);
         self.fn_to_doc.insert(qref, doc_id);
+        self.doc_sources.insert(doc_id, source.to_string());
         doc_id
     }
 
@@ -174,6 +177,7 @@ impl LspSession {
         let interner = self.graph.interner().clone();
         let ast = acvus_ast::parse(&interner, source).expect("parse error in LSP update_source");
         self.graph.update_ast(qref, ParsedAst::Template(ast));
+        self.doc_sources.insert(id, source.to_string());
     }
 
     /// Close a document. Removes the Function from the graph.
@@ -182,6 +186,7 @@ impl LspSession {
             self.fn_to_doc.remove(&qref);
             self.graph.remove_function(qref);
         }
+        self.doc_sources.remove(&id);
     }
 
     /// Get the QualifiedRef for a document.
@@ -213,14 +218,23 @@ impl LspSession {
     }
 
     /// Completions at cursor position.
-    /// Completions at cursor position.
-    ///
-    /// TODO: LSP should store source text separately now that FnKind::Local
-    /// contains ParsedAst instead of source strings. Completions require
-    /// source text which is not available from ParsedAst.
-    /// Return empty until source text storage is added to LspSession.
-    pub fn completions(&self, _id: DocId, _cursor: usize) -> Vec<CompletionItem> {
-        vec![]
+    pub fn completions(&self, id: DocId, cursor: usize) -> Vec<CompletionItem> {
+        let Some(source) = self.doc_sources.get(&id) else {
+            return vec![];
+        };
+        let before = &source[..cursor.min(source.len())];
+        let interner = self.graph.interner();
+        let ns = self
+            .doc_to_fn
+            .get(&id)
+            .and_then(|qref| qref.namespace);
+
+        match detect_trigger(before) {
+            Trigger::Context { prefix } => self.context_completions(ns, &prefix, interner),
+            Trigger::Pipe => self.pipe_completions(interner),
+            Trigger::Keyword { prefix } => keyword_completions(&prefix),
+            Trigger::None => vec![],
+        }
     }
 
     // ── Completion helpers ──────────────────────────────────────────
@@ -318,7 +332,7 @@ fn detect_trigger(before: &str) -> Trigger {
 }
 
 fn keyword_completions(prefix: &str) -> Vec<CompletionItem> {
-    let keywords = ["true", "false", "in", "Some", "None"];
+    let keywords = ["true", "false", "in", "Some", "None", "let", "if", "else", "for", "while"];
     keywords
         .iter()
         .filter(|kw| kw.starts_with(prefix) && **kw != prefix)

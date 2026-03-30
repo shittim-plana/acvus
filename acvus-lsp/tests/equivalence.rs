@@ -19,16 +19,23 @@ fn batch_errors(interner: &Interner, source: &str, ctx: &[(&str, Ty)]) -> Vec<St
         .collect();
     let test_qref = QualifiedRef::root(interner.intern("test"));
     let template = acvus_ast::parse(interner, source).expect("parse failed");
+    let mut functions = vec![Function {
+        qref: test_qref,
+        kind: FnKind::Local(ParsedAst::Template(template)),
+        constraint: FnConstraint {
+            signature: None,
+            output: Constraint::Inferred,
+            effect: None,
+        },
+    }];
+    let mut type_registry = acvus_mir::ty::TypeRegistry::new();
+    let std_regs = acvus_ext::std_registries(interner, &mut type_registry);
+    for registry in std_regs {
+        let registered = registry.register(interner);
+        functions.extend(registered.functions);
+    }
     let graph = CompilationGraph {
-        functions: Freeze::new(vec![Function {
-            qref: test_qref,
-            kind: FnKind::Local(ParsedAst::Template(template)),
-            constraint: FnConstraint {
-                signature: None,
-                output: Constraint::Inferred,
-                effect: None,
-            },
-        }]),
+        functions: Freeze::new(functions),
         contexts: Freeze::new(contexts),
     };
     let ext = extract::extract(interner, &graph);
@@ -37,10 +44,17 @@ fn batch_errors(interner: &Interner, source: &str, ctx: &[(&str, Ty)]) -> Vec<St
         &graph,
         &ext,
         &FxHashMap::default(),
-        Freeze::default(),
+        Freeze::new(type_registry),
         &FxHashMap::default(),
     );
     let mut errs: Vec<String> = Vec::new();
+    // Collect infer errors.
+    for (_, fn_errs) in inf.errors() {
+        for e in fn_errs {
+            errs.push(format!("{}", e.display(interner)));
+        }
+    }
+    // Collect lower errors.
     let result = graph_lower::lower(interner, &graph, &ext, &inf, &FxHashMap::default());
     for le in &result.errors {
         for e in &le.errors {
@@ -51,9 +65,23 @@ fn batch_errors(interner: &Interner, source: &str, ctx: &[(&str, Ty)]) -> Vec<St
     errs
 }
 
+/// Register standard library functions into an LspSession.
+fn register_std(session: &mut LspSession) {
+    let interner = session.interner().clone();
+    let mut type_registry = acvus_mir::ty::TypeRegistry::new();
+    let std_regs = acvus_ext::std_registries(&interner, &mut type_registry);
+    for registry in std_regs {
+        let registered = registry.register(&interner);
+        for func in registered.functions {
+            session.graph_mut().add_function(func);
+        }
+    }
+}
+
 /// Compile via LspSession, return error messages (sorted).
 fn lsp_errors(interner: &Interner, source: &str, ctx: &[(&str, Ty)]) -> Vec<String> {
     let mut session = LspSession::new(interner);
+    register_std(&mut session);
     for (name, ty) in ctx {
         session.add_context(name, None, Constraint::Exact(ty.clone()));
     }
@@ -102,6 +130,7 @@ fn type_error_equivalence() {
 fn incremental_update_fixes_error() {
     let i = Interner::new();
     let mut session = LspSession::new(&i);
+    register_std(&mut session);
     session.add_context("x", None, Constraint::Exact(Ty::Int));
 
     // Start with emit type error: Int not emittable in template.
@@ -126,6 +155,7 @@ fn incremental_update_fixes_error() {
 fn incremental_update_introduces_error() {
     let i = Interner::new();
     let mut session = LspSession::new(&i);
+    register_std(&mut session);
     session.add_context("name", None, Constraint::Exact(Ty::String));
 
     // Start correct.
@@ -151,5 +181,104 @@ fn namespace_context_isolation() {
     assert!(
         session.diagnostics(doc_root).is_empty(),
         "root should see @global"
+    );
+}
+
+// ── Completion tests ───────────────────────────────────────────────
+
+#[test]
+fn completion_context_trigger() {
+    let i = Interner::new();
+    let mut session = LspSession::new(&i);
+    session.add_context("name", None, Constraint::Exact(Ty::String));
+    session.add_context("count", None, Constraint::Exact(Ty::Int));
+
+    let doc = session.open("test", "{{ @n }}", None);
+    // Cursor after "@n" → context trigger with prefix "n"
+    let items = session.completions(doc, 5); // "{{ @n" = 5 chars
+    assert!(!items.is_empty(), "should get context completions");
+    assert!(
+        items.iter().any(|c| c.label == "@name"),
+        "should suggest @name, got: {:?}", items.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+    assert!(
+        !items.iter().any(|c| c.label == "@count"),
+        "@count should not match prefix 'n'"
+    );
+}
+
+#[test]
+fn completion_pipe_trigger() {
+    let i = Interner::new();
+    let mut session = LspSession::new(&i);
+    session.add_context("name", None, Constraint::Exact(Ty::String));
+
+    // Add a helper function so visible_functions returns something.
+    let helper_qref = QualifiedRef::root(i.intern("helper"));
+    session.graph_mut().add_function(Function {
+        qref: helper_qref,
+        kind: FnKind::Local(ParsedAst::Template(
+            acvus_ast::parse(&i, "hello").unwrap(),
+        )),
+        constraint: FnConstraint {
+            signature: None,
+            output: Constraint::Inferred,
+            effect: None,
+        },
+    });
+
+    let doc = session.open("test", "{{ @name | helper }}", None);
+    // Cursor after "| " → pipe trigger (user is about to type after |)
+    let items = session.completions(doc, 10); // "{{ @name |" = 10 chars
+    assert!(!items.is_empty(), "should get pipe completions (functions)");
+    assert!(
+        items.iter().any(|c| c.label == "helper"),
+        "should suggest helper, got: {:?}", items.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn completion_keyword_trigger() {
+    let i = Interner::new();
+    let mut session = LspSession::new(&i);
+
+    let doc = session.open("test", "{{ tr }}", None);
+    // Cursor after "tr" → keyword trigger
+    let items = session.completions(doc, 5); // "{{ tr" = 5 chars
+    assert!(
+        items.iter().any(|c| c.label == "true"),
+        "should suggest 'true', got: {:?}", items.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn completion_empty_after_close() {
+    let i = Interner::new();
+    let mut session = LspSession::new(&i);
+    session.add_context("name", None, Constraint::Exact(Ty::String));
+
+    let doc = session.open("test", "{{ @n }}", None);
+    session.close(doc);
+    let items = session.completions(doc, 5);
+    assert!(items.is_empty(), "closed doc should return no completions");
+}
+
+#[test]
+fn completion_updates_with_source() {
+    let i = Interner::new();
+    let mut session = LspSession::new(&i);
+    session.add_context("name", None, Constraint::Exact(Ty::String));
+    session.add_context("age", None, Constraint::Exact(Ty::Int));
+
+    let doc = session.open("test", "{{ @n }}", None);
+    let items = session.completions(doc, 5);
+    assert!(items.iter().any(|c| c.label == "@name"), "should match @name");
+
+    // Update source to "@a"
+    session.update_source(doc, "{{ @a }}");
+    let items = session.completions(doc, 5);
+    assert!(
+        items.iter().any(|c| c.label == "@age"),
+        "after update should match @age, got: {:?}", items.iter().map(|c| &c.label).collect::<Vec<_>>()
     );
 }

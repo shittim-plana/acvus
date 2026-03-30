@@ -261,7 +261,7 @@ impl IncrementalGraph {
             let root_fn_names: FxHashMap<Astr, QualifiedRef> = self
                 .functions
                 .iter()
-                .filter(|(q, _)| q.namespace.is_none())
+                .filter(|(q, f)| q.namespace.is_none() && matches!(f.kind, FnKind::Local(_)))
                 .map(|(&q, _)| (q.name, q))
                 .collect();
             let new_edges = extract_call_edges(&parsed, &root_fn_names, qref);
@@ -320,7 +320,15 @@ impl IncrementalGraph {
 
     fn run_infer(&mut self) {
         let known_ctx = self.known_context_types();
-        let mut resolved_fn_types = FxHashMap::default();
+        let mut resolved_fn_types: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
+        // Seed with extern function types (always known upfront).
+        for (qref, func) in &self.functions {
+            if let FnKind::Extern = &func.kind {
+                if let Constraint::Exact(ty) = &func.constraint.output {
+                    resolved_fn_types.insert(*qref, ty.clone());
+                }
+            }
+        }
 
         let fn_by_id: FxHashMap<QualifiedRef, &Function> = self
             .functions
@@ -360,6 +368,9 @@ impl IncrementalGraph {
             );
 
             resolved_fn_types.extend(result.resolved_types.clone());
+            for (qref, errs) in &result.errors {
+                self.diagnostics.insert(*qref, errs.clone());
+            }
             self.infer_cache[scc_idx] = Some(result);
         }
 
@@ -377,7 +388,15 @@ impl IncrementalGraph {
 
         // Re-run infer from this SCC onwards.
         let known_ctx = self.known_context_types();
-        let mut resolved_fn_types = FxHashMap::default();
+        let mut resolved_fn_types: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
+        // Seed with extern function types.
+        for (qref, func) in &self.functions {
+            if let FnKind::Extern = &func.kind {
+                if let Constraint::Exact(ty) = &func.constraint.output {
+                    resolved_fn_types.insert(*qref, ty.clone());
+                }
+            }
+        }
 
         let fn_by_id: FxHashMap<QualifiedRef, &Function> = self
             .functions
@@ -450,6 +469,14 @@ impl IncrementalGraph {
                         }
                     }
                 }
+            }
+
+            // Update diagnostics: clear old errors for this SCC, add new ones.
+            for &fid in scc {
+                self.diagnostics.remove(&fid);
+            }
+            for (qref, errs) in &result.errors {
+                self.diagnostics.insert(*qref, errs.clone());
             }
 
             resolved_fn_types.extend(result.resolved_types.clone());

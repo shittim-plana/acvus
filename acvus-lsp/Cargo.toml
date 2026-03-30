@@ -11,6 +11,7 @@ rustc-hash = { workspace = true }
 
 [dev-dependencies]
 acvus-ast = { path = "../acvus-ast" }
+acvus-ext = { path = "../acvus-ext" }
 acvus-mir = { path = "../acvus-mir" }
 acvus-utils = { path = "../acvus-utils" }
 rustc-hash = { workspace = true }
