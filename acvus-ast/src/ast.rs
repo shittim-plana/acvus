@@ -35,6 +35,17 @@ pub enum Stmt {
     ContextStore {
         id: AstId,
         name: QualifiedRef,
+        /// Field path for projection store: `@a.x.y = 0;` → path = [x, y].
+        /// Empty = identity store: `@a = 0;`.
+        path: Vec<Astr>,
+        expr: Expr,
+        span: Span,
+    },
+    /// Field store on a local variable: `a.x.y = 0;`.
+    VarFieldStore {
+        id: AstId,
+        name: Astr,
+        path: Vec<Astr>,
         expr: Expr,
         span: Span,
     },
@@ -525,6 +536,7 @@ fn walk_stmts(stmts: &[Stmt], refs: &mut rustc_hash::FxHashSet<QualifiedRef>) {
                 refs.insert(*name);
                 walk_expr(expr, refs);
             }
+            Stmt::VarFieldStore { expr, .. } => walk_expr(expr, refs),
             Stmt::Expr(expr) => walk_expr(expr, refs),
             Stmt::MatchBind {
                 pattern,

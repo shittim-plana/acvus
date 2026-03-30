@@ -130,8 +130,9 @@ fn fill_ssa_types(cfg: &mut CfgBody, ssa_info: &SsaInfo) {
             if let InstKind::Ref {
                 dst,
                 target: crate::ir::RefTarget::Context(ctx),
-                field: None,
+                path,
             } = &inst.kind
+                && path.is_empty()
             {
                 if !cfg.val_types.contains_key(dst) {
                     if let Some(ty) = ssa_info.ctx_types.get(ctx) {
@@ -350,8 +351,8 @@ fn forward_context_values(
                 InstKind::Ref {
                     dst,
                     target: crate::ir::RefTarget::Context(ctx),
-                    field: None,
-                } => {
+                    path,
+                } if path.is_empty() => {
                     st.val_to_ctx.insert(*dst, *ctx);
                 }
 
@@ -804,9 +805,9 @@ fn collect_ssa_info(cfg: &CfgBody) -> SsaInfo {
     // First pass: collect Ref targets and identify non-promotable storage.
     for block in &cfg.blocks {
         for inst in &block.insts {
-            if let InstKind::Ref { dst, target, field } = &inst.kind {
+            if let InstKind::Ref { dst, target, path } = &inst.kind {
                 ref_target.insert(*dst, target.clone());
-                if field.is_some() {
+                if !path.is_empty() {
                     // Field Ref present → this storage is non-promotable.
                     match target {
                         RefTarget::Var(slot) | RefTarget::Param(slot) => {
@@ -825,12 +826,12 @@ fn collect_ssa_info(cfg: &CfgBody) -> SsaInfo {
     #[cfg(debug_assertions)]
     for (bi, block) in cfg.blocks.iter().enumerate() {
         for (ii, inst) in block.insts.iter().enumerate() {
-            if let InstKind::Ref { dst, target, field } = &inst.kind {
+            if let InstKind::Ref { dst, target, path } = &inst.kind {
                 match target {
                     RefTarget::Var(slot) | RefTarget::Param(slot) => {
-                        eprintln!("[SSA collect] B{bi}:{ii} Ref({:?}, {:?}) dst={:?} field={:?}",
+                        eprintln!("[SSA collect] B{bi}:{ii} Ref({:?}, {:?}) dst={:?} path={:?}",
                             if matches!(target, RefTarget::Var(_)) { "Var" } else { "Param" },
-                            slot, dst, field);
+                            slot, dst, path);
                     }
                     _ => {}
                 }
@@ -848,8 +849,8 @@ fn collect_ssa_info(cfg: &CfgBody) -> SsaInfo {
                 InstKind::Ref {
                     dst,
                     target: RefTarget::Context(ctx),
-                    field: None,
-                } => {
+                    path,
+                } if path.is_empty() => {
                     if !non_promotable_contexts.contains(ctx)
                         && let Some(Ty::Ref(inner, _)) = cfg.val_types.get(dst)
                     {
@@ -1262,7 +1263,7 @@ fn patch_instructions(
             kind: InstKind::Ref {
                 dst: ref_dst,
                 target: crate::ir::RefTarget::Context(ctx),
-                field: None,
+                path: vec![],
             },
         });
         ctx_ref_cache.insert(ctx, ref_dst);
@@ -1382,8 +1383,9 @@ fn apply_var_subst(cfg: &mut CfgBody, var_subst: &FxHashMap<ValueId, ValueId>, s
             if let InstKind::Ref {
                 dst,
                 target,
-                field: None,
+                path,
             } = &inst.kind
+                && path.is_empty()
             {
                 let is_promoted = match target {
                     RefTarget::Context(_) => false,
@@ -1679,7 +1681,7 @@ mod tests {
             kind: InstKind::Ref {
                 dst: v0,
                 target: crate::ir::RefTarget::Context(qref),
-                field: None,
+                path: vec![],
             },
         });
         body.insts.push(Inst {
@@ -1849,7 +1851,7 @@ mod tests {
             kind: InstKind::Ref {
                 dst: v0,
                 target: crate::ir::RefTarget::Context(qref),
-                field: None,
+                path: vec![],
             },
         });
         body.insts.push(Inst {
@@ -1875,7 +1877,7 @@ mod tests {
             kind: InstKind::Ref {
                 dst: v3,
                 target: crate::ir::RefTarget::Context(qref),
-                field: None,
+                path: vec![],
             },
         });
         body.insts.push(Inst {
@@ -1974,7 +1976,7 @@ mod tests {
             kind: InstKind::Ref {
                 dst: v0,
                 target: crate::ir::RefTarget::Context(qref),
-                field: None,
+                path: vec![],
             },
         });
         body.insts.push(Inst {
@@ -2066,7 +2068,7 @@ mod tests {
             kind: InstKind::Ref {
                 dst: v0,
                 target: crate::ir::RefTarget::Context(qref),
-                field: None,
+                path: vec![],
             },
         });
         body.insts.push(Inst {
@@ -2160,7 +2162,7 @@ mod tests {
             kind: InstKind::Ref {
                 dst: v0,
                 target: crate::ir::RefTarget::Context(qref),
-                field: None,
+                path: vec![],
             },
         });
         body.insts.push(Inst {
@@ -2316,7 +2318,7 @@ mod tests {
                 kind: InstKind::Ref {
                     dst: v[1],
                     target: crate::ir::RefTarget::Context(ctx_qref),
-                    field: None,
+                    path: vec![],
                 },
             },
             Inst {
@@ -2332,7 +2334,7 @@ mod tests {
                 kind: InstKind::Ref {
                     dst: v[2],
                     target: crate::ir::RefTarget::Context(ctx_qref),
-                    field: None,
+                    path: vec![],
                 },
             },
             Inst {

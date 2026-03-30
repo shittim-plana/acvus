@@ -2,7 +2,7 @@
 
 ## Template Structure
 
-템플릿은 segment의 시퀀스로 구성된다. Lexer가 먼저 segment를 분류하고, expression 내부는 LALRPOP 파서가 처리한다.
+A template is a sequence of segments. The lexer classifies segments first, then the LALRPOP parser handles expression internals.
 
 ### Segments (Lexer Level)
 
@@ -17,15 +17,15 @@ CatchAll     = "{{_}}"
 CloseBlock   = "{{/}}" | "{{/+" DIGITS "}}" | "{{/-" DIGITS "}}"
 ```
 
-- `Text`: `{{ }}` 바깥의 모든 텍스트.
-- `Comment`: `{{-- --}}`로 감싸진 주석. 출력에 포함되지 않는다.
-- `ExprTag`: `{{ }}` 안의 expression 또는 binding.
-- `CatchAll`: `{{_}}`는 lexer 레벨에서 감지된다. expression 내부의 `_`와 완전히 분리.
-- `CloseBlock`: `{{/}}`로 match 블럭을 닫는다. `+N`/`-N`은 indent modifier.
+- `Text`: All text outside `{{ }}`.
+- `Comment`: Wrapped in `{{-- --}}`. Not included in output.
+- `ExprTag`: Expression or binding inside `{{ }}`.
+- `CatchAll`: `{{_}}` is detected at the lexer level. Completely separate from `_` inside expressions.
+- `CloseBlock`: `{{/}}` closes a match block. `+N`/`-N` are indent modifiers.
 
 ### AST Construction (Parser Level)
 
-Segment 시퀀스에서 AST를 구축한다:
+The AST is built from the segment sequence:
 
 ```
 Node         = Text | Comment | InlineExpr | MatchBlock | IterBlock
@@ -40,20 +40,67 @@ Body         = Node*
 ```
 
 **MatchBlock vs IterBlock**:
-- `=` (MatchBlock): 단일 값에 대한 패턴 매칭. 이터레이션 없이 source 값을 직접 패턴에 대조한다.
-- `in` (IterBlock): source를 이터레이터로 변환하여, 각 원소에 대해 바디를 반복 실행한다.
+- `=` (MatchBlock): Pattern matching against a single value. Matches the source value directly against the pattern without iteration.
+- `in` (IterBlock): Converts the source to an iterator and executes the body for each element.
 
-**Multi-arm 감지**: match 블럭 내부에서 `{{ pattern = }}`이 나타나면 continuation arm으로 취급된다. `=` 뒤에 expression이 없으면 continuation arm, 있으면 binding이다. Multi-arm은 `=` (MatchBlock)에서만 사용 가능하다.
+**Multi-arm detection**: When `{{ pattern = }}` appears inside a match block, it is treated as a continuation arm. If there is no expression after `=`, it is a continuation arm; if there is, it is a binding. Multi-arm is only available with `=` (MatchBlock).
 
-**변수 바인딩**: `{{ x = expr }}`에서 LHS가 단순 변수(`Binding` 패턴)이면 body-less — `{{/}}` 불필요.
+**Variable binding**: In `{{ x = expr }}`, if the LHS is a simple variable (`Binding` pattern), it is body-less — no `{{/}}` needed.
 
-**Iteration 패턴**: `{{ pattern in expr }}`의 패턴은 irrefutable해야 한다 (변수, 오브젝트 destructuring, 튜플 destructuring 등). 리터럴 패턴은 사용 불가.
+**Iteration pattern**: The pattern in `{{ pattern in expr }}` must be irrefutable (variable, object destructuring, tuple destructuring, etc.). Literal patterns are not allowed.
+
+---
+
+## Script Mode
+
+A script is a sequence of semicolon-terminated statements with an optional tail expression:
+
+```
+Script       = ScriptStmt* Expr?
+```
+
+### Statements
+
+```
+ScriptStmt   = Bind | ContextStore | VarFieldStore | MatchBind | Iterate | ExprStmt
+
+Bind         = IDENT "=" Expr ";"                       ← x = 0;
+ContextStore = "@" IDENT ("." IDENT)* "=" Expr ";"      ← @a = 0; / @a.x.y = 0;
+VarFieldStore= IDENT ("." IDENT)+ "=" Expr ";"          ← a.x = 0;
+MatchBind    = Pattern "=" Expr "{" ScriptStmt* "}" ";"  ← if-let with body
+Iterate      = Pattern "in" Expr "{" ScriptStmt* "}" ";" ← for loop with body
+ExprStmt     = Expr ";"
+```
+
+**Assignment LHS resolution**: The LHS FieldAccess chain is flattened to determine the root:
+- Root is `IDENT` with no path → `Bind`
+- Root is `IDENT` with path → `VarFieldStore`
+- Root is `@IDENT` → `ContextStore` (with or without path)
+- Otherwise → parser error (`InvalidAssignTarget`)
+
+**ContextStore path**: In `@a.x.y = 0;`, path = `[x, y]`. Empty path means identity store (`@a = 0;`).
+
+### Destructure Projection
+
+`{ @x, } = @a { body };` — Inside the body scope, `@x` is a projection (alias) of `@a.x`.
+
+```
+{ @x, @y, } = @a {
+    // reading @x = reading @a.x
+    // @x = 0; = @a.x = 0;
+};
+// outside body, @x reverts to the original context @x (shadowing)
+```
+
+Conditions: source is `@ref` and pattern is Object with `@ref` sub-patterns.
+- `@ref` sub-pattern → projection (alias)
+- Other sub-pattern → copy (value extracted via ObjectGet)
 
 ---
 
 ## Expression Grammar
 
-LALRPOP 기반. 연산자 우선순위 (낮은 → 높은):
+LALRPOP-based. Operator precedence (low → high):
 
 ```
 TagContent   = Expr "=" Expr        ← binding / pattern matching
@@ -63,7 +110,7 @@ TagContent   = Expr "=" Expr        ← binding / pattern matching
 
 Expr         = LambdaExpr
 
-LambdaExpr   = PipeExpr "->" LambdaExpr    ← right-associative
+LambdaExpr   = "|" CommaSep<Ident> "|" "->" Expr    ← right-associative
              | PipeExpr
 
 PipeExpr     = PipeExpr "|" OrExpr         ← left-associative
@@ -93,7 +140,11 @@ MulExpr      = MulExpr ("*" | "/" | "%") UnaryExpr ← left-associative
 
 UnaryExpr    = "-" UnaryExpr
              | "!" UnaryExpr
-             | PostfixExpr
+             | QualifiedExpr
+
+QualifiedExpr = IDENT "::" IDENT "(" Expr ")"  ← qualified variant with payload
+              | IDENT "::" IDENT                ← qualified variant without payload
+              | PostfixExpr
 
 PostfixExpr  = PostfixExpr "." IDENT       ← field access
              | PostfixExpr "(" CommaSep<Expr> ")"  ← function call
@@ -103,49 +154,64 @@ PostfixExpr  = PostfixExpr "." IDENT       ← field access
 ### Primary Expressions
 
 ```
-PrimaryExpr  = IDENT                       ← identifier
-             | "$" IDENT                   ← storage reference
+PrimaryExpr  = IDENT                       ← identifier (value binding)
+             | "$" IDENT                   ← extern parameter (immutable, injected)
+             | "@" IDENT                   ← context reference (mutable storage)
              | INT                         ← integer literal
              | FLOAT                       ← float literal
              | STRING                      ← string literal
              | FORMAT_STRING               ← format string (see below)
              | "true" | "false"            ← boolean literal
+             | "Some" "(" Expr ")"         ← Some variant constructor
+             | "None"                      ← None variant constructor
              | "(" CommaSep<TupleElem> ")" ← paren / tuple (see below)
              | "[" CommaSep<ListElem> "]"  ← list
-             | "{" (ObjectField ",")+ "}"  ← object
+             | "{" ScriptStmt+ Expr "}"    ← block expression
+             | "{" Expr "}"               ← block expression (single expr)
+             | "{" (ObjectField ",")+ "}"  ← object literal
 
 TupleElem    = Expr | "_"
 ListElem     = Expr | ".."
-ObjectField  = IDENT | "$" IDENT
+ObjectField  = IDENT ":" Expr             ← explicit key
+             | IDENT                       ← shorthand { name } = { name: name }
+             | "$" IDENT                   ← shorthand { $name } = { name: $name }
+             | "@" IDENT                   ← shorthand { @name } = { name: @name }
 ```
 
 **Format String**:
 - `"hello {{ name }}!"` → `"hello " + name + "!"`
-- `{{ }}` 안에 임의의 expression 사용 가능: `"sum: {{ a + b | to_string }}"`
-- Grammar-level desugaring — `BinOp::Add` 체인으로 변환. 새 AST variant 없음.
-- **String 타입만 허용** — auto `to_string` 없음. 비-String 표현식은 `| to_string` 파이프 필요.
-- 빈 텍스트 세그먼트(`""`)는 체인에서 제외.
+- Any expression inside `{{ }}`: `"sum: {{ a + b | to_string }}"`
+- Grammar-level desugaring — converted to a `BinOp::Add` chain. No new AST variant.
+- **String type only** — no auto `to_string`. Non-String expressions require `| to_string` pipe.
+- Empty text segments (`""`) are excluded from the chain.
 
-**Tuple vs Paren 구분**:
-- 1개 원소 (non-wildcard): `(expr)` → 괄호 그룹 (Paren)
-- 1개 원소 (wildcard): `(_)` → 1-원소 튜플
-- 2개 이상 원소: `(a, b)` → 튜플 (Tuple)
-- 0개 원소: `()` → 빈 튜플
+**Tuple vs Paren**:
+- 1 element (non-wildcard): `(expr)` → parenthesized group (Paren)
+- 1 element (wildcard): `(_)` → 1-element tuple
+- 2+ elements: `(a, b)` → tuple (Tuple)
+- 0 elements: `()` → empty tuple
 
 **Lambda Parameter**:
-- `(a, b) -> expr`에서 `(a, b)`는 먼저 Tuple로 파싱된 후, `->` 앞에서 lambda parameter list로 변환된다.
+- In `|a, b| -> expr`, `|a, b|` forms the lambda parameter list.
+
+**Block Expression**:
+- `{ stmt; stmt; expr }` — statement sequence + tail expression.
+- `{ expr }` — single expression block.
 
 ---
 
 ## Patterns
 
-Expression의 LHS에서 패턴으로 변환된다 (`expr_to_pattern`):
+Converted from expression LHS via `expr_to_pattern`:
 
 ```
-Pattern      = Binding | Literal | List | Object | Range | Tuple
+Pattern      = Binding | ContextBind | Literal | List | Object
+             | Range | Tuple | Variant
 
-Binding      = IDENT                       ← 변수 캡처
-             | "$" IDENT                   ← 스토리지 레퍼런스
+Binding      = IDENT                       ← variable capture
+             | "$" IDENT                   ← extern parameter capture
+
+ContextBind  = "@" IDENT                   ← context binding
 
 Literal      = INT | FLOAT | STRING | "true" | "false"
 
@@ -160,41 +226,57 @@ Range        = Pattern ".." Pattern
 
 Tuple        = "(" TuplePatternElem ("," TuplePatternElem)* ")"
 TuplePatternElem = Pattern | "_"           ← wildcard
+
+Variant      = "Some" "(" Pattern ")"      ← Some variant
+             | "None"                       ← None variant
+             | IDENT "::" IDENT "(" Pattern ")"  ← qualified with payload
+             | IDENT "::" IDENT             ← qualified without payload
 ```
 
-**Wildcard `_` 스코프**: `_`는 tuple 패턴 내부에서만 사용 가능하다 (일반 expression에서는 사용 불가). `{{_}}`의 catch-all과는 별개 — catch-all은 lexer 레벨에서 감지된다.
+**ObjectPatternField**: `{ key: pattern }` or shorthand `{ name }` / `{ $name }` / `{ @name }`.
+
+**Wildcard `_` scope**: `_` is only available inside tuple patterns (not in general expressions). Separate from the `{{_}}` catch-all, which is detected at the lexer level.
+
+**ContextBind in destructure**: The meaning of `@name` sub-patterns inside Object patterns depends on the source:
+- Source is `@ref` → projection (alias, scoped to body)
+- Source is a value → copy (store into context)
 
 ---
 
 ## Tokens
 
-| Token | 예시 |
-|-------|------|
+| Token | Example |
+|-------|---------|
 | `IDENT` | `name`, `user`, `x` |
 | `$REF` | `$name`, `$user` |
+| `@REF` | `@name`, `@user` |
 | `INT` | `0`, `42`, `-1` |
 | `FLOAT` | `3.14`, `0.0` |
 | `STRING` | `"hello"`, `"world"` |
-| `FORMAT_STRING` | `"hello {{ name }}!"` (lexer가 `FmtStringStart`/`Mid`/`End`로 분할) |
+| `FORMAT_STRING` | `"hello {{ name }}!"` (lexer splits into `FmtStringStart`/`Mid`/`End`) |
 | `true` `false` | boolean literals |
-| `_` | wildcard (tuple 패턴 내부) |
-| `+` `-` `*` `/` `%` | 산술 연산자 |
-| `!` | 논리 부정 |
-| `&&` `\|\|` | 논리 AND / OR |
-| `==` `!=` `<` `>` `<=` `>=` | 비교 연산자 |
-| `=` | 바인딩 (패턴 매칭) |
-| `in` | 이터레이션 |
-| `->` | 람다 화살표 |
-| `..` `..=` `=..` | 레인지 연산자 |
-| `.` | 필드 접근 |
-| `\|` | 파이프 연산자 |
-| `(` `)` `[` `]` `{` `}` | 괄호류 |
-| `,` | 구분자 |
+| `Some` `None` | variant constructors |
+| `_` | wildcard (inside tuple patterns) |
+| `+` `-` `*` `/` `%` | arithmetic operators |
+| `!` | logical negation |
+| `&&` `\|\|` | logical AND / OR |
+| `==` `!=` `<` `>` `<=` `>=` | comparison operators |
+| `=` | binding / assignment |
+| `in` | iteration |
+| `->` | lambda arrow |
+| `..` `..=` `=..` | range operators |
+| `.` | field access |
+| `\|` | pipe operator |
+| `::` | qualified name separator |
+| `:` | object field separator |
+| `;` | statement terminator (script mode) |
+| `(` `)` `[` `]` `{` `}` | delimiters |
+| `,` | separator |
 
-### Operator Precedence (낮은 → 높은)
+### Operator Precedence (low → high)
 
-| 우선순위 | 연산자 | 결합 방향 |
-|---------|--------|-----------|
+| Precedence | Operator | Associativity |
+|-----------|----------|---------------|
 | 1 | `->` (lambda) | right |
 | 2 | `\|` (pipe) | left |
 | 3 | `\|\|` (logical or) | left |
@@ -204,4 +286,5 @@ TuplePatternElem = Pattern | "_"           ← wildcard
 | 7 | `+` `-` | left |
 | 8 | `*` `/` `%` | left |
 | 9 | `-` `!` (unary) | prefix |
-| 10 | `.` `()` (postfix) | left |
+| 10 | `::` (qualified) | — |
+| 11 | `.` `()` (postfix) | left |

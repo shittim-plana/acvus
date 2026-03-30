@@ -856,7 +856,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: r0,
                     target: RefTarget::Var(a),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Store {
                     dst: r0,
@@ -867,7 +867,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: r1,
                     target: RefTarget::Var(a),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Load {
                     dst: v1,
@@ -886,7 +886,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: r2,
                     target: RefTarget::Var(a),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Store {
                     dst: r2,
@@ -897,7 +897,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: r3,
                     target: RefTarget::Var(a),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Load {
                     dst: v3,
@@ -949,7 +949,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: r0,
                     target: RefTarget::Var(a),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Store {
                     dst: r0,
@@ -959,7 +959,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: r1,
                     target: RefTarget::Var(a),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Load {
                     dst: v1,
@@ -977,7 +977,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: r2,
                     target: RefTarget::Var(a),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Load {
                     dst: v2,

@@ -3025,3 +3025,60 @@ fn sroa_context_destructure_then_overwrite() {
     let ir = compile_script_ir(&i, "@a = @b.x; @a = 0; @a", &context).unwrap();
     insta::assert_snapshot!(ir);
 }
+
+// ── Projection store ────────────────────────────────────────────────
+
+#[test]
+fn context_projection_store_1depth() {
+    let i = Interner::new();
+    let context = ctx(&i, &[("obj", obj(&i, &[("x", Ty::Int)]))]);
+    let ir = compile_script_ir(&i, "@obj.x = 42; @obj.x", &context).unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn context_projection_store_2depth() {
+    let i = Interner::new();
+    let inner = obj(&i, &[("y", Ty::Int)]);
+    let context = ctx(&i, &[("obj", obj(&i, &[("x", inner)]))]);
+    let ir = compile_script_ir(&i, "@obj.x.y = 99; @obj.x.y", &context).unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn var_field_store_1depth() {
+    let i = Interner::new();
+    let context = ctx(&i, &[("obj", obj(&i, &[("x", Ty::Int)]))]);
+    let ir = compile_script_ir(&i, "a = @obj; a.x = 0; a.x", &context).unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+// ── Destructure projection ──────────────────────────────────────────
+
+#[test]
+fn destructure_projection_read() {
+    let i = Interner::new();
+    let context = ctx(&i, &[("a", obj(&i, &[("x", Ty::Int), ("y", Ty::Int)]))]);
+    let ir = compile_script_ir(&i, "{ @x, } = @a { }; @a.x", &context).unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn destructure_projection_write() {
+    let i = Interner::new();
+    let context = ctx(&i, &[("a", obj(&i, &[("x", Ty::Int)]))]);
+    let ir = compile_script_ir(&i, "{ @x, } = @a { @x = 42; }; @a.x", &context).unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn destructure_projection_shadowing() {
+    let i = Interner::new();
+    let context = ctx(&i, &[
+        ("a", obj(&i, &[("x", Ty::Int)])),
+        ("x", Ty::Int),
+    ]);
+    // @x exists as context, but inside body it's shadowed by projection @a.x
+    let ir = compile_script_ir(&i, "@x = 99; { @x, } = @a { @x = 42; }; @x", &context).unwrap();
+    insta::assert_snapshot!(ir);
+}

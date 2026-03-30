@@ -30,8 +30,9 @@ fn build_ref_to_ctx(cfg: &CfgBody) -> FxHashMap<ValueId, QualifiedRef> {
             if let InstKind::Ref {
                 dst,
                 target: RefTarget::Context(qref),
-                field: None,
+                path,
             } = &inst.kind
+                && path.is_empty()
             {
                 map.insert(*dst, *qref);
             }
@@ -482,7 +483,7 @@ mod tests {
                 InstKind::Ref {
                     dst: v(0),
                     target: RefTarget::Context(ctx),
-                    field: None,
+                    path: vec![],
                 },
                 InstKind::Store {
                     dst: v(0),
@@ -492,7 +493,7 @@ mod tests {
                 InstKind::Ref {
                     dst: v(2),
                     target: RefTarget::Context(ctx),
-                    field: None,
+                    path: vec![],
                 },
                 InstKind::Store {
                     dst: v(2),
@@ -533,7 +534,7 @@ mod tests {
                 InstKind::Ref {
                     dst: v(0),
                     target: RefTarget::Context(ctx),
-                    field: None,
+                    path: vec![],
                 },
                 InstKind::Store {
                     dst: v(0),
@@ -543,7 +544,7 @@ mod tests {
                 InstKind::Ref {
                     dst: v(2),
                     target: RefTarget::Context(ctx),
-                    field: None,
+                    path: vec![],
                 },
                 InstKind::Load {
                     dst: v(3),
@@ -584,7 +585,7 @@ mod tests {
                 InstKind::Ref {
                     dst: v(0),
                     target: RefTarget::Context(ctx),
-                    field: None,
+                    path: vec![],
                 },
                 InstKind::Store {
                     dst: v(0),
@@ -594,7 +595,7 @@ mod tests {
                 InstKind::Ref {
                     dst: v(2),
                     target: RefTarget::Context(ctx),
-                    field: None,
+                    path: vec![],
                 },
                 InstKind::Store {
                     dst: v(2),
@@ -636,7 +637,7 @@ mod tests {
                 InstKind::Ref {
                     dst: v(0),
                     target: RefTarget::Context(ctx),
-                    field: None,
+                    path: vec![],
                 },
                 InstKind::Store {
                     dst: v(0),

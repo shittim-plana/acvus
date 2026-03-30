@@ -755,7 +755,7 @@ impl<'a> CheckCtx<'a> {
 
             // === Scalar field access ===
             InstKind::FieldGet {
-                dst, object, field, ..
+                dst, object, field, rest,
             } => {
                 let obj_ty = ty!(*object);
                 // Try direct type first, then unwrap one container level
@@ -767,8 +767,21 @@ impl<'a> CheckCtx<'a> {
                 };
                 if let Ty::Object(fields) = obj_ty {
                     if let Some(field_ty) = fields.get(field) {
+                        // Walk through rest fields to get the final type.
+                        let mut resolved = field_ty.clone();
+                        for r in rest {
+                            if let Ty::Object(inner) = &resolved {
+                                if let Some(next) = inner.get(r) {
+                                    resolved = next.clone();
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
                         let dst_ty = ty!(*dst);
-                        self.assert_match(pc, span, "FieldGet", "dst", field_ty, dst_ty, errors);
+                        self.assert_match(pc, span, "FieldGet", "dst", &resolved, dst_ty, errors);
                     }
                 } else if !obj_ty.is_error() && !matches!(obj_ty, Ty::Param { .. }) {
                     errors.push(ValidationError {
@@ -787,15 +800,28 @@ impl<'a> CheckCtx<'a> {
                 dst,
                 object,
                 field,
+                rest,
                 value,
-                ..
             } => {
-                // object must be Object, value must match field type, dst must be same Object type.
+                // object must be Object, value must match the leaf field type, dst must be same Object type.
                 let obj_ty = ty!(*object);
                 if let Ty::Object(fields) = obj_ty {
                     if let Some(field_ty) = fields.get(field) {
+                        // Walk through rest fields to get the leaf type.
+                        let mut resolved = field_ty.clone();
+                        for r in rest {
+                            if let Ty::Object(inner) = &resolved {
+                                if let Some(next) = inner.get(r) {
+                                    resolved = next.clone();
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
                         let val_ty = ty!(*value);
-                        self.assert_match(pc, span, "FieldSet", "value", field_ty, val_ty, errors);
+                        self.assert_match(pc, span, "FieldSet", "value", &resolved, val_ty, errors);
                     }
                     let dst_ty = ty!(*dst);
                     self.assert_match(pc, span, "FieldSet", "dst ≡ object", obj_ty, dst_ty, errors);

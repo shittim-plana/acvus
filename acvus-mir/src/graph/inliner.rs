@@ -280,7 +280,7 @@ fn remap_inst(
         },
 
         // Projection
-        InstKind::Ref { dst, target, field } => {
+        InstKind::Ref { dst, target, path } => {
             let new_target = match target {
                 crate::ir::RefTarget::Var(slot) => crate::ir::RefTarget::Var(r(*slot)),
                 crate::ir::RefTarget::Param(slot) => crate::ir::RefTarget::Param(r(*slot)),
@@ -289,7 +289,7 @@ fn remap_inst(
             InstKind::Ref {
                 dst: r(*dst),
                 target: new_target,
-                field: *field,
+                path: path.clone(),
             }
         }
         InstKind::Load { dst, src, volatile } => InstKind::Load {

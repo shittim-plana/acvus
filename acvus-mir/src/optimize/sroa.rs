@@ -11,6 +11,8 @@
 
 use rustc_hash::FxHashMap;
 
+use acvus_utils::Astr;
+
 use crate::graph::QualifiedRef;
 use crate::ir::{Inst, InstKind, MirBody, RefTarget};
 use crate::ty::Ty;
@@ -33,8 +35,9 @@ fn build_whole_types(
         if let InstKind::Ref {
             dst,
             target,
-            field: None,
+            path,
         } = &inst.kind
+            && path.is_empty()
             && let Some(Ty::Ref(inner, _)) = body.val_types.get(dst)
         {
             map.entry(target.clone()).or_insert_with(|| *inner.clone());
@@ -52,7 +55,7 @@ pub fn run_body(body: &mut MirBody, context_types: &FxHashMap<QualifiedRef, Ty>)
     let mut i = 0;
 
     while i < body.insts.len() {
-        let is_field_ref = matches!(&body.insts[i].kind, InstKind::Ref { field: Some(_), .. });
+        let is_field_ref = matches!(&body.insts[i].kind, InstKind::Ref { path, .. } if !path.is_empty());
 
         if !is_field_ref || i + 1 >= body.insts.len() {
             new_insts.push(body.insts[i].clone());
@@ -63,13 +66,14 @@ pub fn run_body(body: &mut MirBody, context_types: &FxHashMap<QualifiedRef, Ty>)
         let InstKind::Ref {
             dst: ref_dst,
             target,
-            field: Some(field),
+            path,
         } = &body.insts[i].kind
         else {
             unreachable!();
         };
         let target = target.clone();
-        let field = *field;
+        let field = path[0];
+        let rest: Vec<Astr> = path[1..].to_vec();
         let ref_dst = *ref_dst;
         let span = body.insts[i].span;
 
@@ -103,7 +107,7 @@ pub fn run_body(body: &mut MirBody, context_types: &FxHashMap<QualifiedRef, Ty>)
                     kind: InstKind::Ref {
                         dst: identity_ref,
                         target: target.clone(),
-                        field: None,
+                        path: vec![],
                     },
                 });
 
@@ -124,7 +128,7 @@ pub fn run_body(body: &mut MirBody, context_types: &FxHashMap<QualifiedRef, Ty>)
                         dst: load_dst,
                         object: tmp,
                         field,
-                        rest: vec![],
+                        rest: rest.clone(),
                     },
                 });
 
@@ -147,7 +151,7 @@ pub fn run_body(body: &mut MirBody, context_types: &FxHashMap<QualifiedRef, Ty>)
                     kind: InstKind::Ref {
                         dst: ref_for_load,
                         target: target.clone(),
-                        field: None,
+                        path: vec![],
                     },
                 });
 
@@ -170,7 +174,7 @@ pub fn run_body(body: &mut MirBody, context_types: &FxHashMap<QualifiedRef, Ty>)
                         dst: updated,
                         object: old,
                         field,
-                        rest: vec![],
+                        rest: rest.clone(),
                         value,
                     },
                 });
@@ -183,7 +187,7 @@ pub fn run_body(body: &mut MirBody, context_types: &FxHashMap<QualifiedRef, Ty>)
                     kind: InstKind::Ref {
                         dst: ref_for_store,
                         target: target.clone(),
-                        field: None,
+                        path: vec![],
                     },
                 });
 
@@ -263,7 +267,7 @@ mod tests {
                 InstKind::Ref {
                     dst: v(0),
                     target: RefTarget::Context(ctx),
-                    field: Some(field_name),
+                    path: vec![field_name],
                 },
                 InstKind::Load {
                     dst: v(1),
@@ -281,8 +285,8 @@ mod tests {
             .insts
             .iter()
             .map(|i| match &i.kind {
-                InstKind::Ref { field: None, .. } => "ref_identity",
-                InstKind::Ref { field: Some(_), .. } => "ref_field",
+                InstKind::Ref { path, .. } if path.is_empty() => "ref_identity",
+                InstKind::Ref { path, .. } if !path.is_empty() => "ref_field",
                 InstKind::Load { .. } => "load",
                 InstKind::FieldGet { .. } => "field_get",
                 _ => "other",
@@ -321,7 +325,7 @@ mod tests {
                 InstKind::Ref {
                     dst: v(0),
                     target: RefTarget::Var(var_name),
-                    field: None,
+                    path: vec![],
                 },
                 InstKind::Store {
                     dst: v(0),
@@ -332,7 +336,7 @@ mod tests {
                 InstKind::Ref {
                     dst: v(2),
                     target: RefTarget::Var(var_name),
-                    field: Some(field_name),
+                    path: vec![field_name],
                 },
                 InstKind::Store {
                     dst: v(2),
@@ -351,8 +355,8 @@ mod tests {
             .insts
             .iter()
             .map(|i| match &i.kind {
-                InstKind::Ref { field: None, .. } => "ref_identity",
-                InstKind::Ref { field: Some(_), .. } => "ref_field",
+                InstKind::Ref { path, .. } if path.is_empty() => "ref_identity",
+                InstKind::Ref { path, .. } if !path.is_empty() => "ref_field",
                 InstKind::Load { .. } => "load",
                 InstKind::Store { .. } => "store",
                 InstKind::FieldSet { .. } => "field_set",
@@ -390,7 +394,7 @@ mod tests {
                 InstKind::Ref {
                     dst: v(0),
                     target: RefTarget::Var(var_name),
-                    field: None,
+                    path: vec![],
                 },
                 InstKind::Load {
                     dst: v(1),

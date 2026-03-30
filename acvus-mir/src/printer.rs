@@ -251,7 +251,7 @@ fn write_body(
             // Constants -- all skipped above, unreachable here.
             InstKind::Const { .. } => unreachable!(),
             // Projection
-            InstKind::Ref { dst, target, field } => {
+            InstKind::Ref { dst, target, path } => {
                 let base = match target {
                     crate::ir::RefTarget::Var(slot) => {
                         body.debug.label(*slot, ctx.interner)
@@ -265,16 +265,17 @@ fn write_body(
                         format!("@{name}")
                     }
                 };
-                if let Some(f_name) = field {
+                if path.is_empty() {
+                    writeln!(f, "{} = ref {}", vn.fmt_val(*dst), base)?
+                } else {
+                    let suffix: Vec<&str> = path.iter().map(|p| ctx.interner.resolve(*p)).collect();
                     writeln!(
                         f,
                         "{} = ref {}.{}",
                         vn.fmt_val(*dst),
                         base,
-                        ctx.interner.resolve(*f_name)
+                        suffix.join(".")
                     )?
-                } else {
-                    writeln!(f, "{} = ref {}", vn.fmt_val(*dst), base)?
                 }
             }
             InstKind::Load { dst, src, volatile } => {

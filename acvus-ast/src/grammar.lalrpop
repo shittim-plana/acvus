@@ -89,14 +89,31 @@ ScriptStmt: Stmt = {
             body,
             span: Span::new(l, r),
         }),
-    // bind / context-store: lhs = rhs;
+    // bind / context-store / field-store: lhs = rhs;
     <l:@L> <lhs:Expr> "=" <rhs:Expr> ";" <r:@R> =>? {
         let span = Span::new(l, r);
-        match &lhs {
-            Expr::Ident { name, ref_kind: RefKind::Value, .. } =>
-                Ok(Stmt::Bind { id: AstId::alloc(), name: name.name, expr: rhs, span }),
+        // Flatten FieldAccess chain to (root, path).
+        fn collect_assign_path(expr: &Expr) -> (&Expr, Vec<Astr>) {
+            match expr {
+                Expr::FieldAccess { object, field, .. } => {
+                    let (root, mut path) = collect_assign_path(object);
+                    path.push(*field);
+                    (root, path)
+                }
+                other => (other, vec![]),
+            }
+        }
+        let (root, path) = collect_assign_path(&lhs);
+        match root {
+            Expr::Ident { name, ref_kind: RefKind::Value, .. } => {
+                if path.is_empty() {
+                    Ok(Stmt::Bind { id: AstId::alloc(), name: name.name, expr: rhs, span })
+                } else {
+                    Ok(Stmt::VarFieldStore { id: AstId::alloc(), name: name.name, path, expr: rhs, span })
+                }
+            }
             Expr::ContextRef { name, .. } =>
-                Ok(Stmt::ContextStore { id: AstId::alloc(), name: *name, expr: rhs, span }),
+                Ok(Stmt::ContextStore { id: AstId::alloc(), name: *name, path, expr: rhs, span }),
             _ => Err(lalrpop_util::ParseError::User {
                 error: ParseError { kind: ParseErrorKind::InvalidAssignTarget, span },
             }),

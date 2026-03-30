@@ -409,6 +409,26 @@ impl<'a, 's> TypeChecker<'a, 's> {
         None
     }
 
+    /// Walk a field path on a type, resolving each step.
+    /// Returns the leaf type, or Ty::error() if any step fails.
+    fn resolve_field_path(&self, base: &Ty, path: &[Astr]) -> Ty {
+        let mut current = base.clone();
+        for field in path {
+            let resolved = self.subst.resolve(&current);
+            match resolved {
+                Ty::Object(fields) => {
+                    if let Some(field_ty) = fields.get(field) {
+                        current = field_ty.clone();
+                    } else {
+                        return Ty::error();
+                    }
+                }
+                _ => return Ty::error(),
+            }
+        }
+        current
+    }
+
     fn error(&mut self, kind: MirErrorKind, span: Span) {
         self.errors.push(MirError { kind, span });
     }
@@ -573,6 +593,7 @@ impl<'a, 's> TypeChecker<'a, 's> {
             acvus_ast::Stmt::ContextStore {
                 id,
                 name,
+                path,
                 expr,
                 span,
             } => {
@@ -584,10 +605,36 @@ impl<'a, 's> TypeChecker<'a, 's> {
                     .get(name)
                     .cloned()
                     .unwrap_or_else(|| self.subst.fresh_param());
-                if self.subst.unify(&ty, &ctx_ty, Polarity::Invariant).is_err() {
+                // Walk path to get the target field type.
+                let target_ty = self.resolve_field_path(&ctx_ty, path);
+                if self.subst.unify(&ty, &target_ty, Polarity::Invariant).is_err() {
                     self.error(
                         MirErrorKind::UnificationFailure {
-                            expected: ctx_ty,
+                            expected: target_ty,
+                            got: ty.clone(),
+                        },
+                        *span,
+                    );
+                }
+                self.record(*id, ty);
+            }
+            acvus_ast::Stmt::VarFieldStore {
+                id,
+                name,
+                path,
+                expr,
+                span,
+            } => {
+                let ty = self.check_expr(false, expr);
+                let var_ty = self.lookup_var(*name).unwrap_or_else(|| {
+                    self.error(MirErrorKind::UndefinedVariable(self.interner.resolve(*name).to_string()), *span);
+                    Ty::error()
+                });
+                let target_ty = self.resolve_field_path(&var_ty, path);
+                if self.subst.unify(&ty, &target_ty, Polarity::Invariant).is_err() {
+                    self.error(
+                        MirErrorKind::UnificationFailure {
+                            expected: target_ty,
                             got: ty.clone(),
                         },
                         *span,

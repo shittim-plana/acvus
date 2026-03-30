@@ -9,19 +9,15 @@ expression: ir
      0 │   r0 = ref @data
      1 │   r1 = load r0
      3 │   r2 = ref @data
-     4 │   r3 = r1.user
-     5 │   r4 = r3.address
-     6 │   r5 = r4.city
-     7 │   r6 = T0 + r5
-     8 │   return r6
+     4 │   r3 = r1.user.address.city
+     5 │   r4 = T0 + r3
+     6 │   return r4
 
     ; r0 (@data) : Ref<{user: {address: {city: String}}}>
     ; r1 (@data) : {user: {address: {city: String}}}
-    ; r2 (v9) : Ref<{user: {address: {city: String}}}>
-    ; r3 (v5) : {address: {city: String}}
-    ; r4 (address) : {city: String}
-    ; r5 (city) : String
-    ; r6 (v8) : String
-    ; r7 (v3) : String
-    ; r8 (v10) : {user: {address: {city: String}}}
-    ; r9 (@data.user) : Ref<{address: {city: String}}>
+    ; r2 (v7) : Ref<{user: {address: {city: String}}}>
+    ; r3 (v5) : String
+    ; r4 (v6) : String
+    ; r5 (v3) : String
+    ; r6 (v8) : {user: {address: {city: String}}}
+    ; r7 (@data.user.address.city) : Ref<String>

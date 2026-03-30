@@ -147,7 +147,7 @@ async fn spawn_eval_context_defs() {
             inst(InstKind::Ref {
                 dst: vids[0],
                 target: acvus_mir::ir::RefTarget::Context(ctx_id),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Const {
                 dst: vids[1],

@@ -39,15 +39,13 @@ expression: ir
 
 === closure L0 (ValueId(0)) ===
      0 │   r0 = undef
-     1 │   r1 = r2.address
-     2 │   r3 = r1.city
-     3 │   return r3
+     1 │   r1 = r2.address.city
+     2 │   return r1
 
-    ; r0 (v9) : {address: {city: String}}
-    ; r1 (v5) : {city: String}
+    ; r0 (v8) : {address: {city: String}}
+    ; r1 (v5) : String
     ; r2 (v1) : {address: {city: String}}
-    ; r3 (city) : String
-    ; r4 (v3) : Ref<{address: {city: String}}>
-    ; r5 (v7) : Ref<{address: {city: String}}>
-    ; r6 (v8) : {address: {city: String}}
-    ; r7 (u.address) : Ref<{city: String}>
+    ; r3 (v3) : Ref<{address: {city: String}}>
+    ; r4 (v7) : {address: {city: String}}
+    ; r5 (v6) : Ref<{address: {city: String}}>
+    ; r6 (u.address.city) : Ref<String>

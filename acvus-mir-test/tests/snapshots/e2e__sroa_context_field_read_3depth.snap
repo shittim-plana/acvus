@@ -6,18 +6,14 @@ expression: ir
      0 │   r0 = ref @obj
      1 │   r1 = load r0
      2 │   r2 = ref @obj
-     3 │   r3 = r1.a
-     4 │   r4 = r3.b
-     5 │   r5 = r4.c
-     6 │   r6 = call #0(r5)
-     7 │   return r6
+     3 │   r3 = r1.a.b.c
+     4 │   r4 = call #0(r3)
+     5 │   return r4
 
     ; r0 (@obj) : Ref<{a: {b: {c: Int}}}>
     ; r1 (@obj) : {a: {b: {c: Int}}}
-    ; r2 (v8) : Ref<{a: {b: {c: Int}}}>
-    ; r3 (v4) : {b: {c: Int}}
-    ; r4 (b) : {c: Int}
-    ; r5 (c) : Int
-    ; r6 (to_string(...)) : String
-    ; r7 (@obj.a) : Ref<{b: {c: Int}}>
-    ; r8 (v9) : {a: {b: {c: Int}}}
+    ; r2 (v6) : Ref<{a: {b: {c: Int}}}>
+    ; r3 (v4) : Int
+    ; r4 (to_string(...)) : String
+    ; r5 (@obj.a.b.c) : Ref<Int>
+    ; r6 (v7) : {a: {b: {c: Int}}}

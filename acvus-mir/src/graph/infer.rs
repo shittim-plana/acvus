@@ -187,7 +187,7 @@ fn collect_value_refs_stmts(stmts: &[acvus_ast::Stmt], refs: &mut Vec<Astr>) {
     use acvus_ast::*;
     for stmt in stmts {
         match stmt {
-            Stmt::Bind { expr, .. } | Stmt::ContextStore { expr, .. } => {
+            Stmt::Bind { expr, .. } | Stmt::ContextStore { expr, .. } | Stmt::VarFieldStore { expr, .. } => {
                 collect_value_refs_expr(expr, refs);
             }
             Stmt::Expr(expr) => collect_value_refs_expr(expr, refs),

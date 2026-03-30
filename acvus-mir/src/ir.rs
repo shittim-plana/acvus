@@ -87,12 +87,13 @@ pub enum InstKind {
 
     // ── Projection (memory world) ────────────────────────────────
     /// Create a projection to named storage. No-op at runtime — produces a path.
-    /// `field: None` = identity (root of the storage).
-    /// `field: Some(f)` = 1-depth field projection.
+    /// `path: vec![]` = identity (root of the storage).
+    /// `path: vec![f]` = 1-depth field projection.
+    /// `path: vec![a, b]` = multi-depth field projection (a.b).
     Ref {
         dst: ValueId,
         target: RefTarget,
-        field: Option<Astr>,
+        path: Vec<Astr>,
     },
     /// Materialize a projection into a value (copy). `src` must be `Ref<T>`.
     /// `volatile`: if true, SSA must not elide or forward this load.
@@ -340,8 +341,8 @@ pub enum ValOrigin {
     ExternParam(Astr),
     /// A field access on a scalar value: `user.name` -- (object val, field name).
     Field(ValueId, Astr),
-    /// A field projection on named storage: `@ctx.field`, `x.field`.
-    RefField(RefTarget, Astr),
+    /// A field projection on named storage: `@ctx.field`, `x.a.b`.
+    RefField(RefTarget, Vec<Astr>),
     /// Result of a function call: `to_string(...)`, `fetch(...)`.
     Call(Astr),
     /// An intermediate/anonymous value (arithmetic, pattern test, etc.).
@@ -381,7 +382,7 @@ impl DebugInfo {
             Some(ValOrigin::Context(name)) => format!("@{}", interner.resolve(*name)),
             Some(ValOrigin::ExternParam(name)) => format!("${}", interner.resolve(*name)),
             Some(ValOrigin::Field(_, field)) => interner.resolve(*field).to_string(),
-            Some(ValOrigin::RefField(target, field)) => {
+            Some(ValOrigin::RefField(target, path)) => {
                 let base = match target {
                     RefTarget::Var(slot) => {
                         // Look up debug name from val_origins for the slot.
@@ -398,7 +399,8 @@ impl DebugInfo {
                     }
                     RefTarget::Context(qref) => format!("@{}", interner.resolve(qref.name)),
                 };
-                format!("{}.{}", base, interner.resolve(*field))
+                let fields: Vec<_> = path.iter().map(|f| interner.resolve(*f).to_string()).collect();
+                format!("{}.{}", base, fields.join("."))
             }
             Some(ValOrigin::Call(func)) => format!("{}(...)", interner.resolve(*func)),
             Some(ValOrigin::Expr) | None => format!("v{}", val.0),

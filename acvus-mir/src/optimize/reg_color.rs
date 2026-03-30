@@ -374,34 +374,29 @@ fn reconstruct_debug(cfg: &CfgBody) -> crate::ir::DebugInfo {
         // Block params: no specific origin (SSA phi results).
         for inst in &block.insts {
             match &inst.kind {
-                InstKind::Ref { dst, target, field } => {
-                    let origin = match (target, field) {
-                        (RefTarget::Context(qref), Some(f)) => {
-                            ValOrigin::RefField(target.clone(), *f)
-                        }
-                        (RefTarget::Context(qref), None) => ValOrigin::Context(qref.name),
-                        (RefTarget::Var(slot), Some(f)) => {
-                            ValOrigin::RefField(target.clone(), *f)
-                        }
-                        (RefTarget::Var(slot), None) => {
-                            if let Some(&(name, _)) = slot_name.get(slot) {
-                                ValOrigin::Named(name)
-                            } else if let Some(origin) = debug.get(*slot) {
-                                origin.clone()
-                            } else {
-                                ValOrigin::Expr
+                InstKind::Ref { dst, target, path } => {
+                    let origin = if !path.is_empty() {
+                        ValOrigin::RefField(target.clone(), path.clone())
+                    } else {
+                        match target {
+                            RefTarget::Context(qref) => ValOrigin::Context(qref.name),
+                            RefTarget::Var(slot) => {
+                                if let Some(&(name, _)) = slot_name.get(slot) {
+                                    ValOrigin::Named(name)
+                                } else if let Some(origin) = debug.get(*slot) {
+                                    origin.clone()
+                                } else {
+                                    ValOrigin::Expr
+                                }
                             }
-                        }
-                        (RefTarget::Param(slot), Some(f)) => {
-                            ValOrigin::RefField(target.clone(), *f)
-                        }
-                        (RefTarget::Param(slot), None) => {
-                            if let Some(&(name, _)) = slot_name.get(slot) {
-                                ValOrigin::ExternParam(name)
-                            } else if let Some(origin) = debug.get(*slot) {
-                                origin.clone()
-                            } else {
-                                ValOrigin::Expr
+                            RefTarget::Param(slot) => {
+                                if let Some(&(name, _)) = slot_name.get(slot) {
+                                    ValOrigin::ExternParam(name)
+                                } else if let Some(origin) = debug.get(*slot) {
+                                    origin.clone()
+                                } else {
+                                    ValOrigin::Expr
+                                }
                             }
                         }
                     };

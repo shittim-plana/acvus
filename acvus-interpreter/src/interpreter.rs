@@ -19,24 +19,24 @@ use crate::value::{FnValue, Value};
 enum RuntimeRef {
     Var {
         slot: ValueId,
-        field: Option<Astr>,
+        path: Vec<Astr>,
     },
     Param {
         slot: ValueId,
-        field: Option<Astr>,
+        path: Vec<Astr>,
     },
     Context {
         qref: QualifiedRef,
-        field: Option<Astr>,
+        path: Vec<Astr>,
     },
 }
 
 impl RuntimeRef {
-    fn from_target(target: &RefTarget, field: Option<Astr>) -> Self {
+    fn from_target(target: &RefTarget, path: Vec<Astr>) -> Self {
         match target {
-            RefTarget::Var(slot) => RuntimeRef::Var { slot: *slot, field },
-            RefTarget::Param(slot) => RuntimeRef::Param { slot: *slot, field },
-            RefTarget::Context(qref) => RuntimeRef::Context { qref: *qref, field },
+            RefTarget::Var(slot) => RuntimeRef::Var { slot: *slot, path },
+            RefTarget::Param(slot) => RuntimeRef::Param { slot: *slot, path },
+            RefTarget::Context(qref) => RuntimeRef::Context { qref: *qref, path },
         }
     }
 }
@@ -44,25 +44,30 @@ impl RuntimeRef {
 /// Load a value from a RuntimeRef.
 fn load_ref(rt_ref: &RuntimeRef, ctx: &RunContext) -> Value {
     let interner = &ctx.shared.interner;
+
+    fn walk_path(mut val: Value, path: &[Astr], interner: &Interner) -> Value {
+        for f in path {
+            val = match &val {
+                Value::Object(obj) => obj
+                    .get(f)
+                    .unwrap_or_else(|| panic!("missing field {}", interner.resolve(*f)))
+                    .share(),
+                other => panic!("field load on non-object: {other:?}"),
+            };
+        }
+        val
+    }
+
     match rt_ref {
-        RuntimeRef::Var { slot, field } | RuntimeRef::Param { slot, field } => {
+        RuntimeRef::Var { slot, path } | RuntimeRef::Param { slot, path } => {
             let val = ctx
                 .variables
                 .get(slot)
                 .unwrap_or_else(|| panic!("undefined variable slot {:?}", slot))
                 .share();
-            match field {
-                None => val,
-                Some(f) => match &val {
-                    Value::Object(obj) => obj
-                        .get(f)
-                        .unwrap_or_else(|| panic!("missing field {}", interner.resolve(*f)))
-                        .share(),
-                    other => panic!("field load on non-object: {other:?}"),
-                },
-            }
+            walk_path(val, path, interner)
         }
-        RuntimeRef::Context { qref, field } => {
+        RuntimeRef::Context { qref, path } => {
             let name = ctx
                 .shared
                 .context_names
@@ -73,16 +78,32 @@ fn load_ref(rt_ref: &RuntimeRef, ctx: &RunContext) -> Value {
                 .page
                 .get(key)
                 .unwrap_or_else(|| panic!("context load: undefined context '{}'", key));
-            match field {
-                None => val,
-                Some(f) => match &val {
-                    Value::Object(obj) => obj
-                        .get(f)
-                        .unwrap_or_else(|| panic!("missing field {}", interner.resolve(*f)))
-                        .share(),
-                    other => panic!("field load on non-object: {other:?}"),
-                },
+            walk_path(val, path, interner)
+        }
+    }
+}
+
+/// Set a nested field path on a mutable Value.
+fn store_path(target: &mut Value, path: &[Astr], value: Value, interner: &Interner) {
+    assert!(!path.is_empty(), "store_path called with empty path");
+    if path.len() == 1 {
+        match target {
+            Value::Object(obj) => {
+                Arc::make_mut(obj).insert(path[0], value);
             }
+            other => panic!("field store on non-object: {other:?}"),
+        }
+    } else {
+        match target {
+            Value::Object(obj) => {
+                let inner = Arc::make_mut(obj)
+                    .get_mut(&path[0])
+                    .unwrap_or_else(|| {
+                        panic!("missing field {}", interner.resolve(path[0]))
+                    });
+                store_path(inner, &path[1..], value, interner);
+            }
+            other => panic!("field store on non-object: {other:?}"),
         }
     }
 }
@@ -91,57 +112,36 @@ fn load_ref(rt_ref: &RuntimeRef, ctx: &RunContext) -> Value {
 fn store_ref(rt_ref: &RuntimeRef, ctx: &mut RunContext, value: Value) {
     let interner = ctx.shared.interner.clone();
     match rt_ref {
-        RuntimeRef::Var { slot, field: None } => {
+        RuntimeRef::Var { slot, path } if path.is_empty() => {
             ctx.variables.insert(*slot, value);
         }
-        RuntimeRef::Var {
-            slot,
-            field: Some(f),
-        } => {
+        RuntimeRef::Var { slot, path } => {
             let entry = ctx
                 .variables
                 .get_mut(slot)
                 .unwrap_or_else(|| panic!("undefined variable slot {:?}", slot));
-            match entry {
-                Value::Object(obj) => {
-                    Arc::make_mut(obj).insert(*f, value);
-                }
-                other => panic!("field store on non-object: {other:?}"),
-            }
+            store_path(entry, path, value, &interner);
         }
         RuntimeRef::Param { slot, .. } => {
             panic!("cannot store to param slot {:?}", slot);
         }
-        RuntimeRef::Context { qref, field: None } => {
+        RuntimeRef::Context { qref, path } => {
             let name = ctx
                 .shared
                 .context_names
                 .get(qref)
                 .unwrap_or_else(|| panic!("context store: no name for {:?}", qref));
             let key = interner.resolve(*name);
-            ctx.page.set(key, value);
-        }
-        RuntimeRef::Context {
-            qref,
-            field: Some(f),
-        } => {
-            let name = ctx
-                .shared
-                .context_names
-                .get(qref)
-                .unwrap_or_else(|| panic!("context store: no name for {:?}", qref));
-            let key = interner.resolve(*name);
-            let mut current = ctx
-                .page
-                .get(key)
-                .unwrap_or_else(|| panic!("context store: undefined context '{}'", key));
-            match &mut current {
-                Value::Object(obj) => {
-                    Arc::make_mut(obj).insert(*f, value);
-                }
-                other => panic!("field store on non-object: {other:?}"),
+            if path.is_empty() {
+                ctx.page.set(key, value);
+            } else {
+                let mut current = ctx
+                    .page
+                    .get(key)
+                    .unwrap_or_else(|| panic!("context store: undefined context '{}'", key));
+                store_path(&mut current, path, value, &interner);
+                ctx.page.set(key, current);
             }
-            ctx.page.set(key, current);
         }
     }
 }
@@ -423,7 +423,7 @@ fn apply_context_defs(
             *vid,
             RuntimeRef::Context {
                 qref: *ctx_id,
-                field: None,
+                path: vec![],
             },
         );
     }
@@ -500,8 +500,8 @@ async fn execute_inst(
         }
 
         // ── Projection ──────────────────────────────────
-        InstKind::Ref { dst, target, field } => {
-            projection_map.insert(*dst, RuntimeRef::from_target(target, *field));
+        InstKind::Ref { dst, target, path } => {
+            projection_map.insert(*dst, RuntimeRef::from_target(target, path.clone()));
             frame.set(*dst, Value::Unit);
         }
         InstKind::Load { dst, src, .. } => {
@@ -925,7 +925,7 @@ async fn execute_inst(
                     *vid,
                     RuntimeRef::Context {
                         qref: *ctx_id,
-                        field: None,
+                        path: vec![],
                     },
                 );
             }
@@ -935,7 +935,7 @@ async fn execute_inst(
                     *vid,
                     RuntimeRef::Context {
                         qref: *ctx_id,
-                        field: None,
+                        path: vec![],
                     },
                 );
             }

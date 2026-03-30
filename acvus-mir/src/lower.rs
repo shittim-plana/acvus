@@ -40,6 +40,9 @@ pub struct Lowerer<'a> {
     fn_types: Freeze<FxHashMap<QualifiedRef, Ty>>,
     /// External constraints on contexts (volatile, read_only, etc.).
     policies: FxHashMap<QualifiedRef, ContextPolicy>,
+    /// Context projection alias stack: @x → (@a, [x]) means @x is an alias for @a.x.
+    /// Pushed/popped around match-bind bodies for destructure projection.
+    context_aliases: Vec<FxHashMap<QualifiedRef, (QualifiedRef, Vec<Astr>)>>,
 }
 
 /// Adjust indentation of a text string according to an `IndentModifier`.
@@ -156,6 +159,7 @@ impl<'a> Lowerer<'a> {
             context_types,
             fn_types,
             policies,
+            context_aliases: vec![],
         }
     }
 
@@ -171,7 +175,7 @@ impl<'a> Lowerer<'a> {
         entries.sort_by_key(|(qref, _)| self.interner.resolve(qref.name).to_string());
 
         for (qref, ty) in entries {
-            let val = self.emit_ref_load(span, RefTarget::Context(qref), None, ty);
+            let val = self.emit_ref_load(span, RefTarget::Context(qref), vec![], ty);
             self.set_origin(val, ValOrigin::Context(qref.name));
         }
     }
@@ -209,13 +213,25 @@ impl<'a> Lowerer<'a> {
                     .unwrap_or(Ty::error());
                 let slot = self.var_slot(*name);
                 self.set_origin(slot, ValOrigin::Named(*name));
-                self.emit_ref_store(*span, RefTarget::Var(slot), None, val);
+                self.emit_ref_store(*span, RefTarget::Var(slot), vec![], val);
                 self.define_var(*name, ty);
             }
             Stmt::ContextStore {
-                name, expr, span, ..
+                name, path, expr, span, ..
             } => {
-                self.lower_context_store(*name, expr, *span); // name is QualifiedRef
+                // Resolve alias: if @x → @a.x, then @x.y = v becomes @a.x.y = v
+                if let Some((real_ctx, alias_path)) = self.resolve_context_alias(name) {
+                    let mut full_path = alias_path;
+                    full_path.extend_from_slice(path);
+                    self.lower_context_store(real_ctx, &full_path, expr, *span);
+                } else {
+                    self.lower_context_store(*name, path, expr, *span);
+                }
+            }
+            Stmt::VarFieldStore {
+                name, path, expr, span, ..
+            } => {
+                self.lower_var_field_store(*name, path, expr, *span);
             }
             Stmt::Expr(expr) => {
                 self.lower_expr(expr);
@@ -252,6 +268,48 @@ impl<'a> Lowerer<'a> {
         body: &[Stmt],
         span: Span,
     ) {
+        // Projection destructure: { @x, @y, } = @a { body }
+        // When source is ContextRef and pattern is Object with ContextBind fields,
+        // register aliases instead of copying values.
+        if let (Expr::ContextRef { name: source_ctx, .. }, Pattern::Object { fields, .. }) =
+            (source, pattern)
+        {
+            self.push_scope();
+            self.push_context_alias_scope();
+            for field in fields {
+                match &field.pattern {
+                    Pattern::ContextBind { name: alias_ctx, .. } => {
+                        self.register_context_alias(*alias_ctx, *source_ctx, vec![field.key]);
+                    }
+                    _ => {
+                        // Non-projection sub-pattern: copy via field load.
+                        let source_reg = self.lower_expr(source);
+                        let source_val = self.materialize(source_reg, span);
+                        let field_val = self.alloc_val();
+                        self.set_val_type(
+                            field_val,
+                            self.object_field_type(source_val, field.key),
+                        );
+                        self.emit_inst(
+                            span,
+                            InstKind::ObjectGet {
+                                dst: field_val,
+                                object: source_val,
+                                key: field.key,
+                            },
+                        );
+                        self.lower_pattern_bind(&field.pattern, field_val, span);
+                    }
+                }
+            }
+            for s in body {
+                self.lower_stmt(s);
+            }
+            self.pop_context_alias_scope();
+            self.pop_scope();
+            return;
+        }
+
         let source_reg = self.lower_expr(source);
 
         let is_irrefutable = matches!(
@@ -457,7 +515,35 @@ impl<'a> Lowerer<'a> {
     }
 
     fn context_policy(&self, ctx: &QualifiedRef) -> ContextPolicy {
+        // Resolve alias first: if @x → @a.x, use @a's policy.
+        if let Some((real_ctx, _)) = self.resolve_context_alias(ctx) {
+            return self.policies.get(&real_ctx).copied().unwrap_or_default();
+        }
         self.policies.get(ctx).copied().unwrap_or_default()
+    }
+
+    /// Resolve a context alias. Returns (real_context, path) if aliased.
+    fn resolve_context_alias(&self, ctx: &QualifiedRef) -> Option<(QualifiedRef, Vec<Astr>)> {
+        for scope in self.context_aliases.iter().rev() {
+            if let Some((real_ctx, path)) = scope.get(ctx) {
+                return Some((*real_ctx, path.clone()));
+            }
+        }
+        None
+    }
+
+    fn push_context_alias_scope(&mut self) {
+        self.context_aliases.push(FxHashMap::default());
+    }
+
+    fn pop_context_alias_scope(&mut self) {
+        self.context_aliases.pop();
+    }
+
+    fn register_context_alias(&mut self, alias: QualifiedRef, target: QualifiedRef, path: Vec<Astr>) {
+        if let Some(scope) = self.context_aliases.last_mut() {
+            scope.insert(alias, (target, path));
+        }
     }
 
     /// Determine volatile flag from a RefTarget.
@@ -473,7 +559,7 @@ impl<'a> Lowerer<'a> {
         &mut self,
         span: Span,
         target: RefTarget,
-        field: Option<Astr>,
+        path: Vec<Astr>,
         value: ValueId,
     ) {
         let val_ty = self
@@ -499,7 +585,7 @@ impl<'a> Lowerer<'a> {
             InstKind::Ref {
                 dst: ref_dst,
                 target,
-                field,
+                path,
             },
         );
         self.emit_inst(
@@ -517,7 +603,7 @@ impl<'a> Lowerer<'a> {
         &mut self,
         span: Span,
         target: RefTarget,
-        field: Option<Astr>,
+        path: Vec<Astr>,
         result_ty: Ty,
     ) -> ValueId {
         let volatile = self.ref_volatile(&target);
@@ -535,7 +621,7 @@ impl<'a> Lowerer<'a> {
             InstKind::Ref {
                 dst: ref_dst,
                 target,
-                field,
+                path,
             },
         );
         let dst = self.alloc_val();
@@ -967,17 +1053,27 @@ impl<'a> Lowerer<'a> {
                 name: qref,
                 span,
             } => {
-                let policy = self.context_policy(qref);
+                // Resolve alias: @x → @a.x becomes Ref { target: Context(a), path: [x] }
+                let (real_ctx, path) = if let Some((real, path)) = self.resolve_context_alias(qref) {
+                    (real, path)
+                } else {
+                    (*qref, vec![])
+                };
+                let policy = self.context_policy(&real_ctx);
                 let inner_ty = self.type_of_id(*id);
                 let dst = self.alloc_val();
                 self.set_val_type(dst, Ty::Ref(Box::new(inner_ty), policy.volatile));
-                self.set_origin(dst, ValOrigin::Context(qref.name));
+                if path.is_empty() {
+                    self.set_origin(dst, ValOrigin::Context(real_ctx.name));
+                } else {
+                    self.set_origin(dst, ValOrigin::RefField(RefTarget::Context(real_ctx), path.clone()));
+                }
                 self.emit_inst(
                     *span,
                     InstKind::Ref {
                         dst,
-                        target: RefTarget::Context(*qref),
-                        field: None,
+                        target: RefTarget::Context(real_ctx),
+                        path,
                     },
                 );
                 dst
@@ -995,12 +1091,12 @@ impl<'a> Lowerer<'a> {
                     // lambda that captured this param as a regular variable), fall
                     // through to local variable lookup.
                     if let Some(param_reg) = self.try_param_slot(name.name) {
-                        let dst = self.emit_ref_load(*span, RefTarget::Param(param_reg), None, ty);
+                        let dst = self.emit_ref_load(*span, RefTarget::Param(param_reg), vec![], ty);
                         self.set_origin(dst, ValOrigin::ExternParam(name.name));
                         dst
                     } else if self.is_defined(name.name) {
                         let slot = self.var_slot(name.name);
-                        let dst = self.emit_ref_load(*span, RefTarget::Var(slot), None, ty);
+                        let dst = self.emit_ref_load(*span, RefTarget::Var(slot), vec![], ty);
                         self.set_origin(dst, ValOrigin::Named(name.name));
                         dst
                     } else {
@@ -1021,7 +1117,7 @@ impl<'a> Lowerer<'a> {
                     }
                     let ty = self.var_type(name.name);
                     let slot = self.var_slot(name.name);
-                    let dst = self.emit_ref_load(*span, RefTarget::Var(slot), None, ty);
+                    let dst = self.emit_ref_load(*span, RefTarget::Var(slot), vec![], ty);
                     self.set_origin(dst, ValOrigin::Named(name.name));
                     dst
                 }
@@ -1074,23 +1170,38 @@ impl<'a> Lowerer<'a> {
                 field,
                 span,
             } => {
+                /// Walk a FieldAccess chain, collecting field names.
+                /// Returns (root_expr, accumulated_path).
+                fn collect_field_chain(expr: &Expr) -> (&Expr, Vec<Astr>) {
+                    match expr {
+                        Expr::FieldAccess { object, field, .. } => {
+                            let (root, mut path) = collect_field_chain(object);
+                            path.push(*field);
+                            (root, path)
+                        }
+                        other => (other, vec![]),
+                    }
+                }
+
                 let field_ty = self.type_of_id(*id);
-                // If object is a named storage reference, emit Ref with field.
-                match object.as_ref() {
+                let (root, mut path) = collect_field_chain(object);
+                path.push(*field);
+
+                match root {
                     Expr::ContextRef { name: qref, .. } => {
                         let policy = self.context_policy(qref);
                         let dst = self.alloc_val();
                         self.set_val_type(dst, Ty::Ref(Box::new(field_ty), policy.volatile));
                         self.set_origin(
                             dst,
-                            ValOrigin::RefField(RefTarget::Context(*qref), *field),
+                            ValOrigin::RefField(RefTarget::Context(*qref), path.clone()),
                         );
                         self.emit_inst(
                             *span,
                             InstKind::Ref {
                                 dst,
                                 target: RefTarget::Context(*qref),
-                                field: Some(*field),
+                                path,
                             },
                         );
                         dst
@@ -1103,13 +1214,16 @@ impl<'a> Lowerer<'a> {
                         let slot = self.var_slot(name.name);
                         let dst = self.alloc_val();
                         self.set_val_type(dst, Ty::Ref(Box::new(field_ty), false));
-                        self.set_origin(dst, ValOrigin::RefField(RefTarget::Var(slot), *field));
+                        self.set_origin(
+                            dst,
+                            ValOrigin::RefField(RefTarget::Var(slot), path.clone()),
+                        );
                         self.emit_inst(
                             *span,
                             InstKind::Ref {
                                 dst,
                                 target: RefTarget::Var(slot),
-                                field: Some(*field),
+                                path,
                             },
                         );
                         dst
@@ -1122,13 +1236,16 @@ impl<'a> Lowerer<'a> {
                         if let Some(param_reg) = self.try_param_slot(name.name) {
                             let dst = self.alloc_val();
                             self.set_val_type(dst, Ty::Ref(Box::new(field_ty), false));
-                            self.set_origin(dst, ValOrigin::RefField(RefTarget::Param(param_reg), *field));
+                            self.set_origin(
+                                dst,
+                                ValOrigin::RefField(RefTarget::Param(param_reg), path.clone()),
+                            );
                             self.emit_inst(
                                 *span,
                                 InstKind::Ref {
                                     dst,
                                     target: RefTarget::Param(param_reg),
-                                    field: Some(*field),
+                                    path,
                                 },
                             );
                             dst
@@ -1137,13 +1254,16 @@ impl<'a> Lowerer<'a> {
                             let slot = self.var_slot(name.name);
                             let dst = self.alloc_val();
                             self.set_val_type(dst, Ty::Ref(Box::new(field_ty), false));
-                            self.set_origin(dst, ValOrigin::RefField(RefTarget::Var(slot), *field));
+                            self.set_origin(
+                                dst,
+                                ValOrigin::RefField(RefTarget::Var(slot), path.clone()),
+                            );
                             self.emit_inst(
                                 *span,
                                 InstKind::Ref {
                                     dst,
                                     target: RefTarget::Var(slot),
-                                    field: Some(*field),
+                                    path,
                                 },
                             );
                             dst
@@ -1245,12 +1365,12 @@ impl<'a> Lowerer<'a> {
                     .map(|(name, var_id, var_span)| {
                         let ty = self.type_of_id(*var_id);
                         if let Some(param_reg) = self.try_param_slot(*name) {
-                            let dst = self.emit_ref_load(*var_span, RefTarget::Param(param_reg), None, ty);
+                            let dst = self.emit_ref_load(*var_span, RefTarget::Param(param_reg), vec![], ty);
                             self.set_origin(dst, ValOrigin::ExternParam(*name));
                             dst
                         } else {
                             let slot = self.var_slot(*name);
-                            let dst = self.emit_ref_load(*var_span, RefTarget::Var(slot), None, ty);
+                            let dst = self.emit_ref_load(*var_span, RefTarget::Var(slot), vec![], ty);
                             self.set_origin(dst, ValOrigin::Named(*name));
                             dst
                         }
@@ -1298,13 +1418,13 @@ impl<'a> Lowerer<'a> {
                 {
                     let slot = self.var_slot(*name);
                     self.set_origin(slot, ValOrigin::Named(*name));
-                    self.emit_ref_store(*span, RefTarget::Var(slot), None, *capture_reg);
+                    self.emit_ref_store(*span, RefTarget::Var(slot), vec![], *capture_reg);
                 }
                 // Emit Ref+Store for params.
                 for (p, param_reg) in params.iter().zip(closure_param_regs.iter()) {
                     let slot = self.var_slot(p.name);
                     self.set_origin(slot, ValOrigin::Named(p.name));
-                    self.emit_ref_store(p.span, RefTarget::Var(slot), None, *param_reg);
+                    self.emit_ref_store(p.span, RefTarget::Var(slot), vec![], *param_reg);
                 }
 
                 // lower_expr calls maybe_cast(body.span(), val) which will
@@ -1489,11 +1609,25 @@ impl<'a> Lowerer<'a> {
     fn lower_context_store(
         &mut self,
         qref: QualifiedRef,
+        path: &[Astr],
         value_expr: &Expr,
         span: Span,
     ) -> ValueId {
         let val = self.lower_expr(value_expr);
-        self.emit_ref_store(span, RefTarget::Context(qref), None, val);
+        self.emit_ref_store(span, RefTarget::Context(qref), path.to_vec(), val);
+        val
+    }
+
+    fn lower_var_field_store(
+        &mut self,
+        name: Astr,
+        path: &[Astr],
+        value_expr: &Expr,
+        span: Span,
+    ) -> ValueId {
+        let val = self.lower_expr(value_expr);
+        let slot = self.var_slot(name);
+        self.emit_ref_store(span, RefTarget::Var(slot), path.to_vec(), val);
         val
     }
 
@@ -1572,7 +1706,7 @@ impl<'a> Lowerer<'a> {
                         let closure_reg = self.emit_ref_load(
                             *ident_span,
                             RefTarget::Var(slot),
-                            None,
+                            vec![],
                             closure_ty,
                         );
                         self.set_origin(closure_reg, ValOrigin::Named(name.name));
@@ -1626,7 +1760,7 @@ impl<'a> Lowerer<'a> {
             } = &mb.arms[0].pattern
         {
             let src = self.lower_expr(&mb.source);
-            self.emit_ref_store(*pat_span, RefTarget::Context(*qref), None, src);
+            self.emit_ref_store(*pat_span, RefTarget::Context(*qref), vec![], src);
             return self.emit_empty_string(mb.span);
         }
 
@@ -1657,7 +1791,7 @@ impl<'a> Lowerer<'a> {
                         .unwrap_or(Ty::error());
                     let slot = self.var_slot(*name);
                     self.set_origin(slot, ValOrigin::Named(*name));
-                    self.emit_ref_store(*pat_span, RefTarget::Var(slot), None, src);
+                    self.emit_ref_store(*pat_span, RefTarget::Var(slot), vec![], src);
                     self.define_var(*name, ty);
                 }
             }
@@ -2181,7 +2315,7 @@ impl<'a> Lowerer<'a> {
     fn lower_pattern_bind(&mut self, pattern: &Pattern, src_reg: ValueId, span: Span) {
         match pattern {
             Pattern::ContextBind { name: qref, .. } => {
-                self.emit_ref_store(span, RefTarget::Context(*qref), None, src_reg);
+                self.emit_ref_store(span, RefTarget::Context(*qref), vec![], src_reg);
             }
             Pattern::Binding {
                 name,
@@ -2197,7 +2331,7 @@ impl<'a> Lowerer<'a> {
                     .unwrap_or(Ty::error());
                 let slot = self.var_slot(*name);
                 self.set_origin(slot, ValOrigin::Named(*name));
-                self.emit_ref_store(span, RefTarget::Var(slot), None, src_reg);
+                self.emit_ref_store(span, RefTarget::Var(slot), vec![], src_reg);
                 self.define_var(*name, ty);
             }
             Pattern::Binding {
@@ -2310,7 +2444,7 @@ impl<'a> Lowerer<'a> {
                     self.collect_free_vars(expr, bound, free, seen);
                     bound.insert(*name);
                 }
-                Stmt::ContextStore { expr, .. } | Stmt::Expr(expr) => {
+                Stmt::ContextStore { expr, .. } | Stmt::VarFieldStore { expr, .. } | Stmt::Expr(expr) => {
                     self.collect_free_vars(expr, bound, free, seen);
                 }
                 Stmt::MatchBind { source, body, .. } | Stmt::Iterate { source, body, .. } => {

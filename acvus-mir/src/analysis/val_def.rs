@@ -117,7 +117,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v0,
                 target: crate::ir::RefTarget::Context(id0),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Load {
                 dst: v1,

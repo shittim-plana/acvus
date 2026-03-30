@@ -339,12 +339,12 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v0,
                 target: crate::ir::RefTarget::Context(id0),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Ref {
                 dst: v1,
                 target: crate::ir::RefTarget::Context(id1),
-                field: None,
+                path: vec![],
             }),
         ]);
         let needed = reachable_context_keys(&module, &FxHashMap::default());
@@ -363,12 +363,12 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v0,
                 target: crate::ir::RefTarget::Context(id0),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Ref {
                 dst: v1,
                 target: crate::ir::RefTarget::Context(id1),
-                field: None,
+                path: vec![],
             }),
         ]);
         let known =
@@ -392,7 +392,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v0,
                 target: crate::ir::RefTarget::Context(id0),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::TestLiteral {
                 dst: v1,
@@ -414,7 +414,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v2,
                 target: crate::ir::RefTarget::Context(id1),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Return(v2)),
             inst(InstKind::BlockLabel {
@@ -425,7 +425,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v3,
                 target: crate::ir::RefTarget::Context(id2),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Return(v3)),
         ]);
@@ -454,7 +454,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v0,
                 target: crate::ir::RefTarget::Context(id0),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::TestLiteral {
                 dst: v1,
@@ -476,7 +476,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v2,
                 target: crate::ir::RefTarget::Context(id1),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Return(v2)),
             inst(InstKind::BlockLabel {
@@ -487,7 +487,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v3,
                 target: crate::ir::RefTarget::Context(id2),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Return(v3)),
         ]);
@@ -515,7 +515,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v0,
                 target: crate::ir::RefTarget::Context(id0),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::TestLiteral {
                 dst: v1,
@@ -537,7 +537,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v2,
                 target: crate::ir::RefTarget::Context(id1),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Return(v2)),
             inst(InstKind::BlockLabel {
@@ -548,7 +548,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v3,
                 target: crate::ir::RefTarget::Context(id2),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Return(v3)),
         ]);
@@ -576,7 +576,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v0,
                 target: crate::ir::RefTarget::Context(id0),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::TestLiteral {
                 dst: v1,
@@ -598,7 +598,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v2,
                 target: crate::ir::RefTarget::Context(id1),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Jump {
                 label: Label(0),
@@ -612,7 +612,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v3,
                 target: crate::ir::RefTarget::Context(id2),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Jump {
                 label: Label(0),
@@ -648,7 +648,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v0,
                 target: crate::ir::RefTarget::Context(id0),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::TestRange {
                 dst: v1,
@@ -672,7 +672,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v2,
                 target: crate::ir::RefTarget::Context(id1),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Return(v2)),
             inst(InstKind::BlockLabel {
@@ -683,7 +683,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v3,
                 target: crate::ir::RefTarget::Context(id2),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Return(v3)),
         ]);
@@ -713,7 +713,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v0,
                 target: crate::ir::RefTarget::Context(id0),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::TestLiteral {
                 dst: v1,
@@ -735,7 +735,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v2,
                 target: crate::ir::RefTarget::Context(id1),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Jump {
                 label: Label(99),
@@ -766,7 +766,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v4,
                 target: crate::ir::RefTarget::Context(id2),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Jump {
                 label: Label(99),
@@ -780,7 +780,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v5,
                 target: crate::ir::RefTarget::Context(id3),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Jump {
                 label: Label(99),
@@ -851,7 +851,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v0,
                     target: crate::ir::RefTarget::Context(id0),
-                    field: None,
+                    path: vec![],
                 }),
                 // %1 = TestVariant(%0, "D")  -- D not in {A,B,C} -> always false
                 inst(InstKind::TestVariant {
@@ -875,7 +875,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v2,
                     target: crate::ir::RefTarget::Context(id1),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -890,7 +890,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v3,
                     target: crate::ir::RefTarget::Context(id2),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -942,7 +942,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v0,
                     target: crate::ir::RefTarget::Context(id0),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::TestVariant {
                     dst: v1,
@@ -964,7 +964,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v2,
                     target: crate::ir::RefTarget::Context(id1),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Return(v2)),
                 inst(InstKind::BlockLabel {
@@ -975,7 +975,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v3,
                     target: crate::ir::RefTarget::Context(id2),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Return(v3)),
             ],
@@ -1028,7 +1028,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v0,
                     target: crate::ir::RefTarget::Context(id0),
-                    field: None,
+                    path: vec![],
                 }),
                 // TestVariant A
                 inst(InstKind::TestVariant {
@@ -1052,7 +1052,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v2,
                     target: crate::ir::RefTarget::Context(id1),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1085,7 +1085,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v4,
                     target: crate::ir::RefTarget::Context(id2),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1100,7 +1100,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v5,
                     target: crate::ir::RefTarget::Context(id3),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1162,7 +1162,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v0,
                     target: crate::ir::RefTarget::Context(id0),
-                    field: None,
+                    path: vec![],
                 }),
                 // Test A
                 inst(InstKind::TestVariant {
@@ -1186,7 +1186,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v2,
                     target: crate::ir::RefTarget::Context(id1),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1219,7 +1219,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v4,
                     target: crate::ir::RefTarget::Context(id2),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1234,7 +1234,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v5,
                     target: crate::ir::RefTarget::Context(id3),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1302,12 +1302,12 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v_pre,
                     target: crate::ir::RefTarget::Context(id10),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Ref {
                     dst: v0,
                     target: crate::ir::RefTarget::Context(id0),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::TestVariant {
                     dst: v1,
@@ -1329,7 +1329,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v2,
                     target: crate::ir::RefTarget::Context(id1),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Return(v2)),
                 inst(InstKind::BlockLabel {
@@ -1340,7 +1340,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v3,
                     target: crate::ir::RefTarget::Context(id2),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Return(v3)),
             ],
@@ -1393,7 +1393,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v0,
                     target: crate::ir::RefTarget::Context(id0),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Jump {
                     label: Label(1),
@@ -1426,7 +1426,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v2,
                     target: crate::ir::RefTarget::Context(id1),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1441,7 +1441,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v3,
                     target: crate::ir::RefTarget::Context(id2),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1456,7 +1456,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v4,
                     target: crate::ir::RefTarget::Context(id3),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Return(v4)),
             ],
@@ -1518,7 +1518,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v0,
                     target: crate::ir::RefTarget::Context(id0),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::TestLiteral {
                     dst: v1,
@@ -1541,7 +1541,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v10,
                     target: crate::ir::RefTarget::Context(id1),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::TestVariant {
                     dst: v11,
@@ -1564,7 +1564,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v12,
                     target: crate::ir::RefTarget::Context(id2),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1579,7 +1579,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v13,
                     target: crate::ir::RefTarget::Context(id3),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1594,7 +1594,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v14,
                     target: crate::ir::RefTarget::Context(id4),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Jump {
                     label: Label(50),
@@ -1662,7 +1662,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v0,
                     target: crate::ir::RefTarget::Context(id0),
-                    field: None,
+                    path: vec![],
                 }),
                 // Test Normal
                 inst(InstKind::TestVariant {
@@ -1686,7 +1686,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v2,
                     target: crate::ir::RefTarget::Context(id1),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1701,7 +1701,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v3,
                     target: crate::ir::RefTarget::Context(id2),
-                    field: None,
+                    path: vec![],
                 }),
                 inst(InstKind::Jump {
                     label: Label(99),
@@ -1716,7 +1716,7 @@ mod tests {
                 inst(InstKind::Ref {
                     dst: v4,
                     target: crate::ir::RefTarget::Context(id3),
-                    field: None,
+                    path: vec![],
                 }),
             ],
             val_types,
@@ -1769,12 +1769,12 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v0,
                 target: crate::ir::RefTarget::Context(id0),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Ref {
                 dst: v1,
                 target: crate::ir::RefTarget::Context(id1),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::MakeTuple {
                 dst: v2,
@@ -1808,7 +1808,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v10,
                 target: crate::ir::RefTarget::Context(id2),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Jump {
                 label: Label(99),
@@ -1841,7 +1841,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v11,
                 target: crate::ir::RefTarget::Context(id3),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Jump {
                 label: Label(99),
@@ -1856,7 +1856,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v12,
                 target: crate::ir::RefTarget::Context(id4),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Jump {
                 label: Label(99),
@@ -1903,12 +1903,12 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v0,
                 target: crate::ir::RefTarget::Context(id0),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Ref {
                 dst: v1,
                 target: crate::ir::RefTarget::Context(id1),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::MakeTuple {
                 dst: v2,
@@ -1943,7 +1943,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v5,
                 target: crate::ir::RefTarget::Context(id2),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Return(v5)),
             // high arm -> live
@@ -1955,7 +1955,7 @@ mod tests {
             inst(InstKind::Ref {
                 dst: v6,
                 target: crate::ir::RefTarget::Context(id3),
-                field: None,
+                path: vec![],
             }),
             inst(InstKind::Return(v6)),
         ]);
