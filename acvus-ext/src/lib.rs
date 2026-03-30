@@ -23,7 +23,10 @@ use acvus_utils::Interner;
 
 /// Register all standard library ExternFn registries.
 /// Handles UserDefined type registration internally.
-pub fn std_registries(interner: &Interner, type_registry: &mut TypeRegistry) -> Vec<ExternRegistry> {
+pub fn std_registries(
+    interner: &Interner,
+    type_registry: &mut TypeRegistry,
+) -> Vec<ExternRegistry> {
     vec![
         string::string_registry(),
         conversion::conversion_registry(),

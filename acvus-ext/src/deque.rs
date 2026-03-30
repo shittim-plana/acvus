@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use acvus_interpreter::{Args, ExternFnBuilder, ExternRegistry, RuntimeError, Value};
-use acvus_mir::graph::{Constraint, FnConstraint, Signature};
 use acvus_mir::graph::QualifiedRef;
+use acvus_mir::graph::{Constraint, FnConstraint, Signature};
 use acvus_mir::ty::{Effect, Param, Ty, TySubst};
 use acvus_utils::Interner;
 
@@ -55,7 +55,9 @@ fn make(interner: &Interner, name: &str, params: Vec<Ty>, ret: Ty) -> ExternFnBu
         .map(|(i, ty)| p(interner, i, ty.clone()))
         .collect();
     let constraint = FnConstraint {
-        signature: Some(Signature { params: named.clone() }),
+        signature: Some(Signature {
+            params: named.clone(),
+        }),
         output: Constraint::Exact(Ty::Fn {
             params: named,
             ret: Box::new(ret),
@@ -73,7 +75,11 @@ pub fn deque_registry(interner: &Interner) -> ExternRegistry {
     let iter_qref = QualifiedRef::root(interner.intern("Iterator"));
     ExternRegistry::new(move |interner| {
         let it = |t: Ty, e: Effect| -> Ty {
-            Ty::UserDefined { id: iter_qref, type_args: vec![t], effect_args: vec![e] }
+            Ty::UserDefined {
+                id: iter_qref,
+                type_args: vec![t],
+                effect_args: vec![e],
+            }
         };
 
         // append: (Deque<T, O>, T) → Deque<T, O>

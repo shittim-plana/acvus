@@ -23,13 +23,12 @@ pub fn build(module: &MirModule) -> ValDefMap {
 fn dst_of(kind: &InstKind) -> Option<ValueId> {
     match kind {
         InstKind::Const { dst, .. }
-        | InstKind::ContextProject { dst, .. }
-        | InstKind::ContextLoad { dst, .. }
-        | InstKind::VarLoad { dst, .. }
-        | InstKind::ParamLoad { dst, .. }
+        | InstKind::Ref { dst, .. }
+        | InstKind::Load { dst, .. }
         | InstKind::BinOp { dst, .. }
         | InstKind::UnaryOp { dst, .. }
         | InstKind::FieldGet { dst, .. }
+        | InstKind::FieldSet { dst, .. }
         | InstKind::FunctionCall { dst, .. }
         | InstKind::LoadFunction { dst, .. }
         | InstKind::MakeDeque { dst, .. }
@@ -57,8 +56,7 @@ fn dst_of(kind: &InstKind) -> Option<ValueId> {
         | InstKind::Undef { dst } => Some(*dst),
 
         // These don't define a new Val
-        InstKind::VarStore { .. }
-        | InstKind::ContextStore { .. }
+        InstKind::Store { .. }
         | InstKind::Jump { .. }
         | InstKind::JumpIf { .. }
         | InstKind::Return(_)
@@ -91,8 +89,8 @@ mod tests {
             main: MirBody {
                 insts,
                 val_types: FxHashMap::default(),
-                param_regs: Vec::new(),
-                capture_regs: Vec::new(),
+                params: Vec::new(),
+                captures: Vec::new(),
                 debug: crate::ir::DebugInfo::new(),
                 val_factory: LocalFactory::new(),
                 label_count: 0,
@@ -109,32 +107,27 @@ mod tests {
     }
 
     #[test]
-    fn context_project_mapped() {
+    fn ref_load_mapped() {
         let i = Interner::new();
         let id0 = QualifiedRef::root(i.intern("x"));
         let mut vf = LocalFactory::<ValueId>::new();
         let v0 = vf.next();
         let v1 = vf.next();
         let module = make_module(vec![
-            inst(InstKind::ContextProject { dst: v0, ctx: id0 , volatile: false }),
-            inst(InstKind::ContextLoad { dst: v1, src: v0 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v0,
+                target: crate::ir::RefTarget::Context(id0),
+                field: None,
+            }),
+            inst(InstKind::Load {
+                dst: v1,
+                src: v0,
+                volatile: false,
+            }),
         ]);
         let result = super::build(&module);
-        assert_eq!(result.0[&v0], 0); // ContextProject defines v0
-        assert_eq!(result.0[&v1], 1); // ContextLoad defines v1
-    }
-
-    #[test]
-    fn var_load_mapped() {
-        let i = Interner::new();
-        let mut vf = LocalFactory::<ValueId>::new();
-        let v0 = vf.next();
-        let module = make_module(vec![inst(InstKind::VarLoad {
-            dst: v0,
-            name: i.intern("count"),
-        })]);
-        let result = super::build(&module);
-        assert_eq!(result.0[&v0], 0);
+        assert_eq!(result.0[&v0], 0); // Ref defines v0
+        assert_eq!(result.0[&v1], 1); // Load defines v1
     }
 
     #[test]
@@ -182,7 +175,6 @@ mod tests {
 
     #[test]
     fn non_defining_insts_skipped() {
-        let i = Interner::new();
         let mut vf = LocalFactory::<ValueId>::new();
         let v0 = vf.next();
         // Skip v1..v98 to get v99
@@ -192,9 +184,10 @@ mod tests {
         let v99 = vf.next();
         let module = make_module(vec![
             inst(InstKind::Return(v99)),
-            inst(InstKind::VarStore {
-                name: i.intern("x"),
-                src: v0,
+            inst(InstKind::Store {
+                dst: v0,
+                value: v0,
+                volatile: false,
             }),
             inst(InstKind::Nop),
         ]);

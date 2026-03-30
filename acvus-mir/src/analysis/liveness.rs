@@ -8,12 +8,12 @@
 
 use rustc_hash::FxHashSet;
 
-use crate::cfg::{BlockIdx, CfgBody, Terminator};
 use crate::analysis::dataflow::{
-    backward_analysis, value_propagate_backward, DataflowAnalysis, DataflowState,
+    DataflowAnalysis, DataflowState, backward_analysis, value_propagate_backward,
 };
 use crate::analysis::domain::SemiLattice;
 use crate::analysis::inst_info;
+use crate::cfg::{BlockIdx, CfgBody, Terminator};
 use crate::ir::{Inst, ValueId};
 
 // ── Domain ──────────────────────────────────────────────────────────
@@ -66,7 +66,9 @@ impl DataflowAnalysis for LivenessAnalysis {
         match term {
             Terminator::Return(val) => state.set(*val, Liveness::Live),
             Terminator::JumpIf { cond, .. } => state.set(*cond, Liveness::Live),
-            Terminator::ListStep { list, index_src, .. } => {
+            Terminator::ListStep {
+                list, index_src, ..
+            } => {
                 state.set(*list, Liveness::Live);
                 state.set(*index_src, Liveness::Live);
             }
@@ -117,16 +119,15 @@ impl LivenessResult {
     pub fn is_live_in(&self, block: BlockIdx, val: ValueId) -> bool {
         self.live_in
             .get(block.0)
-            .map_or(false, |set| set.contains(&val))
+            .is_some_and(|set| set.contains(&val))
     }
 
     /// Is `val` live at the exit of block `block`?
     pub fn is_live_out(&self, block: BlockIdx, val: ValueId) -> bool {
         self.live_out
             .get(block.0)
-            .map_or(false, |set| set.contains(&val))
+            .is_some_and(|set| set.contains(&val))
     }
-
 }
 
 /// Run liveness analysis on a CfgBody.
@@ -140,16 +141,8 @@ pub fn analyze(cfg: &CfgBody) -> LivenessResult {
 
     let result = backward_analysis(cfg, &LivenessAnalysis);
 
-    let live_in = result
-        .block_entry
-        .iter()
-        .map(|state| extract_live_set(state))
-        .collect();
-    let live_out = result
-        .block_exit
-        .iter()
-        .map(|state| extract_live_set(state))
-        .collect();
+    let live_in = result.block_entry.iter().map(extract_live_set).collect();
+    let live_out = result.block_exit.iter().map(extract_live_set).collect();
 
     LivenessResult { live_in, live_out }
 }
@@ -192,8 +185,8 @@ mod tests {
                 })
                 .collect(),
             val_types: FxHashMap::default(),
-            param_regs: Vec::new(),
-            capture_regs: Vec::new(),
+            params: Vec::new(),
+            captures: Vec::new(),
             debug: DebugInfo::new(),
             val_factory: factory,
             label_count: 0,
@@ -205,9 +198,20 @@ mod tests {
     #[test]
     fn simple_linear() {
         let cfg = make_cfg(vec![
-            InstKind::Const { dst: v(0), value: acvus_ast::Literal::Int(1) },
-            InstKind::Const { dst: v(1), value: acvus_ast::Literal::Int(2) },
-            InstKind::BinOp { dst: v(2), op: acvus_ast::BinOp::Add, left: v(0), right: v(1) },
+            InstKind::Const {
+                dst: v(0),
+                value: acvus_ast::Literal::Int(1),
+            },
+            InstKind::Const {
+                dst: v(1),
+                value: acvus_ast::Literal::Int(2),
+            },
+            InstKind::BinOp {
+                dst: v(2),
+                op: acvus_ast::BinOp::Add,
+                left: v(0),
+                right: v(1),
+            },
             InstKind::Return(v(2)),
         ]);
 
@@ -220,8 +224,14 @@ mod tests {
     #[test]
     fn dead_value_not_live() {
         let cfg = make_cfg(vec![
-            InstKind::Const { dst: v(0), value: acvus_ast::Literal::Int(1) },
-            InstKind::Const { dst: v(1), value: acvus_ast::Literal::Int(2) },
+            InstKind::Const {
+                dst: v(0),
+                value: acvus_ast::Literal::Int(1),
+            },
+            InstKind::Const {
+                dst: v(1),
+                value: acvus_ast::Literal::Int(2),
+            },
             InstKind::Return(v(1)),
         ]);
 
@@ -234,16 +244,32 @@ mod tests {
     #[test]
     fn branch_both_arms_use_value() {
         let cfg = make_cfg(vec![
-            InstKind::Const { dst: v(0), value: acvus_ast::Literal::Int(1) },
-            InstKind::Const { dst: v(1), value: acvus_ast::Literal::Bool(true) },
+            InstKind::Const {
+                dst: v(0),
+                value: acvus_ast::Literal::Int(1),
+            },
+            InstKind::Const {
+                dst: v(1),
+                value: acvus_ast::Literal::Bool(true),
+            },
             InstKind::JumpIf {
                 cond: v(1),
-                then_label: Label(0), then_args: vec![v(0)],
-                else_label: Label(1), else_args: vec![v(0)],
+                then_label: Label(0),
+                then_args: vec![v(0)],
+                else_label: Label(1),
+                else_args: vec![v(0)],
             },
-            InstKind::BlockLabel { label: Label(0), params: vec![v(2)], merge_of: None },
+            InstKind::BlockLabel {
+                label: Label(0),
+                params: vec![v(2)],
+                merge_of: None,
+            },
             InstKind::Return(v(2)),
-            InstKind::BlockLabel { label: Label(1), params: vec![v(3)], merge_of: None },
+            InstKind::BlockLabel {
+                label: Label(1),
+                params: vec![v(3)],
+                merge_of: None,
+            },
             InstKind::Return(v(3)),
         ]);
 
@@ -255,10 +281,25 @@ mod tests {
     #[test]
     fn value_live_across_blocks() {
         let cfg = make_cfg(vec![
-            InstKind::Const { dst: v(0), value: acvus_ast::Literal::Int(1) },
-            InstKind::Jump { label: Label(0), args: vec![] },
-            InstKind::BlockLabel { label: Label(0), params: vec![], merge_of: None },
-            InstKind::BinOp { dst: v(1), op: acvus_ast::BinOp::Add, left: v(0), right: v(0) },
+            InstKind::Const {
+                dst: v(0),
+                value: acvus_ast::Literal::Int(1),
+            },
+            InstKind::Jump {
+                label: Label(0),
+                args: vec![],
+            },
+            InstKind::BlockLabel {
+                label: Label(0),
+                params: vec![],
+                merge_of: None,
+            },
+            InstKind::BinOp {
+                dst: v(1),
+                op: acvus_ast::BinOp::Add,
+                left: v(0),
+                right: v(0),
+            },
             InstKind::Return(v(1)),
         ]);
 
@@ -272,17 +313,43 @@ mod tests {
     #[test]
     fn loop_keeps_value_live() {
         let cfg = make_cfg(vec![
-            InstKind::Const { dst: v(0), value: acvus_ast::Literal::Int(0) },
-            InstKind::Jump { label: Label(0), args: vec![v(0)] },
-            InstKind::BlockLabel { label: Label(0), params: vec![v(1)], merge_of: None },
-            InstKind::BinOp { dst: v(2), op: acvus_ast::BinOp::Add, left: v(1), right: v(1) },
-            InstKind::BinOp { dst: v(3), op: acvus_ast::BinOp::Lt, left: v(2), right: v(5) },
+            InstKind::Const {
+                dst: v(0),
+                value: acvus_ast::Literal::Int(0),
+            },
+            InstKind::Jump {
+                label: Label(0),
+                args: vec![v(0)],
+            },
+            InstKind::BlockLabel {
+                label: Label(0),
+                params: vec![v(1)],
+                merge_of: None,
+            },
+            InstKind::BinOp {
+                dst: v(2),
+                op: acvus_ast::BinOp::Add,
+                left: v(1),
+                right: v(1),
+            },
+            InstKind::BinOp {
+                dst: v(3),
+                op: acvus_ast::BinOp::Lt,
+                left: v(2),
+                right: v(5),
+            },
             InstKind::JumpIf {
                 cond: v(3),
-                then_label: Label(0), then_args: vec![v(2)],
-                else_label: Label(1), else_args: vec![v(2)],
+                then_label: Label(0),
+                then_args: vec![v(2)],
+                else_label: Label(1),
+                else_args: vec![v(2)],
             },
-            InstKind::BlockLabel { label: Label(1), params: vec![v(4)], merge_of: None },
+            InstKind::BlockLabel {
+                label: Label(1),
+                params: vec![v(4)],
+                merge_of: None,
+            },
             InstKind::Return(v(4)),
         ]);
 
@@ -290,5 +357,4 @@ mod tests {
         assert!(result.is_live_in(BlockIdx(1), v(1)));
         assert!(result.is_live_out(BlockIdx(1), v(2)));
     }
-
 }

@@ -70,16 +70,18 @@ impl Coloring {
 
     /// Assign the smallest available color with matching type.
     fn assign(&mut self, live: &FxHashSet<u32>, val: ValueId, ty: Option<&Ty>) -> u32 {
-        let color = (0u32..).find(|&c| {
-            if live.contains(&c) {
-                return false;
-            }
-            match self.slot_types.get(c as usize) {
-                Some(Some(slot_ty)) => ty.map_or(false, |t| t == slot_ty),
-                Some(None) => ty.is_none(),
-                None => true, // New slot — any type.
-            }
-        }).unwrap();
+        let color = (0u32..)
+            .find(|&c| {
+                if live.contains(&c) {
+                    return false;
+                }
+                match self.slot_types.get(c as usize) {
+                    Some(Some(slot_ty)) => ty == Some(slot_ty),
+                    Some(None) => ty.is_none(),
+                    None => true, // New slot — any type.
+                }
+            })
+            .unwrap();
 
         self.color_of.insert(val, color);
         if color as usize >= self.slot_types.len() {
@@ -109,16 +111,12 @@ impl Coloring {
 }
 
 /// Run greedy coloring over all blocks.
-fn compute_coloring(
-    cfg: &CfgBody,
-    liveness: &LivenessResult,
-    last_use: &LastUseMap,
-) -> Coloring {
+fn compute_coloring(cfg: &CfgBody, liveness: &LivenessResult, last_use: &LastUseMap) -> Coloring {
     let mut coloring = Coloring::new();
 
     // Params and captures are live simultaneously at entry — color them first.
     let mut entry_live = FxHashSet::default();
-    for &v in cfg.param_regs.iter().chain(cfg.capture_regs.iter()) {
+    for &(_, v) in cfg.params.iter().chain(cfg.captures.iter()) {
         let c = coloring.assign(&entry_live, v, cfg.val_types.get(&v));
         entry_live.insert(c);
     }
@@ -245,17 +243,12 @@ impl LastUseMap {
 
     /// Does `val` die at `point` in block `bi`?
     fn dies_at(&self, bi: usize, val: ValueId, point: UsePoint) -> bool {
-        self.blocks
-            .get(bi)
-            .and_then(|m| m.get(&val))
-            .copied() == Some(point)
+        self.blocks.get(bi).and_then(|m| m.get(&val)).copied() == Some(point)
     }
 
     /// Does `val` have any use in block `bi`?
     fn has_use_in(&self, bi: usize, val: &ValueId) -> bool {
-        self.blocks
-            .get(bi)
-            .map_or(false, |m| m.contains_key(val))
+        self.blocks.get(bi).is_some_and(|m| m.contains_key(val))
     }
 }
 
@@ -264,14 +257,24 @@ impl LastUseMap {
 fn terminator_uses(term: &Terminator) -> smallvec::SmallVec<[ValueId; 4]> {
     match term {
         Terminator::Jump { args, .. } => args.iter().copied().collect(),
-        Terminator::JumpIf { cond, then_args, else_args, .. } => {
+        Terminator::JumpIf {
+            cond,
+            then_args,
+            else_args,
+            ..
+        } => {
             let mut v = smallvec::SmallVec::new();
             v.push(*cond);
             v.extend(then_args.iter().copied());
             v.extend(else_args.iter().copied());
             v
         }
-        Terminator::ListStep { list, index_src, done_args, .. } => {
+        Terminator::ListStep {
+            list,
+            index_src,
+            done_args,
+            ..
+        } => {
             let mut v = smallvec::SmallVec::new();
             v.push(*list);
             v.push(*index_src);
@@ -318,16 +321,16 @@ fn apply_coloring(cfg: &mut CfgBody, coloring: &Coloring) {
     }
 
     // Rewrite param/capture registers.
-    for v in &mut cfg.param_regs {
+    for (_, v) in &mut cfg.params {
         *v = remap(*v);
     }
-    for v in &mut cfg.capture_regs {
+    for (_, v) in &mut cfg.captures {
         *v = remap(*v);
     }
 
-    // Migrate types — only for colored values.
-    // Dead values must not carry over: their old ValueIds can collide
-    // with compacted slots, overwriting correct type entries.
+    // Migrate types — colored values only.
+    // After DCE, all values referenced by instructions are colored.
+    // Uncolored values are dead — their types are discarded.
     let old_types = std::mem::take(&mut cfg.val_types);
     for (vid, ty) in old_types {
         if coloring.is_colored(&vid) {
@@ -335,58 +338,277 @@ fn apply_coloring(cfg: &mut CfgBody, coloring: &Coloring) {
         }
     }
 
+    // Reconstruct debug info from the final CFG — no remap needed.
+    // This is authoritative: each ValueId's origin is determined by the
+    // instruction that defines it in the final IR.
+    cfg.debug = reconstruct_debug(cfg);
+
     cfg.val_factory = new_factory;
+}
+
+/// Reconstruct DebugInfo by scanning the final CFG instructions.
+/// Each ValueId gets its origin from the instruction that defines it.
+fn reconstruct_debug(cfg: &CfgBody) -> crate::ir::DebugInfo {
+    use crate::ir::{DebugInfo, RefTarget, ValOrigin};
+
+    let mut debug = DebugInfo::new();
+
+    // Build slot → name lookup from params and captures.
+    let mut slot_name: FxHashMap<ValueId, (acvus_utils::Astr, bool)> = FxHashMap::default();
+    for (name, reg) in &cfg.params {
+        slot_name.insert(*reg, (*name, true)); // true = param
+    }
+    for (name, reg) in &cfg.captures {
+        slot_name.insert(*reg, (*name, false)); // false = capture (local var)
+    }
+    // Also seed debug info for slot ValueIds themselves (for label lookups).
+    for (&slot, &(name, is_param)) in &slot_name {
+        if is_param {
+            debug.set(slot, ValOrigin::ExternParam(name));
+        } else {
+            debug.set(slot, ValOrigin::Named(name));
+        }
+    }
+
+    for block in &cfg.blocks {
+        // Block params: no specific origin (SSA phi results).
+        for inst in &block.insts {
+            match &inst.kind {
+                InstKind::Ref { dst, target, field } => {
+                    let origin = match (target, field) {
+                        (RefTarget::Context(qref), Some(f)) => {
+                            ValOrigin::RefField(target.clone(), *f)
+                        }
+                        (RefTarget::Context(qref), None) => ValOrigin::Context(qref.name),
+                        (RefTarget::Var(slot), Some(f)) => {
+                            ValOrigin::RefField(target.clone(), *f)
+                        }
+                        (RefTarget::Var(slot), None) => {
+                            if let Some(&(name, _)) = slot_name.get(slot) {
+                                ValOrigin::Named(name)
+                            } else if let Some(origin) = debug.get(*slot) {
+                                origin.clone()
+                            } else {
+                                ValOrigin::Expr
+                            }
+                        }
+                        (RefTarget::Param(slot), Some(f)) => {
+                            ValOrigin::RefField(target.clone(), *f)
+                        }
+                        (RefTarget::Param(slot), None) => {
+                            if let Some(&(name, _)) = slot_name.get(slot) {
+                                ValOrigin::ExternParam(name)
+                            } else if let Some(origin) = debug.get(*slot) {
+                                origin.clone()
+                            } else {
+                                ValOrigin::Expr
+                            }
+                        }
+                    };
+                    debug.set(*dst, origin);
+                }
+                InstKind::Load { dst, src, .. } => {
+                    // Inherit origin from the Ref it loads from.
+                    if let Some(origin) = debug.get(*src) {
+                        debug.set(*dst, origin.clone());
+                    }
+                }
+                InstKind::FieldGet { dst, object, field, .. } => {
+                    debug.set(*dst, ValOrigin::Field(*object, *field));
+                }
+                InstKind::FunctionCall { dst, callee, .. } => {
+                    let name = match callee {
+                        Callee::Direct(qref) => qref.name,
+                        Callee::Indirect(vid) => {
+                            // For indirect calls, try to get the name from the closure's origin.
+                            if let Some(ValOrigin::Named(n)) = debug.get(*vid) {
+                                *n
+                            } else {
+                                continue;
+                            }
+                        }
+                    };
+                    debug.set(*dst, ValOrigin::Call(name));
+                }
+                // Everything else that defines a dst: generic Expr origin.
+                other => {
+                    // Extract dst from remaining instruction kinds.
+                    if let Some(dst) = inst_def_dst(other) {
+                        if debug.get(dst).is_none() {
+                            debug.set(dst, ValOrigin::Expr);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    debug
+}
+
+/// Extract the primary dst ValueId from an instruction, if it has one.
+fn inst_def_dst(kind: &InstKind) -> Option<ValueId> {
+    let defs = crate::analysis::inst_info::defs(kind);
+    defs.first().copied()
 }
 
 fn rewrite_inst(kind: &mut InstKind, remap: &impl Fn(ValueId) -> ValueId) {
     let r = |v: &mut ValueId| *v = remap(*v);
     match kind {
         InstKind::Const { dst, .. } => r(dst),
-        InstKind::ContextProject { dst, .. } => r(dst),
-        InstKind::ContextLoad { dst, src, .. } => { r(dst); r(src); }
-        InstKind::ContextStore { dst, value, .. } => { r(dst); r(value); }
-        InstKind::VarLoad { dst, .. } => r(dst),
-        InstKind::ParamLoad { dst, .. } => r(dst),
-        InstKind::VarStore { src, .. } => r(src),
-        InstKind::BinOp { dst, left, right, .. } => { r(dst); r(left); r(right); }
-        InstKind::UnaryOp { dst, operand, .. } => { r(dst); r(operand); }
-        InstKind::FieldGet { dst, object, .. } => { r(dst); r(object); }
+        InstKind::Ref { dst, target, .. } => {
+            r(dst);
+            match target {
+                crate::ir::RefTarget::Var(slot) | crate::ir::RefTarget::Param(slot) => r(slot),
+                crate::ir::RefTarget::Context(_) => {}
+            }
+        }
+        InstKind::Load { dst, src, .. } => {
+            r(dst);
+            r(src);
+        }
+        InstKind::Store { dst, value, .. } => {
+            r(dst);
+            r(value);
+        }
+        InstKind::BinOp {
+            dst, left, right, ..
+        } => {
+            r(dst);
+            r(left);
+            r(right);
+        }
+        InstKind::UnaryOp { dst, operand, .. } => {
+            r(dst);
+            r(operand);
+        }
+        InstKind::FieldGet { dst, object, .. } => {
+            r(dst);
+            r(object);
+        }
+        InstKind::FieldSet {
+            dst, object, value, ..
+        } => {
+            r(dst);
+            r(object);
+            r(value);
+        }
         InstKind::LoadFunction { dst, .. } => r(dst),
-        InstKind::FunctionCall { dst, callee, args, context_uses, context_defs } => {
+        InstKind::FunctionCall {
+            dst,
+            callee,
+            args,
+            context_uses,
+            context_defs,
+        } => {
             r(dst);
-            if let Callee::Indirect(v) = callee { r(v); }
+            if let Callee::Indirect(v) = callee {
+                r(v);
+            }
             args.iter_mut().for_each(&r);
             context_uses.iter_mut().for_each(|(_, v)| r(v));
             context_defs.iter_mut().for_each(|(_, v)| r(v));
         }
-        InstKind::Spawn { dst, callee, args, context_uses } => {
+        InstKind::Spawn {
+            dst,
+            callee,
+            args,
+            context_uses,
+        } => {
             r(dst);
-            if let Callee::Indirect(v) = callee { r(v); }
+            if let Callee::Indirect(v) = callee {
+                r(v);
+            }
             args.iter_mut().for_each(&r);
             context_uses.iter_mut().for_each(|(_, v)| r(v));
         }
-        InstKind::Eval { dst, src, context_defs } => {
-            r(dst); r(src);
+        InstKind::Eval {
+            dst,
+            src,
+            context_defs,
+        } => {
+            r(dst);
+            r(src);
             context_defs.iter_mut().for_each(|(_, v)| r(v));
         }
-        InstKind::MakeDeque { dst, elements } => { r(dst); elements.iter_mut().for_each(&r); }
-        InstKind::MakeObject { dst, fields } => { r(dst); fields.iter_mut().for_each(|(_, v)| r(v)); }
-        InstKind::MakeRange { dst, start, end, .. } => { r(dst); r(start); r(end); }
-        InstKind::MakeTuple { dst, elements } => { r(dst); elements.iter_mut().for_each(&r); }
-        InstKind::TupleIndex { dst, tuple, .. } => { r(dst); r(tuple); }
-        InstKind::TestLiteral { dst, src, .. } => { r(dst); r(src); }
-        InstKind::TestListLen { dst, src, .. } => { r(dst); r(src); }
-        InstKind::TestObjectKey { dst, src, .. } => { r(dst); r(src); }
-        InstKind::TestRange { dst, src, .. } => { r(dst); r(src); }
-        InstKind::ListIndex { dst, list, .. } => { r(dst); r(list); }
-        InstKind::ListGet { dst, list, index } => { r(dst); r(list); r(index); }
-        InstKind::ListSlice { dst, list, .. } => { r(dst); r(list); }
-        InstKind::ObjectGet { dst, object, .. } => { r(dst); r(object); }
-        InstKind::MakeClosure { dst, captures, .. } => { r(dst); captures.iter_mut().for_each(&r); }
-        InstKind::MakeVariant { dst, payload, .. } => { r(dst); if let Some(v) = payload { r(v); } }
-        InstKind::TestVariant { dst, src, .. } => { r(dst); r(src); }
-        InstKind::UnwrapVariant { dst, src } => { r(dst); r(src); }
-        InstKind::Cast { dst, src, .. } => { r(dst); r(src); }
+        InstKind::MakeDeque { dst, elements } => {
+            r(dst);
+            elements.iter_mut().for_each(&r);
+        }
+        InstKind::MakeObject { dst, fields } => {
+            r(dst);
+            fields.iter_mut().for_each(|(_, v)| r(v));
+        }
+        InstKind::MakeRange {
+            dst, start, end, ..
+        } => {
+            r(dst);
+            r(start);
+            r(end);
+        }
+        InstKind::MakeTuple { dst, elements } => {
+            r(dst);
+            elements.iter_mut().for_each(&r);
+        }
+        InstKind::TupleIndex { dst, tuple, .. } => {
+            r(dst);
+            r(tuple);
+        }
+        InstKind::TestLiteral { dst, src, .. } => {
+            r(dst);
+            r(src);
+        }
+        InstKind::TestListLen { dst, src, .. } => {
+            r(dst);
+            r(src);
+        }
+        InstKind::TestObjectKey { dst, src, .. } => {
+            r(dst);
+            r(src);
+        }
+        InstKind::TestRange { dst, src, .. } => {
+            r(dst);
+            r(src);
+        }
+        InstKind::ListIndex { dst, list, .. } => {
+            r(dst);
+            r(list);
+        }
+        InstKind::ListGet { dst, list, index } => {
+            r(dst);
+            r(list);
+            r(index);
+        }
+        InstKind::ListSlice { dst, list, .. } => {
+            r(dst);
+            r(list);
+        }
+        InstKind::ObjectGet { dst, object, .. } => {
+            r(dst);
+            r(object);
+        }
+        InstKind::MakeClosure { dst, captures, .. } => {
+            r(dst);
+            captures.iter_mut().for_each(&r);
+        }
+        InstKind::MakeVariant { dst, payload, .. } => {
+            r(dst);
+            if let Some(v) = payload {
+                r(v);
+            }
+        }
+        InstKind::TestVariant { dst, src, .. } => {
+            r(dst);
+            r(src);
+        }
+        InstKind::UnwrapVariant { dst, src } => {
+            r(dst);
+            r(src);
+        }
+        InstKind::Cast { dst, src, .. } => {
+            r(dst);
+            r(src);
+        }
         InstKind::Poison { dst, .. } => r(dst),
         InstKind::Undef { dst } => r(dst),
         InstKind::Nop => {}
@@ -404,13 +626,28 @@ fn rewrite_terminator(term: &mut Terminator, remap: &impl Fn(ValueId) -> ValueId
     let r = |v: &mut ValueId| *v = remap(*v);
     match term {
         Terminator::Jump { args, .. } => args.iter_mut().for_each(&r),
-        Terminator::JumpIf { cond, then_args, else_args, .. } => {
+        Terminator::JumpIf {
+            cond,
+            then_args,
+            else_args,
+            ..
+        } => {
             r(cond);
             then_args.iter_mut().for_each(&r);
             else_args.iter_mut().for_each(&r);
         }
-        Terminator::ListStep { dst, list, index_src, index_dst, done_args, .. } => {
-            r(dst); r(list); r(index_src); r(index_dst);
+        Terminator::ListStep {
+            dst,
+            list,
+            index_src,
+            index_dst,
+            done_args,
+            ..
+        } => {
+            r(dst);
+            r(list);
+            r(index_src);
+            r(index_dst);
             done_args.iter_mut().for_each(&r);
         }
         Terminator::Return(v) => r(v),
@@ -426,27 +663,44 @@ mod tests {
     use crate::cfg;
     use crate::ir::*;
     use crate::ty::Ty;
-    use acvus_utils::{LocalFactory, LocalIdOps};
+    use acvus_utils::{Astr, Interner, LocalFactory, LocalIdOps};
 
     fn v(n: usize) -> ValueId {
         ValueId::from_raw(n)
     }
 
+    fn dummy_name() -> Astr {
+        thread_local! {
+            static INTERNER: Interner = Interner::new();
+        }
+        INTERNER.with(|i| i.intern("_"))
+    }
+
     fn make_body(insts: Vec<InstKind>) -> MirBody {
         let mut factory = LocalFactory::<ValueId>::new();
-        for _ in 0..20 { factory.next(); }
+        for _ in 0..20 {
+            factory.next();
+        }
         MirBody {
-            insts: insts.into_iter().map(|kind| Inst { span: acvus_ast::Span::ZERO, kind }).collect(),
+            insts: insts
+                .into_iter()
+                .map(|kind| Inst {
+                    span: acvus_ast::Span::ZERO,
+                    kind,
+                })
+                .collect(),
             val_types: FxHashMap::default(),
-            param_regs: Vec::new(),
-            capture_regs: Vec::new(),
+            params: Vec::new(),
+            captures: Vec::new(),
             debug: DebugInfo::new(),
             val_factory: factory,
             label_count: 0,
         }
     }
 
-    fn make_cfg(insts: Vec<InstKind>) -> CfgBody { cfg::promote(make_body(insts)) }
+    fn make_cfg(insts: Vec<InstKind>) -> CfgBody {
+        cfg::promote(make_body(insts))
+    }
 
     fn make_cfg_with(insts: Vec<InstKind>, f: impl FnOnce(&mut MirBody)) -> CfgBody {
         let mut body = make_body(insts);
@@ -456,7 +710,11 @@ mod tests {
 
     fn collect_defs(body: &MirBody) -> FxHashSet<ValueId> {
         let mut set = FxHashSet::default();
-        for inst in &body.insts { for d in inst_info::defs(&inst.kind) { set.insert(d); } }
+        for inst in &body.insts {
+            for d in inst_info::defs(&inst.kind) {
+                set.insert(d);
+            }
+        }
         set
     }
 
@@ -465,14 +723,29 @@ mod tests {
     #[test]
     fn overlapping_values_get_distinct_slots() {
         let mut cfg = make_cfg(vec![
-            InstKind::Const { dst: v(0), value: acvus_ast::Literal::Int(1) },
-            InstKind::Const { dst: v(1), value: acvus_ast::Literal::Int(2) },
-            InstKind::BinOp { dst: v(2), op: acvus_ast::BinOp::Add, left: v(0), right: v(1) },
+            InstKind::Const {
+                dst: v(0),
+                value: acvus_ast::Literal::Int(1),
+            },
+            InstKind::Const {
+                dst: v(1),
+                value: acvus_ast::Literal::Int(2),
+            },
+            InstKind::BinOp {
+                dst: v(2),
+                op: acvus_ast::BinOp::Add,
+                left: v(0),
+                right: v(1),
+            },
             InstKind::Return(v(2)),
         ]);
         color_body(&mut cfg);
         let body = cfg::demote(cfg);
-        let binop = body.insts.iter().find(|i| matches!(i.kind, InstKind::BinOp { .. })).unwrap();
+        let binop = body
+            .insts
+            .iter()
+            .find(|i| matches!(i.kind, InstKind::BinOp { .. }))
+            .unwrap();
         if let InstKind::BinOp { left, right, .. } = &binop.kind {
             assert_ne!(left, right);
         }
@@ -481,16 +754,38 @@ mod tests {
     #[test]
     fn cross_block_value_not_clobbered() {
         let mut cfg = make_cfg(vec![
-            InstKind::Const { dst: v(0), value: acvus_ast::Literal::Int(1) },
-            InstKind::Jump { label: Label(0), args: vec![] },
-            InstKind::BlockLabel { label: Label(0), params: vec![], merge_of: None },
-            InstKind::Const { dst: v(1), value: acvus_ast::Literal::Int(2) },
-            InstKind::BinOp { dst: v(2), op: acvus_ast::BinOp::Add, left: v(0), right: v(1) },
+            InstKind::Const {
+                dst: v(0),
+                value: acvus_ast::Literal::Int(1),
+            },
+            InstKind::Jump {
+                label: Label(0),
+                args: vec![],
+            },
+            InstKind::BlockLabel {
+                label: Label(0),
+                params: vec![],
+                merge_of: None,
+            },
+            InstKind::Const {
+                dst: v(1),
+                value: acvus_ast::Literal::Int(2),
+            },
+            InstKind::BinOp {
+                dst: v(2),
+                op: acvus_ast::BinOp::Add,
+                left: v(0),
+                right: v(1),
+            },
             InstKind::Return(v(2)),
         ]);
         color_body(&mut cfg);
         let body = cfg::demote(cfg);
-        let binop = body.insts.iter().find(|i| matches!(i.kind, InstKind::BinOp { .. })).unwrap();
+        let binop = body
+            .insts
+            .iter()
+            .find(|i| matches!(i.kind, InstKind::BinOp { .. }))
+            .unwrap();
         if let InstKind::BinOp { left, right, .. } = &binop.kind {
             assert_ne!(left, right);
         }
@@ -499,23 +794,54 @@ mod tests {
     #[test]
     fn loop_param_not_clobbered_by_body() {
         let mut cfg = make_cfg(vec![
-            InstKind::Const { dst: v(0), value: acvus_ast::Literal::Int(0) },
-            InstKind::Jump { label: Label(0), args: vec![v(0)] },
-            InstKind::BlockLabel { label: Label(0), params: vec![v(1)], merge_of: None },
-            InstKind::BinOp { dst: v(2), op: acvus_ast::BinOp::Add, left: v(1), right: v(1) },
-            InstKind::Const { dst: v(3), value: acvus_ast::Literal::Bool(true) },
+            InstKind::Const {
+                dst: v(0),
+                value: acvus_ast::Literal::Int(0),
+            },
+            InstKind::Jump {
+                label: Label(0),
+                args: vec![v(0)],
+            },
+            InstKind::BlockLabel {
+                label: Label(0),
+                params: vec![v(1)],
+                merge_of: None,
+            },
+            InstKind::BinOp {
+                dst: v(2),
+                op: acvus_ast::BinOp::Add,
+                left: v(1),
+                right: v(1),
+            },
+            InstKind::Const {
+                dst: v(3),
+                value: acvus_ast::Literal::Bool(true),
+            },
             InstKind::JumpIf {
                 cond: v(3),
-                then_label: Label(0), then_args: vec![v(2)],
-                else_label: Label(1), else_args: vec![v(2)],
+                then_label: Label(0),
+                then_args: vec![v(2)],
+                else_label: Label(1),
+                else_args: vec![v(2)],
             },
-            InstKind::BlockLabel { label: Label(1), params: vec![v(4)], merge_of: None },
+            InstKind::BlockLabel {
+                label: Label(1),
+                params: vec![v(4)],
+                merge_of: None,
+            },
             InstKind::Return(v(4)),
         ]);
         color_body(&mut cfg);
         let body = cfg::demote(cfg);
-        let binop = body.insts.iter().find(|i| matches!(i.kind, InstKind::BinOp { .. })).unwrap();
-        if let InstKind::BinOp { left, right, dst, .. } = &binop.kind {
+        let binop = body
+            .insts
+            .iter()
+            .find(|i| matches!(i.kind, InstKind::BinOp { .. }))
+            .unwrap();
+        if let InstKind::BinOp {
+            left, right, dst, ..
+        } = &binop.kind
+        {
             assert_eq!(left, right, "loop param used as both operands");
             assert_ne!(left, dst, "result must differ from operand");
         }
@@ -525,9 +851,20 @@ mod tests {
     fn different_types_never_share() {
         let mut cfg = make_cfg_with(
             vec![
-                InstKind::Const { dst: v(0), value: acvus_ast::Literal::Int(1) },
-                InstKind::BinOp { dst: v(1), op: acvus_ast::BinOp::Add, left: v(0), right: v(0) },
-                InstKind::Const { dst: v(2), value: acvus_ast::Literal::Bool(true) },
+                InstKind::Const {
+                    dst: v(0),
+                    value: acvus_ast::Literal::Int(1),
+                },
+                InstKind::BinOp {
+                    dst: v(1),
+                    op: acvus_ast::BinOp::Add,
+                    left: v(0),
+                    right: v(0),
+                },
+                InstKind::Const {
+                    dst: v(2),
+                    value: acvus_ast::Literal::Bool(true),
+                },
                 InstKind::Return(v(2)),
             ],
             |body| {
@@ -538,8 +875,13 @@ mod tests {
         );
         color_body(&mut cfg);
         let body = cfg::demote(cfg);
-        let consts: Vec<_> = body.insts.iter()
-            .filter_map(|i| match &i.kind { InstKind::Const { dst, .. } => Some(*dst), _ => None })
+        let consts: Vec<_> = body
+            .insts
+            .iter()
+            .filter_map(|i| match &i.kind {
+                InstKind::Const { dst, .. } => Some(*dst),
+                _ => None,
+            })
             .collect();
         assert_ne!(consts[0], consts[1]);
     }
@@ -548,16 +890,27 @@ mod tests {
     fn param_regs_remain_valid() {
         let mut cfg = make_cfg_with(
             vec![
-                InstKind::BinOp { dst: v(1), op: acvus_ast::BinOp::Add, left: v(0), right: v(0) },
+                InstKind::BinOp {
+                    dst: v(1),
+                    op: acvus_ast::BinOp::Add,
+                    left: v(0),
+                    right: v(0),
+                },
                 InstKind::Return(v(1)),
             ],
-            |body| { body.param_regs = vec![v(0)]; },
+            |body| {
+                body.params = vec![(dummy_name(), v(0))];
+            },
         );
         color_body(&mut cfg);
         let body = cfg::demote(cfg);
-        let binop = body.insts.iter().find(|i| matches!(i.kind, InstKind::BinOp { .. })).unwrap();
+        let binop = body
+            .insts
+            .iter()
+            .find(|i| matches!(i.kind, InstKind::BinOp { .. }))
+            .unwrap();
         if let InstKind::BinOp { left, .. } = &binop.kind {
-            assert_eq!(*left, body.param_regs[0]);
+            assert_eq!(*left, body.param_regs()[0]);
         }
     }
 
@@ -565,16 +918,27 @@ mod tests {
     fn capture_regs_remain_valid() {
         let mut cfg = make_cfg_with(
             vec![
-                InstKind::BinOp { dst: v(1), op: acvus_ast::BinOp::Add, left: v(0), right: v(0) },
+                InstKind::BinOp {
+                    dst: v(1),
+                    op: acvus_ast::BinOp::Add,
+                    left: v(0),
+                    right: v(0),
+                },
                 InstKind::Return(v(1)),
             ],
-            |body| { body.capture_regs = vec![v(0)]; },
+            |body| {
+                body.captures = vec![(dummy_name(), v(0))];
+            },
         );
         color_body(&mut cfg);
         let body = cfg::demote(cfg);
-        let binop = body.insts.iter().find(|i| matches!(i.kind, InstKind::BinOp { .. })).unwrap();
+        let binop = body
+            .insts
+            .iter()
+            .find(|i| matches!(i.kind, InstKind::BinOp { .. }))
+            .unwrap();
         if let InstKind::BinOp { left, .. } = &binop.kind {
-            assert_eq!(*left, body.capture_regs[0]);
+            assert_eq!(*left, body.capture_regs()[0]);
         }
     }
 
@@ -582,34 +946,64 @@ mod tests {
     fn unused_param_still_has_slot() {
         let mut cfg = make_cfg_with(
             vec![
-                InstKind::Const { dst: v(1), value: acvus_ast::Literal::Int(42) },
+                InstKind::Const {
+                    dst: v(1),
+                    value: acvus_ast::Literal::Int(42),
+                },
                 InstKind::Return(v(1)),
             ],
-            |body| { body.param_regs = vec![v(0)]; },
+            |body| {
+                body.params = vec![(dummy_name(), v(0))];
+            },
         );
         color_body(&mut cfg);
-        assert!(cfg.param_regs[0].to_raw() < 20);
+        assert!(cfg.params[0].1.to_raw() < 20);
     }
 
     #[test]
     fn branch_both_arms_correct() {
         let mut cfg = make_cfg(vec![
-            InstKind::Const { dst: v(0), value: acvus_ast::Literal::Int(1) },
-            InstKind::Const { dst: v(1), value: acvus_ast::Literal::Bool(true) },
+            InstKind::Const {
+                dst: v(0),
+                value: acvus_ast::Literal::Int(1),
+            },
+            InstKind::Const {
+                dst: v(1),
+                value: acvus_ast::Literal::Bool(true),
+            },
             InstKind::JumpIf {
                 cond: v(1),
-                then_label: Label(0), then_args: vec![v(0)],
-                else_label: Label(1), else_args: vec![v(0)],
+                then_label: Label(0),
+                then_args: vec![v(0)],
+                else_label: Label(1),
+                else_args: vec![v(0)],
             },
-            InstKind::BlockLabel { label: Label(0), params: vec![v(2)], merge_of: None },
+            InstKind::BlockLabel {
+                label: Label(0),
+                params: vec![v(2)],
+                merge_of: None,
+            },
             InstKind::Return(v(2)),
-            InstKind::BlockLabel { label: Label(1), params: vec![v(3)], merge_of: None },
+            InstKind::BlockLabel {
+                label: Label(1),
+                params: vec![v(3)],
+                merge_of: None,
+            },
             InstKind::Return(v(3)),
         ]);
         color_body(&mut cfg);
         let body = cfg::demote(cfg);
-        let ji = body.insts.iter().find(|i| matches!(i.kind, InstKind::JumpIf { .. })).unwrap();
-        if let InstKind::JumpIf { then_args, else_args, .. } = &ji.kind {
+        let ji = body
+            .insts
+            .iter()
+            .find(|i| matches!(i.kind, InstKind::JumpIf { .. }))
+            .unwrap();
+        if let InstKind::JumpIf {
+            then_args,
+            else_args,
+            ..
+        } = &ji.kind
+        {
             assert_eq!(then_args[0], else_args[0]);
         }
     }
@@ -619,11 +1013,32 @@ mod tests {
     #[test]
     fn non_overlapping_same_type_share_slot() {
         let original_body = make_body(vec![
-            InstKind::Const { dst: v(0), value: acvus_ast::Literal::Int(1) },
-            InstKind::BinOp { dst: v(1), op: acvus_ast::BinOp::Add, left: v(0), right: v(0) },
-            InstKind::Const { dst: v(2), value: acvus_ast::Literal::Int(2) },
-            InstKind::BinOp { dst: v(3), op: acvus_ast::BinOp::Add, left: v(2), right: v(2) },
-            InstKind::BinOp { dst: v(4), op: acvus_ast::BinOp::Add, left: v(1), right: v(3) },
+            InstKind::Const {
+                dst: v(0),
+                value: acvus_ast::Literal::Int(1),
+            },
+            InstKind::BinOp {
+                dst: v(1),
+                op: acvus_ast::BinOp::Add,
+                left: v(0),
+                right: v(0),
+            },
+            InstKind::Const {
+                dst: v(2),
+                value: acvus_ast::Literal::Int(2),
+            },
+            InstKind::BinOp {
+                dst: v(3),
+                op: acvus_ast::BinOp::Add,
+                left: v(2),
+                right: v(2),
+            },
+            InstKind::BinOp {
+                dst: v(4),
+                op: acvus_ast::BinOp::Add,
+                left: v(1),
+                right: v(3),
+            },
             InstKind::Return(v(4)),
         ]);
         let original_defs = collect_defs(&original_body);
@@ -636,14 +1051,25 @@ mod tests {
     #[test]
     fn dead_value_slot_reclaimed() {
         let mut cfg = make_cfg(vec![
-            InstKind::Const { dst: v(0), value: acvus_ast::Literal::Int(1) },
-            InstKind::Const { dst: v(1), value: acvus_ast::Literal::Int(2) },
+            InstKind::Const {
+                dst: v(0),
+                value: acvus_ast::Literal::Int(1),
+            },
+            InstKind::Const {
+                dst: v(1),
+                value: acvus_ast::Literal::Int(2),
+            },
             InstKind::Return(v(1)),
         ]);
         color_body(&mut cfg);
         let body = cfg::demote(cfg);
-        let consts: Vec<_> = body.insts.iter()
-            .filter_map(|i| match &i.kind { InstKind::Const { dst, .. } => Some(*dst), _ => None })
+        let consts: Vec<_> = body
+            .insts
+            .iter()
+            .filter_map(|i| match &i.kind {
+                InstKind::Const { dst, .. } => Some(*dst),
+                _ => None,
+            })
             .collect();
         assert_eq!(consts[0], consts[1], "dead value slot should be reused");
     }
@@ -653,8 +1079,12 @@ mod tests {
     #[test]
     fn empty_body_no_panic() {
         let mut cfg = CfgBody {
-            blocks: vec![], label_to_block: FxHashMap::default(), val_types: FxHashMap::default(),
-            param_regs: vec![], capture_regs: vec![], debug: DebugInfo::new(),
+            blocks: vec![],
+            label_to_block: FxHashMap::default(),
+            val_types: FxHashMap::default(),
+            params: vec![],
+            captures: vec![],
+            debug: DebugInfo::new(),
             val_factory: LocalFactory::<ValueId>::new(),
         };
         color_body(&mut cfg);
@@ -663,12 +1093,17 @@ mod tests {
     #[test]
     fn single_return_no_panic() {
         let mut cfg = make_cfg(vec![
-            InstKind::Const { dst: v(0), value: acvus_ast::Literal::Int(0) },
+            InstKind::Const {
+                dst: v(0),
+                value: acvus_ast::Literal::Int(0),
+            },
             InstKind::Return(v(0)),
         ]);
         color_body(&mut cfg);
         let body = cfg::demote(cfg);
-        if let (InstKind::Const { dst, .. }, InstKind::Return(val)) = (&body.insts[0].kind, &body.insts[1].kind) {
+        if let (InstKind::Const { dst, .. }, InstKind::Return(val)) =
+            (&body.insts[0].kind, &body.insts[1].kind)
+        {
             assert_eq!(val, dst);
         }
     }
@@ -677,17 +1112,32 @@ mod tests {
     fn val_types_remapped_correctly() {
         let mut cfg = make_cfg_with(
             vec![
-                InstKind::Const { dst: v(0), value: acvus_ast::Literal::Int(1) },
-                InstKind::BinOp { dst: v(1), op: acvus_ast::BinOp::Add, left: v(0), right: v(0) },
+                InstKind::Const {
+                    dst: v(0),
+                    value: acvus_ast::Literal::Int(1),
+                },
+                InstKind::BinOp {
+                    dst: v(1),
+                    op: acvus_ast::BinOp::Add,
+                    left: v(0),
+                    right: v(0),
+                },
                 InstKind::Return(v(1)),
             ],
-            |body| { body.val_types.insert(v(0), Ty::Int); body.val_types.insert(v(1), Ty::Int); },
+            |body| {
+                body.val_types.insert(v(0), Ty::Int);
+                body.val_types.insert(v(1), Ty::Int);
+            },
         );
         color_body(&mut cfg);
         let body = cfg::demote(cfg);
         let defs = collect_defs(&body);
         for vid in body.val_types.keys() {
-            assert!(defs.contains(vid) || body.param_regs.contains(vid) || body.capture_regs.contains(vid));
+            assert!(
+                defs.contains(vid)
+                    || body.param_regs().contains(vid)
+                    || body.capture_regs().contains(vid)
+            );
         }
     }
 
@@ -695,16 +1145,36 @@ mod tests {
     fn dead_val_types_do_not_overwrite_live_types() {
         let mut cfg = make_cfg_with(
             vec![
-                InstKind::Const { dst: v(0), value: acvus_ast::Literal::Bool(true) },
-                InstKind::Const { dst: v(1), value: acvus_ast::Literal::String("x".into()) },
-                InstKind::Const { dst: v(2), value: acvus_ast::Literal::Int(1) },
-                InstKind::JumpIf {
-                    cond: v(0), then_label: Label(0), then_args: vec![v(2)],
-                    else_label: Label(1), else_args: vec![v(2)],
+                InstKind::Const {
+                    dst: v(0),
+                    value: acvus_ast::Literal::Bool(true),
                 },
-                InstKind::BlockLabel { label: Label(0), params: vec![v(3)], merge_of: None },
+                InstKind::Const {
+                    dst: v(1),
+                    value: acvus_ast::Literal::String("x".into()),
+                },
+                InstKind::Const {
+                    dst: v(2),
+                    value: acvus_ast::Literal::Int(1),
+                },
+                InstKind::JumpIf {
+                    cond: v(0),
+                    then_label: Label(0),
+                    then_args: vec![v(2)],
+                    else_label: Label(1),
+                    else_args: vec![v(2)],
+                },
+                InstKind::BlockLabel {
+                    label: Label(0),
+                    params: vec![v(3)],
+                    merge_of: None,
+                },
                 InstKind::Return(v(3)),
-                InstKind::BlockLabel { label: Label(1), params: vec![v(4)], merge_of: None },
+                InstKind::BlockLabel {
+                    label: Label(1),
+                    params: vec![v(4)],
+                    merge_of: None,
+                },
                 InstKind::Return(v(4)),
             ],
             |body| {
@@ -717,7 +1187,11 @@ mod tests {
         );
         color_body(&mut cfg);
         let body = cfg::demote(cfg);
-        let ji = body.insts.iter().find(|i| matches!(i.kind, InstKind::JumpIf { .. })).unwrap();
+        let ji = body
+            .insts
+            .iter()
+            .find(|i| matches!(i.kind, InstKind::JumpIf { .. }))
+            .unwrap();
         if let InstKind::JumpIf { cond, .. } = &ji.kind {
             assert_eq!(body.val_types.get(cond), Some(&Ty::Bool));
         }
@@ -727,18 +1201,50 @@ mod tests {
     fn empty_block_param_does_not_alias_early_value() {
         let mut cfg = make_cfg_with(
             vec![
-                InstKind::Const { dst: v(0), value: acvus_ast::Literal::String("hello".into()) },
-                InstKind::Const { dst: v(1), value: acvus_ast::Literal::Bool(true) },
-                InstKind::JumpIf {
-                    cond: v(1), then_label: Label(0), then_args: vec![],
-                    else_label: Label(1), else_args: vec![],
+                InstKind::Const {
+                    dst: v(0),
+                    value: acvus_ast::Literal::String("hello".into()),
                 },
-                InstKind::BlockLabel { label: Label(0), params: vec![], merge_of: None },
-                InstKind::Jump { label: Label(2), args: vec![v(0)] },
-                InstKind::BlockLabel { label: Label(1), params: vec![], merge_of: None },
-                InstKind::Jump { label: Label(2), args: vec![v(0)] },
-                InstKind::BlockLabel { label: Label(2), params: vec![v(2)], merge_of: None },
-                InstKind::BinOp { dst: v(3), op: acvus_ast::BinOp::Add, left: v(0), right: v(2) },
+                InstKind::Const {
+                    dst: v(1),
+                    value: acvus_ast::Literal::Bool(true),
+                },
+                InstKind::JumpIf {
+                    cond: v(1),
+                    then_label: Label(0),
+                    then_args: vec![],
+                    else_label: Label(1),
+                    else_args: vec![],
+                },
+                InstKind::BlockLabel {
+                    label: Label(0),
+                    params: vec![],
+                    merge_of: None,
+                },
+                InstKind::Jump {
+                    label: Label(2),
+                    args: vec![v(0)],
+                },
+                InstKind::BlockLabel {
+                    label: Label(1),
+                    params: vec![],
+                    merge_of: None,
+                },
+                InstKind::Jump {
+                    label: Label(2),
+                    args: vec![v(0)],
+                },
+                InstKind::BlockLabel {
+                    label: Label(2),
+                    params: vec![v(2)],
+                    merge_of: None,
+                },
+                InstKind::BinOp {
+                    dst: v(3),
+                    op: acvus_ast::BinOp::Add,
+                    left: v(0),
+                    right: v(2),
+                },
                 InstKind::Return(v(3)),
             ],
             |body| {
@@ -750,7 +1256,11 @@ mod tests {
         );
         color_body(&mut cfg);
         let body = cfg::demote(cfg);
-        let binop = body.insts.iter().find(|i| matches!(i.kind, InstKind::BinOp { .. })).unwrap();
+        let binop = body
+            .insts
+            .iter()
+            .find(|i| matches!(i.kind, InstKind::BinOp { .. }))
+            .unwrap();
         if let InstKind::BinOp { left, right, .. } = &binop.kind {
             assert_ne!(left, right);
         }
@@ -759,11 +1269,32 @@ mod tests {
     #[test]
     fn val_factory_reflects_compacted_count() {
         let mut cfg = make_cfg(vec![
-            InstKind::Const { dst: v(0), value: acvus_ast::Literal::Int(1) },
-            InstKind::BinOp { dst: v(1), op: acvus_ast::BinOp::Add, left: v(0), right: v(0) },
-            InstKind::Const { dst: v(2), value: acvus_ast::Literal::Int(2) },
-            InstKind::BinOp { dst: v(3), op: acvus_ast::BinOp::Add, left: v(2), right: v(2) },
-            InstKind::BinOp { dst: v(4), op: acvus_ast::BinOp::Add, left: v(1), right: v(3) },
+            InstKind::Const {
+                dst: v(0),
+                value: acvus_ast::Literal::Int(1),
+            },
+            InstKind::BinOp {
+                dst: v(1),
+                op: acvus_ast::BinOp::Add,
+                left: v(0),
+                right: v(0),
+            },
+            InstKind::Const {
+                dst: v(2),
+                value: acvus_ast::Literal::Int(2),
+            },
+            InstKind::BinOp {
+                dst: v(3),
+                op: acvus_ast::BinOp::Add,
+                left: v(2),
+                right: v(2),
+            },
+            InstKind::BinOp {
+                dst: v(4),
+                op: acvus_ast::BinOp::Add,
+                left: v(1),
+                right: v(3),
+            },
             InstKind::Return(v(4)),
         ]);
         color_body(&mut cfg);

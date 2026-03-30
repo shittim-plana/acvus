@@ -1,4 +1,5 @@
 use acvus_macro::{acvus_script, acvus_template};
+use acvus_utils::QualifiedRef;
 
 #[test]
 fn script_no_placeholder() {
@@ -157,7 +158,7 @@ fn int_expr(n: i64) -> acvus_ast::Expr {
 fn ident_expr(interner: &acvus_utils::Interner, name: &str) -> acvus_ast::Expr {
     acvus_ast::Expr::Ident {
         id: acvus_ast::AstId::alloc(),
-        name: interner.intern(name),
+        name: QualifiedRef::root(interner.intern(name)),
         ref_kind: acvus_ast::RefKind::Value,
         span: acvus_ast::Span::ZERO,
     }
@@ -207,8 +208,8 @@ fn assert_int(expr: &acvus_ast::Expr, expected: i64) {
 fn assert_ident(expr: &acvus_ast::Expr, interner: &acvus_utils::Interner, expected: &str) {
     match expr {
         acvus_ast::Expr::Ident { name, .. } => {
-            let expected_astr = interner.intern(expected);
-            assert_eq!(*name, expected_astr, "expected ident '{expected}'");
+            let expected_qref = QualifiedRef::root(interner.intern(expected));
+            assert_eq!(*name, expected_qref, "expected ident '{expected}'");
         }
         other => panic!("expected Ident({expected}), got {other:?}"),
     }

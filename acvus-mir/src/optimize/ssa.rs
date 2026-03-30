@@ -11,8 +11,6 @@
 //! 3. When all predecessors of a block are known, `seal_block(block)`
 //! 4. `finish()` returns the PHI insertions to apply
 
-use acvus_utils::Astr;
-
 use crate::graph::QualifiedRef;
 use crate::ir::{Label, ValueId};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -22,8 +20,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 pub enum SsaVar {
     /// Context variable: `@name`.
     Context(QualifiedRef),
-    /// Local variable: `name` (hoisted) or `$name` (extern param).
-    Local(Astr),
+    /// Local variable or extern param, identified by storage slot ValueId.
+    Local(ValueId),
 }
 
 /// A pending PHI that needs to be resolved when the block is sealed.
@@ -54,6 +52,9 @@ pub struct SSABuilder {
 
     /// Completed PHI insertions.
     phi_results: Vec<PhiInsertion>,
+
+    /// Substitutions from trivial phi elimination: trivial_phi_val → resolved_val.
+    trivial_subst: FxHashMap<ValueId, ValueId>,
 }
 
 /// A completed PHI insertion.
@@ -86,6 +87,7 @@ impl SSABuilder {
             sealed: FxHashSet::default(),
             pending_phis: FxHashMap::default(),
             phi_results: Vec::new(),
+            trivial_subst: FxHashMap::default(),
         }
     }
 
@@ -109,7 +111,7 @@ impl SSABuilder {
         &mut self,
         block: Label,
         var: SsaVar,
-        alloc_val: &mut impl FnMut() -> ValueId,
+        alloc_val: &mut impl FnMut(SsaVar) -> ValueId,
     ) -> ValueId {
         // Local definition in this block?
         if let Some(&val) = self.current_defs.get(&(block, var)) {
@@ -122,7 +124,7 @@ impl SSABuilder {
         }
 
         // Not sealed — place a pending PHI.
-        let phi_val = alloc_val();
+        let phi_val = alloc_val(var);
         self.pending_phis
             .entry(block)
             .or_default()
@@ -137,7 +139,7 @@ impl SSABuilder {
 
     /// Seal a block: all predecessors are now known.
     /// Resolves any pending PHIs by looking up predecessor definitions.
-    pub fn seal_block(&mut self, block: Label, alloc_val: &mut impl FnMut() -> ValueId) {
+    pub fn seal_block(&mut self, block: Label, alloc_val: &mut impl FnMut(SsaVar) -> ValueId) {
         assert!(
             !self.sealed.contains(&block),
             "block {:?} already sealed",
@@ -153,7 +155,22 @@ impl SSABuilder {
     }
 
     /// Finish SSA construction. Returns all PHI insertions.
-    pub fn finish(self) -> Vec<PhiInsertion> {
+    ///
+    /// Resolves incoming values through trivial_subst: if a phi operand
+    /// references a trivially-eliminated phi, it's replaced with the final value.
+    pub fn finish(mut self) -> Vec<PhiInsertion> {
+        if !self.trivial_subst.is_empty() {
+            for phi in &mut self.phi_results {
+                for (_, val) in &mut phi.incoming {
+                    // Walk the substitution chain (A→B→C if B was also trivial).
+                    let mut resolved = *val;
+                    while let Some(&next) = self.trivial_subst.get(&resolved) {
+                        resolved = next;
+                    }
+                    *val = resolved;
+                }
+            }
+        }
         self.phi_results
     }
 
@@ -163,7 +180,7 @@ impl SSABuilder {
         &mut self,
         block: Label,
         var: SsaVar,
-        alloc_val: &mut impl FnMut() -> ValueId,
+        alloc_val: &mut impl FnMut(SsaVar) -> ValueId,
     ) -> ValueId {
         let preds = self.predecessors.get(&block).cloned().unwrap_or_default();
 
@@ -182,7 +199,7 @@ impl SSABuilder {
         }
 
         // Multiple predecessors — need PHI.
-        let phi_val = alloc_val();
+        let phi_val = alloc_val(var);
         // Define before resolving to break cycles (loop back edges).
         self.current_defs.insert((block, var), phi_val);
         self.resolve_phi(block, var, phi_val, alloc_val);
@@ -195,7 +212,7 @@ impl SSABuilder {
         block: Label,
         var: SsaVar,
         phi_val: ValueId,
-        alloc_val: &mut impl FnMut() -> ValueId,
+        alloc_val: &mut impl FnMut(SsaVar) -> ValueId,
     ) {
         let preds = self.predecessors.get(&block).cloned().unwrap_or_default();
         let mut incoming = Vec::new();
@@ -217,6 +234,8 @@ impl SSABuilder {
             // Trivial — all predecessors provide the same value.
             let single = *unique.iter().next().unwrap();
             self.current_defs.insert((block, var), single);
+            // Record substitution so finish() can resolve references to this phi.
+            self.trivial_subst.insert(phi_val, single);
             // No PHI insertion needed.
         } else {
             // Non-trivial PHI.
@@ -240,14 +259,19 @@ mod tests {
         Label(n)
     }
 
-    fn make_val_alloc() -> impl FnMut() -> ValueId {
+    fn make_val_alloc() -> impl FnMut(SsaVar) -> ValueId {
         use acvus_utils::LocalIdOps;
         let mut counter = 0usize;
-        move || {
+        move |_var: SsaVar| {
             let id = ValueId::from_raw(counter);
             counter += 1;
             id
         }
+    }
+
+    /// Shorthand for test: allocate without specifying var (tests don't need types).
+    fn test_alloc(alloc: &mut impl FnMut(SsaVar) -> ValueId, var: SsaVar) -> ValueId {
+        alloc(var)
     }
 
     fn make_ctx(interner: &Interner, name: &str) -> SsaVar {
@@ -264,7 +288,7 @@ mod tests {
         let mut ssa = SSABuilder::new();
         let mut alloc = make_val_alloc();
 
-        let v0 = alloc();
+        let v0 = alloc(ctx);
         ssa.define(label(0), ctx, v0);
         let result = ssa.use_var(label(0), ctx, &mut alloc);
 
@@ -280,7 +304,7 @@ mod tests {
         let mut ssa = SSABuilder::new();
         let mut alloc = make_val_alloc();
 
-        let v0 = alloc();
+        let v0 = alloc(ctx);
         ssa.define(label(0), ctx, v0);
         ssa.add_predecessor(label(1), label(0));
         ssa.seal_block(label(1), &mut alloc);
@@ -299,13 +323,13 @@ mod tests {
         let mut alloc = make_val_alloc();
 
         // block 0: initial definition
-        let v_init = alloc();
+        let v_init = alloc(ctx);
         ssa.define(label(0), ctx, v_init);
 
         // block 1: write
         ssa.add_predecessor(label(1), label(0));
         ssa.seal_block(label(1), &mut alloc);
-        let v_write = alloc();
+        let v_write = alloc(ctx);
         ssa.define(label(1), ctx, v_write);
 
         // block 2: no write (uses v_init from block 0)
@@ -336,19 +360,19 @@ mod tests {
         let mut ssa = SSABuilder::new();
         let mut alloc = make_val_alloc();
 
-        let v_init = alloc();
+        let v_init = alloc(ctx);
         ssa.define(label(0), ctx, v_init);
 
         // block 1: write v1
         ssa.add_predecessor(label(1), label(0));
         ssa.seal_block(label(1), &mut alloc);
-        let v1 = alloc();
+        let v1 = alloc(ctx);
         ssa.define(label(1), ctx, v1);
 
         // block 2: write v2
         ssa.add_predecessor(label(2), label(0));
         ssa.seal_block(label(2), &mut alloc);
-        let v2 = alloc();
+        let v2 = alloc(ctx);
         ssa.define(label(2), ctx, v2);
 
         // merge
@@ -375,7 +399,7 @@ mod tests {
         let mut alloc = make_val_alloc();
 
         // block 0: init
-        let v0 = alloc();
+        let v0 = alloc(ctx);
         ssa.define(label(0), ctx, v0);
 
         // block 1: outer then → inner branch
@@ -385,7 +409,7 @@ mod tests {
         // block 2: inner then — write
         ssa.add_predecessor(label(2), label(1));
         ssa.seal_block(label(2), &mut alloc);
-        let v_inner = alloc();
+        let v_inner = alloc(ctx);
         ssa.define(label(2), ctx, v_inner);
 
         // block 3: inner else — no write
@@ -400,7 +424,7 @@ mod tests {
         // block 5: outer else — write
         ssa.add_predecessor(label(5), label(0));
         ssa.seal_block(label(5), &mut alloc);
-        let v_outer = alloc();
+        let v_outer = alloc(ctx);
         ssa.define(label(5), ctx, v_outer);
 
         // block 6: outer merge
@@ -442,7 +466,7 @@ mod tests {
         let mut alloc = make_val_alloc();
 
         // block 0: init
-        let v0 = alloc();
+        let v0 = alloc(ctx);
         ssa.define(label(0), ctx, v0);
 
         // block 1: loop header — NOT sealed yet (back edge pending)
@@ -453,7 +477,7 @@ mod tests {
         // block 2: loop body — writes
         ssa.add_predecessor(label(2), label(1));
         ssa.seal_block(label(2), &mut alloc);
-        let v_body = alloc();
+        let v_body = alloc(ctx);
         ssa.define(label(2), ctx, v_body);
 
         // Back edge: block 2 → block 1
@@ -487,7 +511,7 @@ mod tests {
         let mut ssa = SSABuilder::new();
         let mut alloc = make_val_alloc();
 
-        let v0 = alloc();
+        let v0 = alloc(ctx);
         ssa.define(label(0), ctx, v0);
 
         ssa.add_predecessor(label(1), label(0));
@@ -517,15 +541,15 @@ mod tests {
         let mut ssa = SSABuilder::new();
         let mut alloc = make_val_alloc();
 
-        let va0 = alloc();
-        let vb0 = alloc();
+        let va0 = alloc(ctx_a);
+        let vb0 = alloc(ctx_b);
         ssa.define(label(0), ctx_a, va0);
         ssa.define(label(0), ctx_b, vb0);
 
         // block 1: write ctx_a only
         ssa.add_predecessor(label(1), label(0));
         ssa.seal_block(label(1), &mut alloc);
-        let va1 = alloc();
+        let va1 = alloc(ctx_a);
         ssa.define(label(1), ctx_a, va1);
 
         // block 2: no writes

@@ -51,11 +51,7 @@ fn inline_multi_arg() {
     let ir = compile_inline_ir(
         &i,
         ("main", "add(3, 4)"),
-        &[(
-            "add",
-            "$a + $b",
-            sig(&i, &[("a", Ty::Int), ("b", Ty::Int)]),
-        )],
+        &[("add", "$a + $b", sig(&i, &[("a", Ty::Int), ("b", Ty::Int)]))],
         &[],
     )
     .unwrap();
@@ -142,11 +138,7 @@ fn inline_pipe_with_extra_args() {
     let ir = compile_inline_ir(
         &i,
         ("main", "3 | add(4)"),
-        &[(
-            "add",
-            "$a + $b",
-            sig(&i, &[("a", Ty::Int), ("b", Ty::Int)]),
-        )],
+        &[("add", "$a + $b", sig(&i, &[("a", Ty::Int), ("b", Ty::Int)]))],
         &[],
     )
     .unwrap();
@@ -161,13 +153,7 @@ fn inline_pipe_with_extra_args() {
 fn inline_preserves_extern_call() {
     // main calls to_string (ExternFn) — should remain as FunctionCall
     let i = Interner::new();
-    let ir = compile_inline_ir(
-        &i,
-        ("main", "42 | to_string"),
-        &[],
-        &[],
-    )
-    .unwrap();
+    let ir = compile_inline_ir(&i, ("main", "42 | to_string"), &[], &[]).unwrap();
     insta::assert_snapshot!(ir);
 }
 
@@ -245,11 +231,7 @@ fn inline_callee_writes_context() {
     let ir = compile_inline_ir(
         &i,
         ("main", "set_count(42)"),
-        &[(
-            "set_count",
-            "@count = $x; $x",
-            sig(&i, &[("x", Ty::Int)]),
-        )],
+        &[("set_count", "@count = $x; $x", sig(&i, &[("x", Ty::Int)]))],
         &[("count", Ty::Int)],
     )
     .unwrap();
@@ -263,11 +245,7 @@ fn inline_caller_and_callee_read_same_context() {
     let ir = compile_inline_ir(
         &i,
         ("main", "@count + add_count(1)"),
-        &[(
-            "add_count",
-            "$x + @count",
-            sig(&i, &[("x", Ty::Int)]),
-        )],
+        &[("add_count", "$x + @count", sig(&i, &[("x", Ty::Int)]))],
         &[("count", Ty::Int)],
     )
     .unwrap();
@@ -281,11 +259,7 @@ fn inline_callee_writes_caller_reads() {
     let ir = compile_inline_ir(
         &i,
         ("main", "x = bump(); x + @count"),
-        &[(
-            "bump",
-            "@count = @count + 1; @count",
-            sig(&i, &[]),
-        )],
+        &[("bump", "@count = @count + 1; @count", sig(&i, &[]))],
         &[("count", Ty::Int)],
     )
     .unwrap();
@@ -299,11 +273,7 @@ fn inline_multiple_context_writes() {
     let ir = compile_inline_ir(
         &i,
         ("main", "init()"),
-        &[(
-            "init",
-            "@a = 1; @b = 2; @a + @b",
-            sig(&i, &[]),
-        )],
+        &[("init", "@a = 1; @b = 2; @a + @b", sig(&i, &[]))],
         &[("a", Ty::Int), ("b", Ty::Int)],
     )
     .unwrap();
@@ -426,11 +396,7 @@ fn inline_pure_function() {
     let ir = compile_inline_ir(
         &i,
         ("main", "add(1, 2)"),
-        &[(
-            "add",
-            "$a + $b",
-            sig(&i, &[("a", Ty::Int), ("b", Ty::Int)]),
-        )],
+        &[("add", "$a + $b", sig(&i, &[("a", Ty::Int), ("b", Ty::Int)]))],
         &[],
     )
     .unwrap();
@@ -497,13 +463,7 @@ fn inline_devirt_known_closure() {
     // Indirect call to a known closure (single MakeClosure def) gets devirtualized and inlined.
     // main = { f = |x| -> x + 1; f(5) }
     let i = Interner::new();
-    let ir = compile_inline_ir(
-        &i,
-        ("main", "f = |x| -> x + 1; f(5)"),
-        &[],
-        &[],
-    )
-    .unwrap();
+    let ir = compile_inline_ir(&i, ("main", "f = |x| -> x + 1; f(5)"), &[], &[]).unwrap();
     insta::assert_snapshot!(ir);
 }
 
@@ -572,11 +532,7 @@ fn inline_comparison() {
     let ir = compile_inline_ir(
         &i,
         ("main", "is_positive(42)"),
-        &[(
-            "is_positive",
-            "$x > 0",
-            sig(&i, &[("x", Ty::Int)]),
-        )],
+        &[("is_positive", "$x > 0", sig(&i, &[("x", Ty::Int)]))],
         &[],
     )
     .unwrap();
@@ -590,11 +546,7 @@ fn inline_with_local_binding() {
     let ir = compile_inline_ir(
         &i,
         ("main", "compute(5)"),
-        &[(
-            "compute",
-            "y = $x * 2; y + 1",
-            sig(&i, &[("x", Ty::Int)]),
-        )],
+        &[("compute", "y = $x * 2; y + 1", sig(&i, &[("x", Ty::Int)]))],
         &[],
     )
     .unwrap();
@@ -608,10 +560,7 @@ fn inline_result_unused_intermediate() {
     let ir = compile_inline_ir(
         &i,
         ("main", "get_a() + get_b()"),
-        &[
-            ("get_a", "1", sig(&i, &[])),
-            ("get_b", "2", sig(&i, &[])),
-        ],
+        &[("get_a", "1", sig(&i, &[])), ("get_b", "2", sig(&i, &[]))],
         &[],
     )
     .unwrap();

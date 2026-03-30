@@ -1,4 +1,3 @@
-use Future;
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;

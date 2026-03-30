@@ -8,20 +8,21 @@ expression: ir
   T2 = "!"
 
 === main ===
-     0 │   r0 = context_project @name
-     1 │   r1 = context_load r0
+     0 │   r0 = ref @name
+     1 │   r1 = load r0
      4 │   r2 = T0 + T1
-     5 │   r3 = r2 + r1
-     7 │   r4 = r3 + T2
-     8 │   return r4
+     5 │   r3 = ref @name
+     6 │   r4 = r2 + r1
+     8 │   r5 = r4 + T2
+     9 │   return r5
 
-    ; r0 (@name) : String
-    ; r1 (v2) : String
+    ; r0 (@name) : Ref<String>
+    ; r1 (@name) : String
     ; r2 (v5) : String
-    ; r3 (v8) : String
-    ; r4 (v10) : String
-    ; r5 (v3) : String
-    ; r6 (v7) : String
-    ; r7 (@name) : String
+    ; r3 (@name) : Ref<String>
+    ; r4 (v8) : String
+    ; r5 (v10) : String
+    ; r6 (v3) : String
+    ; r7 (v7) : String
     ; r8 (v9) : String
     ; r9 (v4) : String

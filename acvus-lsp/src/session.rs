@@ -90,8 +90,7 @@ impl LspSession {
     // ── Namespace management (delegate) ─────────────────────────────
 
     pub fn add_namespace(&mut self, name: &str) -> Astr {
-        let ns_name = self.graph.interner().intern(name);
-        ns_name
+        self.graph.interner().intern(name)
     }
 
     pub fn remove_namespace(&mut self, ns_name: Astr) {
@@ -102,7 +101,7 @@ impl LspSession {
             .filter(|qref| {
                 self.graph
                     .function(**qref)
-                    .map_or(false, |f| f.qref.namespace == Some(ns_name))
+                    .is_some_and(|f| f.qref.namespace == Some(ns_name))
             })
             .copied()
             .collect();
@@ -127,10 +126,7 @@ impl LspSession {
             Some(ns) => QualifiedRef::qualified(ns, interned),
             None => QualifiedRef::root(interned),
         };
-        self.graph.add_context(Context {
-            qref,
-            constraint,
-        });
+        self.graph.add_context(Context { qref, constraint });
         qref
     }
 
@@ -141,12 +137,7 @@ impl LspSession {
     // ── Document lifecycle ──────────────────────────────────────────
 
     /// Open a document. Creates a Function in the graph.
-    pub fn open(
-        &mut self,
-        name: &str,
-        source: &str,
-        namespace: Option<Astr>,
-    ) -> DocId {
+    pub fn open(&mut self, name: &str, source: &str, namespace: Option<Astr>) -> DocId {
         let doc_id = DocId(self.next_doc_id);
         self.next_doc_id += 1;
 
@@ -158,8 +149,7 @@ impl LspSession {
         };
 
         // Always parse as template for LSP (templates are the primary document type).
-        let ast = acvus_ast::parse(&interner, source)
-            .expect("parse error in LSP open");
+        let ast = acvus_ast::parse(&interner, source).expect("parse error in LSP open");
         let func = Function {
             qref,
             kind: FnKind::Local(ParsedAst::Template(ast)),
@@ -182,8 +172,7 @@ impl LspSession {
             return;
         };
         let interner = self.graph.interner().clone();
-        let ast = acvus_ast::parse(&interner, source)
-            .expect("parse error in LSP update_source");
+        let ast = acvus_ast::parse(&interner, source).expect("parse error in LSP update_source");
         self.graph.update_ast(qref, ParsedAst::Template(ast));
     }
 

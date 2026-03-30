@@ -273,12 +273,21 @@ impl<'a> CheckCtx<'a> {
             }
         }
 
+        // Build ref_target map: Ref dst → RefTarget.
+        let mut ref_target: FxHashMap<ValueId, crate::ir::RefTarget> = FxHashMap::default();
+        for inst in &body.insts {
+            if let InstKind::Ref { dst, target, .. } = &inst.kind {
+                ref_target.insert(*dst, target.clone());
+            }
+        }
+
         for (pc, inst) in body.insts.iter().enumerate() {
             self.check_inst(
                 pc,
                 inst.span,
                 &inst.kind,
                 &body.val_types,
+                &ref_target,
                 &body.insts,
                 errors,
             );
@@ -358,6 +367,7 @@ impl<'a> CheckCtx<'a> {
         span: Span,
         kind: &InstKind,
         vt: &FxHashMap<ValueId, Ty>,
+        ref_target: &FxHashMap<ValueId, crate::ir::RefTarget>,
         insts: &[crate::ir::Inst],
         errors: &mut Vec<ValidationError>,
     ) {
@@ -686,8 +696,67 @@ impl<'a> CheckCtx<'a> {
                 }
             }
 
-            // === Access ===
-            InstKind::FieldGet { dst, object, field } => {
+            // === Projection ===
+            InstKind::Ref { dst, .. } => {
+                // Ref produces Ty::Ref(_). Just verify the dst has a type.
+                let _ = self.ty_of(*dst, vt, span, pc, errors);
+            }
+            InstKind::Load { dst, src, .. } => {
+                // src must be Ty::Ref(T), dst must be T.
+                let src_ty = ty!(*src);
+                if let Ty::Ref(inner, _) = src_ty {
+                    let dst_ty = ty!(*dst);
+                    self.assert_match(pc, span, "Load", "dst", inner.as_ref(), dst_ty, errors);
+                } else if !src_ty.is_error() && !matches!(src_ty, Ty::Param { .. }) {
+                    errors.push(ValidationError {
+                        scope: self.scope_name.clone(),
+                        inst_index: pc,
+                        span,
+                        kind: ValidationErrorKind::InvalidConstructor {
+                            inst_name: "Load".to_string(),
+                            expected_constructor: "Ref".to_string(),
+                            actual: src_ty.clone(),
+                        },
+                    });
+                }
+            }
+            InstKind::Store { dst, value, .. } => {
+                // dst must be Ty::Ref(T), value must be T.
+                let dst_ty = ty!(*dst);
+                if let Ty::Ref(inner, _) = dst_ty {
+                    let val_ty = ty!(*value);
+                    self.assert_match(pc, span, "Store", "value", inner.as_ref(), val_ty, errors);
+                    // Context materiality check: storing non-materializable to context is an error.
+                    if let Some(crate::ir::RefTarget::Context(_)) = ref_target.get(dst)
+                        && let Some(ty) = vt.get(value)
+                        && !matches!(ty, Ty::Error(_) | Ty::Param { .. })
+                        && !ty.is_materializable()
+                    {
+                        errors.push(ValidationError {
+                            scope: self.scope_name.clone(),
+                            inst_index: pc,
+                            span,
+                            kind: ValidationErrorKind::NotMaterializable { ty: ty.clone() },
+                        });
+                    }
+                } else if !dst_ty.is_error() && !matches!(dst_ty, Ty::Param { .. }) {
+                    errors.push(ValidationError {
+                        scope: self.scope_name.clone(),
+                        inst_index: pc,
+                        span,
+                        kind: ValidationErrorKind::InvalidConstructor {
+                            inst_name: "Store".to_string(),
+                            expected_constructor: "Ref".to_string(),
+                            actual: dst_ty.clone(),
+                        },
+                    });
+                }
+            }
+
+            // === Scalar field access ===
+            InstKind::FieldGet {
+                dst, object, field, ..
+            } => {
                 let obj_ty = ty!(*object);
                 // Try direct type first, then unwrap one container level
                 // (lowerer may record List/Deque type for pattern-match iteration)
@@ -708,6 +777,35 @@ impl<'a> CheckCtx<'a> {
                         span,
                         kind: ValidationErrorKind::InvalidConstructor {
                             inst_name: "FieldGet".to_string(),
+                            expected_constructor: "Object".to_string(),
+                            actual: obj_ty.clone(),
+                        },
+                    });
+                }
+            }
+            InstKind::FieldSet {
+                dst,
+                object,
+                field,
+                value,
+                ..
+            } => {
+                // object must be Object, value must match field type, dst must be same Object type.
+                let obj_ty = ty!(*object);
+                if let Ty::Object(fields) = obj_ty {
+                    if let Some(field_ty) = fields.get(field) {
+                        let val_ty = ty!(*value);
+                        self.assert_match(pc, span, "FieldSet", "value", field_ty, val_ty, errors);
+                    }
+                    let dst_ty = ty!(*dst);
+                    self.assert_match(pc, span, "FieldSet", "dst ≡ object", obj_ty, dst_ty, errors);
+                } else if !obj_ty.is_error() && !matches!(obj_ty, Ty::Param { .. }) {
+                    errors.push(ValidationError {
+                        scope: self.scope_name.clone(),
+                        inst_index: pc,
+                        span,
+                        kind: ValidationErrorKind::InvalidConstructor {
+                            inst_name: "FieldSet".to_string(),
                             expected_constructor: "Object".to_string(),
                             actual: obj_ty.clone(),
                         },
@@ -963,9 +1061,25 @@ impl<'a> CheckCtx<'a> {
                 }
                 // index_src and index_dst must be Int
                 let index_src_ty = ty!(*index_src);
-                self.assert_match(pc, span, "ListStep", "index_src", &Ty::Int, index_src_ty, errors);
+                self.assert_match(
+                    pc,
+                    span,
+                    "ListStep",
+                    "index_src",
+                    &Ty::Int,
+                    index_src_ty,
+                    errors,
+                );
                 let index_dst_ty = ty!(*index_dst);
-                self.assert_match(pc, span, "ListStep", "index_dst", &Ty::Int, index_dst_ty, errors);
+                self.assert_match(
+                    pc,
+                    span,
+                    "ListStep",
+                    "index_dst",
+                    &Ty::Int,
+                    index_dst_ty,
+                    errors,
+                );
             }
 
             // === Calls ===
@@ -1172,35 +1286,6 @@ impl<'a> CheckCtx<'a> {
                 }
             }
 
-            // === Context / Variables ===
-            InstKind::ContextProject { dst, .. } => {
-                let _ = self.ty_of(*dst, vt, span, pc, errors);
-            }
-            InstKind::ContextLoad { dst, .. } => {
-                let _ = self.ty_of(*dst, vt, span, pc, errors);
-            }
-            InstKind::VarLoad { dst, .. } | InstKind::ParamLoad { dst, .. } => {
-                let _ = self.ty_of(*dst, vt, span, pc, errors);
-            }
-            InstKind::VarStore { src, .. } => {
-                let _ = self.ty_of(*src, vt, span, pc, errors);
-            }
-            InstKind::ContextStore { value, .. } => {
-                let val_ty = self.ty_of(*value, vt, span, pc, errors);
-                if let Some(ty) = val_ty {
-                    // Skip poison types (Error/Param) — these are unresolved,
-                    // not intentionally ephemeral. They match anything.
-                    if !matches!(ty, Ty::Error(_) | Ty::Param { .. }) && !ty.is_materializable() {
-                        errors.push(ValidationError {
-                            scope: self.scope_name.clone(),
-                            inst_index: pc,
-                            span,
-                            kind: ValidationErrorKind::NotMaterializable { ty: ty.clone() },
-                        });
-                    }
-                }
-            }
-
             // === Control flow ===
             InstKind::Jump { label, args } => {
                 if let Some(params) = self.block_params(label, insts) {
@@ -1329,8 +1414,8 @@ mod tests {
             main: MirBody {
                 insts,
                 val_types,
-                param_regs: Vec::new(),
-                capture_regs: Vec::new(),
+                params: Vec::new(),
+                captures: Vec::new(),
                 debug: DebugInfo::new(),
                 val_factory: LocalFactory::new(),
                 label_count: 10,

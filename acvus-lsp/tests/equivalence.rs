@@ -32,7 +32,14 @@ fn batch_errors(interner: &Interner, source: &str, ctx: &[(&str, Ty)]) -> Vec<St
         contexts: Freeze::new(contexts),
     };
     let ext = extract::extract(interner, &graph);
-    let inf = infer::infer(interner, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+    let inf = infer::infer(
+        interner,
+        &graph,
+        &ext,
+        &FxHashMap::default(),
+        Freeze::default(),
+        &FxHashMap::default(),
+    );
     let mut errs: Vec<String> = Vec::new();
     let result = graph_lower::lower(interner, &graph, &ext, &inf, &FxHashMap::default());
     for le in &result.errors {
@@ -138,7 +145,6 @@ fn namespace_context_isolation() {
     let ns = session.add_namespace("node_a");
     session.add_context("value", Some(ns), Constraint::Exact(Ty::Int));
     session.add_context("global", None, Constraint::Exact(Ty::String));
-
 
     // Root function sees @global.
     let doc_root = session.open("root_fn", "{{ @global }}", None);

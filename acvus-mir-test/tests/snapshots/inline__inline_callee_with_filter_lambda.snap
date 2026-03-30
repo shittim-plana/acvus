@@ -6,11 +6,13 @@ expression: ir
      2 │   r0 = -2 (r1)
      4 │   r2 = list [1 (r3), r0, 3 (r4)]
      5 │   r5 = cast DequeToList r2
-     6 │   r6 = call #0(r5)
-     7 │   r7 = closure L0 []
-     8 │   r8 = call #1(r6, r7)
-     9 │   r9 = call #2(r8)
-    10 │   return r9
+     6 │   r6 = ref $v6
+     7 │   r7 = load r6
+     8 │   r8 = call #0(r7)
+     9 │   r9 = closure L0 []
+    10 │   r10 = call #1(r8, r9)
+    11 │   r11 = call #2(r10)
+    12 │   return r11
 
     ; r0 (v3) : Int
     ; r1 (v2) : Int
@@ -18,9 +20,10 @@ expression: ir
     ; r3 (v1) : Int
     ; r4 (v4) : Int
     ; r5 (v6) : List<Int>
-    ; r6 (v10) : Iterator<?0, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
-    ; r7 (v11) : Fn(Int) -> Bool
-    ; r8 (filter(...)) : Iterator<Int, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
-    ; r9 (collect(...)) : List<Int>
-    ; r10 (positives(...)) : Iterator<Int, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
-    ; r11 ($xs) : List<Int>
+    ; r6 (v10) : Ref<List<Int>>
+    ; r7 ($xs) : List<Int>
+    ; r8 (v12) : Iterator<?0, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
+    ; r9 (v13) : Fn(Int) -> Bool
+    ; r10 (filter(...)) : Iterator<Int, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
+    ; r11 (collect(...)) : List<Int>
+    ; r12 (positives(...)) : Iterator<Int, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>

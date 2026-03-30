@@ -8,16 +8,21 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::graph::{ContextPolicy, QualifiedRef};
 use crate::hints::HintTable;
-use crate::ir::{Callee, CastKind, Inst, InstKind, Label, MirBody, MirModule, ValOrigin, ValueId};
-use crate::ty::{Ty};
+use crate::ir::{
+    Callee, CastKind, Inst, InstKind, Label, MirBody, MirModule, RefTarget, ValOrigin, ValueId,
+};
+use crate::ty::Ty;
 use crate::typeck::{CoercionMap, TypeMap};
 
 pub struct Lowerer<'a> {
     body: MirBody,
     /// Interner for string interning.
     interner: &'a Interner,
-    /// Stack of scopes: variable name → type (for validity, capture, and VarLoad typing).
+    /// Stack of scopes: variable name → type (for validity, capture, and Ref+Load typing).
     scopes: Vec<FxHashMap<Astr, Ty>>,
+    /// Variable name → storage slot ValueId.
+    /// Each variable gets a unique slot (like LLVM's alloca).
+    var_slots: FxHashMap<Astr, ValueId>,
     /// Type map from type checker.
     type_map: TypeMap,
     /// Coercion map from type checker (expr AstId → CastKind).
@@ -30,14 +35,9 @@ pub struct Lowerer<'a> {
     /// Hint table.
     hints: HintTable,
     /// Context QualifiedRef → Ty.
-    context_ids: Freeze<FxHashMap<QualifiedRef, Ty>>,
-    /// Function name → (QualifiedRef, Ty).
-    function_ids: Freeze<FxHashMap<Astr, (QualifiedRef, Ty)>>,
-    /// ValueIds that are projections (not yet materialized values).
-    /// FieldAccess on a projection produces another projection.
-    /// Use `ensure_loaded` to materialize.
-    /// Value: policy of the originating context.
-    projections: FxHashMap<ValueId, ContextPolicy>,
+    context_types: Freeze<FxHashMap<QualifiedRef, Ty>>,
+    /// Function QualifiedRef → Ty. From InferResult.fn_types.
+    fn_types: Freeze<FxHashMap<QualifiedRef, Ty>>,
     /// External constraints on contexts (volatile, read_only, etc.).
     policies: FxHashMap<QualifiedRef, ContextPolicy>,
 }
@@ -125,64 +125,54 @@ impl<'a> Lowerer<'a> {
         interner: &'a Interner,
         type_map: TypeMap,
         coercion_map: CoercionMap,
-        context_ids: Freeze<FxHashMap<QualifiedRef, Ty>>,
-        function_ids: Freeze<FxHashMap<Astr, (QualifiedRef, Ty)>>,
+        context_types: Freeze<FxHashMap<QualifiedRef, Ty>>,
+        fn_types: Freeze<FxHashMap<QualifiedRef, Ty>>,
         policies: FxHashMap<QualifiedRef, ContextPolicy>,
+        extern_params: Vec<(Astr, Ty)>,
     ) -> Self {
         let coercion_lookup: FxHashMap<AstId, CastKind> = coercion_map.into_iter().collect();
-        // Pre-inject function names into the initial scope.
         let initial_scope = FxHashMap::default();
+        let mut body = MirBody::new();
+
+        // Allocate param_regs for extern params (LLVM-style: params are SSA values).
+        // param_regs[i] holds the initial value of extern_params[i].
+        // SSA will use these as entry definitions instead of Ref+Load.
+        for (name, ty) in &extern_params {
+            let reg = body.val_factory.next();
+            body.val_types.insert(reg, ty.clone());
+            body.params.push((*name, reg));
+        }
+
         Self {
-            body: MirBody::new(),
+            body,
             interner,
             scopes: vec![initial_scope],
+            var_slots: FxHashMap::default(),
             type_map,
             coercion_lookup,
             closures: FxHashMap::default(),
             closure_label_count: 0,
             hints: HintTable::new(),
-            context_ids,
-            function_ids,
-            projections: FxHashMap::default(),
+            context_types,
+            fn_types,
             policies,
         }
     }
 
-    /// Emit ContextProject + ContextLoad for all known contexts at entry.
+    /// Emit Ref + Load for all known contexts at entry.
     /// This is the alloca equivalent — SSA pass will promote these to PHI form.
     /// Order is deterministic (sorted by context name).
     fn emit_entry_context_loads(&mut self, span: Span) {
         let mut entries: Vec<_> = self
-            .context_ids
+            .context_types
             .iter()
             .map(|(&qref, ty)| (qref, ty.clone()))
             .collect();
         entries.sort_by_key(|(qref, _)| self.interner.resolve(qref.name).to_string());
 
         for (qref, ty) in entries {
-            let policy = self.context_policy(&qref);
-            let proj = self.alloc_val();
-            self.set_val_type(proj, ty.clone());
-            self.set_origin(proj, ValOrigin::Context(qref.name));
-            self.emit_inst(
-                span,
-                InstKind::ContextProject {
-                    dst: proj,
-                    ctx: qref,
-                    volatile: policy.volatile,
-                },
-            );
-            self.mark_projection(proj, policy);
-            let val = self.alloc_val();
-            self.set_val_type(val, ty);
-            self.emit_inst(
-                span,
-                InstKind::ContextLoad {
-                    dst: val,
-                    src: proj,
-                    volatile: policy.volatile,
-                },
-            );
+            let val = self.emit_ref_load(span, RefTarget::Context(qref), None, ty);
+            self.set_origin(val, ValOrigin::Context(qref.name));
         }
     }
 
@@ -207,7 +197,9 @@ impl<'a> Lowerer<'a> {
 
     fn lower_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Bind { name, expr, span, .. } => {
+            Stmt::Bind {
+                name, expr, span, ..
+            } => {
                 let val = self.lower_expr(expr);
                 let ty = self
                     .body
@@ -215,16 +207,14 @@ impl<'a> Lowerer<'a> {
                     .get(&val)
                     .cloned()
                     .unwrap_or(Ty::error());
-                self.emit_inst(
-                    *span,
-                    InstKind::VarStore {
-                        name: *name,
-                        src: val,
-                    },
-                );
+                let slot = self.var_slot(*name);
+                self.set_origin(slot, ValOrigin::Named(*name));
+                self.emit_ref_store(*span, RefTarget::Var(slot), None, val);
                 self.define_var(*name, ty);
             }
-            Stmt::ContextStore { name, expr, span, .. } => {
+            Stmt::ContextStore {
+                name, expr, span, ..
+            } => {
                 self.lower_context_store(*name, expr, *span); // name is QualifiedRef
             }
             Stmt::Expr(expr) => {
@@ -328,13 +318,27 @@ impl<'a> Lowerer<'a> {
             Some(Ty::Deque(..)) => {
                 let cast_dst = self.alloc_val();
                 self.set_val_type(cast_dst, Ty::List(Box::new(elem_ty.clone())));
-                self.emit_inst(span, InstKind::Cast { dst: cast_dst, src: source_reg, kind: CastKind::DequeToList });
+                self.emit_inst(
+                    span,
+                    InstKind::Cast {
+                        dst: cast_dst,
+                        src: source_reg,
+                        kind: CastKind::DequeToList,
+                    },
+                );
                 cast_dst
             }
             Some(Ty::Range) => {
                 let cast_dst = self.alloc_val();
                 self.set_val_type(cast_dst, Ty::List(Box::new(Ty::Int)));
-                self.emit_inst(span, InstKind::Cast { dst: cast_dst, src: source_reg, kind: CastKind::RangeToList });
+                self.emit_inst(
+                    span,
+                    InstKind::Cast {
+                        dst: cast_dst,
+                        src: source_reg,
+                        kind: CastKind::RangeToList,
+                    },
+                );
                 cast_dst
             }
             _ => source_reg,
@@ -343,7 +347,13 @@ impl<'a> Lowerer<'a> {
         // Initial index = 0.
         let zero = self.alloc_val();
         self.set_val_type(zero, Ty::Int);
-        self.emit_inst(span, InstKind::Const { dst: zero, value: Literal::Int(0) });
+        self.emit_inst(
+            span,
+            InstKind::Const {
+                dst: zero,
+                value: Literal::Int(0),
+            },
+        );
 
         let loop_label = self.alloc_label();
         let end_label = self.alloc_label();
@@ -426,41 +436,135 @@ impl<'a> Lowerer<'a> {
         (module, self.hints)
     }
 
-    /// If `val` is a projection, materialize it into a value via ContextLoad.
-    /// If it's already a value, return as-is.
+    /// If `val` is a Ref<T>, emit Load to materialize it into T.
+    /// If it's already a scalar value, return as-is.
     fn ensure_loaded(&mut self, span: Span, val: ValueId) -> ValueId {
-        if let Some(policy) = self.projections.remove(&val) {
+        if let Some(Ty::Ref(inner, volatile)) = self.body.val_types.get(&val).cloned() {
             let dst = self.alloc_val();
-            let ty = self.body.val_types.get(&val).cloned().unwrap_or(Ty::error());
-            self.set_val_type(dst, ty);
-            self.emit_inst(span, InstKind::ContextLoad { dst, src: val, volatile: policy.volatile });
+            self.set_val_type(dst, *inner);
+            self.emit_inst(
+                span,
+                InstKind::Load {
+                    dst,
+                    src: val,
+                    volatile,
+                },
+            );
             dst
         } else {
             val
         }
     }
 
-    /// Mark a ValueId as a projection with its context policy.
-    fn mark_projection(&mut self, val: ValueId, policy: ContextPolicy) {
-        self.projections.insert(val, policy);
-    }
-
-    fn is_projection(&self, val: ValueId) -> bool {
-        self.projections.contains_key(&val)
-    }
-
     fn context_policy(&self, ctx: &QualifiedRef) -> ContextPolicy {
         self.policies.get(ctx).copied().unwrap_or_default()
     }
 
-    /// If val is a projection, emit ContextLoad to materialize it.
+    /// Determine volatile flag from a RefTarget.
+    fn ref_volatile(&self, target: &RefTarget) -> bool {
+        match target {
+            RefTarget::Context(qref) => self.context_policy(qref).volatile,
+            RefTarget::Var(_) | RefTarget::Param(_) => false,
+        }
+    }
+
+    /// Emit Ref + Store: write `value` to the given storage target.
+    fn emit_ref_store(
+        &mut self,
+        span: Span,
+        target: RefTarget,
+        field: Option<Astr>,
+        value: ValueId,
+    ) {
+        let val_ty = self
+            .body
+            .val_types
+            .get(&value)
+            .cloned()
+            .unwrap_or(Ty::error());
+        let volatile = self.ref_volatile(&target);
+        let ref_dst = self.alloc_val();
+        self.set_val_type(ref_dst, Ty::Ref(Box::new(val_ty), volatile));
+        // Set origin on Ref dst for printer context name resolution.
+        match &target {
+            RefTarget::Context(qref) => self.set_origin(ref_dst, ValOrigin::Context(qref.name)),
+            RefTarget::Var(_) | RefTarget::Param(_) => {
+                // Origin is already set on the slot by the caller before calling emit_ref_store.
+                // The Ref dst inherits from the target, but the slot's debug name is
+                // set separately via set_origin on the slot ValueId.
+            }
+        }
+        self.emit_inst(
+            span,
+            InstKind::Ref {
+                dst: ref_dst,
+                target,
+                field,
+            },
+        );
+        self.emit_inst(
+            span,
+            InstKind::Store {
+                dst: ref_dst,
+                value,
+                volatile,
+            },
+        );
+    }
+
+    /// Emit Ref + Load: read a value from the given storage target.
+    fn emit_ref_load(
+        &mut self,
+        span: Span,
+        target: RefTarget,
+        field: Option<Astr>,
+        result_ty: Ty,
+    ) -> ValueId {
+        let volatile = self.ref_volatile(&target);
+        let ref_dst = self.alloc_val();
+        self.set_val_type(ref_dst, Ty::Ref(Box::new(result_ty.clone()), volatile));
+        // Set origin on Ref dst for printer context name resolution.
+        match &target {
+            RefTarget::Context(qref) => self.set_origin(ref_dst, ValOrigin::Context(qref.name)),
+            RefTarget::Var(_) | RefTarget::Param(_) => {
+                // Origin set separately on the slot ValueId.
+            }
+        }
+        self.emit_inst(
+            span,
+            InstKind::Ref {
+                dst: ref_dst,
+                target,
+                field,
+            },
+        );
+        let dst = self.alloc_val();
+        self.set_val_type(dst, result_ty);
+        self.emit_inst(
+            span,
+            InstKind::Load {
+                dst,
+                src: ref_dst,
+                volatile,
+            },
+        );
+        dst
+    }
+
+    /// If val is a Ref<T>, emit Load to materialize it.
     /// Otherwise return val unchanged.
     fn materialize(&mut self, val: ValueId, span: Span) -> ValueId {
-        if let Some(&policy) = self.projections.get(&val) {
+        if let Some(Ty::Ref(inner, volatile)) = self.body.val_types.get(&val).cloned() {
             let dst = self.alloc_val();
-            let ty = self.body.val_types.get(&val).cloned().unwrap_or(Ty::Unit);
-            self.set_val_type(dst, ty);
-            self.emit_inst(span, InstKind::ContextLoad { dst, src: val, volatile: policy.volatile });
+            self.set_val_type(dst, *inner);
+            self.emit_inst(
+                span,
+                InstKind::Load {
+                    dst,
+                    src: val,
+                    volatile,
+                },
+            );
             dst
         } else {
             val
@@ -532,6 +636,35 @@ impl<'a> Lowerer<'a> {
             }
         }
         Ty::error()
+    }
+
+    /// Get or create a storage slot ValueId for the given variable name.
+    fn var_slot(&mut self, name: Astr) -> ValueId {
+        if let Some(&slot) = self.var_slots.get(&name) {
+            slot
+        } else {
+            let slot = self.body.val_factory.next();
+            self.var_slots.insert(name, slot);
+            slot
+        }
+    }
+
+    /// Look up the param_reg for an extern parameter by name.
+    /// Returns None if not found (e.g., inside a lambda where the param was captured).
+    fn try_param_slot(&self, name: Astr) -> Option<ValueId> {
+        for (pname, preg) in &self.body.params {
+            if *pname == name {
+                return Some(*preg);
+            }
+        }
+        None
+    }
+
+    /// Look up the param_reg for an extern parameter by name.
+    /// Panics if the param is not found (should be caught by typeck).
+    fn param_slot(&self, name: Astr) -> ValueId {
+        self.try_param_slot(name)
+            .unwrap_or_else(|| panic!("param_slot: extern param {:?} not found", name))
     }
 
     fn set_val_type(&mut self, val: ValueId, ty: Ty) {
@@ -757,13 +890,13 @@ impl<'a> Lowerer<'a> {
                     // ExternCast → lower as FunctionCall (pure, 1 arg, no context).
                     // Determine result type from the cast function's return type.
                     let ret_ty = self
-                        .function_ids
-                        .get(&fn_ref.name)
-                        .and_then(|(_, ty)| match ty {
+                        .fn_types
+                        .get(&fn_ref)
+                        .and_then(|ty| match ty {
                             Ty::Fn { ret, .. } => Some(ret.as_ref().clone()),
                             _ => None,
                         })
-                        .unwrap_or_else(|| Ty::error());
+                        .unwrap_or_else(Ty::error);
                     let cast_dst = self.alloc_val();
                     self.set_val_type(cast_dst, ret_ty);
                     self.emit_inst(
@@ -808,18 +941,11 @@ impl<'a> Lowerer<'a> {
     // --- Expression lowering ---
 
     /// Lower an expression to a **value** (not a projection).
-    /// If the result is a projection, it is materialized via ContextLoad.
+    /// If the result is a Ref<T>, it is materialized via Load.
     fn lower_expr(&mut self, expr: &Expr) -> ValueId {
         let val = self.lower_expr_inner(expr);
         let val = self.maybe_cast(expr.id(), expr.span(), val);
         self.ensure_loaded(expr.span(), val)
-    }
-
-    /// Lower an expression, preserving projections (no automatic ContextLoad).
-    /// Used by FieldAccess and ContextStore where projection must be maintained.
-    fn lower_expr_projectable(&mut self, expr: &Expr) -> ValueId {
-        let val = self.lower_expr_inner(expr);
-        self.maybe_cast(expr.id(), expr.span(), val)
     }
 
     fn lower_expr_inner(&mut self, expr: &Expr) -> ValueId {
@@ -836,12 +962,24 @@ impl<'a> Lowerer<'a> {
                 dst
             }
 
-            Expr::ContextRef { id, name: qref, span } => {
+            Expr::ContextRef {
+                id,
+                name: qref,
+                span,
+            } => {
                 let policy = self.context_policy(qref);
-                let dst = self.alloc_typed(*id);
+                let inner_ty = self.type_of_id(*id);
+                let dst = self.alloc_val();
+                self.set_val_type(dst, Ty::Ref(Box::new(inner_ty), policy.volatile));
                 self.set_origin(dst, ValOrigin::Context(qref.name));
-                self.emit_inst(*span, InstKind::ContextProject { dst, ctx: *qref, volatile: policy.volatile });
-                self.mark_projection(dst, policy);
+                self.emit_inst(
+                    *span,
+                    InstKind::Ref {
+                        dst,
+                        target: RefTarget::Context(*qref),
+                        field: None,
+                    },
+                );
                 dst
             }
 
@@ -852,23 +990,39 @@ impl<'a> Lowerer<'a> {
                 span,
             } => match ref_kind {
                 RefKind::ExternParam => {
-                    let dst = self.alloc_typed(*id);
-                    self.set_origin(dst, ValOrigin::ExternParam(*name));
-                    self.emit_inst(*span, InstKind::ParamLoad { dst, name: *name });
-                    dst
+                    let ty = self.type_of_id(*id);
+                    // Try current body's params first. If not found (e.g., inside a
+                    // lambda that captured this param as a regular variable), fall
+                    // through to local variable lookup.
+                    if let Some(param_reg) = self.try_param_slot(name.name) {
+                        let dst = self.emit_ref_load(*span, RefTarget::Param(param_reg), None, ty);
+                        self.set_origin(dst, ValOrigin::ExternParam(name.name));
+                        dst
+                    } else if self.is_defined(name.name) {
+                        let slot = self.var_slot(name.name);
+                        let dst = self.emit_ref_load(*span, RefTarget::Var(slot), None, ty);
+                        self.set_origin(dst, ValOrigin::Named(name.name));
+                        dst
+                    } else {
+                        // Not found — emit poison (should be caught by typeck).
+                        let dst = self.alloc_val();
+                        self.set_val_type(dst, ty);
+                        self.emit_inst(*span, InstKind::Poison { dst });
+                        dst
+                    }
                 }
                 RefKind::Value => {
-                    if !self.is_defined(*name) {
+                    if !self.is_defined(name.name) {
                         // Undefined variable — emit Unit (dead code).
+                        // TODO: this should be an error, not silent Unit.
                         let dst = self.alloc_val();
                         self.set_val_type(dst, Ty::Unit);
                         return dst;
                     }
-                    let dst = self.alloc_val();
-                    let ty = self.var_type(*name);
-                    self.set_val_type(dst, ty);
-                    self.set_origin(dst, ValOrigin::Named(*name));
-                    self.emit_inst(*span, InstKind::VarLoad { dst, name: *name });
+                    let ty = self.var_type(name.name);
+                    let slot = self.var_slot(name.name);
+                    let dst = self.emit_ref_load(*span, RefTarget::Var(slot), None, ty);
+                    self.set_origin(dst, ValOrigin::Named(name.name));
                     dst
                 }
             },
@@ -895,7 +1049,12 @@ impl<'a> Lowerer<'a> {
                 dst
             }
 
-            Expr::UnaryOp { id, op, operand, span } => {
+            Expr::UnaryOp {
+                id,
+                op,
+                operand,
+                span,
+            } => {
                 let o = self.lower_expr(operand);
                 let dst = self.alloc_expr(*id);
                 self.emit_inst(
@@ -915,29 +1074,130 @@ impl<'a> Lowerer<'a> {
                 field,
                 span,
             } => {
-                let obj = self.lower_expr_projectable(object);
-                let is_proj = self.is_projection(obj);
-                let dst = self.alloc_val();
-                self.set_val_type(dst, self.type_of_id(*id));
-                self.set_origin(dst, ValOrigin::Field(obj, *field));
-                self.emit_inst(
-                    *span,
-                    InstKind::FieldGet {
-                        dst,
-                        object: obj,
-                        field: *field,
-                    },
-                );
-                // Projection propagates through field access (including policy).
-                if let Some(&policy) = self.projections.get(&obj) {
-                    self.mark_projection(dst, policy);
+                let field_ty = self.type_of_id(*id);
+                // If object is a named storage reference, emit Ref with field.
+                match object.as_ref() {
+                    Expr::ContextRef { name: qref, .. } => {
+                        let policy = self.context_policy(qref);
+                        let dst = self.alloc_val();
+                        self.set_val_type(dst, Ty::Ref(Box::new(field_ty), policy.volatile));
+                        self.set_origin(
+                            dst,
+                            ValOrigin::RefField(RefTarget::Context(*qref), *field),
+                        );
+                        self.emit_inst(
+                            *span,
+                            InstKind::Ref {
+                                dst,
+                                target: RefTarget::Context(*qref),
+                                field: Some(*field),
+                            },
+                        );
+                        dst
+                    }
+                    Expr::Ident {
+                        name,
+                        ref_kind: RefKind::Value,
+                        ..
+                    } if self.is_defined(name.name) => {
+                        let slot = self.var_slot(name.name);
+                        let dst = self.alloc_val();
+                        self.set_val_type(dst, Ty::Ref(Box::new(field_ty), false));
+                        self.set_origin(dst, ValOrigin::RefField(RefTarget::Var(slot), *field));
+                        self.emit_inst(
+                            *span,
+                            InstKind::Ref {
+                                dst,
+                                target: RefTarget::Var(slot),
+                                field: Some(*field),
+                            },
+                        );
+                        dst
+                    }
+                    Expr::Ident {
+                        name,
+                        ref_kind: RefKind::ExternParam,
+                        ..
+                    } => {
+                        if let Some(param_reg) = self.try_param_slot(name.name) {
+                            let dst = self.alloc_val();
+                            self.set_val_type(dst, Ty::Ref(Box::new(field_ty), false));
+                            self.set_origin(dst, ValOrigin::RefField(RefTarget::Param(param_reg), *field));
+                            self.emit_inst(
+                                *span,
+                                InstKind::Ref {
+                                    dst,
+                                    target: RefTarget::Param(param_reg),
+                                    field: Some(*field),
+                                },
+                            );
+                            dst
+                        } else if self.is_defined(name.name) {
+                            // Captured param — treat as local variable.
+                            let slot = self.var_slot(name.name);
+                            let dst = self.alloc_val();
+                            self.set_val_type(dst, Ty::Ref(Box::new(field_ty), false));
+                            self.set_origin(dst, ValOrigin::RefField(RefTarget::Var(slot), *field));
+                            self.emit_inst(
+                                *span,
+                                InstKind::Ref {
+                                    dst,
+                                    target: RefTarget::Var(slot),
+                                    field: Some(*field),
+                                },
+                            );
+                            dst
+                        } else {
+                            // Fallback: lower as scalar FieldGet.
+                            let obj = self.lower_expr(object);
+                            let dst = self.alloc_val();
+                            self.set_val_type(dst, field_ty);
+                            self.set_origin(dst, ValOrigin::Field(obj, *field));
+                            self.emit_inst(
+                                *span,
+                                InstKind::FieldGet {
+                                    dst,
+                                    object: obj,
+                                    field: *field,
+                                    rest: vec![],
+                                },
+                            );
+                            dst
+                        }
+                    }
+                    // Otherwise: lower object to scalar, then FieldGet.
+                    _ => {
+                        let obj = self.lower_expr(object);
+                        let dst = self.alloc_val();
+                        self.set_val_type(dst, field_ty);
+                        self.set_origin(dst, ValOrigin::Field(obj, *field));
+                        self.emit_inst(
+                            *span,
+                            InstKind::FieldGet {
+                                dst,
+                                object: obj,
+                                field: *field,
+                                rest: vec![],
+                            },
+                        );
+                        dst
+                    }
                 }
-                dst
             }
 
-            Expr::FuncCall { id, func, args, span } => self.lower_func_call(func, args, None, *id, *span),
+            Expr::FuncCall {
+                id,
+                func,
+                args,
+                span,
+            } => self.lower_func_call(func, args, None, *id, *span),
 
-            Expr::Pipe { id, left, right, span } => {
+            Expr::Pipe {
+                id,
+                left,
+                right,
+                span,
+            } => {
                 // Desugar: `a | f(b, c)` → `f(a, b, c)`, `a | f` → `f(a)`
                 match right.as_ref() {
                     Expr::FuncCall { func, args, .. } => {
@@ -967,19 +1227,33 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            Expr::Lambda { id, params, body, span } => {
+            Expr::Lambda {
+                id,
+                params,
+                body,
+                span,
+            } => {
                 // Capture analysis: find free variables in body.
                 let param_names: FxHashSet<Astr> = params.iter().map(|p| p.name).collect();
                 let free_vars = self.free_vars_in_expr(body, &param_names);
 
-                // Emit VarLoad for each captured variable (snapshot current value).
+                // Emit Ref+Load for each captured variable (snapshot current value).
+                // If the free var is an extern param in the current scope, use Param ref;
+                // otherwise use Var ref.
                 let capture_regs: Vec<ValueId> = free_vars
                     .iter()
                     .map(|(name, var_id, var_span)| {
-                        let dst = self.alloc_typed(*var_id);
-                        self.set_origin(dst, ValOrigin::Named(*name));
-                        self.emit_inst(*var_span, InstKind::VarLoad { dst, name: *name });
-                        dst
+                        let ty = self.type_of_id(*var_id);
+                        if let Some(param_reg) = self.try_param_slot(*name) {
+                            let dst = self.emit_ref_load(*var_span, RefTarget::Param(param_reg), None, ty);
+                            self.set_origin(dst, ValOrigin::ExternParam(*name));
+                            dst
+                        } else {
+                            let slot = self.var_slot(*name);
+                            let dst = self.emit_ref_load(*var_span, RefTarget::Var(slot), None, ty);
+                            self.set_origin(dst, ValOrigin::Named(*name));
+                            dst
+                        }
                     })
                     .collect();
                 // Create closure body.
@@ -1017,27 +1291,20 @@ impl<'a> Lowerer<'a> {
                 // Swap state.
                 let saved_body = std::mem::replace(&mut self.body, sub_body);
                 let saved_scopes = std::mem::replace(&mut self.scopes, sub_scopes);
-                let saved_projections = std::mem::take(&mut self.projections);
+                let saved_var_slots = std::mem::replace(&mut self.var_slots, FxHashMap::default());
 
-                // Emit VarStore for captures so VarLoad in body can find them.
-                for ((name, _, _), capture_reg) in free_vars.iter().zip(closure_capture_regs.iter()) {
-                    self.emit_inst(
-                        *span,
-                        InstKind::VarStore {
-                            name: *name,
-                            src: *capture_reg,
-                        },
-                    );
+                // Emit Ref+Store for captures so Ref+Load in body can find them.
+                for ((name, _, _), capture_reg) in free_vars.iter().zip(closure_capture_regs.iter())
+                {
+                    let slot = self.var_slot(*name);
+                    self.set_origin(slot, ValOrigin::Named(*name));
+                    self.emit_ref_store(*span, RefTarget::Var(slot), None, *capture_reg);
                 }
-                // Emit VarStore for params.
+                // Emit Ref+Store for params.
                 for (p, param_reg) in params.iter().zip(closure_param_regs.iter()) {
-                    self.emit_inst(
-                        p.span,
-                        InstKind::VarStore {
-                            name: p.name,
-                            src: *param_reg,
-                        },
-                    );
+                    let slot = self.var_slot(p.name);
+                    self.set_origin(slot, ValOrigin::Named(p.name));
+                    self.emit_ref_store(p.span, RefTarget::Var(slot), None, *param_reg);
                 }
 
                 // lower_expr calls maybe_cast(body.span(), val) which will
@@ -1054,10 +1321,10 @@ impl<'a> Lowerer<'a> {
 
                 let mut closure_body_mir = std::mem::replace(&mut self.body, saved_body);
                 self.scopes = saved_scopes;
-                self.projections = saved_projections;
+                self.var_slots = saved_var_slots;
 
-                closure_body_mir.capture_regs = closure_capture_regs;
-                closure_body_mir.param_regs = closure_param_regs;
+                closure_body_mir.captures = free_vars.iter().map(|(name, _, _)| *name).zip(closure_capture_regs).collect();
+                closure_body_mir.params = params.iter().map(|p| p.name).zip(closure_param_regs).collect();
                 self.closures.insert(closure_label, closure_body_mir);
 
                 // Allocate dst with Fn type. If a return-site Cast was inserted,
@@ -1188,7 +1455,11 @@ impl<'a> Lowerer<'a> {
             }
 
             Expr::Variant {
-                id, tag, payload, span, ..
+                id,
+                tag,
+                payload,
+                span,
+                ..
             } => {
                 let payload_val = payload.as_ref().map(|e| self.lower_expr(e));
                 let dst = self.alloc_expr(*id);
@@ -1222,27 +1493,7 @@ impl<'a> Lowerer<'a> {
         span: Span,
     ) -> ValueId {
         let val = self.lower_expr(value_expr);
-        let policy = self.context_policy(&qref);
-        let ctx_id = qref;
-        let proj = self.alloc_val();
-        let val_ty = self.body.val_types.get(&val).cloned().unwrap_or(Ty::error());
-        self.set_val_type(proj, val_ty);
-        self.emit_inst(
-            span,
-            InstKind::ContextProject {
-                dst: proj,
-                ctx: ctx_id,
-                volatile: policy.volatile,
-            },
-        );
-        self.emit_inst(
-            span,
-            InstKind::ContextStore {
-                dst: proj,
-                value: val,
-                volatile: policy.volatile,
-            },
-        );
+        self.emit_ref_store(span, RefTarget::Context(qref), None, val);
         val
     }
 
@@ -1268,8 +1519,9 @@ impl<'a> Lowerer<'a> {
 
         // @fn_name(args) — context-based function call.
         if let Expr::ContextRef { name: qref, .. } = func {
-            let fn_id = self.function_ids.get(&qref.name).map(|(id, _)| *id);
-            if let Some(fn_id) = fn_id {
+            let fn_ty = self.fn_types.get(qref);
+            if fn_ty.is_some() {
+                let fn_id = *qref;
                 self.set_origin(dst, ValOrigin::Call(qref.name));
                 self.emit_inst(
                     call_span,
@@ -1296,16 +1548,15 @@ impl<'a> Lowerer<'a> {
             match ref_kind {
                 // fn_name(args) — named call
                 RefKind::Value => {
-                    self.set_origin(dst, ValOrigin::Call(*name));
+                    self.set_origin(dst, ValOrigin::Call(name.name));
 
                     // 1. Graph function (Direct call)
-                    let fn_id = self.function_ids.get(name).map(|(id, _)| *id);
-                    if let Some(fn_id) = fn_id {
+                    if self.fn_types.contains_key(name) {
                         self.emit_inst(
                             call_span,
                             InstKind::FunctionCall {
                                 dst,
-                                callee: Callee::Direct(fn_id),
+                                callee: Callee::Direct(*name),
                                 args: arg_regs,
                                 context_uses: vec![],
                                 context_defs: vec![],
@@ -1315,18 +1566,16 @@ impl<'a> Lowerer<'a> {
                     }
 
                     // 2. Local variable (closure/lambda — Indirect call)
-                    if self.is_defined(*name) {
-                        let closure_reg = self.alloc_val();
-                        let closure_ty = self.var_type(*name);
-                        self.set_val_type(closure_reg, closure_ty);
-                        self.set_origin(closure_reg, ValOrigin::Named(*name));
-                        self.emit_inst(
+                    if self.is_defined(name.name) {
+                        let closure_ty = self.var_type(name.name);
+                        let slot = self.var_slot(name.name);
+                        let closure_reg = self.emit_ref_load(
                             *ident_span,
-                            InstKind::VarLoad {
-                                dst: closure_reg,
-                                name: *name,
-                            },
+                            RefTarget::Var(slot),
+                            None,
+                            closure_ty,
                         );
+                        self.set_origin(closure_reg, ValOrigin::Named(name.name));
                         self.emit_inst(
                             call_span,
                             InstKind::FunctionCall {
@@ -1377,26 +1626,7 @@ impl<'a> Lowerer<'a> {
             } = &mb.arms[0].pattern
         {
             let src = self.lower_expr(&mb.source);
-            let policy = self.context_policy(qref);
-            let proj = self.alloc_val();
-            let src_ty = self.body.val_types.get(&src).cloned().unwrap_or(Ty::error());
-            self.set_val_type(proj, src_ty);
-            self.emit_inst(
-                *pat_span,
-                InstKind::ContextProject {
-                    dst: proj,
-                    ctx: *qref,
-                    volatile: policy.volatile,
-                },
-            );
-            self.emit_inst(
-                *pat_span,
-                InstKind::ContextStore {
-                    dst: proj,
-                    value: src,
-                    volatile: policy.volatile,
-                },
-            );
+            self.emit_ref_store(*pat_span, RefTarget::Context(*qref), None, src);
             return self.emit_empty_string(mb.span);
         }
 
@@ -1425,7 +1655,9 @@ impl<'a> Lowerer<'a> {
                         .get(&src)
                         .cloned()
                         .unwrap_or(Ty::error());
-                    self.emit_inst(*pat_span, InstKind::VarStore { name: *name, src });
+                    let slot = self.var_slot(*name);
+                    self.set_origin(slot, ValOrigin::Named(*name));
+                    self.emit_ref_store(*pat_span, RefTarget::Var(slot), None, src);
                     self.define_var(*name, ty);
                 }
             }
@@ -1558,13 +1790,27 @@ impl<'a> Lowerer<'a> {
             Some(Ty::Deque(..)) => {
                 let cast_dst = self.alloc_val();
                 self.set_val_type(cast_dst, Ty::List(Box::new(elem_ty.clone())));
-                self.emit_inst(ib.span, InstKind::Cast { dst: cast_dst, src: source_reg, kind: CastKind::DequeToList });
+                self.emit_inst(
+                    ib.span,
+                    InstKind::Cast {
+                        dst: cast_dst,
+                        src: source_reg,
+                        kind: CastKind::DequeToList,
+                    },
+                );
                 cast_dst
             }
             Some(Ty::Range) => {
                 let cast_dst = self.alloc_val();
                 self.set_val_type(cast_dst, Ty::List(Box::new(Ty::Int)));
-                self.emit_inst(ib.span, InstKind::Cast { dst: cast_dst, src: source_reg, kind: CastKind::RangeToList });
+                self.emit_inst(
+                    ib.span,
+                    InstKind::Cast {
+                        dst: cast_dst,
+                        src: source_reg,
+                        kind: CastKind::RangeToList,
+                    },
+                );
                 cast_dst
             }
             _ => source_reg,
@@ -1573,7 +1819,13 @@ impl<'a> Lowerer<'a> {
         // Initial index = 0.
         let zero = self.alloc_val();
         self.set_val_type(zero, Ty::Int);
-        self.emit_inst(ib.span, InstKind::Const { dst: zero, value: Literal::Int(0) });
+        self.emit_inst(
+            ib.span,
+            InstKind::Const {
+                dst: zero,
+                value: Literal::Int(0),
+            },
+        );
 
         let loop_label = self.alloc_label();
         let catch_all_label = self.alloc_label();
@@ -1929,26 +2181,7 @@ impl<'a> Lowerer<'a> {
     fn lower_pattern_bind(&mut self, pattern: &Pattern, src_reg: ValueId, span: Span) {
         match pattern {
             Pattern::ContextBind { name: qref, .. } => {
-                let policy = self.context_policy(qref);
-                let proj = self.alloc_val();
-                let src_ty = self.body.val_types.get(&src_reg).cloned().unwrap_or(Ty::error());
-                self.set_val_type(proj, src_ty);
-                self.emit_inst(
-                    span,
-                    InstKind::ContextProject {
-                        dst: proj,
-                        ctx: *qref,
-                        volatile: policy.volatile,
-                    },
-                );
-                self.emit_inst(
-                    span,
-                    InstKind::ContextStore {
-                        dst: proj,
-                        value: src_reg,
-                        volatile: policy.volatile,
-                    },
-                );
+                self.emit_ref_store(span, RefTarget::Context(*qref), None, src_reg);
             }
             Pattern::Binding {
                 name,
@@ -1962,13 +2195,9 @@ impl<'a> Lowerer<'a> {
                     .get(&src_reg)
                     .cloned()
                     .unwrap_or(Ty::error());
-                self.emit_inst(
-                    span,
-                    InstKind::VarStore {
-                        name: *name,
-                        src: src_reg,
-                    },
-                );
+                let slot = self.var_slot(*name);
+                self.set_origin(slot, ValOrigin::Named(*name));
+                self.emit_ref_store(span, RefTarget::Var(slot), None, src_reg);
                 self.define_var(*name, ty);
             }
             Pattern::Binding {
@@ -2107,20 +2336,29 @@ impl<'a> Lowerer<'a> {
                 ref_kind: RefKind::Value,
                 span,
             } => {
-                if bound.contains(name) || seen.contains(name) {
+                if bound.contains(&name.name) || seen.contains(&name.name) {
                     return;
                 }
-                if self.is_defined(*name) {
-                    seen.insert(*name);
-                    free.push((*name, *id, *span));
+                if self.is_defined(name.name) {
+                    seen.insert(name.name);
+                    free.push((name.name, *id, *span));
                 }
             }
-            // ExternParam/context refs resolve at runtime — no capture needed.
+            // ExternParam: must be captured since the closure body may not have
+            // access to the parent function's param_regs (ValueId-based).
             Expr::Ident {
+                id,
+                name,
                 ref_kind: RefKind::ExternParam,
-                ..
+                span,
+            } => {
+                if !bound.contains(&name.name) && !seen.contains(&name.name) {
+                    seen.insert(name.name);
+                    free.push((name.name, *id, *span));
+                }
             }
-            | Expr::ContextRef { .. } => {}
+            // Context refs resolve globally — no capture needed.
+            Expr::ContextRef { .. } => {}
             Expr::BinaryOp { left, right, .. } => {
                 self.collect_free_vars(left, bound, free, seen);
                 self.collect_free_vars(right, bound, free, seen);

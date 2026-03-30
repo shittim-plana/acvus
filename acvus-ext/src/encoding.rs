@@ -16,7 +16,9 @@ fn sig(interner: &Interner, params: Vec<Ty>, ret: Ty) -> FnConstraint {
         .map(|(i, ty)| Param::new(interner.intern(&format!("_{i}")), ty))
         .collect();
     FnConstraint {
-        signature: Some(Signature { params: named.clone() }),
+        signature: Some(Signature {
+            params: named.clone(),
+        }),
         output: Constraint::Exact(Ty::Fn {
             params: named,
             ret: Box::new(ret),

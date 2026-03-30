@@ -6,8 +6,8 @@
 //!
 //! Lifecycle: MirBody → promote → CfgBody → (passes) → demote → MirBody
 
-use acvus_utils::LocalFactory;
-use rustc_hash::FxHashMap;
+use acvus_utils::{Astr, LocalFactory};
+use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 
 use crate::ir::{DebugInfo, Inst, InstKind, Label, MirBody, ValueId};
@@ -20,11 +20,14 @@ pub struct BlockIdx(pub usize);
 
 // ── Block ─────────────────────────────────────────────────────────
 
+/// Sentinel label for the entry block (no BlockLabel instruction in MirBody).
+pub const ENTRY_LABEL: Label = Label(u32::MAX);
+
 /// A basic block that owns its instructions.
 #[derive(Debug, Clone)]
 pub struct Block {
-    /// Block label (None for entry block).
-    pub label: Option<Label>,
+    /// Unique block label. Entry block uses `ENTRY_LABEL`.
+    pub label: Label,
     /// SSA block parameters (PHI equivalent).
     pub params: Vec<ValueId>,
     /// Body instructions (no control flow).
@@ -72,8 +75,10 @@ pub struct CfgBody {
     pub blocks: Vec<Block>,
     pub label_to_block: FxHashMap<Label, BlockIdx>,
     pub val_types: FxHashMap<ValueId, Ty>,
-    pub param_regs: Vec<ValueId>,
-    pub capture_regs: Vec<ValueId>,
+    /// Function parameters: (name, register).
+    pub params: Vec<(Astr, ValueId)>,
+    /// Captured variables: (name, register).
+    pub captures: Vec<(Astr, ValueId)>,
     pub debug: DebugInfo,
     pub val_factory: LocalFactory<ValueId>,
 }
@@ -139,12 +144,17 @@ impl CfgBody {
 
 pub fn promote(body: MirBody) -> CfgBody {
     let mut blocks: Vec<Block> = Vec::new();
-    let mut current_label: Option<Label> = None;
+    let mut current_label: Label = ENTRY_LABEL;
     let mut current_params: Vec<ValueId> = Vec::new();
     let mut current_insts: Vec<Inst> = Vec::new();
     let mut current_merge: Option<Label> = None;
 
     let mut label_to_block: FxHashMap<Label, BlockIdx> = FxHashMap::default();
+    label_to_block.insert(ENTRY_LABEL, BlockIdx(0));
+
+    // Synthetic label counter for blocks without BlockLabel (should be rare —
+    // the lowerer emits BlockLabel for all non-entry blocks).
+    let mut next_label = body.label_count;
 
     for inst in body.insts {
         match &inst.kind {
@@ -165,7 +175,7 @@ pub fn promote(body: MirBody) -> CfgBody {
 
                 // Start new block.
                 label_to_block.insert(*label, BlockIdx(blocks.len()));
-                current_label = Some(*label);
+                current_label = *label;
                 current_params = params.clone();
                 current_merge = *merge_of;
             }
@@ -185,12 +195,31 @@ pub fn promote(body: MirBody) -> CfgBody {
         merge_of: current_merge,
     });
 
+    // Invariant: every block has a unique label.
+    // Entry block (bi=0) has ENTRY_LABEL. All others should have a label from
+    // BlockLabel. If any non-entry block has ENTRY_LABEL, it means MirBody had
+    // a block boundary without BlockLabel — assign a synthetic label.
+    for bi in 1..blocks.len() {
+        if blocks[bi].label == ENTRY_LABEL {
+            let label = Label(next_label);
+            next_label += 1;
+            label_to_block.insert(label, BlockIdx(bi));
+            blocks[bi].label = label;
+        }
+    }
+
+    // Debug: verify uniqueness.
+    debug_assert!({
+        let mut seen = FxHashSet::default();
+        blocks.iter().all(|b| seen.insert(b.label))
+    }, "duplicate block labels after promote");
+
     CfgBody {
         blocks,
         label_to_block,
         val_types: body.val_types,
-        param_regs: body.param_regs,
-        capture_regs: body.capture_regs,
+        params: body.params,
+        captures: body.captures,
         debug: body.debug,
         val_factory: body.val_factory,
     }
@@ -262,11 +291,11 @@ pub fn demote(cfg: CfgBody) -> MirBody {
 
     for block in cfg.blocks {
         // Emit BlockLabel for non-entry blocks.
-        if let Some(label) = block.label {
+        if block.label != ENTRY_LABEL {
             insts.push(Inst {
                 span: acvus_ast::Span::ZERO,
                 kind: InstKind::BlockLabel {
-                    label,
+                    label: block.label,
                     params: block.params,
                     merge_of: block.merge_of,
                 },
@@ -337,14 +366,32 @@ pub fn demote(cfg: CfgBody) -> MirBody {
     // Filter out Nops.
     insts.retain(|inst| !matches!(inst.kind, InstKind::Nop));
 
+    // Compute label_count: next available label = max(label.0) + 1.
+    // Excludes ENTRY_LABEL (sentinel u32::MAX).
+    let label_count = insts
+        .iter()
+        .filter_map(|inst| match &inst.kind {
+            InstKind::BlockLabel { label, .. } => Some(label.0 + 1),
+            InstKind::Jump { label, .. } => Some(label.0 + 1),
+            InstKind::JumpIf {
+                then_label,
+                else_label,
+                ..
+            } => Some(then_label.0.max(else_label.0) + 1),
+            InstKind::ListStep { done, .. } => Some(done.0 + 1),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+
     MirBody {
         insts,
         val_types: cfg.val_types,
-        param_regs: cfg.param_regs,
-        capture_regs: cfg.capture_regs,
+        params: cfg.params,
+        captures: cfg.captures,
         debug: cfg.debug,
         val_factory: cfg.val_factory,
-        label_count: 0,
+        label_count,
     }
 }
 
@@ -373,8 +420,8 @@ mod tests {
                 })
                 .collect(),
             val_types: FxHashMap::default(),
-            param_regs: Vec::new(),
-            capture_regs: Vec::new(),
+            params: Vec::new(),
+            captures: Vec::new(),
             debug: DebugInfo::new(),
             val_factory: factory,
             label_count: 0,

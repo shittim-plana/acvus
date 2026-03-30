@@ -109,25 +109,20 @@ fn remap_uses(kind: &mut InstKind, remap: &FxHashMap<ValueId, ValueId>) {
     match kind {
         // No uses
         InstKind::Const { .. }
-        | InstKind::VarLoad { .. }
-        | InstKind::ParamLoad { .. }
+        | InstKind::Ref { .. }
         | InstKind::BlockLabel { .. }
         | InstKind::Nop
         | InstKind::Poison { .. }
         | InstKind::Undef { .. } => {}
 
-        // ContextProject has no ValueId uses (ctx is a QualifiedRef, not a ValueId).
-        InstKind::ContextProject { .. } => {}
-
         // Single use
         InstKind::Return(v) => remap_val(v, remap),
 
-        // ContextLoad: src is a use (projection ValueId).
-        InstKind::ContextLoad { src, .. } => remap_val(src, remap),
+        // Load: src is a use.
+        InstKind::Load { src, .. } => remap_val(src, remap),
 
-        InstKind::VarStore { src, .. } => remap_val(src, remap),
-        // ContextStore: dst is a projection use, value is a value use.
-        InstKind::ContextStore { dst, value, .. } => {
+        // Store: dst is a projection use, value is a value use.
+        InstKind::Store { dst, value, .. } => {
             remap_val(dst, remap);
             remap_val(value, remap);
         }
@@ -135,6 +130,10 @@ fn remap_uses(kind: &mut InstKind, remap: &FxHashMap<ValueId, ValueId>) {
         InstKind::UnaryOp { operand, .. } => remap_val(operand, remap),
 
         InstKind::FieldGet { object, .. } => remap_val(object, remap),
+        InstKind::FieldSet { object, value, .. } => {
+            remap_val(object, remap);
+            remap_val(value, remap);
+        }
 
         InstKind::TupleIndex { tuple, .. } => remap_val(tuple, remap),
 
@@ -258,8 +257,8 @@ mod tests {
         MirBody {
             insts,
             val_types: FxHashMap::default(),
-            param_regs: Vec::new(),
-            capture_regs: Vec::new(),
+            params: Vec::new(),
+            captures: Vec::new(),
             debug: DebugInfo::new(),
             val_factory: LocalFactory::new(),
             label_count: 0,

@@ -5,7 +5,7 @@
 //!
 //! These are the building blocks for use-def analysis, DCE, reordering, etc.
 
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 
 use crate::ir::{Callee, InstKind, ValueId};
 
@@ -13,13 +13,12 @@ use crate::ir::{Callee, InstKind, ValueId};
 pub fn defs(kind: &InstKind) -> SmallVec<[ValueId; 2]> {
     match kind {
         InstKind::Const { dst, .. }
-        | InstKind::ContextProject { dst, .. }
-        | InstKind::ContextLoad { dst, .. }
-        | InstKind::VarLoad { dst, .. }
-        | InstKind::ParamLoad { dst, .. }
+        | InstKind::Ref { dst, .. }
+        | InstKind::Load { dst, .. }
         | InstKind::BinOp { dst, .. }
         | InstKind::UnaryOp { dst, .. }
         | InstKind::FieldGet { dst, .. }
+        | InstKind::FieldSet { dst, .. }
         | InstKind::LoadFunction { dst, .. }
         | InstKind::MakeDeque { dst, .. }
         | InstKind::MakeObject { dst, .. }
@@ -61,14 +60,11 @@ pub fn defs(kind: &InstKind) -> SmallVec<[ValueId; 2]> {
             d
         }
 
-        InstKind::ListStep {
-            dst, index_dst, ..
-        } => smallvec![*dst, *index_dst],
+        InstKind::ListStep { dst, index_dst, .. } => smallvec![*dst, *index_dst],
 
         InstKind::BlockLabel { params, .. } => params.iter().copied().collect(),
 
-        InstKind::VarStore { .. }
-        | InstKind::ContextStore { .. }
+        InstKind::Store { .. }
         | InstKind::Jump { .. }
         | InstKind::JumpIf { .. }
         | InstKind::Return(_)
@@ -81,9 +77,7 @@ pub fn uses(kind: &InstKind) -> SmallVec<[ValueId; 4]> {
     match kind {
         // No uses
         InstKind::Const { .. }
-        | InstKind::ContextProject { .. }
-        | InstKind::VarLoad { .. }
-        | InstKind::ParamLoad { .. }
+        | InstKind::Ref { .. }
         | InstKind::LoadFunction { .. }
         | InstKind::BlockLabel { .. }
         | InstKind::Nop
@@ -91,11 +85,11 @@ pub fn uses(kind: &InstKind) -> SmallVec<[ValueId; 4]> {
         | InstKind::Undef { .. } => smallvec![],
 
         // Single use
-        InstKind::ContextLoad { src, .. } => smallvec![*src],
-        InstKind::ContextStore { dst, value, .. } => smallvec![*dst, *value],
-        InstKind::VarStore { src, .. } => smallvec![*src],
+        InstKind::Load { src, .. } => smallvec![*src],
+        InstKind::Store { dst, value, .. } => smallvec![*dst, *value],
         InstKind::UnaryOp { operand, .. } => smallvec![*operand],
         InstKind::FieldGet { object, .. } => smallvec![*object],
+        InstKind::FieldSet { object, value, .. } => smallvec![*object, *value],
         InstKind::Cast { src, .. } => smallvec![*src],
         InstKind::Return(val) => smallvec![*val],
         InstKind::TestLiteral { src, .. } => smallvec![*src],

@@ -9,10 +9,15 @@ use acvus_utils::Interner;
 
 // ── Handlers ────────────────────────────────────────────────────────
 
-fn h_unwrap(_: &Interner, (val,): (Value,), Uses(()): Uses<()>) -> Result<(Value, Defs<()>), RuntimeError> {
+fn h_unwrap(
+    _: &Interner,
+    (val,): (Value,),
+    Uses(()): Uses<()>,
+) -> Result<(Value, Defs<()>), RuntimeError> {
     match val {
         Value::Variant(v) if v.payload.is_some() => {
-            let inner = Arc::try_unwrap(v.payload.unwrap()).unwrap_or_else(|arc| arc.as_ref().share());
+            let inner =
+                Arc::try_unwrap(v.payload.unwrap()).unwrap_or_else(|arc| arc.as_ref().share());
             Ok((inner, Defs(())))
         }
         Value::Variant(_) => panic!("unwrap: called on None"),
@@ -20,10 +25,15 @@ fn h_unwrap(_: &Interner, (val,): (Value,), Uses(()): Uses<()>) -> Result<(Value
     }
 }
 
-fn h_unwrap_or(_: &Interner, (val, default): (Value, Value), Uses(()): Uses<()>) -> Result<(Value, Defs<()>), RuntimeError> {
+fn h_unwrap_or(
+    _: &Interner,
+    (val, default): (Value, Value),
+    Uses(()): Uses<()>,
+) -> Result<(Value, Defs<()>), RuntimeError> {
     match val {
         Value::Variant(v) if v.payload.is_some() => {
-            let inner = Arc::try_unwrap(v.payload.unwrap()).unwrap_or_else(|arc| arc.as_ref().share());
+            let inner =
+                Arc::try_unwrap(v.payload.unwrap()).unwrap_or_else(|arc| arc.as_ref().share());
             Ok((inner, Defs(())))
         }
         Value::Variant(_) => Ok((default, Defs(()))),
@@ -36,9 +46,14 @@ fn h_unwrap_or(_: &Interner, (val, default): (Value, Value), Uses(()): Uses<()>)
 fn build_unwrap(interner: &Interner) -> acvus_interpreter::ExternFn {
     let mut s = TySubst::new();
     let t = s.fresh_param();
-    let named = vec![Param::new(interner.intern("_0"), Ty::Option(Box::new(t.clone())))];
+    let named = vec![Param::new(
+        interner.intern("_0"),
+        Ty::Option(Box::new(t.clone())),
+    )];
     let constraint = FnConstraint {
-        signature: Some(Signature { params: named.clone() }),
+        signature: Some(Signature {
+            params: named.clone(),
+        }),
         output: Constraint::Exact(Ty::Fn {
             params: named,
             ret: Box::new(t),
@@ -58,7 +73,9 @@ fn build_unwrap_or(interner: &Interner) -> acvus_interpreter::ExternFn {
         Param::new(interner.intern("_1"), t.clone()),
     ];
     let constraint = FnConstraint {
-        signature: Some(Signature { params: named.clone() }),
+        signature: Some(Signature {
+            params: named.clone(),
+        }),
         output: Constraint::Exact(Ty::Fn {
             params: named,
             ret: Box::new(t),

@@ -25,7 +25,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use acvus_mir::graph::{FnConstraint, FnKind, Function, QualifiedRef};
-use acvus_mir::ty::Ty;
 use acvus_utils::Interner;
 use rustc_hash::FxHashMap;
 
@@ -288,7 +287,7 @@ impl ExternRegistry {
 mod tests {
     use super::*;
     use acvus_mir::graph::{Constraint, Signature};
-    use acvus_mir::ty::{Effect, Param};
+    use acvus_mir::ty::{Effect, Param, Ty};
 
     fn interner() -> Interner {
         Interner::new()
@@ -301,7 +300,9 @@ mod tests {
             .map(|(i, ty)| Param::new(interner.intern(&format!("_{i}")), ty))
             .collect();
         FnConstraint {
-            signature: Some(Signature { params: named.clone() }),
+            signature: Some(Signature {
+                params: named.clone(),
+            }),
             output: Constraint::Exact(Ty::Fn {
                 params: named,
                 ret: Box::new(ret),
@@ -459,12 +460,9 @@ mod tests {
     #[test]
     fn builder_creates_extern_fn() {
         let i = interner();
-        let ext = ExternFnBuilder::new("add", sig(&i, vec![Ty::Int, Ty::Int], Ty::Int))
-            .handler(
-                |_interner: &Interner, (a, b): (i64, i64), Uses(()): Uses<()>| {
-                    Ok((a + b, Defs(())))
-                },
-            );
+        let ext = ExternFnBuilder::new("add", sig(&i, vec![Ty::Int, Ty::Int], Ty::Int)).handler(
+            |_interner: &Interner, (a, b): (i64, i64), Uses(()): Uses<()>| Ok((a + b, Defs(()))),
+        );
 
         assert_eq!(ext.name, "add");
         assert!(matches!(ext.handler_kind, HandlerKind::Extern(_)));

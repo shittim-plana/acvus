@@ -10,12 +10,12 @@
 
 use rustc_hash::FxHashSet;
 
-use crate::cfg::{BlockIdx, CfgBody};
-use crate::analysis::dataflow::{backward_analysis, DataflowAnalysis, DataflowState};
+use crate::analysis::dataflow::{DataflowAnalysis, DataflowState, backward_analysis};
 use crate::analysis::domain::SemiLattice;
+use crate::cfg::{BlockIdx, CfgBody};
 use crate::graph::QualifiedRef;
 use crate::ir::{Callee, Inst, InstKind, ValueId};
-use crate::ty::{Effect, EffectTarget, Ty, TokenId};
+use crate::ty::{Effect, EffectTarget, TokenId, Ty};
 use rustc_hash::FxHashMap;
 
 // ── Domain ──────────────────────────────────────────────────────────
@@ -97,11 +97,7 @@ impl<'a> DataflowAnalysis for TokenLivenessAnalysis<'a> {
     type Key = TokenId;
     type Domain = TokenLiveness;
 
-    fn transfer_inst(
-        &self,
-        inst: &Inst,
-        state: &mut DataflowState<TokenId, TokenLiveness>,
-    ) {
+    fn transfer_inst(&self, inst: &Inst, state: &mut DataflowState<TokenId, TokenLiveness>) {
         // Gen: if this instruction uses a token, mark it live.
         for tid in token_ids_of(&inst.kind, self.fn_types, self.val_types) {
             state.set(tid, TokenLiveness::Live);
@@ -144,22 +140,19 @@ impl TokenLivenessResult {
     pub fn is_live_in(&self, block: BlockIdx, token: TokenId) -> bool {
         self.live_in
             .get(block.0)
-            .map_or(false, |set| set.contains(&token))
+            .is_some_and(|set| set.contains(&token))
     }
 
     /// Is `token` live at the exit of `block`?
     pub fn is_live_out(&self, block: BlockIdx, token: TokenId) -> bool {
         self.live_out
             .get(block.0)
-            .map_or(false, |set| set.contains(&token))
+            .is_some_and(|set| set.contains(&token))
     }
 }
 
 /// Run token liveness analysis on a CfgBody.
-pub fn analyze(
-    cfg: &CfgBody,
-    fn_types: &FxHashMap<QualifiedRef, Ty>,
-) -> TokenLivenessResult {
+pub fn analyze(cfg: &CfgBody, fn_types: &FxHashMap<QualifiedRef, Ty>) -> TokenLivenessResult {
     if cfg.blocks.is_empty() {
         return TokenLivenessResult {
             live_in: vec![],
@@ -217,8 +210,8 @@ mod tests {
                 })
                 .collect(),
             val_types: FxHashMap::default(),
-            param_regs: Vec::new(),
-            capture_regs: Vec::new(),
+            params: Vec::new(),
+            captures: Vec::new(),
             debug: DebugInfo::new(),
             val_factory: factory,
             label_count: 0,
@@ -229,7 +222,11 @@ mod tests {
         TokenId::alloc()
     }
 
-    fn io_fn_type_with_token(i: &acvus_utils::Interner, name: &str, tid: TokenId) -> (QualifiedRef, Ty) {
+    fn io_fn_type_with_token(
+        i: &acvus_utils::Interner,
+        name: &str,
+        tid: TokenId,
+    ) -> (QualifiedRef, Ty) {
         let qref = QualifiedRef::root(i.intern(name));
         let mut reads = BTreeSet::new();
         reads.insert(EffectTarget::Token(tid));
@@ -317,9 +314,19 @@ mod tests {
 
         let cfg = make_cfg(
             vec![
-                InstKind::Const { dst: v(0), value: acvus_ast::Literal::Int(0) },
-                InstKind::Jump { label: Label(0), args: vec![] },
-                InstKind::BlockLabel { label: Label(0), params: vec![], merge_of: None },
+                InstKind::Const {
+                    dst: v(0),
+                    value: acvus_ast::Literal::Int(0),
+                },
+                InstKind::Jump {
+                    label: Label(0),
+                    args: vec![],
+                },
+                InstKind::BlockLabel {
+                    label: Label(0),
+                    params: vec![],
+                    merge_of: None,
+                },
                 InstKind::FunctionCall {
                     dst: v(1),
                     callee: Callee::Direct(qref),
@@ -352,14 +359,25 @@ mod tests {
                 InstKind::FunctionCall {
                     dst: v(0),
                     callee: Callee::Direct(qref1),
-                    args: vec![], context_uses: vec![], context_defs: vec![],
+                    args: vec![],
+                    context_uses: vec![],
+                    context_defs: vec![],
                 },
-                InstKind::Jump { label: Label(0), args: vec![] },
-                InstKind::BlockLabel { label: Label(0), params: vec![], merge_of: None },
+                InstKind::Jump {
+                    label: Label(0),
+                    args: vec![],
+                },
+                InstKind::BlockLabel {
+                    label: Label(0),
+                    params: vec![],
+                    merge_of: None,
+                },
                 InstKind::FunctionCall {
                     dst: v(1),
                     callee: Callee::Direct(qref2),
-                    args: vec![], context_uses: vec![], context_defs: vec![],
+                    args: vec![],
+                    context_uses: vec![],
+                    context_defs: vec![],
                 },
                 InstKind::Return(v(1)),
             ],
@@ -382,25 +400,54 @@ mod tests {
 
         let cfg = make_cfg(
             vec![
-                InstKind::Const { dst: v(0), value: acvus_ast::Literal::Bool(true) },
+                InstKind::Const {
+                    dst: v(0),
+                    value: acvus_ast::Literal::Bool(true),
+                },
                 InstKind::JumpIf {
                     cond: v(0),
-                    then_label: Label(0), then_args: vec![],
-                    else_label: Label(1), else_args: vec![],
+                    then_label: Label(0),
+                    then_args: vec![],
+                    else_label: Label(1),
+                    else_args: vec![],
                 },
-                InstKind::BlockLabel { label: Label(0), params: vec![], merge_of: None },
+                InstKind::BlockLabel {
+                    label: Label(0),
+                    params: vec![],
+                    merge_of: None,
+                },
                 InstKind::FunctionCall {
-                    dst: v(1), callee: Callee::Direct(qref),
-                    args: vec![], context_uses: vec![], context_defs: vec![],
+                    dst: v(1),
+                    callee: Callee::Direct(qref),
+                    args: vec![],
+                    context_uses: vec![],
+                    context_defs: vec![],
                 },
-                InstKind::Jump { label: Label(2), args: vec![v(1)] },
-                InstKind::BlockLabel { label: Label(1), params: vec![], merge_of: None },
+                InstKind::Jump {
+                    label: Label(2),
+                    args: vec![v(1)],
+                },
+                InstKind::BlockLabel {
+                    label: Label(1),
+                    params: vec![],
+                    merge_of: None,
+                },
                 InstKind::FunctionCall {
-                    dst: v(2), callee: Callee::Direct(qref),
-                    args: vec![], context_uses: vec![], context_defs: vec![],
+                    dst: v(2),
+                    callee: Callee::Direct(qref),
+                    args: vec![],
+                    context_uses: vec![],
+                    context_defs: vec![],
                 },
-                InstKind::Jump { label: Label(2), args: vec![v(2)] },
-                InstKind::BlockLabel { label: Label(2), params: vec![v(3)], merge_of: None },
+                InstKind::Jump {
+                    label: Label(2),
+                    args: vec![v(2)],
+                },
+                InstKind::BlockLabel {
+                    label: Label(2),
+                    params: vec![v(3)],
+                    merge_of: None,
+                },
                 InstKind::Return(v(3)),
             ],
             5,

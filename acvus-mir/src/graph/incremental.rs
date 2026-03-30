@@ -4,14 +4,14 @@
 //! On source change: re-extract → diff call edges → re-SCC if needed →
 //! re-infer dirty SCCs (with early cutoff).
 
-use acvus_utils::{Astr, Interner};
+use acvus_utils::{Astr, Freeze, Interner};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::error::MirError;
 use crate::ty::{EffectSet, Ty};
 
 use super::extract::{ExtractResult, ParsedSource, extract_one};
-use super::infer::{InferredParam, SccInferResult, extract_call_edges, infer_scc, tarjan_scc};
+use super::infer::{SccInferResult, extract_call_edges, infer_scc, tarjan_scc};
 use super::types::*;
 
 // ── Cached entries ──────────────────────────────────────────────────
@@ -172,29 +172,9 @@ impl IncrementalGraph {
     }
 
     /// Get context/param info that must be injected externally for a function.
-    pub fn context_info(&self, qref: QualifiedRef) -> Vec<ContextInfo> {
-        // Collect from infer results: fn_params for this function.
-        let scc_idx = match self.fn_to_scc.get(&qref) {
-            Some(&idx) => idx,
-            None => return vec![],
-        };
-        let scc_result = match self.infer_cache.get(scc_idx) {
-            Some(Some(r)) => r,
-            _ => return vec![],
-        };
-        scc_result
-            .fn_params
-            .get(&qref)
-            .map(|params| {
-                params
-                    .iter()
-                    .map(|p| ContextInfo {
-                        name: p.name,
-                        ty: p.ty.clone(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+    pub fn context_info(&self, _qref: QualifiedRef) -> Vec<ContextInfo> {
+        // TODO: context param inference removed — reconstruct from fn_metas if needed.
+        vec![]
     }
 
     // TODO: resolution now comes from InferResult outcomes.
@@ -246,10 +226,7 @@ impl IncrementalGraph {
 
     /// All contexts visible from a namespace (own namespace + root).
     /// Used by LSP for completions.
-    pub fn visible_contexts(
-        &self,
-        ns: Option<Astr>,
-    ) -> Vec<(Option<Astr>, Astr, &Context)> {
+    pub fn visible_contexts(&self, ns: Option<Astr>) -> Vec<(Option<Astr>, Astr, &Context)> {
         self.contexts
             .values()
             .filter(|c| c.qref.namespace.is_none() || c.qref.namespace == ns)
@@ -261,10 +238,7 @@ impl IncrementalGraph {
     /// - Root functions (unqualified)
     /// - Same-namespace functions (would need qualified, but are accessible)
     /// Used by LSP for completions.
-    pub fn visible_functions(
-        &self,
-        ns: Option<Astr>,
-    ) -> Vec<(Option<Astr>, Astr, &Function)> {
+    pub fn visible_functions(&self, ns: Option<Astr>) -> Vec<(Option<Astr>, Astr, &Function)> {
         self.functions
             .values()
             .filter(|f| f.qref.namespace.is_none() || f.qref.namespace == ns)
@@ -297,10 +271,7 @@ impl IncrementalGraph {
             }
             self.call_edges.insert(qref, new_edges);
 
-            self.extract_cache.insert(
-                qref,
-                ExtractEntry { parsed },
-            );
+            self.extract_cache.insert(qref, ExtractEntry { parsed });
         } else {
             // Parse failed — clear caches.
             self.extract_cache.remove(&qref);
@@ -349,7 +320,7 @@ impl IncrementalGraph {
 
     fn run_infer(&mut self) {
         let known_ctx = self.known_context_types();
-        let mut resolved_fn_types = crate::builtins::builtin_fn_types(&self.interner);
+        let mut resolved_fn_types = FxHashMap::default();
 
         let fn_by_id: FxHashMap<QualifiedRef, &Function> = self
             .functions
@@ -406,7 +377,7 @@ impl IncrementalGraph {
 
         // Re-run infer from this SCC onwards.
         let known_ctx = self.known_context_types();
-        let mut resolved_fn_types = crate::builtins::builtin_fn_types(&self.interner);
+        let mut resolved_fn_types = FxHashMap::default();
 
         let fn_by_id: FxHashMap<QualifiedRef, &Function> = self
             .functions
@@ -498,10 +469,10 @@ impl IncrementalGraph {
             };
 
             for &fid in scc {
-                if let Some(direct) = scc_result.fn_direct_effects.get(&fid) {
-                    if let Some(meta) = scc_result.fn_metas.get_mut(&fid) {
-                        meta.effect = direct.clone();
-                    }
+                if let Some(direct) = scc_result.fn_direct_effects.get(&fid)
+                    && let Some(meta) = scc_result.fn_metas.get_mut(&fid)
+                {
+                    meta.effect = direct.clone();
                 }
             }
         }
@@ -580,23 +551,17 @@ impl IncrementalGraph {
 
     /// Build a snapshot InferResult for compatibility with batch APIs.
     pub fn infer_result(&self) -> super::infer::InferResult {
-        let mut fn_params: FxHashMap<QualifiedRef, Vec<InferredParam>> = FxHashMap::default();
         let mut outcomes: FxHashMap<QualifiedRef, super::infer::FnInferOutcome> =
             FxHashMap::default();
 
         for scc_result in self.infer_cache.iter().flatten() {
-            fn_params.extend(scc_result.fn_params.clone());
             // Convert SccInferResult metas to Incomplete outcomes (temporary — incremental
             // does not yet run check_completeness; this will be reworked in Step 6).
             for (&fid, meta) in &scc_result.fn_metas {
                 outcomes.insert(
                     fid,
                     super::infer::FnInferOutcome::Incomplete {
-                        unknown_contexts: scc_result
-                            .fn_params
-                            .get(&fid)
-                            .cloned()
-                            .unwrap_or_default(),
+                        unknown_contexts: vec![],
                         unknown_extern_params: vec![],
                         meta: meta.clone(),
                         errors: vec![],
@@ -605,25 +570,15 @@ impl IncrementalGraph {
             }
         }
 
-        let mut all_map: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
-        for params in fn_params.values() {
-            for param in params {
-                all_map
-                    .entry(param.name)
-                    .or_insert_with(|| param.ty.clone());
-            }
+        let mut fn_types: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
+        for (&qref, outcome) in &outcomes {
+            fn_types.insert(qref, outcome.meta().ty.clone());
         }
-        let all_params: Vec<InferredParam> = all_map
-            .into_iter()
-            .map(|(name, ty)| InferredParam { name, ty })
-            .collect();
 
         super::infer::InferResult {
             outcomes,
-            fn_params,
-            all_params,
-            context_types: self.known_context_types(),
+            context_types: Freeze::new(self.known_context_types()),
+            fn_types: Freeze::new(fn_types),
         }
     }
 }
-

@@ -376,14 +376,22 @@ fn instantiate_pair_shares_params() {
     });
     let mut rule_s = TySubst::new();
     let t = rule_s.fresh_param();
-    let from = Ty::UserDefined { id, type_args: vec![t.clone()], effect_args: vec![] };
+    let from = Ty::UserDefined {
+        id,
+        type_args: vec![t.clone()],
+        effect_args: vec![],
+    };
     let to = Ty::List(Box::new(t));
 
     let mut s = subst_with(reg);
     let (inst_from, inst_to) = s.instantiate_pair(&from, &to);
 
     // Unify inst_from with concrete → T resolves
-    let concrete_from = Ty::UserDefined { id, type_args: vec![Ty::Int], effect_args: vec![] };
+    let concrete_from = Ty::UserDefined {
+        id,
+        type_args: vec![Ty::Int],
+        effect_args: vec![],
+    };
     assert!(s.unify(&concrete_from, &inst_from, Invariant).is_ok());
 
     // inst_to should now resolve to List<Int> (shared T)
@@ -512,12 +520,16 @@ fn iterator_effect_subtyping_covariant() {
     let pure_iter = iter_ty(&i, Ty::Int, Effect::pure());
     let io_iter = iter_ty(&i, Ty::Int, Effect::io());
     // Pure ≤ IO in Covariant → OK (subeffect)
-    assert!(s.unify(&pure_iter, &io_iter, Covariant).is_ok(),
-        "Pure Iterator should be subtype of IO Iterator in Covariant");
+    assert!(
+        s.unify(&pure_iter, &io_iter, Covariant).is_ok(),
+        "Pure Iterator should be subtype of IO Iterator in Covariant"
+    );
     // IO ≤ Pure in Covariant → FAIL
     let mut s2 = subst_with(setup().1);
-    assert!(s2.unify(&io_iter, &pure_iter, Covariant).is_err(),
-        "IO Iterator should NOT be subtype of Pure Iterator in Covariant");
+    assert!(
+        s2.unify(&io_iter, &pure_iter, Covariant).is_err(),
+        "IO Iterator should NOT be subtype of Pure Iterator in Covariant"
+    );
 }
 
 #[test]
@@ -531,10 +543,16 @@ fn iterator_effect_var_resolves_via_lub() {
     let io_iter = iter_ty(&i, Ty::Int, Effect::io());
     // ?E matches Pure
     assert!(s.unify(&param_iter, &pure_iter, Invariant).is_ok());
-    assert!(s.resolve_effect(&e).is_pure(), "E should be Pure after first unify");
+    assert!(
+        s.resolve_effect(&e).is_pure(),
+        "E should be Pure after first unify"
+    );
     // Now ?E (=Pure) vs IO in Covariant → Pure ≤ IO → OK, E stays Pure
     assert!(s.unify(&param_iter, &io_iter, Covariant).is_ok());
-    assert!(s.resolve_effect(&e).is_pure(), "E stays Pure (subeffect, not LUB)");
+    assert!(
+        s.resolve_effect(&e).is_pure(),
+        "E stays Pure (subeffect, not LUB)"
+    );
 }
 
 #[test]
@@ -563,13 +581,17 @@ fn lub_sequence_identity_mismatch_to_iterator() {
     let b = seq_ty(&i, Ty::Int, o2, Effect::pure());
     assert!(s.unify(&p, &a, Covariant).is_ok());
     let result = s.unify(&p, &b, Covariant);
-    assert!(result.is_ok(), "LUB via CastRule should succeed: {result:?}");
+    assert!(
+        result.is_ok(),
+        "LUB via CastRule should succeed: {result:?}"
+    );
     let resolved = s.resolve(&p);
     // Should be Iterator (CastRule: Sequence → Iterator)
     match &resolved {
         Ty::UserDefined { id, .. } => {
             assert_eq!(
-                i.resolve(id.name), "Iterator",
+                i.resolve(id.name),
+                "Iterator",
                 "LUB of identity-mismatched Sequences should be Iterator"
             );
         }

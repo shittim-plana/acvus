@@ -8,23 +8,27 @@ expression: ir
 
 === main ===
      0 │   r0 = undef
-     1 │   r1 = context_project @name
-     2 │   r2 = context_load r1
+     1 │   r1 = ref @name
+     2 │   r2 = load r1
      6 │   r3 = T0 + T0
-     8 │   r4 = r3 + T0
-     9 │   r5 = r4 + r2
-    10 │   return r5
+     7 │   r4 = ref @name
+     9 │   r5 = r3 + T0
+    10 │   r6 = r5 + r2
+    11 │   return r6
 
-    ; r0 (v13) : String
-    ; r1 (@name) : String
-    ; r2 (v2) : String
-    ; r3 (v6) : String
-    ; r4 (v10) : String
-    ; r5 (v12) : String
-    ; r6 (@name) : String
-    ; r7 (x) : String
-    ; r8 (v3) : String
-    ; r9 (v9) : String
-    ; r10 (v5) : String
-    ; r11 (v8) : String
+    ; r0 (v17) : String
+    ; r1 (@name) : Ref<String>
+    ; r2 (@name) : String
+    ; r3 (v8) : String
+    ; r4 (@name) : Ref<String>
+    ; r5 (v13) : String
+    ; r6 (v16) : String
+    ; r7 (v3) : String
+    ; r8 (v11) : Ref<String>
+    ; r9 (v14) : Ref<String>
+    ; r10 (v6) : Ref<String>
+    ; r11 (v12) : String
     ; r12 (v4) : String
+    ; r13 (x) : String
+    ; r14 (v7) : String
+    ; r15 (v10) : String

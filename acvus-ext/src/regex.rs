@@ -58,7 +58,9 @@ fn sig(interner: &Interner, params: Vec<Ty>, ret: Ty) -> FnConstraint {
         .map(|(i, ty)| Param::new(interner.intern(&format!("_{i}")), ty))
         .collect();
     FnConstraint {
-        signature: Some(Signature { params: named.clone() }),
+        signature: Some(Signature {
+            params: named.clone(),
+        }),
         output: Constraint::Exact(Ty::Fn {
             params: named,
             ret: Box::new(ret),
@@ -84,11 +86,7 @@ pub fn regex_registry(interner: &Interner, type_registry: &mut TypeRegistry) -> 
     ExternRegistry::new(move |interner| {
         vec![
             // regex(pattern) -> Regex
-            ExternFnBuilder::new(
-                "regex",
-                sig(interner, vec![Ty::String], ty.clone()),
-            )
-            .handler(
+            ExternFnBuilder::new("regex", sig(interner, vec![Ty::String], ty.clone())).handler(
                 move |_interner: &Interner, (pattern,): (String,), Uses(()): Uses<()>| {
                     let re = regex::Regex::new(&pattern)
                         .unwrap_or_else(|e| panic!("regex: invalid pattern '{pattern}': {e}"));
@@ -125,27 +123,33 @@ pub fn regex_registry(interner: &Interner, type_registry: &mut TypeRegistry) -> 
                 sig(
                     interner,
                     vec![ty.clone(), Ty::String],
-                    Ty::UserDefined { id: iter_qref, type_args: vec![Ty::String], effect_args: vec![Effect::self_modifying()] },
+                    Ty::UserDefined {
+                        id: iter_qref,
+                        type_args: vec![Ty::String],
+                        effect_args: vec![Effect::self_modifying()],
+                    },
                 ),
             )
             .handler(
                 |_interner: &Interner, (Re(re, _), text): (Re, String), Uses(()): Uses<()>| {
                     let mut start = 0;
-                    let iter = Value::iterator(IterHandle::from_fn(
-                        Effect::self_modifying(),
-                        move || {
+                    let iter =
+                        Value::iterator(IterHandle::from_fn(Effect::self_modifying(), move || {
                             let m = re.find_at(&text, start)?;
                             start = m.end();
                             Some(Value::string(m.as_str()))
-                        },
-                    ));
+                        }));
                     Ok((iter, Defs(())))
                 },
             ),
             // regex_replace(text, re, replacement) -> String
             ExternFnBuilder::new(
                 "regex_replace",
-                sig(interner, vec![Ty::String, ty.clone(), Ty::String], Ty::String),
+                sig(
+                    interner,
+                    vec![Ty::String, ty.clone(), Ty::String],
+                    Ty::String,
+                ),
             )
             .handler(
                 |_interner: &Interner,
@@ -160,16 +164,19 @@ pub fn regex_registry(interner: &Interner, type_registry: &mut TypeRegistry) -> 
                 sig(
                     interner,
                     vec![ty.clone(), Ty::String],
-                    Ty::UserDefined { id: iter_qref, type_args: vec![Ty::String], effect_args: vec![Effect::self_modifying()] },
+                    Ty::UserDefined {
+                        id: iter_qref,
+                        type_args: vec![Ty::String],
+                        effect_args: vec![Effect::self_modifying()],
+                    },
                 ),
             )
             .handler(
                 |_interner: &Interner, (Re(re, _), text): (Re, String), Uses(()): Uses<()>| {
                     let mut last_end = 0;
                     let mut done = false;
-                    let iter = Value::iterator(IterHandle::from_fn(
-                        Effect::self_modifying(),
-                        move || {
+                    let iter =
+                        Value::iterator(IterHandle::from_fn(Effect::self_modifying(), move || {
                             if done {
                                 return None;
                             }
@@ -184,8 +191,7 @@ pub fn regex_registry(interner: &Interner, type_registry: &mut TypeRegistry) -> 
                                     Some(Value::string(&text[last_end..]))
                                 }
                             }
-                        },
-                    ));
+                        }));
                     Ok((iter, Defs(())))
                 },
             ),
@@ -195,17 +201,18 @@ pub fn regex_registry(interner: &Interner, type_registry: &mut TypeRegistry) -> 
                 sig(
                     interner,
                     vec![Ty::String, ty.clone()],
-                    Ty::UserDefined { id: iter_qref, type_args: vec![Ty::String], effect_args: vec![Effect::self_modifying()] },
+                    Ty::UserDefined {
+                        id: iter_qref,
+                        type_args: vec![Ty::String],
+                        effect_args: vec![Effect::self_modifying()],
+                    },
                 ),
             )
             .handler(
-                |_interner: &Interner,
-                 (text, Re(re, _)): (String, Re),
-                 Uses(()): Uses<()>| {
+                |_interner: &Interner, (text, Re(re, _)): (String, Re), Uses(()): Uses<()>| {
                     let mut start = 0;
-                    let iter = Value::iterator(IterHandle::from_fn(
-                        Effect::self_modifying(),
-                        move || {
+                    let iter =
+                        Value::iterator(IterHandle::from_fn(Effect::self_modifying(), move || {
                             loop {
                                 let caps = re.captures_at(&text, start)?;
                                 let full = caps.get(0)?;
@@ -214,8 +221,7 @@ pub fn regex_registry(interner: &Interner, type_registry: &mut TypeRegistry) -> 
                                     return Some(Value::string(group1.as_str()));
                                 }
                             }
-                        },
-                    ));
+                        }));
                     Ok((iter, Defs(())))
                 },
             ),

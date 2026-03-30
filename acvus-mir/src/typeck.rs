@@ -5,7 +5,7 @@ use acvus_ast::{
     Pattern, RefKind, Span, Template, TupleElem, TuplePatternElem,
 };
 use acvus_utils::{Astr, Interner};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
 use crate::error::{MirError, MirErrorKind};
 use crate::graph::QualifiedRef;
@@ -309,7 +309,9 @@ impl<'a, 's> TypeChecker<'a, 's> {
         let tail_ty = if let Some(tail) = &script.tail {
             let ty = self.check_expr(false, tail);
             if let Some(expected) = expected_tail
-                && self.unify_covariant(&ty, expected, Some(tail.id())).is_err()
+                && self
+                    .unify_covariant(&ty, expected, Some(tail.id()))
+                    .is_err()
             {
                 let resolved = self.subst.resolve(&ty);
                 let expected_resolved = self.subst.resolve(expected);
@@ -358,17 +360,17 @@ impl<'a, 's> TypeChecker<'a, 's> {
     ) -> Result<(), (Ty, Ty)> {
         self.subst.last_extern_cast = None;
         let result = self.subst.unify(value_ty, expected_ty, Polarity::Covariant);
-        if result.is_ok() {
-            if let Some(id) = coerce_id {
-                // ExternCast takes priority — set by try_coerce.
-                if let Some(fn_id) = self.subst.take_last_extern_cast() {
-                    self.coercion_map.push((id, CastKind::Extern(fn_id)));
-                } else {
-                    let resolved_val = self.subst.resolve(value_ty);
-                    let resolved_exp = self.subst.resolve(expected_ty);
-                    if let Some(kind) = CastKind::between(&resolved_val, &resolved_exp) {
-                        self.coercion_map.push((id, kind));
-                    }
+        if result.is_ok()
+            && let Some(id) = coerce_id
+        {
+            // ExternCast takes priority — set by try_coerce.
+            if let Some(fn_id) = self.subst.take_last_extern_cast() {
+                self.coercion_map.push((id, CastKind::Extern(fn_id)));
+            } else {
+                let resolved_val = self.subst.resolve(value_ty);
+                let resolved_exp = self.subst.resolve(expected_ty);
+                if let Some(kind) = CastKind::between(&resolved_val, &resolved_exp) {
+                    self.coercion_map.push((id, kind));
                 }
             }
         }
@@ -480,7 +482,7 @@ impl<'a, 's> TypeChecker<'a, 's> {
             return false;
         }
         for (i, (at, pt)) in arg_types.iter().zip(param_tys.iter()).enumerate() {
-            let span = arg_spans.get(i).copied().unwrap_or(call_span);
+            let _span = arg_spans.get(i).copied().unwrap_or(call_span);
             let coerce_id = arg_ids.get(i).copied();
             if self.unify_covariant(at, pt, coerce_id).is_err() {
                 self.error(
@@ -540,7 +542,10 @@ impl<'a, 's> TypeChecker<'a, 's> {
                 match &resolved {
                     Ty::String | Ty::Error(_) => {}
                     Ty::Param { .. } => {
-                        if self.unify_covariant(&ty, &Ty::String, Some(expr.id())).is_err() {
+                        if self
+                            .unify_covariant(&ty, &Ty::String, Some(expr.id()))
+                            .is_err()
+                        {
                             self.error(MirErrorKind::EmitNotString { actual: resolved }, *span);
                         }
                     }
@@ -555,12 +560,22 @@ impl<'a, 's> TypeChecker<'a, 's> {
     /// Type-check a single script statement.
     fn check_stmt(&mut self, stmt: &acvus_ast::Stmt) {
         match stmt {
-            acvus_ast::Stmt::Bind { id, name, expr, span } => {
+            acvus_ast::Stmt::Bind {
+                id,
+                name,
+                expr,
+                span: _,
+            } => {
                 let ty = self.check_expr(false, expr);
                 self.define_var(*name, ty.clone());
                 self.record(*id, ty);
             }
-            acvus_ast::Stmt::ContextStore { id, name, expr, span } => {
+            acvus_ast::Stmt::ContextStore {
+                id,
+                name,
+                expr,
+                span,
+            } => {
                 let ty = self.check_expr(false, expr);
                 self.record_context_write(*name);
                 let ctx_ty = self
@@ -746,7 +761,10 @@ impl<'a, 's> TypeChecker<'a, 's> {
                             let first_ty = self.literal_ty(&elems[0]);
                             for elem in &elems[1..] {
                                 let elem_ty = self.literal_ty(elem);
-                                if self.unify_covariant(&elem_ty, &first_ty, Some(*id)).is_err() {
+                                if self
+                                    .unify_covariant(&elem_ty, &first_ty, Some(*id))
+                                    .is_err()
+                                {
                                     self.error(
                                         MirErrorKind::HeterogeneousList {
                                             expected: self.subst.resolve(&first_ty),
@@ -764,7 +782,11 @@ impl<'a, 's> TypeChecker<'a, 's> {
                 self.record_ret(*id, ty)
             }
 
-            Expr::ContextRef { id, name: qref, span } => {
+            Expr::ContextRef {
+                id,
+                name: qref,
+                span,
+            } => {
                 let ty = self.resolve_context_type(*qref, *span);
                 self.record_context_read(*qref);
                 let ty = if !allow_non_pure
@@ -793,14 +815,16 @@ impl<'a, 's> TypeChecker<'a, 's> {
                 span,
             } => {
                 let ty = match ref_kind {
-                    RefKind::ExternParam => match self.param_types.iter().find(|(n, _)| n == name) {
-                        Some((_, ty)) => ty.clone(),
-                        None => {
-                            if self.analysis_mode {
-                                // In analysis mode, unknown $params are inferred.
-                                // Use declared type from Signature if available.
-                                let ty =
-                                    if self.next_declared_param < self.declared_param_types.len() {
+                    RefKind::ExternParam => {
+                        match self.param_types.iter().find(|(n, _)| *n == name.name) {
+                            Some((_, ty)) => ty.clone(),
+                            None => {
+                                if self.analysis_mode {
+                                    // In analysis mode, unknown $params are inferred.
+                                    // Use declared type from Signature if available.
+                                    let ty = if self.next_declared_param
+                                        < self.declared_param_types.len()
+                                    {
                                         let t = self.declared_param_types[self.next_declared_param]
                                             .clone();
                                         self.next_declared_param += 1;
@@ -808,28 +832,29 @@ impl<'a, 's> TypeChecker<'a, 's> {
                                     } else {
                                         self.subst.fresh_param()
                                     };
-                                self.param_types.push((*name, ty.clone()));
-                                ty
-                            } else {
-                                self.error(
-                                    MirErrorKind::UndefinedVariable(format!(
-                                        "${}",
-                                        self.interner.resolve(*name)
-                                    )),
-                                    *span,
-                                );
-                                Ty::error()
+                                    self.param_types.push((name.name, ty.clone()));
+                                    ty
+                                } else {
+                                    self.error(
+                                        MirErrorKind::UndefinedVariable(format!(
+                                            "${}",
+                                            self.interner.resolve(name.name)
+                                        )),
+                                        *span,
+                                    );
+                                    Ty::error()
+                                }
                             }
                         }
-                    },
-                    RefKind::Value => match self.lookup_var(*name) {
+                    }
+                    RefKind::Value => match self.lookup_var(name.name) {
                         Some(ty) => ty,
                         None => {
                             // Undefined local variable — always an error.
                             // Use $name for extern params, @name for context.
                             self.error(
                                 MirErrorKind::UndefinedVariable(
-                                    self.interner.resolve(*name).to_string(),
+                                    self.interner.resolve(name.name).to_string(),
                                 ),
                                 *span,
                             );
@@ -943,7 +968,12 @@ impl<'a, 's> TypeChecker<'a, 's> {
                 self.record_ret(*id, ty)
             }
 
-            Expr::UnaryOp { id, op, operand, span } => {
+            Expr::UnaryOp {
+                id,
+                op,
+                operand,
+                span,
+            } => {
                 let ot = self.check_expr(false, operand);
                 let ot = self.subst.resolve(&ot);
 
@@ -1045,12 +1075,22 @@ impl<'a, 's> TypeChecker<'a, 's> {
                 self.record_ret(*id, ty)
             }
 
-            Expr::FuncCall { id, func, args, span } => {
+            Expr::FuncCall {
+                id,
+                func,
+                args,
+                span,
+            } => {
                 let ty = self.check_func_call(func, args, None, *span);
                 self.record_ret(*id, ty)
             }
 
-            Expr::Pipe { id, left, right, span } => {
+            Expr::Pipe {
+                id,
+                left,
+                right,
+                span,
+            } => {
                 // Desugar: `a | f(b, c)` → `f(a, b, c)`
                 // `a | f` → `f(a)`
                 let pipe_left = Some(left.as_ref());
@@ -1066,13 +1106,25 @@ impl<'a, 's> TypeChecker<'a, 's> {
                     _ => {
                         let lt = self.check_expr(false, left);
                         let rt = self.check_expr(false, right);
-                        self.check_callable(&rt, &[], &Some(lt), Some(left.span()), Some(left.id()), *span)
+                        self.check_callable(
+                            &rt,
+                            &[],
+                            &Some(lt),
+                            Some(left.span()),
+                            Some(left.id()),
+                            *span,
+                        )
                     }
                 };
                 self.record_ret(*id, ty)
             }
 
-            Expr::Lambda { id, params, body, span } => {
+            Expr::Lambda {
+                id,
+                params,
+                body,
+                span: _,
+            } => {
                 self.push_scope();
                 let mut param_types = Vec::new();
                 for p in params {
@@ -1114,7 +1166,7 @@ impl<'a, 's> TypeChecker<'a, 's> {
                 self.record_ret(*id, ty)
             }
 
-            Expr::Paren { id, inner, span } => {
+            Expr::Paren { id, inner, span: _ } => {
                 let ty = self.check_expr(false, inner);
                 self.record_ret(*id, ty)
             }
@@ -1159,7 +1211,11 @@ impl<'a, 's> TypeChecker<'a, 's> {
                 self.record_ret(*id, ty)
             }
 
-            Expr::Object { id, fields, span } => {
+            Expr::Object {
+                id,
+                fields,
+                span: _,
+            } => {
                 let mut field_types = FxHashMap::default();
                 for ObjectExprField { key, value, .. } in fields {
                     let ft = self.check_expr(false, value);
@@ -1189,7 +1245,11 @@ impl<'a, 's> TypeChecker<'a, 's> {
                 self.record_ret(*id, Ty::Range)
             }
 
-            Expr::Tuple { id, elements, span } => {
+            Expr::Tuple {
+                id,
+                elements,
+                span: _,
+            } => {
                 let elem_types: Vec<Ty> = elements
                     .iter()
                     .map(|elem| match elem {
@@ -1201,7 +1261,11 @@ impl<'a, 's> TypeChecker<'a, 's> {
                 self.record_ret(*id, ty)
             }
 
-            Expr::Group { id, elements, span } => {
+            Expr::Group {
+                id,
+                elements,
+                span: _,
+            } => {
                 // Group is only valid as lambda param list (handled by parser).
                 let Some(last) = elements.last() else {
                     self.record(*id, Ty::Unit);
@@ -1288,7 +1352,12 @@ impl<'a, 's> TypeChecker<'a, 's> {
                 self.record_ret(*id, ty)
             }
 
-            Expr::Block { id, stmts, tail, span } => {
+            Expr::Block {
+                id,
+                stmts,
+                tail,
+                span: _,
+            } => {
                 self.push_scope();
                 for stmt in stmts {
                     self.check_stmt(stmt);
@@ -1323,11 +1392,18 @@ impl<'a, 's> TypeChecker<'a, 's> {
             let resolved = self.subst.resolve(&ft);
             let pipe_left_span = pipe_left.map(|e| e.span());
             let pipe_left_id = pipe_left.map(|e| e.id());
-            return self.check_callable(&resolved, args, &pipe_ty, pipe_left_span, pipe_left_id, call_span);
+            return self.check_callable(
+                &resolved,
+                args,
+                &pipe_ty,
+                pipe_left_span,
+                pipe_left_id,
+                call_span,
+            );
         };
 
         // Check named functions (builtins, externs, user-defined).
-        let name_str = self.interner.resolve(*name);
+        let name_str = self.interner.resolve(name.name);
         if let Some(fn_sig) = self.env.functions.get(name) {
             let arg_types: Vec<Ty> = pipe_ty
                 .iter()
@@ -1355,7 +1431,8 @@ impl<'a, 's> TypeChecker<'a, 's> {
                 } => {
                     self.propagate_call_effect(effect.clone());
                     let tys: Vec<Ty> = param_tys.iter().map(|p| p.ty.clone()).collect();
-                    if !self.check_args(name_str, &arg_types, &arg_spans, &arg_ids, &tys, call_span) {
+                    if !self.check_args(name_str, &arg_types, &arg_spans, &arg_ids, &tys, call_span)
+                    {
                         return Ty::error();
                     }
                     return self.subst.resolve(ret);
@@ -1371,15 +1448,22 @@ impl<'a, 's> TypeChecker<'a, 's> {
         }
 
         // Check local variable with function type.
-        if let Some(var_ty) = self.lookup_var(*name) {
+        if let Some(var_ty) = self.lookup_var(name.name) {
             let resolved = self.subst.resolve(&var_ty);
             let pipe_left_span = pipe_left.map(|e| e.span());
             let pipe_left_id = pipe_left.map(|e| e.id());
-            return self.check_callable(&resolved, args, &pipe_ty, pipe_left_span, pipe_left_id, call_span);
+            return self.check_callable(
+                &resolved,
+                args,
+                &pipe_ty,
+                pipe_left_span,
+                pipe_left_id,
+                call_span,
+            );
         }
 
         self.error(
-            MirErrorKind::UndefinedFunction(self.interner.resolve(*name).to_string()),
+            MirErrorKind::UndefinedFunction(self.interner.resolve(name.name).to_string()),
             call_span,
         );
         Ty::error()
@@ -1390,17 +1474,17 @@ impl<'a, 's> TypeChecker<'a, 's> {
     /// Otherwise, propagates to the top-level body_effect.
     fn propagate_call_effect(&mut self, effect: Effect) {
         let resolved = self.subst.resolve_effect(&effect);
-        if let Effect::Resolved(callee_set) = &resolved {
-            if !callee_set.is_pure() {
-                if let Some(ls) = self.lambda_stack.last_mut() {
-                    if let Effect::Resolved(ref mut ls_set) = ls.effect {
-                        *ls_set = ls_set.union(callee_set);
-                    } else {
-                        ls.effect = resolved.clone();
-                    }
-                } else if let Effect::Resolved(ref mut body_set) = self.body_effect {
-                    *body_set = body_set.union(callee_set);
+        if let Effect::Resolved(callee_set) = &resolved
+            && !callee_set.is_pure()
+        {
+            if let Some(ls) = self.lambda_stack.last_mut() {
+                if let Effect::Resolved(ref mut ls_set) = ls.effect {
+                    *ls_set = ls_set.union(callee_set);
+                } else {
+                    ls.effect = resolved.clone();
                 }
+            } else if let Effect::Resolved(ref mut body_set) = self.body_effect {
+                *body_set = body_set.union(callee_set);
             }
         }
     }
@@ -1458,7 +1542,14 @@ impl<'a, 's> TypeChecker<'a, 's> {
                 // Propagate effect to enclosing scope (lambda or top-level body).
                 self.propagate_call_effect(effect.clone());
                 let tys: Vec<Ty> = params.iter().map(|p| p.ty.clone()).collect();
-                if !self.check_args("<closure>", &arg_types, &arg_spans, &arg_ids, &tys, call_span) {
+                if !self.check_args(
+                    "<closure>",
+                    &arg_types,
+                    &arg_spans,
+                    &arg_ids,
+                    &tys,
+                    call_span,
+                ) {
                     return Ty::error();
                 }
                 self.subst.resolve(ret)
@@ -1514,11 +1605,7 @@ impl<'a, 's> TypeChecker<'a, 's> {
                     );
                 }
             }
-            Pattern::Binding {
-                name,
-                ref_kind,
-                ..
-            } => match ref_kind {
+            Pattern::Binding { name, ref_kind, .. } => match ref_kind {
                 RefKind::ExternParam => {
                     self.error(
                         MirErrorKind::ExternParamAssign(self.interner.resolve(*name).to_string()),
@@ -1833,7 +1920,7 @@ pub(crate) fn contains_var(ty: &Ty) -> bool {
         Ty::Enum { variants, .. } => variants
             .values()
             .any(|p| p.as_ref().is_some_and(|ty| contains_var(ty))),
-        Ty::UserDefined { .. } | Ty::Identity(_) => false,
+        Ty::UserDefined { .. } | Ty::Identity(_) | Ty::Ref(..) => false,
     }
 }
 
@@ -1887,14 +1974,22 @@ mod tests {
             .iter()
             .map(|(&name, ty)| (QualifiedRef::root(name), ty.clone()))
             .collect();
+
         let env = crate::ty::TypeEnv {
             contexts: qref_contexts,
-            functions: crate::builtins::builtin_fn_types(interner),
+            functions: Default::default(),
         };
         let checker = TypeChecker::new(interner, &env, &mut subst);
         let resolution = checker.check_template(&template).map_err(|errs| {
             errs.iter()
-                .map(|e| format!("[typeck] [{}..{}] {}", e.span.start, e.span.end, e.display(interner)))
+                .map(|e| {
+                    format!(
+                        "[typeck] [{}..{}] {}",
+                        e.span.start,
+                        e.span.end,
+                        e.display(interner)
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
         })?;
@@ -2256,7 +2351,10 @@ mod tests {
         ]);
         let src = "{{ @handler(@conn) }}";
         let result = check_with_interner(src, &ctx, &i);
-        assert!(result.is_err(), "UserDefined in argument should be rejected");
+        assert!(
+            result.is_err(),
+            "UserDefined in argument should be rejected"
+        );
     }
 
     // ── Pure context load tests (scalars — always ok) ──
@@ -2276,5 +2374,4 @@ mod tests {
         let src = "{{ x = @msg }}{{_}}{{/}}";
         check_with_interner(src, &ctx, &i).unwrap();
     }
-
 }

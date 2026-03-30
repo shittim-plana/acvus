@@ -1,0 +1,88 @@
+---
+source: acvus-mir-test/tests/optimized.rs
+expression: raw
+---
+=== literals ===
+  T0 = " (score: "
+  T1 = ")"
+
+=== main ===
+     0 │   r0 = ref @min_score
+     1 │   r1 = load r0
+     2 │   r2 = ref @output
+     3 │   r3 = load r2
+     4 │   r4 = ref @user
+     5 │   r5 = load r4
+     6 │   r6 = ref @user.age
+     7 │   r7 = load r6
+     9 │   r8 = r7 * 2 (r9)
+    10 │   r10 = ref score
+    11 │   store r10 = r8
+    12 │   r11 = ref @user.name
+    13 │   r12 = load r11
+    15 │   r13 = r12 + T0
+    16 │   r14 = ref score
+    17 │   r15 = load r14
+    18 │   r16 = call #0(r15)
+    19 │   r17 = r13 + r16
+    21 │   r18 = r17 + T1
+    22 │   r19 = ref label
+    23 │   store r19 = r18
+    24 │   r20 = ref score
+    25 │   r21 = load r20
+    26 │   r22 = ref @min_score
+    27 │   r23 = load r22
+    28 │   r24 = r21 > r23
+    29 │   r25 = ref eligible
+    30 │   store r25 = r24
+    31 │   r26 = ref label
+    32 │   r27 = load r26
+    33 │   r28 = ref score
+    34 │   r29 = load r28
+    35 │   r30 = ref eligible
+    36 │   r31 = load r30
+    37 │   r32 = object {label: r27, score: r29, eligible: r31}
+    38 │   r33 = ref @output
+    39 │   store r33 = r32
+    40 │   r34 = ref @output
+    41 │   r35 = load r34
+    42 │   return r35
+
+    ; r0 (@min_score) : Ref<Int>
+    ; r1 (@min_score) : Int
+    ; r2 (@output) : Ref<{eligible: Bool, label: String, score: Int}>
+    ; r3 (@output) : {eligible: Bool, label: String, score: Int}
+    ; r4 (@user) : Ref<{age: Int, name: String}>
+    ; r5 (@user) : {age: Int, name: String}
+    ; r6 (@user.age) : Ref<Int>
+    ; r7 (v8) : Int
+    ; r8 (v10) : Int
+    ; r9 (v9) : Int
+    ; r10 (v12) : Ref<Int>
+    ; r11 (@user.name) : Ref<String>
+    ; r12 (v14) : String
+    ; r13 (v16) : String
+    ; r14 (v17) : Ref<Int>
+    ; r15 (score) : Int
+    ; r16 (to_string(...)) : String
+    ; r17 (v20) : String
+    ; r18 (v22) : String
+    ; r19 (v24) : Ref<String>
+    ; r20 (v25) : Ref<Int>
+    ; r21 (score) : Int
+    ; r22 (@min_score) : Ref<Int>
+    ; r23 (v28) : Int
+    ; r24 (v29) : Bool
+    ; r25 (v31) : Ref<Bool>
+    ; r26 (v32) : Ref<String>
+    ; r27 (label) : String
+    ; r28 (v34) : Ref<Int>
+    ; r29 (score) : Int
+    ; r30 (v36) : Ref<Bool>
+    ; r31 (eligible) : Bool
+    ; r32 (v38) : {eligible: Bool, label: String, score: Int}
+    ; r33 (@output) : Ref<{eligible: Bool, label: String, score: Int}>
+    ; r34 (@output) : Ref<{eligible: Bool, label: String, score: Int}>
+    ; r35 (v41) : {eligible: Bool, label: String, score: Int}
+    ; r36 (v15) : String
+    ; r37 (v21) : String

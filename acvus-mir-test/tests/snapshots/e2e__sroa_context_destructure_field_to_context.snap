@@ -1,0 +1,27 @@
+---
+source: acvus-mir-test/tests/e2e.rs
+expression: ir
+---
+=== main ===
+     0 │   r0 = ref @a
+     1 │   r1 = load r0
+     2 │   r2 = ref @b
+     3 │   r3 = load r2
+     4 │   r4 = ref @b
+     5 │   r5 = r3.x
+     6 │   r6 = ref @a
+     7 │   store r6 = r5
+     8 │   r7 = ref @a
+     9 │   return r5
+
+    ; r0 (@a) : Ref<Int>
+    ; r1 (@a) : Int
+    ; r2 (@b) : Ref<{x: Int}>
+    ; r3 (@b) : {x: Int}
+    ; r4 (v10) : Ref<{x: Int}>
+    ; r5 (v6) : Int
+    ; r6 (@a) : Ref<Int>
+    ; r7 (@a) : Ref<Int>
+    ; r8 (v11) : {x: Int}
+    ; r9 (v9) : Int
+    ; r10 (@b.x) : Ref<Int>

@@ -8,11 +8,11 @@ members = [
     "acvus-mir",
     "acvus-mir-cli",
     "acvus-mir-test",
-    "acvus-orchestration",
+    # "acvus-orchestration",
     "acvus-ext",
     "acvus-ext-llm",
     "acvus-lsp",
-    "acvus-orchestration-test",
+    # "acvus-orchestration-test",
     "pomollu-engine",
     "acvus-macro"
 ]

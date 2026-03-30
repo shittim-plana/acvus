@@ -33,18 +33,17 @@ pub(crate) fn make_graph(
     } else {
         ParsedAst::Script(acvus_ast::parse_script(interner, source).expect("parse"))
     };
-    let mut functions = crate::builtins::standard_builtins(interner);
-    functions.push(Function {
-        qref: test_qref,
-        kind: FnKind::Local(parsed),
-        constraint: FnConstraint {
-            signature: None,
-            output: Constraint::Inferred,
-            effect: None,
-        },
-    });
+
     let graph = CompilationGraph {
-        functions: Freeze::new(functions),
+        functions: Freeze::new(vec![Function {
+            qref: test_qref,
+            kind: FnKind::Local(parsed),
+            constraint: FnConstraint {
+                signature: None,
+                output: Constraint::Inferred,
+                effect: None,
+            },
+        }]),
         contexts: Freeze::new(contexts),
     };
     (graph, test_qref)
@@ -56,7 +55,14 @@ fn run_pipeline(
     target: QualifiedRef,
 ) -> Result<(MirModule, HintTable), String> {
     let ext = extract::extract(interner, graph);
-    let inf = infer::infer(interner, graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+    let inf = infer::infer(
+        interner,
+        graph,
+        &ext,
+        &FxHashMap::default(),
+        Freeze::default(),
+        &FxHashMap::default(),
+    );
 
     // Collect infer errors.
     let mut errors: Vec<String> = Vec::new();
@@ -89,20 +95,10 @@ fn run_pipeline(
         return Err(errors.join("\n"));
     }
 
-    // Build fn_types for SSA + validate.
-    let fn_types: FxHashMap<QualifiedRef, Ty> = inf
-        .outcomes
-        .iter()
-        .filter_map(|(qref, outcome)| {
-            if let crate::graph::infer::FnInferOutcome::Complete { meta, .. } = outcome {
-                Some((*qref, meta.ty.clone()))
-            } else {
-                None
-            }
-        })
-        .collect();
+    // Use InferResult.fn_types (authoritative, frozen).
+    let fn_types = &inf.fn_types;
 
-    // Run SSA + validate (lower now outputs pre-SSA MIR).
+    // Run SROA + SSA + validate (lower outputs pre-SSA MIR).
     let mut pair = result
         .modules
         .into_iter()
@@ -110,18 +106,25 @@ fn run_pipeline(
         .map(|(_, pair)| pair)
         .ok_or_else(|| "no module produced for target".to_string())?;
 
+    // SROA → SSA → DCE.
+    crate::optimize::sroa::run_body(&mut pair.0.main, &inf.context_types);
+    for closure in pair.0.closures.values_mut() {
+        crate::optimize::sroa::run_body(closure, &inf.context_types);
+    }
     {
         let mut cfg_body = crate::cfg::promote(std::mem::replace(&mut pair.0.main, MirBody::new()));
-        crate::optimize::ssa_pass::run(&mut cfg_body, &fn_types);
+        crate::optimize::ssa_pass::run(&mut cfg_body, fn_types);
+        crate::optimize::dce::run(&mut cfg_body, fn_types);
         pair.0.main = crate::cfg::demote(cfg_body);
     }
     for closure in pair.0.closures.values_mut() {
         let mut cfg_body = crate::cfg::promote(std::mem::replace(closure, MirBody::new()));
-        crate::optimize::ssa_pass::run(&mut cfg_body, &fn_types);
+        crate::optimize::ssa_pass::run(&mut cfg_body, fn_types);
+        crate::optimize::dce::run(&mut cfg_body, fn_types);
         *closure = crate::cfg::demote(cfg_body);
     }
 
-    let validation_errors = crate::validate::validate(&pair.0, &fn_types, &FxHashMap::default());
+    let validation_errors = crate::validate::validate(&pair.0, fn_types, &FxHashMap::default());
     if !validation_errors.is_empty() {
         let msgs: Vec<String> = validation_errors
             .iter()
@@ -154,12 +157,8 @@ pub fn compile_script(
 }
 
 /// Compile a template and return the printed IR. Panics with full error on failure.
-pub fn compile_and_dump(
-    interner: &Interner,
-    source: &str,
-    ctx: &[(&str, Ty)],
-) -> String {
-    let (module, _) = compile_template(interner, source, ctx)
-        .unwrap_or_else(|e| panic!("compile failed:\n{e}"));
+pub fn compile_and_dump(interner: &Interner, source: &str, ctx: &[(&str, Ty)]) -> String {
+    let (module, _) =
+        compile_template(interner, source, ctx).unwrap_or_else(|e| panic!("compile failed:\n{e}"));
     crate::printer::dump(interner, &module)
 }

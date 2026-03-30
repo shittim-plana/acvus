@@ -1,0 +1,53 @@
+---
+source: acvus-mir-test/tests/optimized.rs
+expression: opt
+---
+=== main ===
+     0 │   r0 = undef
+     1 │   r1 = ref @idx
+     2 │   r2 = ref @found
+     3 │   r3 = ref @found
+     4 │   r4 = ref @idx
+     5 │   r5 = ref @items
+     6 │   r6 = ref @target
+    10 │   r7 = load r4
+    11 │   r8 = load r5
+    12 │   r9 = load r6
+    13 │   r10 = load r3
+    14 │   jump L0(0 (r11), r7, r10, r0)
+    15 │ L0(r0: Int, r11: Int, r10: Bool, r7: Int):
+    16 │   store r1 = 0 (r11)
+    17 │   store r2 = r10
+    18 │   r12 = 0 (r11) + 1 (r13)
+    19 │   r14 = object {found: r10, index: 0 (r11)}
+    20 │   list_step r11, r15 = r8[r0] else L1()
+    21 │ L2:
+    22 │   r16 = 0 (r11) == r9
+    23 │   r17 = test r16 == true
+    24 │   jump_if r17 then L3 else L4(r10)
+    25 │ L3:
+    26 │   jump L4(true (r18))
+    27 │ L4(r10: Bool):
+    28 │   jump L0(r15, r12, r10, 0 (r11))
+    29 │ L1:
+    30 │   return r14
+
+    ; r0 (v1) : Int
+    ; r1 (@idx) : Ref<Int>
+    ; r2 (@found) : Ref<Bool>
+    ; r3 (@found) : Ref<Bool>
+    ; r4 (@idx) : Ref<Int>
+    ; r5 (@items) : Ref<List<Int>>
+    ; r6 (@target) : Ref<Int>
+    ; r7 (@idx) : Int
+    ; r8 (@items) : List<Int>
+    ; r9 (@target) : Int
+    ; r10 (@found) : Bool
+    ; r11 (v8) : Int
+    ; r12 (v15) : Int
+    ; r13 (v10) : Int
+    ; r14 (v16) : {found: Bool, index: Int}
+    ; r15 (v17) : Int
+    ; r16 (v18) : Bool
+    ; r17 (v19) : Bool
+    ; r18 (v9) : Bool

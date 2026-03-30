@@ -8,15 +8,13 @@
 //! Spec changes (add/update item) are lowered to graph mutations,
 //! and only affected functions are recompiled.
 
-use std::ops::Range;
-
 use acvus_mir::graph::incremental::IncrementalGraph;
 use acvus_mir::graph::{Function, QualifiedRef};
 use acvus_utils::Interner;
 use rustc_hash::FxHashMap;
 
 use crate::lower::{self, FieldError, SpanMap};
-use crate::spec::{Item, Namespace};
+use crate::spec::Namespace;
 
 // ── Turn result ────────────────────────────────────────────────────
 
@@ -37,6 +35,12 @@ pub struct Session {
     span_map: SpanMap,
     /// Mapping from spec item name → QualifiedRef(s) in the graph.
     item_functions: FxHashMap<String, Vec<QualifiedRef>>,
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Session {
@@ -119,47 +123,24 @@ impl Session {
     }
 
     /// Get all diagnostics across all functions.
-    pub fn all_diagnostics(&self) -> impl Iterator<Item = (QualifiedRef, &[acvus_mir::error::MirError])> {
+    pub fn all_diagnostics(
+        &self,
+    ) -> impl Iterator<Item = (QualifiedRef, &[acvus_mir::error::MirError])> {
         self.graph.all_diagnostics()
     }
 
     /// Whether any function has errors (field errors or type errors).
     pub fn has_errors(&self) -> bool {
         !self.field_errors.is_empty()
-            || self.graph.all_diagnostics().any(|(_, errs)| !errs.is_empty())
+            || self
+                .graph
+                .all_diagnostics()
+                .any(|(_, errs)| !errs.is_empty())
     }
 
     /// Look up function ID by name.
     pub fn function_id(&self, name: &str) -> Option<QualifiedRef> {
         self.item_functions.get(name)?.first().copied()
-    }
-
-    // ── Execution ──────────────────────────────────────────────────
-
-    /// Execute a single turn.
-    ///
-    /// `entry`: mutable journal entry for context read/write.
-    pub async fn execute_turn(
-        &self,
-        // TODO: takes a Page — pending orchestration migration
-        _page: &acvus_interpreter::InMemoryPage,
-    ) -> TurnResult {
-        // TODO: find entrypoint, create interpreter, execute
-        todo!("execute_turn")
-    }
-
-    /// Render past turns from history.
-    ///
-    /// `entry`: read-only journal entry for context access.
-    /// `range`: which history items to render (start..end).
-    pub async fn display_history(
-        &self,
-        // TODO: takes a Page — pending orchestration migration
-        _page: &acvus_interpreter::InMemoryPage,
-        _range: Range<usize>,
-    ) -> Vec<String> {
-        // TODO: get history display function, execute with range
-        todo!("display_history")
     }
 }
 
@@ -195,7 +176,10 @@ mod tests {
                     endpoint: "e".into(),
                     api_key: "k".into(),
                     model: "m".into(),
-                    temperature: None, top_p: None, top_k: None, max_tokens: None,
+                    temperature: None,
+                    top_p: None,
+                    top_k: None,
+                    max_tokens: None,
                     system: None,
                     messages: vec![GoogleMessage {
                         role: GoogleRole::User,

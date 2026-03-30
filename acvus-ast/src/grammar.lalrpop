@@ -94,7 +94,7 @@ ScriptStmt: Stmt = {
         let span = Span::new(l, r);
         match &lhs {
             Expr::Ident { name, ref_kind: RefKind::Value, .. } =>
-                Ok(Stmt::Bind { id: AstId::alloc(), name: *name, expr: rhs, span }),
+                Ok(Stmt::Bind { id: AstId::alloc(), name: name.name, expr: rhs, span }),
             Expr::ContextRef { name, .. } =>
                 Ok(Stmt::ContextStore { id: AstId::alloc(), name: *name, expr: rhs, span }),
             _ => Err(lalrpop_util::ParseError::User {
@@ -244,9 +244,9 @@ PostfixExpr: Expr = {
 // Primary expressions
 PrimaryExpr: Expr = {
     <l:@L> <name:"ident"> <r:@R> =>
-        Expr::Ident { id: AstId::alloc(), name, ref_kind: RefKind::Value, span: Span::new(l, r) },
+        Expr::Ident { id: AstId::alloc(), name: QualifiedRef::root(name), ref_kind: RefKind::Value, span: Span::new(l, r) },
     <l:@L> <name:"$ref"> <r:@R> =>
-        Expr::Ident { id: AstId::alloc(), name, ref_kind: RefKind::ExternParam, span: Span::new(l, r) },
+        Expr::Ident { id: AstId::alloc(), name: QualifiedRef::root(name), ref_kind: RefKind::ExternParam, span: Span::new(l, r) },
     <l:@L> <name:"@ref"> <r:@R> =>
         Expr::ContextRef { id: AstId::alloc(), name: QualifiedRef::root(name), span: Span::new(l, r) },
     <l:@L> <n:"int"> <r:@R> =>
@@ -362,7 +362,7 @@ ObjectField: ObjectExprField = {
         ObjectExprField {
             id: AstId::alloc(),
             key: name,
-            value: Expr::Ident { id: AstId::alloc(), name, ref_kind: RefKind::Value, span },
+            value: Expr::Ident { id: AstId::alloc(), name: QualifiedRef::root(name), ref_kind: RefKind::Value, span },
             span,
         }
     },
@@ -371,7 +371,7 @@ ObjectField: ObjectExprField = {
         ObjectExprField {
             id: AstId::alloc(),
             key: name,
-            value: Expr::Ident { id: AstId::alloc(), name, ref_kind: RefKind::ExternParam, span },
+            value: Expr::Ident { id: AstId::alloc(), name: QualifiedRef::root(name), ref_kind: RefKind::ExternParam, span },
             span,
         }
     },

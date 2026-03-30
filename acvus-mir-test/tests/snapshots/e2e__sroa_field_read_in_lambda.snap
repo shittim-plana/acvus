@@ -1,0 +1,47 @@
+---
+source: acvus-mir-test/tests/e2e.rs
+expression: ir
+---
+=== literals ===
+  T0 = ""
+  T1 = ","
+
+=== main ===
+     0 │   r0 = ref @users
+     1 │   r1 = load r0
+     3 │   r2 = ref @users
+     4 │   r3 = call #0(r1)
+     5 │   r4 = closure L0 []
+     6 │   r5 = call #1(r3, r4)
+     7 │   r6 = call #2(r5)
+     8 │   r7 = call #0(r6)
+    10 │   r8 = call #3(r7, T1)
+    11 │   r9 = T0 + r8
+    12 │   return r9
+
+    ; r0 (@users) : Ref<List<{name: String}>>
+    ; r1 (@users) : List<{name: String}>
+    ; r2 (@users) : Ref<List<{name: String}>>
+    ; r3 (iter(...)) : Iterator<{name: String}, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
+    ; r4 (v7) : Fn({name: String}) -> String
+    ; r5 (map(...)) : Iterator<String, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
+    ; r6 (collect(...)) : List<String>
+    ; r7 (v10) : Iterator<?0, Resolved(EffectSet { reads: {}, writes: {}, io: false, self_modifying: false })>
+    ; r8 (join(...)) : String
+    ; r9 (v13) : String
+    ; r10 (v11) : String
+    ; r11 (v3) : String
+    ; r12 (v5) : List<{name: String}>
+
+=== closure L0 (ValueId(0)) ===
+     0 │   r0 = undef
+     1 │   r1 = r2.name
+     2 │   return r1
+
+    ; r0 (v8) : {name: String}
+    ; r1 (v5) : String
+    ; r2 (v1) : {name: String}
+    ; r3 (v3) : Ref<{name: String}>
+    ; r4 (v7) : {name: String}
+    ; r5 (v6) : Ref<{name: String}>
+    ; r6 (u.name) : Ref<String>

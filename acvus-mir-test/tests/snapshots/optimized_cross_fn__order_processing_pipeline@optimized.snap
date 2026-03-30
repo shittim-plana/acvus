@@ -1,0 +1,94 @@
+---
+source: acvus-mir-test/tests/optimized_cross_fn.rs
+expression: opt
+---
+=== literals ===
+  T0 = " sub:"
+  T1 = " disc:"
+  T2 = " tax:"
+  T3 = " ship:"
+  T4 = " total:"
+
+=== main ===
+     0 │   r0 = ref @shipping
+     1 │   r1 = ref @receipt_out
+     2 │   r2 = ref @default_ship
+     3 │   r3 = ref @total_out
+     4 │   r4 = ref @free_ship_min
+     5 │   r5 = ref @item_count
+     6 │   r6 = ref @shipping
+     7 │   r7 = ref @tax_rate
+     9 │   r8 = load r5
+    10 │   r9 = r8 * 100 (r10)
+    11 │   r10 = load r3
+    12 │   r8 = r9 * 100 (r10)
+    14 │   r11 = r8 / 100 (r10)
+    15 │   r10 = r9 - r11
+    16 │   r8 = load r7
+    17 │   r12 = 100 (r10) * r8
+    19 │   r8 = r12 / 100 (r10)
+    20 │   r10 = r9 - r11
+    21 │   r12 = 100 (r10) + r8
+    22 │   r10 = load r4
+    23 │   r13 = r12 > 100 (r10)
+    24 │   r14 = test r13 == true
+    26 │   r13 = r12 <= 100 (r10)
+    27 │   r15 = test r13 == true
+    29 │   r16 = load r1
+    30 │   r17 = r16 + T4
+    31 │   r18 = call #0(r9)
+    32 │   r16 = r17 + T4
+    34 │   r17 = r16 + T4
+    35 │   r18 = call #0(r11)
+    36 │   r16 = r17 + T4
+    38 │   r17 = r16 + T4
+    39 │   r18 = call #0(r8)
+    40 │   r16 = r17 + T4
+    42 │   r17 = r16 + T4
+    44 │   r3 = ref @total_out
+    45 │   r1 = ref @receipt_out
+    46 │   r10 = load r2
+    47 │   r8 = load r6
+    48 │   jump_if r14 then L0 else L1(r8)
+    49 │ L0:
+    50 │   jump L1(0 (r19))
+    51 │ L1(r8: Int):
+    52 │   jump_if r15 then L2 else L3(r8)
+    53 │ L2:
+    54 │   jump L3(100 (r10))
+    55 │ L3(r10: Int):
+    56 │   store r0 = 100 (r10)
+    57 │   r8 = r12 + 100 (r10)
+    58 │   r16 = call #0(100 (r10))
+    59 │   r20 = r17 + r16
+    60 │   r16 = r20 + T4
+    61 │   r18 = call #0(r8)
+    62 │   r17 = r16 + T4
+    63 │   r21 = spawn #1(r17)
+    64 │   store r3 = r8
+    65 │   store r1 = r17
+    66 │   r10 = eval r21
+    67 │   return r8
+
+    ; r0 (@shipping) : Ref<Int>
+    ; r1 (@receipt_out) : Ref<String>
+    ; r2 (@default_ship) : Ref<Int>
+    ; r3 (@total_out) : Ref<Int>
+    ; r4 (@free_ship_min) : Ref<Int>
+    ; r5 (@item_count) : Ref<Int>
+    ; r6 (@shipping) : Ref<Int>
+    ; r7 (@tax_rate) : Ref<Int>
+    ; r8 (@shipping) : Int
+    ; r9 (v11) : Int
+    ; r10 (@default_ship) : Int
+    ; r11 (v12) : Int
+    ; r12 (v13) : Int
+    ; r13 (v14) : Bool
+    ; r14 (v15) : Bool
+    ; r15 (v17) : Bool
+    ; r16 (to_string(...)) : String
+    ; r17 (v20) : String
+    ; r18 (to_string(...)) : String
+    ; r19 (v16) : Int
+    ; r20 (v21) : String
+    ; r21 (v22) : Handle!<Int>

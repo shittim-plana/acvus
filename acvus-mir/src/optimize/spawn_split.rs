@@ -112,8 +112,8 @@ mod tests {
                 })
                 .collect(),
             val_types,
-            param_regs: Vec::new(),
-            capture_regs: Vec::new(),
+            params: Vec::new(),
+            captures: Vec::new(),
             debug: DebugInfo::new(),
             val_factory: factory,
             label_count: 0,

@@ -68,7 +68,14 @@ fn compile_analysis(
     };
 
     let ext = extract::extract(interner, &graph);
-    let inf = infer::infer(interner, &graph, &ext, &FxHashMap::default(), Freeze::new(type_registry), &FxHashMap::default());
+    let inf = infer::infer(
+        interner,
+        &graph,
+        &ext,
+        &FxHashMap::default(),
+        Freeze::new(type_registry),
+        &FxHashMap::default(),
+    );
 
     // Collect infer errors.
     let mut errors: Vec<String> = Vec::new();
@@ -77,7 +84,10 @@ fn compile_analysis(
         for e in errs {
             errors.push(format!(
                 "[infer:{}] [{}..{}] {}",
-                fn_name, e.span.start, e.span.end, e.display(interner)
+                fn_name,
+                e.span.start,
+                e.span.end,
+                e.display(interner)
             ));
         }
     }
@@ -88,7 +98,9 @@ fn compile_analysis(
     for e in result.errors.iter().flat_map(|le| le.errors.iter()) {
         errors.push(format!(
             "[lower] [{}..{}] {}",
-            e.span.start, e.span.end, e.display(interner)
+            e.span.start,
+            e.span.end,
+            e.display(interner)
         ));
     }
 
@@ -488,7 +500,10 @@ fn error_emit_non_string() {
 fn undeclared_context_resolves_via_infer_var() {
     let i = Interner::new();
     let result = compile_to_ir(&i, "{{ @unknown | to_string }}", &FxHashMap::default());
-    assert!(result.is_ok(), "undeclared context should resolve via infer var: {result:?}");
+    assert!(
+        result.is_ok(),
+        "undeclared context should resolve via infer var: {result:?}"
+    );
 }
 
 #[test]
@@ -1759,10 +1774,15 @@ fn pruned_context_keys_in_dead_catch_all() {
     let ir = acvus_mir::printer::dump_with(&i, &module);
     eprintln!("=== PRUNED TEST IR ===\n{ir}\n=== END ===");
 
-    // Build name→QualifiedRef lookup from the compiled module's ContextProject instructions + debug info.
+    // Build name→QualifiedRef lookup from the compiled module's Ref(Context) instructions + debug info.
     let mut name_to_qref: FxHashMap<&str, QualifiedRef> = FxHashMap::default();
     for inst in &module.main.insts {
-        if let InstKind::ContextProject { dst, ctx, .. } = &inst.kind {
+        if let InstKind::Ref {
+            dst,
+            target: acvus_mir::ir::RefTarget::Context(ctx),
+            ..
+        } = &inst.kind
+        {
             if let Some(acvus_mir::ir::ValOrigin::Context(name)) =
                 module.main.debug.val_origins.get(dst)
             {
@@ -1889,16 +1909,9 @@ fn migrated_projection_chained_field_access() {
     let obj_ty = obj(&i, &[("a", inner)]);
     let context = ctx(&i, &[("obj", obj_ty)]);
     let ir = compile_script_ir(&i, "@obj.a.b | to_string", &context).unwrap();
-    // Original test checked: 1 ContextProject, 2 FieldGet, 1 ContextLoad.
-    // Verify via IR string.
-    assert!(
-        ir.contains("context_project"),
-        "should have context_project in IR: {ir}"
-    );
-    assert!(
-        ir.contains("context_load"),
-        "should have context_load in IR: {ir}"
-    );
+    // New IR: Ref(@obj) + Load (whole), Ref(@obj.a) + Load (field), FieldGet(.b).
+    assert!(ir.contains("ref @obj"), "should have ref @obj in IR: {ir}");
+    assert!(ir.contains("load"), "should have load in IR: {ir}");
     let field_get_count = ir.matches(".b").count() + ir.matches(".a").count();
     assert!(
         field_get_count >= 2,
@@ -2000,10 +2013,7 @@ fn migrated_typeck_nested_lambda_captures() {
     let i = Interner::new();
     let context = ctx(
         &i,
-        &[
-            ("items", Ty::List(Box::new(Ty::Int))),
-            ("factor", Ty::Int),
-        ],
+        &[("items", Ty::List(Box::new(Ty::Int))), ("factor", Ty::Int)],
     );
     compile_to_ir(
         &i,
@@ -2071,12 +2081,7 @@ fn migrated_print_closure() {
 fn migrated_ssa_iter_no_write_no_phi() {
     let i = Interner::new();
     let context = ctx(&i, &[("items", Ty::List(Box::new(Ty::String)))]);
-    let ir = compile_to_ir(
-        &i,
-        r#"{{ x in @items }}{{ x | to_string }}{{/}}"#,
-        &context,
-    )
-    .unwrap();
+    let ir = compile_to_ir(&i, r#"{{ x in @items }}{{ x | to_string }}{{/}}"#, &context).unwrap();
     // Original test checked: count_context_stores == 0 after SSA pass.
     // In IR output, context stores would appear as "ctx_store".
     assert!(
@@ -2092,27 +2097,39 @@ fn effect_map_impure_propagates() {
     // iter(list) | map(impure_fn) should produce an effectful Iterator.
     // Reusing the result should be rejected (move-only).
     let i = Interner::new();
-    let context = ctx(&i, &[("items", Ty::List(Box::new(Ty::Int))), ("counter", Ty::Int)]);
+    let context = ctx(
+        &i,
+        &[("items", Ty::List(Box::new(Ty::Int))), ("counter", Ty::Int)],
+    );
     // map with context write → effectful. Using result twice → use-after-move.
     let result = compile_script_ir(
         &i,
         r#"it = @items | iter | map(|x| -> { @counter = x; x }); it | collect; it | collect"#,
         &context,
     );
-    assert!(result.is_err(), "effectful iter reuse should be rejected: {result:?}");
+    assert!(
+        result.is_err(),
+        "effectful iter reuse should be rejected: {result:?}"
+    );
 }
 
 #[test]
 fn effect_map_impure_single_use_ok() {
     // Single use of effectful iterator should compile.
     let i = Interner::new();
-    let context = ctx(&i, &[("items", Ty::List(Box::new(Ty::Int))), ("counter", Ty::Int)]);
+    let context = ctx(
+        &i,
+        &[("items", Ty::List(Box::new(Ty::Int))), ("counter", Ty::Int)],
+    );
     let result = compile_script_ir(
         &i,
         r#"@items | iter | map(|x| -> { @counter = x; x }) | collect"#,
         &context,
     );
-    assert!(result.is_ok(), "single use of effectful iter should compile: {result:?}");
+    assert!(
+        result.is_ok(),
+        "single use of effectful iter should compile: {result:?}"
+    );
 }
 
 #[test]
@@ -2120,26 +2137,46 @@ fn effect_chain_multiple_impure_combines() {
     // map(impure_a) | filter(impure_b) → both effects combined.
     // Reusing should be rejected.
     let i = Interner::new();
-    let context = ctx(&i, &[("items", Ty::List(Box::new(Ty::Int))), ("a", Ty::Int), ("b", Ty::Int)]);
+    let context = ctx(
+        &i,
+        &[
+            ("items", Ty::List(Box::new(Ty::Int))),
+            ("a", Ty::Int),
+            ("b", Ty::Int),
+        ],
+    );
     let result = compile_script_ir(
         &i,
         r#"it = @items | iter | map(|x| -> { @a = x; x }) | filter(|x| -> { @b = x; x > 0 }); it | collect; it | collect"#,
         &context,
     );
-    assert!(result.is_err(), "chained impure iter reuse should be rejected: {result:?}");
+    assert!(
+        result.is_err(),
+        "chained impure iter reuse should be rejected: {result:?}"
+    );
 }
 
 #[test]
 fn effect_chain_multiple_impure_single_use_ok() {
     // Single use of chained impure should compile.
     let i = Interner::new();
-    let context = ctx(&i, &[("items", Ty::List(Box::new(Ty::Int))), ("a", Ty::Int), ("b", Ty::Int)]);
+    let context = ctx(
+        &i,
+        &[
+            ("items", Ty::List(Box::new(Ty::Int))),
+            ("a", Ty::Int),
+            ("b", Ty::Int),
+        ],
+    );
     let result = compile_script_ir(
         &i,
         r#"@items | iter | map(|x| -> { @a = x; x }) | filter(|x| -> { @b = x; x > 0 }) | collect"#,
         &context,
     );
-    assert!(result.is_ok(), "single use of chained impure should compile: {result:?}");
+    assert!(
+        result.is_ok(),
+        "single use of chained impure should compile: {result:?}"
+    );
 }
 
 #[test]
@@ -2154,7 +2191,10 @@ fn effect_pure_iter_is_reusable() {
         &context,
     );
     // UserDefined is always move-only, even when pure.
-    assert!(result.is_err(), "even pure UserDefined iter reuse should be rejected: {result:?}");
+    assert!(
+        result.is_err(),
+        "even pure UserDefined iter reuse should be rejected: {result:?}"
+    );
 }
 
 #[test]
@@ -2162,13 +2202,19 @@ fn effect_reject_collect_impure_reuse_after_collect() {
     // After collecting an impure iterator, the iterator variable is consumed (move-only).
     // Attempting to collect again from the same variable should fail with use-after-move.
     let i = Interner::new();
-    let context = ctx(&i, &[("items", Ty::List(Box::new(Ty::Int))), ("counter", Ty::Int)]);
+    let context = ctx(
+        &i,
+        &[("items", Ty::List(Box::new(Ty::Int))), ("counter", Ty::Int)],
+    );
     let result = compile_script_ir(
         &i,
         r#"it = @items | iter | map(|x| -> { @counter = x; x }); collected = it | collect; it | collect"#,
         &context,
     );
-    assert!(result.is_err(), "reuse of impure iter after collect should be rejected: {result:?}");
+    assert!(
+        result.is_err(),
+        "reuse of impure iter after collect should be rejected: {result:?}"
+    );
     assert!(
         has_use_after_move(&result.unwrap_err()),
         "expected use-after-move error"
@@ -2180,7 +2226,10 @@ fn effect_collect_result_is_reusable() {
     // The result of collect (List) should be freely reusable even when the source
     // iterator was impure. List is not move-only.
     let i = Interner::new();
-    let context = ctx(&i, &[("items", Ty::List(Box::new(Ty::Int))), ("counter", Ty::Int)]);
+    let context = ctx(
+        &i,
+        &[("items", Ty::List(Box::new(Ty::Int))), ("counter", Ty::Int)],
+    );
     let result = compile_script_ir(
         &i,
         r#"collected = @items | iter | map(|x| -> { @counter = x; x }) | collect; collected | len; collected | len"#,
@@ -2220,7 +2269,10 @@ fn has_use_after_move(err: &str) -> bool {
 #[test]
 fn migrated_move_reject_effectful_iter_reuse() {
     let i = Interner::new();
-    let context = ctx(&i, &[("items", Ty::List(Box::new(Ty::Int))), ("counter", Ty::Int)]);
+    let context = ctx(
+        &i,
+        &[("items", Ty::List(Box::new(Ty::Int))), ("counter", Ty::Int)],
+    );
     let result = compile_script_ir(
         &i,
         r#"x = @items | iter | map(|x| -> { @counter = x; x }); x | collect; x | collect"#,
@@ -2242,10 +2294,7 @@ fn migrated_move_reject_var_double_load() {
         "{{ a = @items | iter }}{{ a | collect | len | to_string }}{{ a | collect | len | to_string }}",
         &context,
     );
-    assert!(
-        result.is_err(),
-        "should reject var double load of iterator"
-    );
+    assert!(result.is_err(), "should reject var double load of iterator");
     assert!(
         has_use_after_move(&result.unwrap_err()),
         "expected use-after-move error"
@@ -2255,7 +2304,10 @@ fn migrated_move_reject_var_double_load() {
 #[test]
 fn migrated_move_reject_effectful_pipe_reuse() {
     let i = Interner::new();
-    let context = ctx(&i, &[("items", Ty::List(Box::new(Ty::Int))), ("counter", Ty::Int)]);
+    let context = ctx(
+        &i,
+        &[("items", Ty::List(Box::new(Ty::Int))), ("counter", Ty::Int)],
+    );
     let result = compile_script_ir(
         &i,
         r#"x = @items | iter | map(|x| -> { @counter = x; x }); a = x | collect; b = x | collect; a"#,
@@ -2291,7 +2343,10 @@ fn migrated_move_reject_pure_iter_reuse() {
 #[test]
 fn migrated_move_accept_effectful_single_use() {
     let i = Interner::new();
-    let context = ctx(&i, &[("items", Ty::List(Box::new(Ty::Int))), ("counter", Ty::Int)]);
+    let context = ctx(
+        &i,
+        &[("items", Ty::List(Box::new(Ty::Int))), ("counter", Ty::Int)],
+    );
     let result = compile_script_ir(
         &i,
         r#"x = @items | iter | map(|x| -> { @counter = x; x }); x | collect"#,
@@ -2306,7 +2361,10 @@ fn migrated_move_accept_effectful_single_use() {
 #[test]
 fn migrated_move_accept_collect_then_reuse() {
     let i = Interner::new();
-    let context = ctx(&i, &[("items", Ty::List(Box::new(Ty::Int))), ("counter", Ty::Int)]);
+    let context = ctx(
+        &i,
+        &[("items", Ty::List(Box::new(Ty::Int))), ("counter", Ty::Int)],
+    );
     let result = compile_script_ir(
         &i,
         r#"list = @items | iter | map(|x| -> { @counter = x; x }) | collect; a = list | len; b = list | len; a + b"#,
@@ -2323,7 +2381,10 @@ fn migrated_move_accept_var_reassign() {
     let i = Interner::new();
     let context = ctx(
         &i,
-        &[("items", Ty::List(Box::new(Ty::Int))), ("items2", Ty::List(Box::new(Ty::Int)))],
+        &[
+            ("items", Ty::List(Box::new(Ty::Int))),
+            ("items2", Ty::List(Box::new(Ty::Int))),
+        ],
     );
     let result = compile_to_ir(
         &i,
@@ -2336,7 +2397,10 @@ fn migrated_move_accept_var_reassign() {
 #[test]
 fn migrated_move_accept_effectful_pipe_chain() {
     let i = Interner::new();
-    let context = ctx(&i, &[("items", Ty::List(Box::new(Ty::Int))), ("counter", Ty::Int)]);
+    let context = ctx(
+        &i,
+        &[("items", Ty::List(Box::new(Ty::Int))), ("counter", Ty::Int)],
+    );
     let result = compile_script_ir(
         &i,
         r#"@items | iter | map(|x| -> { @counter = x; x }) | filter(|x| -> x > 0) | map(|x| -> x * 2) | collect"#,
@@ -2370,11 +2434,7 @@ fn migrated_move_reject_list_of_effectful_reuse() {
     let i = Interner::new();
     let ty = Ty::List(Box::new(eff_iter_ty(&i)));
     let context = ctx(&i, &[("src", ty)]);
-    let result = compile_script_ir(
-        &i,
-        "x = @src; a = x | len; b = x | len; a + b",
-        &context,
-    );
+    let result = compile_script_ir(&i, "x = @src; a = x | len; b = x | len; a + b", &context);
     assert!(
         result.is_err(),
         "List containing effectful should be move-only"
@@ -2397,7 +2457,10 @@ fn migrated_move_reject_option_effectful_reuse() {
 #[test]
 fn migrated_move_reject_branch_move_then_use() {
     let i = Interner::new();
-    let context = ctx(&i, &[("flag", Ty::Bool), ("items", Ty::List(Box::new(Ty::Int)))]);
+    let context = ctx(
+        &i,
+        &[("flag", Ty::Bool), ("items", Ty::List(Box::new(Ty::Int)))],
+    );
     let result = compile_to_ir(
         &i,
         "{{ a = @items | iter }}{{ true = @flag }}{{ a | collect | len | to_string }}{{_}}nothing{{/}}{{ a | collect | len | to_string }}",
@@ -2431,7 +2494,10 @@ fn migrated_move_reject_both_branches_move_then_use() {
 #[test]
 fn migrated_move_accept_branch_move_no_use_after() {
     let i = Interner::new();
-    let context = ctx(&i, &[("flag", Ty::Bool), ("items", Ty::List(Box::new(Ty::Int)))]);
+    let context = ctx(
+        &i,
+        &[("flag", Ty::Bool), ("items", Ty::List(Box::new(Ty::Int)))],
+    );
     let result = compile_to_ir(
         &i,
         "{{ a = @items | iter }}{{ true = @flag }}{{ a | collect | len | to_string }}{{_}}nothing{{/}}",
@@ -2536,10 +2602,7 @@ fn migrated_move_accept_nested_flat_map_deque_return() {
 #[test]
 fn migrated_move_accept_fnonce_passed_to_map() {
     let i = Interner::new();
-    let context = ctx(
-        &i,
-        &[("items", Ty::List(Box::new(Ty::Int)))],
-    );
+    let context = ctx(&i, &[("items", Ty::List(Box::new(Ty::Int)))]);
     let result = compile_script_ir(
         &i,
         "x = @items | iter; f = (|z| -> collect(x)); @items | map(f) | collect",
@@ -2609,4 +2672,356 @@ fn migrated_move_reject_effectful_var_without_purify() {
         result.is_err(),
         "effectful var without purify should be rejected"
     );
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Projection system: soundness & completeness
+// ══════════════════════════════════════════════════════════════════════
+
+// ── Completeness: valid programs accepted ───────────────────────────
+
+/// Variable whole read/write: `x = 42; x` — SSA promotion eliminates Ref/Load/Store.
+#[test]
+fn projection_var_whole_read_write() {
+    let i = Interner::new();
+    let ir = compile_script_ir(&i, "x = 42; x", &FxHashMap::default()).unwrap();
+    // After SSA: no Ref/Load/Store should remain (all promoted).
+    assert!(
+        !ir.contains("ref "),
+        "Ref should be eliminated by SSA: {ir}"
+    );
+    assert!(
+        !ir.contains("store"),
+        "Store should be eliminated by SSA: {ir}"
+    );
+    // The value should flow directly to return.
+    assert!(ir.contains("return"), "should have return: {ir}");
+}
+
+/// Variable read after multiple writes: `x = 1; x = 2; x` → SSA sees last def.
+#[test]
+fn projection_var_multiple_writes() {
+    let i = Interner::new();
+    let ir = compile_script_ir(&i, "x = 1; x = 2; x", &FxHashMap::default()).unwrap();
+    assert!(
+        !ir.contains("ref "),
+        "Ref should be eliminated by SSA: {ir}"
+    );
+}
+
+/// Context whole read: `@ctx` — volatile context preserves Ref+Load.
+#[test]
+fn projection_context_whole_read() {
+    let i = Interner::new();
+    let context = ctx(&i, &[("data", Ty::Int)]);
+    let ir = compile_script_ir(&i, "@data", &context).unwrap();
+    // Non-volatile context: SSA should forward the entry load value.
+    // Ref/Load from entry may remain or be forwarded — just verify it compiles + returns.
+    assert!(ir.contains("return"), "should have return: {ir}");
+}
+
+/// Context field read: `@obj.name` — 1-depth Ref with field.
+#[test]
+fn projection_context_field_read() {
+    let i = Interner::new();
+    let context = ctx(&i, &[("obj", obj(&i, &[("name", Ty::String)]))]);
+    let ir = compile_script_ir(&i, "@obj.name", &context).unwrap();
+    // Should have a field ref (Ref with field) or SSA-forwarded result.
+    assert!(ir.contains("return"), "should compile and return: {ir}");
+}
+
+/// Context field write: `@obj = { name: "test" }` — whole context store.
+#[test]
+fn projection_context_whole_write() {
+    let i = Interner::new();
+    let context = ctx(&i, &[("out", Ty::String)]);
+    let ir = compile_to_ir(&i, r#"{{ @out = "hello" }}"#, &context).unwrap();
+    // Context store should produce Store instruction (may remain after SSA for write-back).
+    assert!(
+        ir.contains("store"),
+        "should have context store in IR: {ir}"
+    );
+}
+
+/// Chained field access: `@obj.a.b` — Ref(@obj, "a") + Load + FieldGet("b").
+#[test]
+fn projection_chained_field_access_2depth() {
+    let i = Interner::new();
+    let inner = obj(&i, &[("b", Ty::Int)]);
+    let context = ctx(&i, &[("obj", obj(&i, &[("a", inner)]))]);
+    let ir = compile_script_ir(&i, "@obj.a.b | to_string", &context).unwrap();
+    // Should have field access for .b (either as FieldGet or via Ref).
+    assert!(ir.contains(".b"), "should access field b: {ir}");
+    assert!(ir.contains("return"), "should compile and return: {ir}");
+}
+
+/// Variable used in arithmetic after assignment: `x = @val; x + 1`.
+#[test]
+fn projection_var_in_arithmetic() {
+    let i = Interner::new();
+    let context = ctx(&i, &[("val", Ty::Int)]);
+    let ir = compile_script_ir(&i, "x = @val; x + 1", &context).unwrap();
+    // SSA should promote x — no Ref for x should remain.
+    assert!(ir.contains("+"), "should have addition: {ir}");
+    assert!(ir.contains("return"), "should compile and return: {ir}");
+}
+
+/// Lambda captures variable: `x = @data; |y| -> x + y`.
+#[test]
+fn projection_lambda_capture() {
+    let i = Interner::new();
+    let context = ctx(&i, &[("data", Ty::Int)]);
+    let ir = compile_script_ir(&i, "x = @data; |y| -> x + y", &context).unwrap();
+    assert!(ir.contains("closure"), "should have closure: {ir}");
+    assert!(ir.contains("return"), "should compile and return: {ir}");
+}
+
+/// ExternParam read: `$param` — should compile (immutable, Ref+Load).
+#[test]
+fn projection_param_read() {
+    let i = Interner::new();
+    let ir = compile_to_ir(
+        &i,
+        "{{ $count | to_string }}",
+        &FxHashMap::from_iter([(i.intern("count"), Ty::Int)]),
+    )
+    .unwrap();
+    assert!(ir.contains("return"), "should compile and return: {ir}");
+}
+
+// ── Soundness: invalid programs rejected ────────────────────────────
+
+/// Store non-materializable (Fn) to context → must be rejected.
+#[test]
+fn projection_soundness_reject_fn_in_context() {
+    let i = Interner::new();
+    let fn_ty = Ty::Fn {
+        params: vec![acvus_mir::ty::Param::new(i.intern("x"), Ty::Int)],
+        ret: Box::new(Ty::Int),
+        captures: vec![],
+        effect: acvus_mir::ty::Effect::pure(),
+    };
+    let context = ctx(&i, &[("f", fn_ty)]);
+    let result = compile_script_ir(&i, "@f = @f; @f", &context);
+    assert!(result.is_err(), "storing Fn to context should fail");
+}
+
+/// Store non-materializable (List<Fn>) to context → must be rejected.
+#[test]
+fn projection_soundness_reject_list_fn_in_context() {
+    let i = Interner::new();
+    let fn_ty = Ty::Fn {
+        params: vec![acvus_mir::ty::Param::new(i.intern("x"), Ty::Int)],
+        ret: Box::new(Ty::Int),
+        captures: vec![],
+        effect: acvus_mir::ty::Effect::pure(),
+    };
+    let context = ctx(&i, &[("xs", Ty::List(Box::new(fn_ty)))]);
+    let result = compile_script_ir(&i, "@xs = @xs; @xs", &context);
+    assert!(result.is_err(), "storing List<Fn> to context should fail");
+}
+
+/// Write to ExternParam → must be rejected (typeck catches this).
+#[test]
+fn projection_soundness_reject_param_write() {
+    let i = Interner::new();
+    let result = compile_to_ir(
+        &i,
+        "{{ $count = 42 }}",
+        &FxHashMap::from_iter([(i.intern("count"), Ty::Int)]),
+    );
+    assert!(result.is_err(), "writing to ExternParam should fail");
+}
+
+// ── SSA correctness: promotion & volatile ───────────────────────────
+
+/// Non-volatile variable: SSA promotion eliminates Ref/Load/Store.
+#[test]
+fn projection_ssa_var_promoted() {
+    let i = Interner::new();
+    let ir = compile_script_ir(&i, "x = 1; y = x + 2; y", &FxHashMap::default()).unwrap();
+    // All Ref/Load/Store for x and y should be eliminated.
+    assert!(
+        !ir.contains("ref "),
+        "var Ref should be promoted away: {ir}"
+    );
+    assert!(
+        !ir.contains("store "),
+        "var Store should be promoted away: {ir}"
+    );
+}
+
+/// Context read-then-write: SSA should preserve context Store (write-back).
+#[test]
+fn projection_ssa_context_write_back() {
+    let i = Interner::new();
+    let context = ctx(&i, &[("count", Ty::Int)]);
+    let ir = compile_script_ir(&i, "@count = @count + 1; @count", &context).unwrap();
+    // Context write-back Store should remain in the IR.
+    assert!(
+        ir.contains("store"),
+        "context write-back store should remain: {ir}"
+    );
+}
+
+/// Move-only value through variable: single use accepted.
+#[test]
+fn projection_move_single_use() {
+    let i = Interner::new();
+    let context = ctx(&i, &[("items", Ty::List(Box::new(Ty::Int)))]);
+    let ir = compile_to_ir(
+        &i,
+        r#"{{ x = @items | iter }}{{ x | collect | len | to_string }}"#,
+        &context,
+    )
+    .unwrap();
+    assert!(
+        ir.contains("return"),
+        "single use of move-only should compile: {ir}"
+    );
+}
+
+/// Move-only value through variable: reassignment revives.
+#[test]
+fn projection_move_var_reassign_revives() {
+    let i = Interner::new();
+    let context = ctx(&i, &[("items", Ty::List(Box::new(Ty::Int)))]);
+    let ir = compile_to_ir(
+        &i,
+        r#"{{ x = @items | iter }}{{ x | collect | len | to_string }}{{ x = @items | iter }}{{ x | collect | len | to_string }}"#,
+        &context,
+    ).unwrap();
+    assert!(
+        ir.contains("return"),
+        "var reassign should revive move-only: {ir}"
+    );
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// SROA: field projection decomposition
+// ══════════════════════════════════════════════════════════════════════
+
+// ── Completeness: valid field access patterns ───────────────────────
+
+#[test]
+fn sroa_context_field_read_1depth() {
+    let i = Interner::new();
+    let context = ctx(&i, &[("obj", obj(&i, &[("name", Ty::String)]))]);
+    let ir = compile_script_ir(&i, "@obj.name", &context).unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn sroa_context_field_read_2depth() {
+    let i = Interner::new();
+    let inner = obj(&i, &[("b", Ty::Int)]);
+    let context = ctx(&i, &[("obj", obj(&i, &[("a", inner)]))]);
+    let ir = compile_script_ir(&i, "@obj.a.b | to_string", &context).unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn sroa_context_field_read_3depth() {
+    let i = Interner::new();
+    let c = obj(&i, &[("c", Ty::Int)]);
+    let b = obj(&i, &[("b", c)]);
+    let context = ctx(&i, &[("obj", obj(&i, &[("a", b)]))]);
+    let ir = compile_script_ir(&i, "@obj.a.b.c | to_string", &context).unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn sroa_field_read_arithmetic() {
+    let i = Interner::new();
+    let context = ctx(&i, &[("obj", obj(&i, &[("val", Ty::Int)]))]);
+    let ir = compile_script_ir(&i, "@obj.val + 1", &context).unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn sroa_multiple_field_reads_same_object() {
+    let i = Interner::new();
+    let context = ctx(&i, &[("obj", obj(&i, &[("x", Ty::Int), ("y", Ty::Int)]))]);
+    let ir = compile_script_ir(&i, "@obj.x + @obj.y", &context).unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn sroa_field_read_in_lambda() {
+    let i = Interner::new();
+    let context = ctx(
+        &i,
+        &[(
+            "users",
+            Ty::List(Box::new(obj(&i, &[("name", Ty::String)]))),
+        )],
+    );
+    let ir = compile_to_ir(
+        &i,
+        r#"{{ @users | iter | map(|u| -> u.name) | collect | join(",") }}"#,
+        &context,
+    )
+    .unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+// ── Soundness ───────────────────────────────────────────────────────
+
+#[test]
+fn sroa_soundness_context_write_back_preserved() {
+    let i = Interner::new();
+    let context = ctx(&i, &[("count", Ty::Int)]);
+    let ir = compile_script_ir(&i, "@count = @count + 1; @count", &context).unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn sroa_soundness_reject_fn_in_context() {
+    let i = Interner::new();
+    let fn_ty = Ty::Fn {
+        params: vec![acvus_mir::ty::Param::new(i.intern("x"), Ty::Int)],
+        ret: Box::new(Ty::Int),
+        captures: vec![],
+        effect: acvus_mir::ty::Effect::pure(),
+    };
+    let context = ctx(&i, &[("f", fn_ty)]);
+    let result = compile_script_ir(&i, "@f = @f; @f", &context);
+    assert!(
+        result.is_err(),
+        "storing Fn to context should fail even with SROA"
+    );
+}
+
+// ── Context destructure chain ───────────────────────────────────────
+
+#[test]
+fn sroa_context_destructure_field_to_context() {
+    let i = Interner::new();
+    let context = ctx(&i, &[("b", obj(&i, &[("x", Ty::Int)])), ("a", Ty::Int)]);
+    let ir = compile_script_ir(&i, "@a = @b.x; @a", &context).unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn sroa_context_chain_destructure() {
+    let i = Interner::new();
+    let inner = obj(&i, &[("val", Ty::Int)]);
+    let context = ctx(
+        &i,
+        &[
+            ("b", obj(&i, &[("a", inner.clone())])),
+            ("a", inner),
+            ("c", Ty::Int),
+        ],
+    );
+    let ir = compile_script_ir(&i, "@a = @b.a; @c = @a.val; @c", &context).unwrap();
+    insta::assert_snapshot!(ir);
+}
+
+#[test]
+fn sroa_context_destructure_then_overwrite() {
+    let i = Interner::new();
+    let context = ctx(&i, &[("b", obj(&i, &[("x", Ty::Int)])), ("a", Ty::Int)]);
+    let ir = compile_script_ir(&i, "@a = @b.x; @a = 0; @a", &context).unwrap();
+    insta::assert_snapshot!(ir);
 }

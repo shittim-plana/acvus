@@ -23,10 +23,10 @@
 
 use std::collections::VecDeque;
 
-use crate::cfg::{BlockIdx, CfgBody, Terminator, promote};
 use crate::analysis::dataflow::{DataflowResult, DataflowState, forward_analysis};
 use crate::analysis::domain::AbstractValue;
 use crate::analysis::value_transfer::ValueDomainTransfer;
+use crate::cfg::{BlockIdx, CfgBody, Terminator, promote};
 use crate::graph::QualifiedRef;
 use crate::ir::{InstKind, MirModule, ValueId};
 use acvus_ast::Literal;
@@ -85,7 +85,11 @@ pub fn partition_context_keys(
     // (closures may be called from any reachable point).
     for closure in module.closures.values() {
         for inst in &closure.insts {
-            if let InstKind::ContextProject { ctx, .. } = &inst.kind {
+            if let InstKind::Ref {
+                target: crate::ir::RefTarget::Context(ctx),
+                ..
+            } = &inst.kind
+            {
                 if known.contains_key(ctx) {
                     partition.reachable_known.insert(*ctx);
                 } else {
@@ -162,11 +166,20 @@ fn compute_reach(
         let block_reach = resolve_merge_upgrade(idx, block, cfg, &mut reach);
 
         match &block.terminator {
-            Terminator::JumpIf { cond, then_label, else_label, .. } => {
+            Terminator::JumpIf {
+                cond,
+                then_label,
+                else_label,
+                ..
+            } => {
                 let verdict = value_result.block_exit[idx].get(*cond).as_definite_bool();
                 match verdict {
-                    Some(true) => propagate_to(*then_label, block_reach, cfg, &mut reach, &mut queue),
-                    Some(false) => propagate_to(*else_label, block_reach, cfg, &mut reach, &mut queue),
+                    Some(true) => {
+                        propagate_to(*then_label, block_reach, cfg, &mut reach, &mut queue)
+                    }
+                    Some(false) => {
+                        propagate_to(*else_label, block_reach, cfg, &mut reach, &mut queue)
+                    }
                     None => {
                         propagate_to(*then_label, Reach::Conditional, cfg, &mut reach, &mut queue);
                         propagate_to(*else_label, Reach::Conditional, cfg, &mut reach, &mut queue);
@@ -226,7 +239,7 @@ fn propagate_to(
 
 // ── Context key collection ─────────────────────────────────────────
 
-/// Walk all blocks, classify each ContextProject by its block's reach level.
+/// Walk all blocks, classify each Ref(Context) by its block's reach level.
 fn collect_context_keys(
     cfg: &CfgBody,
     reach: &[Reach],
@@ -237,7 +250,11 @@ fn collect_context_keys(
         let block_reach = reach[bi];
 
         for inst in &block.insts {
-            let InstKind::ContextProject { ctx, .. } = &inst.kind else {
+            let InstKind::Ref {
+                target: crate::ir::RefTarget::Context(ctx),
+                ..
+            } = &inst.kind
+            else {
                 continue;
             };
 
@@ -277,8 +294,8 @@ mod tests {
             main: MirBody {
                 insts,
                 val_types: FxHashMap::default(),
-                param_regs: Vec::new(),
-                capture_regs: Vec::new(),
+                params: Vec::new(),
+                captures: Vec::new(),
                 debug: DebugInfo::new(),
                 val_factory: LocalFactory::new(),
                 label_count: 0,
@@ -319,8 +336,16 @@ mod tests {
         let v0 = vf.next();
         let v1 = vf.next();
         let module = make_module(vec![
-            inst(InstKind::ContextProject { dst: v0, ctx: id0 , volatile: false }),
-            inst(InstKind::ContextProject { dst: v1, ctx: id1 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v0,
+                target: crate::ir::RefTarget::Context(id0),
+                field: None,
+            }),
+            inst(InstKind::Ref {
+                dst: v1,
+                target: crate::ir::RefTarget::Context(id1),
+                field: None,
+            }),
         ]);
         let needed = reachable_context_keys(&module, &FxHashMap::default());
         assert_eq!(needed, FxHashSet::from_iter([id0, id1]));
@@ -335,8 +360,16 @@ mod tests {
         let v0 = vf.next();
         let v1 = vf.next();
         let module = make_module(vec![
-            inst(InstKind::ContextProject { dst: v0, ctx: id0 , volatile: false }),
-            inst(InstKind::ContextProject { dst: v1, ctx: id1 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v0,
+                target: crate::ir::RefTarget::Context(id0),
+                field: None,
+            }),
+            inst(InstKind::Ref {
+                dst: v1,
+                target: crate::ir::RefTarget::Context(id1),
+                field: None,
+            }),
         ]);
         let known =
             FxHashMap::from_iter([(id0, KnownValue::Literal(Literal::String("alice".into())))]);
@@ -356,7 +389,11 @@ mod tests {
         let v2 = vf.next();
         let v3 = vf.next();
         let module = make_module(vec![
-            inst(InstKind::ContextProject { dst: v0, ctx: id0 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v0,
+                target: crate::ir::RefTarget::Context(id0),
+                field: None,
+            }),
             inst(InstKind::TestLiteral {
                 dst: v1,
                 src: v0,
@@ -374,14 +411,22 @@ mod tests {
                 params: vec![],
                 merge_of: None,
             }),
-            inst(InstKind::ContextProject { dst: v2, ctx: id1 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v2,
+                target: crate::ir::RefTarget::Context(id1),
+                field: None,
+            }),
             inst(InstKind::Return(v2)),
             inst(InstKind::BlockLabel {
                 label: Label(2),
                 params: vec![],
                 merge_of: None,
             }),
-            inst(InstKind::ContextProject { dst: v3, ctx: id2 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v3,
+                target: crate::ir::RefTarget::Context(id2),
+                field: None,
+            }),
             inst(InstKind::Return(v3)),
         ]);
 
@@ -406,7 +451,11 @@ mod tests {
         let v2 = vf.next();
         let v3 = vf.next();
         let module = make_module(vec![
-            inst(InstKind::ContextProject { dst: v0, ctx: id0 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v0,
+                target: crate::ir::RefTarget::Context(id0),
+                field: None,
+            }),
             inst(InstKind::TestLiteral {
                 dst: v1,
                 src: v0,
@@ -424,14 +473,22 @@ mod tests {
                 params: vec![],
                 merge_of: None,
             }),
-            inst(InstKind::ContextProject { dst: v2, ctx: id1 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v2,
+                target: crate::ir::RefTarget::Context(id1),
+                field: None,
+            }),
             inst(InstKind::Return(v2)),
             inst(InstKind::BlockLabel {
                 label: Label(2),
                 params: vec![],
                 merge_of: None,
             }),
-            inst(InstKind::ContextProject { dst: v3, ctx: id2 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v3,
+                target: crate::ir::RefTarget::Context(id2),
+                field: None,
+            }),
             inst(InstKind::Return(v3)),
         ]);
 
@@ -455,7 +512,11 @@ mod tests {
         let v2 = vf.next();
         let v3 = vf.next();
         let module = make_module(vec![
-            inst(InstKind::ContextProject { dst: v0, ctx: id0 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v0,
+                target: crate::ir::RefTarget::Context(id0),
+                field: None,
+            }),
             inst(InstKind::TestLiteral {
                 dst: v1,
                 src: v0,
@@ -473,14 +534,22 @@ mod tests {
                 params: vec![],
                 merge_of: None,
             }),
-            inst(InstKind::ContextProject { dst: v2, ctx: id1 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v2,
+                target: crate::ir::RefTarget::Context(id1),
+                field: None,
+            }),
             inst(InstKind::Return(v2)),
             inst(InstKind::BlockLabel {
                 label: Label(2),
                 params: vec![],
                 merge_of: None,
             }),
-            inst(InstKind::ContextProject { dst: v3, ctx: id2 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v3,
+                target: crate::ir::RefTarget::Context(id2),
+                field: None,
+            }),
             inst(InstKind::Return(v3)),
         ]);
 
@@ -504,7 +573,11 @@ mod tests {
         let v2 = vf.next();
         let v3 = vf.next();
         let module = make_module(vec![
-            inst(InstKind::ContextProject { dst: v0, ctx: id0 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v0,
+                target: crate::ir::RefTarget::Context(id0),
+                field: None,
+            }),
             inst(InstKind::TestLiteral {
                 dst: v1,
                 src: v0,
@@ -522,7 +595,11 @@ mod tests {
                 params: vec![],
                 merge_of: None,
             }),
-            inst(InstKind::ContextProject { dst: v2, ctx: id1 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v2,
+                target: crate::ir::RefTarget::Context(id1),
+                field: None,
+            }),
             inst(InstKind::Jump {
                 label: Label(0),
                 args: vec![],
@@ -532,7 +609,11 @@ mod tests {
                 params: vec![],
                 merge_of: None,
             }),
-            inst(InstKind::ContextProject { dst: v3, ctx: id2 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v3,
+                target: crate::ir::RefTarget::Context(id2),
+                field: None,
+            }),
             inst(InstKind::Jump {
                 label: Label(0),
                 args: vec![],
@@ -564,7 +645,11 @@ mod tests {
         let v2 = vf.next();
         let v3 = vf.next();
         let module = make_module(vec![
-            inst(InstKind::ContextProject { dst: v0, ctx: id0 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v0,
+                target: crate::ir::RefTarget::Context(id0),
+                field: None,
+            }),
             inst(InstKind::TestRange {
                 dst: v1,
                 src: v0,
@@ -584,14 +669,22 @@ mod tests {
                 params: vec![],
                 merge_of: None,
             }),
-            inst(InstKind::ContextProject { dst: v2, ctx: id1 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v2,
+                target: crate::ir::RefTarget::Context(id1),
+                field: None,
+            }),
             inst(InstKind::Return(v2)),
             inst(InstKind::BlockLabel {
                 label: Label(2),
                 params: vec![],
                 merge_of: None,
             }),
-            inst(InstKind::ContextProject { dst: v3, ctx: id2 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v3,
+                target: crate::ir::RefTarget::Context(id2),
+                field: None,
+            }),
             inst(InstKind::Return(v3)),
         ]);
 
@@ -617,7 +710,11 @@ mod tests {
         let v4 = vf.next();
         let v5 = vf.next();
         let module = make_module(vec![
-            inst(InstKind::ContextProject { dst: v0, ctx: id0 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v0,
+                target: crate::ir::RefTarget::Context(id0),
+                field: None,
+            }),
             inst(InstKind::TestLiteral {
                 dst: v1,
                 src: v0,
@@ -635,7 +732,11 @@ mod tests {
                 params: vec![],
                 merge_of: None,
             }),
-            inst(InstKind::ContextProject { dst: v2, ctx: id1 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v2,
+                target: crate::ir::RefTarget::Context(id1),
+                field: None,
+            }),
             inst(InstKind::Jump {
                 label: Label(99),
                 args: vec![],
@@ -662,7 +763,11 @@ mod tests {
                 params: vec![],
                 merge_of: None,
             }),
-            inst(InstKind::ContextProject { dst: v4, ctx: id2 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v4,
+                target: crate::ir::RefTarget::Context(id2),
+                field: None,
+            }),
             inst(InstKind::Jump {
                 label: Label(99),
                 args: vec![],
@@ -672,7 +777,11 @@ mod tests {
                 params: vec![],
                 merge_of: None,
             }),
-            inst(InstKind::ContextProject { dst: v5, ctx: id3 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v5,
+                target: crate::ir::RefTarget::Context(id3),
+                field: None,
+            }),
             inst(InstKind::Jump {
                 label: Label(99),
                 args: vec![],
@@ -698,8 +807,8 @@ mod tests {
             main: MirBody {
                 insts,
                 val_types,
-                param_regs: Vec::new(),
-                capture_regs: Vec::new(),
+                params: Vec::new(),
+                captures: Vec::new(),
                 debug: DebugInfo::new(),
                 val_factory: LocalFactory::new(),
                 label_count: 0,
@@ -738,8 +847,12 @@ mod tests {
 
         let module = make_module_with_types(
             vec![
-                // %0 = ContextLoad "val"
-                inst(InstKind::ContextProject { dst: v0, ctx: id0 , volatile: false }),
+                // %0 = Load "val"
+                inst(InstKind::Ref {
+                    dst: v0,
+                    target: crate::ir::RefTarget::Context(id0),
+                    field: None,
+                }),
                 // %1 = TestVariant(%0, "D")  -- D not in {A,B,C} -> always false
                 inst(InstKind::TestVariant {
                     dst: v1,
@@ -759,7 +872,11 @@ mod tests {
                     params: vec![],
                     merge_of: None,
                 }),
-                inst(InstKind::ContextProject { dst: v2, ctx: id1 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v2,
+                    target: crate::ir::RefTarget::Context(id1),
+                    field: None,
+                }),
                 inst(InstKind::Jump {
                     label: Label(99),
                     args: vec![],
@@ -770,7 +887,11 @@ mod tests {
                     params: vec![],
                     merge_of: None,
                 }),
-                inst(InstKind::ContextProject { dst: v3, ctx: id2 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v3,
+                    target: crate::ir::RefTarget::Context(id2),
+                    field: None,
+                }),
                 inst(InstKind::Jump {
                     label: Label(99),
                     args: vec![],
@@ -818,7 +939,11 @@ mod tests {
 
         let module = make_module_with_types(
             vec![
-                inst(InstKind::ContextProject { dst: v0, ctx: id0 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v0,
+                    target: crate::ir::RefTarget::Context(id0),
+                    field: None,
+                }),
                 inst(InstKind::TestVariant {
                     dst: v1,
                     src: v0,
@@ -836,14 +961,22 @@ mod tests {
                     params: vec![],
                     merge_of: None,
                 }),
-                inst(InstKind::ContextProject { dst: v2, ctx: id1 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v2,
+                    target: crate::ir::RefTarget::Context(id1),
+                    field: None,
+                }),
                 inst(InstKind::Return(v2)),
                 inst(InstKind::BlockLabel {
                     label: Label(2),
                     params: vec![],
                     merge_of: None,
                 }),
-                inst(InstKind::ContextProject { dst: v3, ctx: id2 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v3,
+                    target: crate::ir::RefTarget::Context(id2),
+                    field: None,
+                }),
                 inst(InstKind::Return(v3)),
             ],
             val_types,
@@ -892,7 +1025,11 @@ mod tests {
 
         let module = make_module_with_types(
             vec![
-                inst(InstKind::ContextProject { dst: v0, ctx: id0 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v0,
+                    target: crate::ir::RefTarget::Context(id0),
+                    field: None,
+                }),
                 // TestVariant A
                 inst(InstKind::TestVariant {
                     dst: v1,
@@ -912,7 +1049,11 @@ mod tests {
                     params: vec![],
                     merge_of: None,
                 }),
-                inst(InstKind::ContextProject { dst: v2, ctx: id1 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v2,
+                    target: crate::ir::RefTarget::Context(id1),
+                    field: None,
+                }),
                 inst(InstKind::Jump {
                     label: Label(99),
                     args: vec![],
@@ -941,7 +1082,11 @@ mod tests {
                     params: vec![],
                     merge_of: None,
                 }),
-                inst(InstKind::ContextProject { dst: v4, ctx: id2 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v4,
+                    target: crate::ir::RefTarget::Context(id2),
+                    field: None,
+                }),
                 inst(InstKind::Jump {
                     label: Label(99),
                     args: vec![],
@@ -952,7 +1097,11 @@ mod tests {
                     params: vec![],
                     merge_of: None,
                 }),
-                inst(InstKind::ContextProject { dst: v5, ctx: id3 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v5,
+                    target: crate::ir::RefTarget::Context(id3),
+                    field: None,
+                }),
                 inst(InstKind::Jump {
                     label: Label(99),
                     args: vec![],
@@ -1010,7 +1159,11 @@ mod tests {
 
         let module = make_module_with_types(
             vec![
-                inst(InstKind::ContextProject { dst: v0, ctx: id0 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v0,
+                    target: crate::ir::RefTarget::Context(id0),
+                    field: None,
+                }),
                 // Test A
                 inst(InstKind::TestVariant {
                     dst: v1,
@@ -1030,7 +1183,11 @@ mod tests {
                     params: vec![],
                     merge_of: None,
                 }),
-                inst(InstKind::ContextProject { dst: v2, ctx: id1 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v2,
+                    target: crate::ir::RefTarget::Context(id1),
+                    field: None,
+                }),
                 inst(InstKind::Jump {
                     label: Label(99),
                     args: vec![],
@@ -1059,7 +1216,11 @@ mod tests {
                     params: vec![],
                     merge_of: None,
                 }),
-                inst(InstKind::ContextProject { dst: v4, ctx: id2 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v4,
+                    target: crate::ir::RefTarget::Context(id2),
+                    field: None,
+                }),
                 inst(InstKind::Jump {
                     label: Label(99),
                     args: vec![],
@@ -1070,7 +1231,11 @@ mod tests {
                     params: vec![],
                     merge_of: None,
                 }),
-                inst(InstKind::ContextProject { dst: v5, ctx: id3 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v5,
+                    target: crate::ir::RefTarget::Context(id3),
+                    field: None,
+                }),
                 inst(InstKind::Jump {
                     label: Label(99),
                     args: vec![],
@@ -1134,10 +1299,16 @@ mod tests {
         let module = make_module_with_types(
             vec![
                 // Eager load before any branch
-                inst(InstKind::ContextProject {
+                inst(InstKind::Ref {
                     dst: v_pre,
-                    ctx: id10, volatile: false }),
-                inst(InstKind::ContextProject { dst: v0, ctx: id0 , volatile: false }),
+                    target: crate::ir::RefTarget::Context(id10),
+                    field: None,
+                }),
+                inst(InstKind::Ref {
+                    dst: v0,
+                    target: crate::ir::RefTarget::Context(id0),
+                    field: None,
+                }),
                 inst(InstKind::TestVariant {
                     dst: v1,
                     src: v0,
@@ -1155,14 +1326,22 @@ mod tests {
                     params: vec![],
                     merge_of: None,
                 }),
-                inst(InstKind::ContextProject { dst: v2, ctx: id1 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v2,
+                    target: crate::ir::RefTarget::Context(id1),
+                    field: None,
+                }),
                 inst(InstKind::Return(v2)),
                 inst(InstKind::BlockLabel {
                     label: Label(20),
                     params: vec![],
                     merge_of: None,
                 }),
-                inst(InstKind::ContextProject { dst: v3, ctx: id2 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v3,
+                    target: crate::ir::RefTarget::Context(id2),
+                    field: None,
+                }),
                 inst(InstKind::Return(v3)),
             ],
             val_types,
@@ -1211,7 +1390,11 @@ mod tests {
         let module = make_module_with_types(
             vec![
                 // Entry: load scrutinee then jump to first test
-                inst(InstKind::ContextProject { dst: v0, ctx: id0 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v0,
+                    target: crate::ir::RefTarget::Context(id0),
+                    field: None,
+                }),
                 inst(InstKind::Jump {
                     label: Label(1),
                     args: vec![],
@@ -1240,7 +1423,11 @@ mod tests {
                     params: vec![],
                     merge_of: None,
                 }),
-                inst(InstKind::ContextProject { dst: v2, ctx: id1 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v2,
+                    target: crate::ir::RefTarget::Context(id1),
+                    field: None,
+                }),
                 inst(InstKind::Jump {
                     label: Label(99),
                     args: vec![],
@@ -1251,7 +1438,11 @@ mod tests {
                     params: vec![],
                     merge_of: None,
                 }),
-                inst(InstKind::ContextProject { dst: v3, ctx: id2 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v3,
+                    target: crate::ir::RefTarget::Context(id2),
+                    field: None,
+                }),
                 inst(InstKind::Jump {
                     label: Label(99),
                     args: vec![],
@@ -1262,7 +1453,11 @@ mod tests {
                     params: vec![],
                     merge_of: Some(Label(1)),
                 }),
-                inst(InstKind::ContextProject { dst: v4, ctx: id3 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v4,
+                    target: crate::ir::RefTarget::Context(id3),
+                    field: None,
+                }),
                 inst(InstKind::Return(v4)),
             ],
             val_types,
@@ -1320,7 +1515,11 @@ mod tests {
         let module = make_module_with_types(
             vec![
                 // Entry: unknown branch -> the match is only conditionally reachable
-                inst(InstKind::ContextProject { dst: v0, ctx: id0 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v0,
+                    target: crate::ir::RefTarget::Context(id0),
+                    field: None,
+                }),
                 inst(InstKind::TestLiteral {
                     dst: v1,
                     src: v0,
@@ -1339,7 +1538,11 @@ mod tests {
                     params: vec![],
                     merge_of: None,
                 }),
-                inst(InstKind::ContextProject { dst: v10, ctx: id1 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v10,
+                    target: crate::ir::RefTarget::Context(id1),
+                    field: None,
+                }),
                 inst(InstKind::TestVariant {
                     dst: v11,
                     src: v10,
@@ -1358,7 +1561,11 @@ mod tests {
                     params: vec![],
                     merge_of: None,
                 }),
-                inst(InstKind::ContextProject { dst: v12, ctx: id2 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v12,
+                    target: crate::ir::RefTarget::Context(id2),
+                    field: None,
+                }),
                 inst(InstKind::Jump {
                     label: Label(99),
                     args: vec![],
@@ -1369,7 +1576,11 @@ mod tests {
                     params: vec![],
                     merge_of: None,
                 }),
-                inst(InstKind::ContextProject { dst: v13, ctx: id3 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v13,
+                    target: crate::ir::RefTarget::Context(id3),
+                    field: None,
+                }),
                 inst(InstKind::Jump {
                     label: Label(99),
                     args: vec![],
@@ -1380,7 +1591,11 @@ mod tests {
                     params: vec![],
                     merge_of: Some(Label(1)),
                 }),
-                inst(InstKind::ContextProject { dst: v14, ctx: id4 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v14,
+                    target: crate::ir::RefTarget::Context(id4),
+                    field: None,
+                }),
                 inst(InstKind::Jump {
                     label: Label(50),
                     args: vec![],
@@ -1443,8 +1658,12 @@ mod tests {
 
         let module = make_module_with_types(
             vec![
-                // %0 = ContextLoad "Output"
-                inst(InstKind::ContextProject { dst: v0, ctx: id0 , volatile: false }),
+                // %0 = Load "Output"
+                inst(InstKind::Ref {
+                    dst: v0,
+                    target: crate::ir::RefTarget::Context(id0),
+                    field: None,
+                }),
                 // Test Normal
                 inst(InstKind::TestVariant {
                     dst: v1,
@@ -1464,7 +1683,11 @@ mod tests {
                     params: vec![],
                     merge_of: None,
                 }),
-                inst(InstKind::ContextProject { dst: v2, ctx: id1 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v2,
+                    target: crate::ir::RefTarget::Context(id1),
+                    field: None,
+                }),
                 inst(InstKind::Jump {
                     label: Label(99),
                     args: vec![],
@@ -1475,7 +1698,11 @@ mod tests {
                     params: vec![],
                     merge_of: None,
                 }),
-                inst(InstKind::ContextProject { dst: v3, ctx: id2 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v3,
+                    target: crate::ir::RefTarget::Context(id2),
+                    field: None,
+                }),
                 inst(InstKind::Jump {
                     label: Label(99),
                     args: vec![],
@@ -1486,7 +1713,11 @@ mod tests {
                     params: vec![],
                     merge_of: Some(Label(10)),
                 }),
-                inst(InstKind::ContextProject { dst: v4, ctx: id3 , volatile: false }),
+                inst(InstKind::Ref {
+                    dst: v4,
+                    target: crate::ir::RefTarget::Context(id3),
+                    field: None,
+                }),
             ],
             val_types,
         );
@@ -1535,8 +1766,16 @@ mod tests {
         let v12 = vf.next();
         let module = make_module(vec![
             // Pack two known context values into a tuple
-            inst(InstKind::ContextProject { dst: v0, ctx: id0 , volatile: false }),
-            inst(InstKind::ContextProject { dst: v1, ctx: id1 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v0,
+                target: crate::ir::RefTarget::Context(id0),
+                field: None,
+            }),
+            inst(InstKind::Ref {
+                dst: v1,
+                target: crate::ir::RefTarget::Context(id1),
+                field: None,
+            }),
             inst(InstKind::MakeTuple {
                 dst: v2,
                 elements: vec![v0, v1],
@@ -1566,7 +1805,11 @@ mod tests {
                 params: vec![],
                 merge_of: None,
             }),
-            inst(InstKind::ContextProject { dst: v10, ctx: id2 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v10,
+                target: crate::ir::RefTarget::Context(id2),
+                field: None,
+            }),
             inst(InstKind::Jump {
                 label: Label(99),
                 args: vec![],
@@ -1595,7 +1838,11 @@ mod tests {
                 params: vec![],
                 merge_of: None,
             }),
-            inst(InstKind::ContextProject { dst: v11, ctx: id3 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v11,
+                target: crate::ir::RefTarget::Context(id3),
+                field: None,
+            }),
             inst(InstKind::Jump {
                 label: Label(99),
                 args: vec![],
@@ -1606,7 +1853,11 @@ mod tests {
                 params: vec![],
                 merge_of: None,
             }),
-            inst(InstKind::ContextProject { dst: v12, ctx: id4 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v12,
+                target: crate::ir::RefTarget::Context(id4),
+                field: None,
+            }),
             inst(InstKind::Jump {
                 label: Label(99),
                 args: vec![],
@@ -1649,8 +1900,16 @@ mod tests {
         let v5 = vf.next();
         let v6 = vf.next();
         let module = make_module(vec![
-            inst(InstKind::ContextProject { dst: v0, ctx: id0 , volatile: false }),
-            inst(InstKind::ContextProject { dst: v1, ctx: id1 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v0,
+                target: crate::ir::RefTarget::Context(id0),
+                field: None,
+            }),
+            inst(InstKind::Ref {
+                dst: v1,
+                target: crate::ir::RefTarget::Context(id1),
+                field: None,
+            }),
             inst(InstKind::MakeTuple {
                 dst: v2,
                 elements: vec![v0, v1],
@@ -1681,7 +1940,11 @@ mod tests {
                 params: vec![],
                 merge_of: None,
             }),
-            inst(InstKind::ContextProject { dst: v5, ctx: id2 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v5,
+                target: crate::ir::RefTarget::Context(id2),
+                field: None,
+            }),
             inst(InstKind::Return(v5)),
             // high arm -> live
             inst(InstKind::BlockLabel {
@@ -1689,7 +1952,11 @@ mod tests {
                 params: vec![],
                 merge_of: None,
             }),
-            inst(InstKind::ContextProject { dst: v6, ctx: id3 , volatile: false }),
+            inst(InstKind::Ref {
+                dst: v6,
+                target: crate::ir::RefTarget::Context(id3),
+                field: None,
+            }),
             inst(InstKind::Return(v6)),
         ]);
 

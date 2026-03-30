@@ -17,7 +17,9 @@ fn sig(interner: &Interner, params: Vec<Ty>, ret: Ty) -> FnConstraint {
         .map(|(i, ty)| Param::new(interner.intern(&format!("_{i}")), ty))
         .collect();
     FnConstraint {
-        signature: Some(Signature { params: named.clone() }),
+        signature: Some(Signature {
+            params: named.clone(),
+        }),
         output: Constraint::Exact(Ty::Fn {
             params: named,
             ret: Box::new(ret),
@@ -35,7 +37,9 @@ fn sig_effect(interner: &Interner, params: Vec<Ty>, ret: Ty, effect: Effect) -> 
         .map(|(i, ty)| Param::new(interner.intern(&format!("_{i}")), ty))
         .collect();
     FnConstraint {
-        signature: Some(Signature { params: named.clone() }),
+        signature: Some(Signature {
+            params: named.clone(),
+        }),
         output: Constraint::Exact(Ty::Fn {
             params: named,
             ret: Box::new(ret),
@@ -83,12 +87,11 @@ async fn extern_pure_string_transform() {
 
     let registry = ExternRegistry::new(|interner| {
         vec![
-            ExternFnBuilder::new("shout", sig(interner, vec![Ty::String], Ty::String))
-                .handler(
-                    |_interner: &Interner, (s,): (String,), Uses(()): Uses<()>| {
-                        Ok((s.to_uppercase(), Defs(())))
-                    },
-                ),
+            ExternFnBuilder::new("shout", sig(interner, vec![Ty::String], Ty::String)).handler(
+                |_interner: &Interner, (s,): (String,), Uses(()): Uses<()>| {
+                    Ok((s.to_uppercase(), Defs(())))
+                },
+            ),
         ]
     });
 
@@ -108,22 +111,25 @@ async fn extern_reads_context() {
     let registry = ExternRegistry::new(|interner| {
         let qref = QualifiedRef::root(interner.intern("offset"));
         vec![
-            ExternFnBuilder::new("add_offset", sig_effect(
-                interner,
-                vec![Ty::Int],
-                Ty::Int,
-                Effect::Resolved(EffectSet {
-                    reads: BTreeSet::from([EffectTarget::Context(qref)]),
-                    writes: BTreeSet::new(),
-                    io: false,
-                    self_modifying: false,
-                }),
-            ))
-                .handler(
-                    |_interner: &Interner, (x,): (i64,), Uses((offset,)): Uses<(i64,)>| {
-                        Ok((x + offset, Defs(())))
-                    },
+            ExternFnBuilder::new(
+                "add_offset",
+                sig_effect(
+                    interner,
+                    vec![Ty::Int],
+                    Ty::Int,
+                    Effect::Resolved(EffectSet {
+                        reads: BTreeSet::from([EffectTarget::Context(qref)]),
+                        writes: BTreeSet::new(),
+                        io: false,
+                        self_modifying: false,
+                    }),
                 ),
+            )
+            .handler(
+                |_interner: &Interner, (x,): (i64,), Uses((offset,)): Uses<(i64,)>| {
+                    Ok((x + offset, Defs(())))
+                },
+            ),
         ]
     });
 
@@ -143,22 +149,25 @@ async fn extern_writes_context() {
     let registry = ExternRegistry::new(|interner| {
         let qref = QualifiedRef::root(interner.intern("counter"));
         vec![
-            ExternFnBuilder::new("increment", sig_effect(
-                interner,
-                vec![],
-                Ty::Unit,
-                Effect::Resolved(EffectSet {
-                    reads: BTreeSet::from([EffectTarget::Context(qref)]),
-                    writes: BTreeSet::from([EffectTarget::Context(qref)]),
-                    io: false,
-                    self_modifying: false,
-                }),
-            ))
-                .handler(
-                    |_interner: &Interner, (): (), Uses((count,)): Uses<(i64,)>| {
-                        Ok(((), Defs((count + 1,))))
-                    },
+            ExternFnBuilder::new(
+                "increment",
+                sig_effect(
+                    interner,
+                    vec![],
+                    Ty::Unit,
+                    Effect::Resolved(EffectSet {
+                        reads: BTreeSet::from([EffectTarget::Context(qref)]),
+                        writes: BTreeSet::from([EffectTarget::Context(qref)]),
+                        io: false,
+                        self_modifying: false,
+                    }),
                 ),
+            )
+            .handler(
+                |_interner: &Interner, (): (), Uses((count,)): Uses<(i64,)>| {
+                    Ok(((), Defs((count + 1,))))
+                },
+            ),
         ]
     });
 
@@ -179,27 +188,28 @@ async fn extern_reads_and_writes_context() {
     let registry = ExternRegistry::new(|interner| {
         let qref = QualifiedRef::root(interner.intern("history"));
         vec![
-            ExternFnBuilder::new("record", sig_effect(
-                interner,
-                vec![Ty::Int],
-                Ty::Int,
-                Effect::Resolved(EffectSet {
-                    reads: BTreeSet::from([EffectTarget::Context(qref)]),
-                    writes: BTreeSet::from([EffectTarget::Context(qref)]),
-                    io: false,
-                    self_modifying: false,
-                }),
-            ))
-                .handler(
-                    |_interner: &Interner,
-                     (item,): (Value,),
-                     Uses((history,)): Uses<(Vec<Value>,)>| {
-                        let mut new_history = history;
-                        new_history.push(item);
-                        let len = new_history.len() as i64;
-                        Ok((len, Defs((new_history,))))
-                    },
+            ExternFnBuilder::new(
+                "record",
+                sig_effect(
+                    interner,
+                    vec![Ty::Int],
+                    Ty::Int,
+                    Effect::Resolved(EffectSet {
+                        reads: BTreeSet::from([EffectTarget::Context(qref)]),
+                        writes: BTreeSet::from([EffectTarget::Context(qref)]),
+                        io: false,
+                        self_modifying: false,
+                    }),
                 ),
+            )
+            .handler(
+                |_interner: &Interner, (item,): (Value,), Uses((history,)): Uses<(Vec<Value>,)>| {
+                    let mut new_history = history;
+                    new_history.push(item);
+                    let len = new_history.len() as i64;
+                    Ok((len, Defs((new_history,))))
+                },
+            ),
         ]
     });
 
@@ -223,22 +233,25 @@ async fn extern_multiple_calls_sequential() {
     let registry = ExternRegistry::new(|interner| {
         let qref = QualifiedRef::root(interner.intern("acc"));
         vec![
-            ExternFnBuilder::new("add_to_acc", sig_effect(
-                interner,
-                vec![Ty::Int],
-                Ty::Unit,
-                Effect::Resolved(EffectSet {
-                    reads: BTreeSet::from([EffectTarget::Context(qref)]),
-                    writes: BTreeSet::from([EffectTarget::Context(qref)]),
-                    io: false,
-                    self_modifying: false,
-                }),
-            ))
-                .handler(
-                    |_interner: &Interner, (x,): (i64,), Uses((acc,)): Uses<(i64,)>| {
-                        Ok(((), Defs((acc + x,))))
-                    },
+            ExternFnBuilder::new(
+                "add_to_acc",
+                sig_effect(
+                    interner,
+                    vec![Ty::Int],
+                    Ty::Unit,
+                    Effect::Resolved(EffectSet {
+                        reads: BTreeSet::from([EffectTarget::Context(qref)]),
+                        writes: BTreeSet::from([EffectTarget::Context(qref)]),
+                        io: false,
+                        self_modifying: false,
+                    }),
                 ),
+            )
+            .handler(
+                |_interner: &Interner, (x,): (i64,), Uses((acc,)): Uses<(i64,)>| {
+                    Ok(((), Defs((acc + x,))))
+                },
+            ),
         ]
     });
 
@@ -264,12 +277,11 @@ async fn extern_captures_environment() {
 
     let registry = ExternRegistry::new(move |interner| {
         vec![
-            ExternFnBuilder::new("multiply_secret", sig(interner, vec![Ty::Int], Ty::Int))
-                .handler(
-                    move |_interner: &Interner, (x,): (i64,), Uses(()): Uses<()>| {
-                        Ok((x * secret, Defs(())))
-                    },
-                ),
+            ExternFnBuilder::new("multiply_secret", sig(interner, vec![Ty::Int], Ty::Int)).handler(
+                move |_interner: &Interner, (x,): (i64,), Uses(()): Uses<()>| {
+                    Ok((x * secret, Defs(())))
+                },
+            ),
         ]
     });
 
@@ -338,20 +350,23 @@ fn ir_function_call_has_context_bindings() {
     let registry = ExternRegistry::new(|interner| {
         let qref = QualifiedRef::root(interner.intern("counter"));
         vec![
-            ExternFnBuilder::new("bump", sig_effect(
-                interner,
-                vec![],
-                Ty::Unit,
-                Effect::Resolved(EffectSet {
-                    reads: BTreeSet::from([EffectTarget::Context(qref)]),
-                    writes: BTreeSet::from([EffectTarget::Context(qref)]),
-                    io: false,
-                    self_modifying: false,
-                }),
-            ))
-                .handler(|_interner: &Interner, (): (), Uses((n,)): Uses<(i64,)>| {
-                    Ok(((), Defs((n + 1,))))
-                }),
+            ExternFnBuilder::new(
+                "bump",
+                sig_effect(
+                    interner,
+                    vec![],
+                    Ty::Unit,
+                    Effect::Resolved(EffectSet {
+                        reads: BTreeSet::from([EffectTarget::Context(qref)]),
+                        writes: BTreeSet::from([EffectTarget::Context(qref)]),
+                        io: false,
+                        self_modifying: false,
+                    }),
+                ),
+            )
+            .handler(|_interner: &Interner, (): (), Uses((n,)): Uses<(i64,)>| {
+                Ok(((), Defs((n + 1,))))
+            }),
         ]
     });
 
@@ -361,7 +376,9 @@ fn ir_function_call_has_context_bindings() {
     let source = "bump(); @counter";
     let cr = compile_source_with_externs(
         &i,
-        acvus_mir::graph::ParsedAst::Script(acvus_ast::parse_script(&i, source).expect("parse error")),
+        acvus_mir::graph::ParsedAst::Script(
+            acvus_ast::parse_script(&i, source).expect("parse error"),
+        ),
         &context_types,
         vec![registry],
         acvus_mir::ty::TypeRegistry::new(),
@@ -429,10 +446,9 @@ fn ir_pure_function_call_no_context_bindings() {
 
     let registry = ExternRegistry::new(|interner| {
         vec![
-            ExternFnBuilder::new("double", sig(interner, vec![Ty::Int], Ty::Int))
-                .handler(|_interner: &Interner, (x,): (i64,), Uses(()): Uses<()>| {
-                    Ok((x * 2, Defs(())))
-                }),
+            ExternFnBuilder::new("double", sig(interner, vec![Ty::Int], Ty::Int)).handler(
+                |_interner: &Interner, (x,): (i64,), Uses(()): Uses<()>| Ok((x * 2, Defs(()))),
+            ),
         ]
     });
 
@@ -441,7 +457,9 @@ fn ir_pure_function_call_no_context_bindings() {
     let source = "double(21)";
     let cr = compile_source_with_externs(
         &i,
-        acvus_mir::graph::ParsedAst::Script(acvus_ast::parse_script(&i, source).expect("parse error")),
+        acvus_mir::graph::ParsedAst::Script(
+            acvus_ast::parse_script(&i, source).expect("parse error"),
+        ),
         &context_types,
         vec![registry],
         acvus_mir::ty::TypeRegistry::new(),
@@ -503,24 +521,42 @@ fn ir_pure_function_call_no_context_bindings() {
 // Each test dumps the optimized MIR to stderr (--nocapture) for inspection.
 
 fn io_effect() -> Effect {
-    Effect::Resolved(EffectSet { io: true, ..Default::default() })
+    Effect::Resolved(EffectSet {
+        io: true,
+        ..Default::default()
+    })
 }
 
 /// Registry with 4 independent IO functions (no args) + 1 parameterized.
 fn io_registry() -> ExternRegistry {
     ExternRegistry::new(|interner| {
         vec![
-            ExternFnBuilder::new("fetch_a", sig_effect(interner, vec![], Ty::Int, io_effect()))
-                .handler(|_: &Interner, (): (), Uses(()): Uses<()>| Ok((100i64, Defs(())))),
-            ExternFnBuilder::new("fetch_b", sig_effect(interner, vec![], Ty::Int, io_effect()))
-                .handler(|_: &Interner, (): (), Uses(()): Uses<()>| Ok((200i64, Defs(())))),
-            ExternFnBuilder::new("fetch_c", sig_effect(interner, vec![], Ty::Int, io_effect()))
-                .handler(|_: &Interner, (): (), Uses(()): Uses<()>| Ok((300i64, Defs(())))),
-            ExternFnBuilder::new("fetch_d", sig_effect(interner, vec![], Ty::Int, io_effect()))
-                .handler(|_: &Interner, (): (), Uses(()): Uses<()>| Ok((400i64, Defs(())))),
+            ExternFnBuilder::new(
+                "fetch_a",
+                sig_effect(interner, vec![], Ty::Int, io_effect()),
+            )
+            .handler(|_: &Interner, (): (), Uses(()): Uses<()>| Ok((100i64, Defs(())))),
+            ExternFnBuilder::new(
+                "fetch_b",
+                sig_effect(interner, vec![], Ty::Int, io_effect()),
+            )
+            .handler(|_: &Interner, (): (), Uses(()): Uses<()>| Ok((200i64, Defs(())))),
+            ExternFnBuilder::new(
+                "fetch_c",
+                sig_effect(interner, vec![], Ty::Int, io_effect()),
+            )
+            .handler(|_: &Interner, (): (), Uses(()): Uses<()>| Ok((300i64, Defs(())))),
+            ExternFnBuilder::new(
+                "fetch_d",
+                sig_effect(interner, vec![], Ty::Int, io_effect()),
+            )
+            .handler(|_: &Interner, (): (), Uses(()): Uses<()>| Ok((400i64, Defs(())))),
             // Parameterized: fetch_by(x) = x * 10
-            ExternFnBuilder::new("fetch_by", sig_effect(interner, vec![Ty::Int], Ty::Int, io_effect()))
-                .handler(|_: &Interner, (x,): (i64,), Uses(()): Uses<()>| Ok((x * 10, Defs(())))),
+            ExternFnBuilder::new(
+                "fetch_by",
+                sig_effect(interner, vec![Ty::Int], Ty::Int, io_effect()),
+            )
+            .handler(|_: &Interner, (x,): (i64,), Uses(()): Uses<()>| Ok((x * 10, Defs(())))),
         ]
     })
 }
@@ -530,15 +566,17 @@ fn compile_io_script(source: &str) -> (Interner, CompileResult) {
     compile_io_script_with_ctx(source, &[])
 }
 
-fn compile_io_script_with_ctx(source: &str, context: &[(&str, Value)]) -> (Interner, CompileResult) {
+fn compile_io_script_with_ctx(
+    source: &str,
+    context: &[(&str, Value)],
+) -> (Interner, CompileResult) {
     let i = Interner::new();
     let context_types: FxHashMap<acvus_utils::Astr, Ty> = context
         .iter()
         .map(|(name, val)| (i.intern(name), infer_ty(val)))
         .collect();
-    let ast = acvus_mir::graph::ParsedAst::Script(
-        acvus_ast::parse_script(&i, source).expect("parse"),
-    );
+    let ast =
+        acvus_mir::graph::ParsedAst::Script(acvus_ast::parse_script(&i, source).expect("parse"));
     let mut tr = acvus_mir::ty::TypeRegistry::new();
     let std_regs = acvus_ext::std_registries(&i, &mut tr);
     let mut regs = std_regs;
@@ -570,11 +608,19 @@ fn dump_and_positions(label: &str, i: &Interner, cr: &CompileResult) -> (Vec<usi
     let dump = acvus_mir::printer::dump_with(i, module);
     eprintln!("=== {label} ===\n{dump}");
 
-    let spawns: Vec<usize> = module.main.insts.iter().enumerate()
+    let spawns: Vec<usize> = module
+        .main
+        .insts
+        .iter()
+        .enumerate()
         .filter(|(_, i)| matches!(i.kind, InstKind::Spawn { .. }))
         .map(|(idx, _)| idx)
         .collect();
-    let evals: Vec<usize> = module.main.insts.iter().enumerate()
+    let evals: Vec<usize> = module
+        .main
+        .insts
+        .iter()
+        .enumerate()
         .filter(|(_, i)| matches!(i.kind, InstKind::Eval { .. }))
         .map(|(idx, _)| idx)
         .collect();
@@ -588,8 +634,12 @@ fn dump_and_positions(label: &str, i: &Interner, cr: &CompileResult) -> (Vec<usi
 async fn io_two_independent() {
     let i = Interner::new();
     let result = run_script_with_externs(
-        &i, "fetch_a() + fetch_b()", ctx(&i, &[]), vec![io_registry()],
-    ).await;
+        &i,
+        "fetch_a() + fetch_b()",
+        ctx(&i, &[]),
+        vec![io_registry()],
+    )
+    .await;
     assert_eq!(result.value, Value::Int(300));
 }
 
@@ -599,8 +649,10 @@ fn io_two_independent_mir() {
     let (spawns, evals) = dump_and_positions("two_independent", &i, &cr);
     assert_eq!(spawns.len(), 2, "expected 2 spawns");
     assert_eq!(evals.len(), 2, "expected 2 evals");
-    assert!(spawns.iter().all(|&s| evals.iter().all(|&e| s < e)),
-        "all spawns must precede all evals");
+    assert!(
+        spawns.iter().all(|&s| evals.iter().all(|&e| s < e)),
+        "all spawns must precede all evals"
+    );
 }
 
 // ── 2. Four-way independent IO ─────────────────────────────────────
@@ -614,7 +666,8 @@ async fn io_four_way_parallel() {
         "fetch_a() + fetch_b() + fetch_c() + fetch_d()",
         ctx(&i, &[]),
         vec![io_registry()],
-    ).await;
+    )
+    .await;
     assert_eq!(result.value, Value::Int(1000));
 }
 
@@ -624,8 +677,10 @@ fn io_four_way_parallel_mir() {
     let (spawns, evals) = dump_and_positions("four_way_parallel", &i, &cr);
     assert_eq!(spawns.len(), 4, "expected 4 spawns");
     assert_eq!(evals.len(), 4, "expected 4 evals");
-    assert!(spawns.iter().all(|&s| evals.iter().all(|&e| s < e)),
-        "all spawns must precede all evals");
+    assert!(
+        spawns.iter().all(|&s| evals.iter().all(|&e| s < e)),
+        "all spawns must precede all evals"
+    );
 }
 
 // ── 3. Dependent chain + independent IO ────────────────────────────
@@ -647,15 +702,14 @@ async fn io_chain_with_independent() {
         "a = fetch_a(); b = fetch_by(a); c = fetch_c(); b + c",
         ctx(&i, &[]),
         vec![io_registry()],
-    ).await;
+    )
+    .await;
     assert_eq!(result.value, Value::Int(1300));
 }
 
 #[test]
 fn io_chain_with_independent_mir() {
-    let (i, cr) = compile_io_script(
-        "a = fetch_a(); b = fetch_by(a); c = fetch_c(); b + c",
-    );
+    let (i, cr) = compile_io_script("a = fetch_a(); b = fetch_by(a); c = fetch_c(); b + c");
     let (spawns, evals) = dump_and_positions("chain_with_independent", &i, &cr);
 
     // 3 IO calls → 3 spawns, 3 evals.
@@ -665,8 +719,10 @@ fn io_chain_with_independent_mir() {
     // fetch_a and fetch_c should be spawned before any eval.
     // fetch_by depends on eval(fetch_a), so its spawn comes after first eval.
     // At minimum: the first 2 spawns should precede the first eval.
-    assert!(spawns[0] < evals[0] && spawns[1] < evals[0],
-        "fetch_a and fetch_c spawns should both precede first eval");
+    assert!(
+        spawns[0] < evals[0] && spawns[1] < evals[0],
+        "fetch_a and fetch_c spawns should both precede first eval"
+    );
 }
 
 // ── 4. Diamond dependency ──────────────────────────────────────────
@@ -687,15 +743,14 @@ async fn io_diamond_dependency() {
         "a = fetch_a(); b = fetch_by(a); c = fetch_by(a); b + c",
         ctx(&i, &[]),
         vec![io_registry()],
-    ).await;
+    )
+    .await;
     assert_eq!(result.value, Value::Int(2000));
 }
 
 #[test]
 fn io_diamond_dependency_mir() {
-    let (i, cr) = compile_io_script(
-        "a = fetch_a(); b = fetch_by(a); c = fetch_by(a); b + c",
-    );
+    let (i, cr) = compile_io_script("a = fetch_a(); b = fetch_by(a); c = fetch_by(a); b + c");
     let (spawns, evals) = dump_and_positions("diamond_dependency", &i, &cr);
 
     assert_eq!(spawns.len(), 3, "expected 3 spawns (fetch_a + 2x fetch_by)");
@@ -705,8 +760,10 @@ fn io_diamond_dependency_mir() {
     // Spawn[0] = fetch_a (before any eval)
     assert!(spawns[0] < evals[0], "fetch_a spawn before first eval");
     // The two fetch_by spawns should both precede their evals.
-    assert!(spawns[1] < evals[1] && spawns[2] < evals[1],
-        "both fetch_by spawns should precede second eval");
+    assert!(
+        spawns[1] < evals[1] && spawns[2] < evals[1],
+        "both fetch_by spawns should precede second eval"
+    );
 }
 
 // ── 5. Deep sequential chain ───────────────────────────────────────
@@ -725,15 +782,15 @@ async fn io_deep_chain() {
         "a = fetch_a(); b = fetch_by(a); c = fetch_by(b); d = fetch_by(c); d",
         ctx(&i, &[]),
         vec![io_registry()],
-    ).await;
+    )
+    .await;
     assert_eq!(result.value, Value::Int(100000));
 }
 
 #[test]
 fn io_deep_chain_mir() {
-    let (i, cr) = compile_io_script(
-        "a = fetch_a(); b = fetch_by(a); c = fetch_by(b); d = fetch_by(c); d",
-    );
+    let (i, cr) =
+        compile_io_script("a = fetch_a(); b = fetch_by(a); c = fetch_by(b); d = fetch_by(c); d");
     let (spawns, evals) = dump_and_positions("deep_chain", &i, &cr);
 
     assert_eq!(spawns.len(), 4, "4 IO calls in chain");
@@ -741,8 +798,11 @@ fn io_deep_chain_mir() {
 
     // Each spawn[i+1] must come after eval[i] (strict dependency chain).
     for i in 0..3 {
-        assert!(evals[i] < spawns[i + 1],
-            "eval[{i}] must precede spawn[{}] in dependency chain", i + 1);
+        assert!(
+            evals[i] < spawns[i + 1],
+            "eval[{i}] must precede spawn[{}] in dependency chain",
+            i + 1
+        );
     }
 }
 
@@ -763,23 +823,25 @@ async fn io_two_independent_chains() {
         "a = fetch_a(); b = fetch_by(a); c = fetch_c(); d = fetch_by(c); b + d",
         ctx(&i, &[]),
         vec![io_registry()],
-    ).await;
+    )
+    .await;
     assert_eq!(result.value, Value::Int(4000));
 }
 
 #[test]
 fn io_two_independent_chains_mir() {
-    let (i, cr) = compile_io_script(
-        "a = fetch_a(); b = fetch_by(a); c = fetch_c(); d = fetch_by(c); b + d",
-    );
+    let (i, cr) =
+        compile_io_script("a = fetch_a(); b = fetch_by(a); c = fetch_c(); d = fetch_by(c); b + d");
     let (spawns, evals) = dump_and_positions("two_independent_chains", &i, &cr);
 
     assert_eq!(spawns.len(), 4, "4 IO calls");
     assert_eq!(evals.len(), 4, "4 evals");
 
     // The heads of both chains (fetch_a, fetch_c) should be spawned before any eval.
-    assert!(spawns[0] < evals[0] && spawns[1] < evals[0],
-        "chain heads should be spawned before first eval");
+    assert!(
+        spawns[0] < evals[0] && spawns[1] < evals[0],
+        "chain heads should be spawned before first eval"
+    );
 }
 
 // ── 7. IO in iteration ─────────────────────────────────────────────
@@ -791,16 +853,23 @@ fn io_two_independent_chains_mir() {
 async fn io_in_iteration() {
     let i = Interner::new();
     // fetch_by(1)=10, fetch_by(2)=20, fetch_by(3)=30 → sum=60
-    let c = ctx(&i, &[
-        ("items", Value::list(vec![Value::Int(1), Value::Int(2), Value::Int(3)])),
-        ("sum", Value::Int(0)),
-    ]);
+    let c = ctx(
+        &i,
+        &[
+            (
+                "items",
+                Value::list(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+            ),
+            ("sum", Value::Int(0)),
+        ],
+    );
     let result = run_script_with_externs(
         &i,
         "x in @items { @sum = @sum + fetch_by(x); }; @sum",
         c,
         vec![io_registry()],
-    ).await;
+    )
+    .await;
     assert_eq!(result.value, Value::Int(60));
 }
 
@@ -849,6 +918,8 @@ fn io_compiler_pipeline_mir() {
     // fetch_by depends on eval(fetch_a).
     // At minimum: 3 independent spawns before first eval.
     let spawns_before_first_eval = spawns.iter().filter(|&&s| s < evals[0]).count();
-    assert!(spawns_before_first_eval >= 3,
-        "at least 3 independent IO spawns should precede first eval, got {spawns_before_first_eval}");
+    assert!(
+        spawns_before_first_eval >= 3,
+        "at least 3 independent IO spawns should precede first eval, got {spawns_before_first_eval}"
+    );
 }

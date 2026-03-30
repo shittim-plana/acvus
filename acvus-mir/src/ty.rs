@@ -64,11 +64,26 @@ pub struct CastRule {
 /// Head constructor of a type — used for duplicate cast rule detection.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum TyHead {
-    Int, Float, String, Bool, Unit, Range, Byte,
-    List, Object, Tuple, Fn, Option, Enum,
-    Handle, Deque, Identity,
+    Int,
+    Float,
+    String,
+    Bool,
+    Unit,
+    Range,
+    Byte,
+    List,
+    Object,
+    Tuple,
+    Fn,
+    Option,
+    Enum,
+    Handle,
+    Deque,
+    Identity,
+    Ref,
     UserDefined(QualifiedRef),
-    Param, Error,
+    Param,
+    Error,
 }
 
 fn ty_head(ty: &Ty) -> TyHead {
@@ -89,6 +104,7 @@ fn ty_head(ty: &Ty) -> TyHead {
         Ty::Handle(..) => TyHead::Handle,
         Ty::Deque(..) => TyHead::Deque,
         Ty::Identity(..) => TyHead::Identity,
+        Ty::Ref(..) => TyHead::Ref,
         Ty::UserDefined { id, .. } => TyHead::UserDefined(*id),
         Ty::Param { .. } => TyHead::Param,
         Ty::Error(_) => TyHead::Error,
@@ -563,6 +579,13 @@ pub enum Ty {
         token: ParamToken,
         constraint: Option<ParamConstraint>,
     },
+    /// Projection type: a reference to a storage location of type `T`.
+    /// `Load` converts `Ref<T>` → `T`. `Store` writes `T` through `Ref<T>`.
+    /// Second field is the volatile qualifier — if true, loads/stores through
+    /// this Ref must not be elided or forwarded by SSA. Transitive: any Ref
+    /// derived from a volatile Ref inherits volatile.
+    /// Ephemeral — cannot be materialized or purified.
+    Ref(Box<Ty>, bool),
     /// Poison type: produced after a type error. Unifies with anything to suppress cascading errors.
     ///
     /// Contains a private token — only constructible via `Ty::error()` within `acvus_mir`.
@@ -621,6 +644,7 @@ impl Ty {
             | Ty::Enum { .. } => Materiality::Composite,
             Ty::UserDefined { .. } => Materiality::Ephemeral,
             Ty::Identity(_) => Materiality::Concrete,
+            Ty::Ref(..) => Materiality::Ephemeral,
             Ty::Param { .. } | Ty::Error(_) => Materiality::Ephemeral,
         }
     }
@@ -644,6 +668,7 @@ impl Ty {
             }
             Ty::UserDefined { .. } => false,
             Ty::Identity(_) => true,
+            Ty::Ref(..) => false,
             Ty::Param { .. } | Ty::Error(_) => false,
         }
     }
@@ -669,7 +694,8 @@ impl Ty {
             Ty::Handle(..)
             | Ty::Fn { .. }
             | Ty::UserDefined { .. }
-            | Ty::Identity(_) => false,
+            | Ty::Identity(_)
+            | Ty::Ref(..) => false,
             Ty::Param { .. } | Ty::Error(_) => false,
         }
     }
@@ -757,17 +783,25 @@ impl<'a> fmt::Display for TyDisplay<'a> {
             }
             Ty::Identity(id) => write!(f, "{id}"),
             Ty::Option(inner) => write!(f, "Option<{}>", inner.display(self.interner)),
-            Ty::UserDefined { id, type_args, effect_args } => {
+            Ty::UserDefined {
+                id,
+                type_args,
+                effect_args,
+            } => {
                 let name = self.interner.resolve(id.name);
                 write!(f, "{name}")?;
                 if !type_args.is_empty() || !effect_args.is_empty() {
                     write!(f, "<")?;
                     for (i, arg) in type_args.iter().enumerate() {
-                        if i > 0 { write!(f, ", ")?; }
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
                         write!(f, "{}", arg.display(self.interner))?;
                     }
                     for (i, arg) in effect_args.iter().enumerate() {
-                        if i > 0 || !type_args.is_empty() { write!(f, ", ")?; }
+                        if i > 0 || !type_args.is_empty() {
+                            write!(f, ", ")?;
+                        }
                         write!(f, "{arg:?}")?;
                     }
                     write!(f, ">")?;
@@ -775,6 +809,13 @@ impl<'a> fmt::Display for TyDisplay<'a> {
                 Ok(())
             }
             Ty::Enum { name, .. } => write!(f, "{}", self.interner.resolve(*name)),
+            Ty::Ref(inner, volatile) => {
+                if *volatile {
+                    write!(f, "VolatileRef<{}>", inner.display(self.interner))
+                } else {
+                    write!(f, "Ref<{}>", inner.display(self.interner))
+                }
+            }
             Ty::Param { token: t, .. } => write!(f, "?{}", t.0),
             Ty::Error(_) => write!(f, "<error>"),
         }
@@ -1071,21 +1112,32 @@ impl TySubst {
             // UserDefined: same id, effect mismatch → effect union.
             // type_args mismatch → CastRule-based LUB (common target).
             (
-                Ty::UserDefined { id: id_a, type_args: ta_a, effect_args: ea_a },
-                Ty::UserDefined { id: id_b, type_args: ta_b, effect_args: ea_b },
+                Ty::UserDefined {
+                    id: id_a,
+                    type_args: ta_a,
+                    effect_args: ea_a,
+                },
+                Ty::UserDefined {
+                    id: id_b,
+                    type_args: ta_b,
+                    effect_args: ea_b,
+                },
             ) if id_a == id_b => {
                 assert_eq!(ta_a.len(), ta_b.len());
                 assert_eq!(ea_a.len(), ea_b.len());
 
                 // Try type_args invariant unify first.
                 let snap = self.snapshot();
-                let type_args_ok = ta_a.iter().zip(ta_b.iter()).all(|(a, b)| {
-                    self.unify(a, b, Polarity::Invariant).is_ok()
-                });
+                let type_args_ok = ta_a
+                    .iter()
+                    .zip(ta_b.iter())
+                    .all(|(a, b)| self.unify(a, b, Polarity::Invariant).is_ok());
 
                 if type_args_ok {
                     // type_args match — union effect_args.
-                    let merged_effects: Vec<Effect> = ea_a.iter().zip(ea_b.iter())
+                    let merged_effects: Vec<Effect> = ea_a
+                        .iter()
+                        .zip(ea_b.iter())
                         .map(|(ea, eb)| {
                             self.coerce_effects_to_effectful(ea, eb);
                             let ra = self.resolve_effect(ea);
@@ -1109,12 +1161,7 @@ impl TySubst {
     }
 
     /// Find LUB via CastRule: both sides cast to a common target type.
-    fn try_lub_via_cast_rules(
-        &mut self,
-        from_id: QualifiedRef,
-        a: &Ty,
-        b: &Ty,
-    ) -> Option<Ty> {
+    fn try_lub_via_cast_rules(&mut self, from_id: QualifiedRef, a: &Ty, b: &Ty) -> Option<Ty> {
         let rules = self.type_registry.rules_from(from_id).to_vec();
         if rules.is_empty() {
             return None;
@@ -1126,7 +1173,11 @@ impl TySubst {
             // Cast A through this rule.
             let (inst_from_a, inst_to_a) = self.instantiate_pair(&rule.from, &rule.to);
             let a_ok = self.unify(a, &inst_from_a, Polarity::Invariant).is_ok();
-            let target_a = if a_ok { Some(self.resolve(&inst_to_a)) } else { None };
+            let target_a = if a_ok {
+                Some(self.resolve(&inst_to_a))
+            } else {
+                None
+            };
             self.rollback(snap);
 
             let target_a = target_a?;
@@ -1135,14 +1186,21 @@ impl TySubst {
             // Cast B through the same rule.
             let (inst_from_b, inst_to_b) = self.instantiate_pair(&rule.from, &rule.to);
             let b_ok = self.unify(b, &inst_from_b, Polarity::Invariant).is_ok();
-            let target_b = if b_ok { Some(self.resolve(&inst_to_b)) } else { None };
+            let target_b = if b_ok {
+                Some(self.resolve(&inst_to_b))
+            } else {
+                None
+            };
             self.rollback(snap);
 
             let target_b = target_b?;
 
             // Try to unify the two cast targets (recursively — may invoke LUB again).
             let snap = self.snapshot();
-            if self.unify(&target_a, &target_b, Polarity::Covariant).is_ok() {
+            if self
+                .unify(&target_a, &target_b, Polarity::Covariant)
+                .is_ok()
+            {
                 let result = self.resolve(&target_a);
                 self.rollback(snap);
                 return Some(result);
@@ -1200,9 +1258,10 @@ impl TySubst {
                 }
             }
             Ty::List(inner) => Ty::List(Box::new(self.resolve(inner))),
-            Ty::Deque(inner, identity) => {
-                Ty::Deque(Box::new(self.resolve(inner)), Box::new(self.resolve(identity)))
-            }
+            Ty::Deque(inner, identity) => Ty::Deque(
+                Box::new(self.resolve(inner)),
+                Box::new(self.resolve(identity)),
+            ),
             Ty::Identity(_) => ty.clone(),
             Ty::Option(inner) => Ty::Option(Box::new(self.resolve(inner))),
             Ty::Object(fields) => {
@@ -1240,7 +1299,11 @@ impl TySubst {
                     variants: resolved,
                 }
             }
-            Ty::UserDefined { id, type_args, effect_args } => Ty::UserDefined {
+            Ty::UserDefined {
+                id,
+                type_args,
+                effect_args,
+            } => Ty::UserDefined {
                 id: *id,
                 type_args: type_args.iter().map(|t| self.resolve(t)).collect(),
                 effect_args: effect_args.iter().map(|e| self.resolve_effect(e)).collect(),
@@ -1313,8 +1376,16 @@ impl TySubst {
             | (Ty::Byte, Ty::Byte) => Ok(()),
 
             (
-                Ty::UserDefined { id: id_a, type_args: ta_args, effect_args: ea_args },
-                Ty::UserDefined { id: id_b, type_args: tb_args, effect_args: eb_args },
+                Ty::UserDefined {
+                    id: id_a,
+                    type_args: ta_args,
+                    effect_args: ea_args,
+                },
+                Ty::UserDefined {
+                    id: id_b,
+                    type_args: tb_args,
+                    effect_args: eb_args,
+                },
             ) if id_a == id_b => {
                 // Same UserDefined type — unify args pairwise.
                 // type_args: invariant. effect_args: caller's polarity.
@@ -1322,12 +1393,15 @@ impl TySubst {
                 assert_eq!(ta_args.len(), tb_args.len(), "type_args length mismatch");
                 assert_eq!(ea_args.len(), eb_args.len(), "effect_args length mismatch");
                 let snap = self.snapshot();
-                let type_ok = ta_args.iter().zip(tb_args.iter()).all(|(a, b)| {
-                    self.unify(a, b, Polarity::Invariant).is_ok()
-                });
-                let effect_ok = type_ok && ea_args.iter().zip(eb_args.iter()).all(|(ea, eb)| {
-                    self.unify_effects(ea, eb, pol).is_ok()
-                });
+                let type_ok = ta_args
+                    .iter()
+                    .zip(tb_args.iter())
+                    .all(|(a, b)| self.unify(a, b, Polarity::Invariant).is_ok());
+                let effect_ok = type_ok
+                    && ea_args
+                        .iter()
+                        .zip(eb_args.iter())
+                        .all(|(ea, eb)| self.unify_effects(ea, eb, pol).is_ok());
                 if effect_ok {
                     Ok(())
                 } else {
@@ -1482,11 +1556,11 @@ impl TySubst {
                 let snap = self.snapshot();
                 let mut field_mismatch = false;
                 for (key, ty_a) in fa {
-                    if let Some(ty_b) = fb.get(key) {
-                        if self.unify(ty_a, ty_b, pol).is_err() {
-                            field_mismatch = true;
-                            break;
-                        }
+                    if let Some(ty_b) = fb.get(key)
+                        && self.unify(ty_a, ty_b, pol).is_err()
+                    {
+                        field_mismatch = true;
+                        break;
                     }
                 }
                 if field_mismatch && pol != Polarity::Invariant {
@@ -1502,7 +1576,8 @@ impl TySubst {
                             } else {
                                 self.rollback(fsnap);
                                 // Field LUB.
-                                let lub = self.try_lub(ty_a, ty_b)
+                                let lub = self
+                                    .try_lub(ty_a, ty_b)
                                     .ok_or_else(|| (a.clone(), b.clone()))?;
                                 merged.insert(*key, lub);
                             }
@@ -1639,12 +1714,7 @@ impl TySubst {
 
     /// Try to find a unique ExternCast rule among `rules` that converts `sub` to `sup`.
     /// Sets `last_extern_cast` on success for typeck to read.
-    fn try_extern_cast_rules(
-        &mut self,
-        rules: &[CastRule],
-        sub: &Ty,
-        sup: &Ty,
-    ) -> Result<(), ()> {
+    fn try_extern_cast_rules(&mut self, rules: &[CastRule], sub: &Ty, sup: &Ty) -> Result<(), ()> {
         if rules.is_empty() {
             return Err(());
         }
@@ -1726,24 +1796,19 @@ impl TySubst {
             Ty::List(inner) => Ty::List(Box::new(
                 self.instantiate_inner(inner, param_map, effect_map, fresh_map),
             )),
-            Ty::Deque(inner, identity) => {
-                Ty::Deque(
-                    Box::new(self.instantiate_inner(inner, param_map, effect_map, fresh_map)),
-                    Box::new(self.instantiate_inner(identity, param_map, effect_map, fresh_map)),
-                )
-            }
-            Ty::Identity(identity) => {
-                use acvus_utils::LocalIdOps;
-                match identity {
-                    Identity::Fresh(id) => {
-                        let new_id = *fresh_map.entry(*id).or_insert_with(|| {
-                            self.identity_factory.next()
-                        });
-                        Ty::Identity(Identity::Concrete(new_id))
-                    }
-                    Identity::Concrete(_) => ty.clone(),
+            Ty::Deque(inner, identity) => Ty::Deque(
+                Box::new(self.instantiate_inner(inner, param_map, effect_map, fresh_map)),
+                Box::new(self.instantiate_inner(identity, param_map, effect_map, fresh_map)),
+            ),
+            Ty::Identity(identity) => match identity {
+                Identity::Fresh(id) => {
+                    let new_id = *fresh_map
+                        .entry(*id)
+                        .or_insert_with(|| self.identity_factory.next());
+                    Ty::Identity(Identity::Concrete(new_id))
                 }
-            }
+                Identity::Concrete(_) => ty.clone(),
+            },
             Ty::Option(inner) => Ty::Option(Box::new(
                 self.instantiate_inner(inner, param_map, effect_map, fresh_map),
             )),
@@ -1803,7 +1868,11 @@ impl TySubst {
                     })
                     .collect(),
             },
-            Ty::UserDefined { id, type_args, effect_args } => Ty::UserDefined {
+            Ty::UserDefined {
+                id,
+                type_args,
+                effect_args,
+            } => Ty::UserDefined {
                 id: *id,
                 type_args: type_args
                     .iter()
@@ -1874,9 +1943,7 @@ impl TySubst {
             Ty::Enum { variants, .. } => variants
                 .values()
                 .any(|p| p.as_ref().is_some_and(|ty| self.occurs_in(param, ty))),
-            Ty::UserDefined { type_args, .. } => {
-                type_args.iter().any(|t| self.occurs_in(param, t))
-            }
+            Ty::UserDefined { type_args, .. } => type_args.iter().any(|t| self.occurs_in(param, t)),
             _ => false,
         }
     }
@@ -1889,12 +1956,13 @@ impl TySubst {
 /// Replaces `ContextTypeRegistry` + internal `BuiltinRegistry`.
 /// The type checker receives this as its sole external input —
 /// it does not know whether a function is a builtin, extern, or user-defined.
+/// All keys are QualifiedRef — the canonical identifier.
 #[derive(Debug, Clone)]
 pub struct TypeEnv {
-    /// Context variable types (`@name` → Ty), keyed by QualifiedRef (namespace-aware).
+    /// Context variable types, keyed by QualifiedRef.
     pub contexts: FxHashMap<QualifiedRef, Ty>,
-    /// Function types (`name` → `Ty::Fn`). One entry per function name.
-    pub functions: FxHashMap<Astr, Ty>,
+    /// Function types, keyed by QualifiedRef.
+    pub functions: FxHashMap<QualifiedRef, Ty>,
 }
 
 impl TypeEnv {
@@ -1915,8 +1983,8 @@ impl Default for TypeEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acvus_utils::Interner;
     use crate::graph::types::QualifiedRef;
+    use acvus_utils::Interner;
 
     use Polarity::*;
 
@@ -1988,7 +2056,10 @@ mod tests {
         let deque_int = Ty::Deque(Box::new(Ty::Int), Box::new(o.clone()));
         assert!(s.unify(&deque_t, &deque_int, Invariant).is_ok());
         assert_eq!(s.resolve(&t), Ty::Int);
-        assert_eq!(s.resolve(&deque_t), Ty::Deque(Box::new(Ty::Int), Box::new(o)));
+        assert_eq!(
+            s.resolve(&deque_t),
+            Ty::Deque(Box::new(Ty::Int), Box::new(o))
+        );
     }
 
     #[test]
@@ -2240,7 +2311,10 @@ mod tests {
         let t = s.fresh_param();
         assert!(s.unify(&t, &Ty::String, Invariant).is_ok());
         let deque = Ty::Deque(Box::new(t.clone()), Box::new(o.clone()));
-        assert_eq!(s.resolve(&deque), Ty::Deque(Box::new(Ty::String), Box::new(o)));
+        assert_eq!(
+            s.resolve(&deque),
+            Ty::Deque(Box::new(Ty::String), Box::new(o))
+        );
     }
 
     #[test]
@@ -2262,10 +2336,7 @@ mod tests {
         s.rollback(snap);
         let id_after = s.alloc_identity(false);
         // After rollback, next_identity should be restored, so id_after == id2.
-        assert_eq!(
-            id_after, id2,
-            "rollback should restore identity counter"
-        );
+        assert_eq!(id_after, id2, "rollback should restore identity counter");
     }
 
     #[test]
@@ -2481,8 +2552,12 @@ mod tests {
         let inner_var = s.fresh_param();
         let v = s.fresh_param();
         assert!(
-            s.unify(&Ty::Deque(Box::new(inner_var.clone()), Box::new(o1)), &v, Covariant)
-                .is_ok()
+            s.unify(
+                &Ty::Deque(Box::new(inner_var.clone()), Box::new(o1)),
+                &v,
+                Covariant
+            )
+            .is_ok()
         );
         assert!(
             s.unify(&Ty::Deque(Box::new(Ty::Int), Box::new(o2)), &v, Covariant)
@@ -2507,8 +2582,10 @@ mod tests {
         let o2 = s.alloc_identity(false);
         let d1 = Ty::Deque(Box::new(Ty::Int), Box::new(o1));
         let d2 = Ty::Deque(Box::new(Ty::Int), Box::new(o2));
-        assert!(s.unify(&d1, &d2, Covariant).is_err(),
-            "concrete Deque identity mismatch with no Param should fail");
+        assert!(
+            s.unify(&d1, &d2, Covariant).is_err(),
+            "concrete Deque identity mismatch with no Param should fail"
+        );
     }
 
     #[test]
@@ -2534,12 +2611,20 @@ mod tests {
         let inner = s.fresh_param();
         let v = s.fresh_param();
         assert!(
-            s.unify(&v, &Ty::Deque(Box::new(inner.clone()), Box::new(o1)), Covariant)
-                .is_ok()
+            s.unify(
+                &v,
+                &Ty::Deque(Box::new(inner.clone()), Box::new(o1)),
+                Covariant
+            )
+            .is_ok()
         );
         assert!(
-            s.unify(&v, &Ty::Deque(Box::new(inner.clone()), Box::new(o2)), Covariant)
-                .is_ok()
+            s.unify(
+                &v,
+                &Ty::Deque(Box::new(inner.clone()), Box::new(o2)),
+                Covariant
+            )
+            .is_ok()
         );
         // v should be List<inner_var>, inner still unresolved
         let resolved = s.resolve(&v);
@@ -2560,12 +2645,20 @@ mod tests {
         let o2 = s.alloc_identity(false);
         let v = s.fresh_param();
         assert!(
-            s.unify(&v, &Ty::Deque(Box::new(Ty::Int), Box::new(o1)), Contravariant)
-                .is_ok()
+            s.unify(
+                &v,
+                &Ty::Deque(Box::new(Ty::Int), Box::new(o1)),
+                Contravariant
+            )
+            .is_ok()
         );
         assert!(
-            s.unify(&v, &Ty::Deque(Box::new(Ty::Int), Box::new(o2)), Contravariant)
-                .is_ok()
+            s.unify(
+                &v,
+                &Ty::Deque(Box::new(Ty::Int), Box::new(o2)),
+                Contravariant
+            )
+            .is_ok()
         );
         assert_eq!(s.resolve(&v), Ty::List(Box::new(Ty::Int)));
     }
@@ -2816,8 +2909,12 @@ mod tests {
         let o1 = s.alloc_identity(false);
         let v = s.fresh_param();
         assert!(
-            s.unify(&v, &Ty::Deque(Box::new(Ty::Int), Box::new(o1.clone())), Covariant)
-                .is_ok()
+            s.unify(
+                &v,
+                &Ty::Deque(Box::new(Ty::Int), Box::new(o1.clone())),
+                Covariant
+            )
+            .is_ok()
         );
         let snap = s.snapshot();
         let o2 = s.alloc_identity(false);
@@ -3023,7 +3120,10 @@ mod tests {
         let mut s = TySubst::new();
         let o1 = s.alloc_identity(false);
         let o2 = s.alloc_identity(false);
-        let a = Ty::Deque(Box::new(Ty::Deque(Box::new(Ty::Int), Box::new(o1))), Box::new(o2.clone()));
+        let a = Ty::Deque(
+            Box::new(Ty::Deque(Box::new(Ty::Int), Box::new(o1))),
+            Box::new(o2.clone()),
+        );
         let b = Ty::Deque(Box::new(Ty::List(Box::new(Ty::Int))), Box::new(o2));
         assert!(s.unify(&a, &b, Covariant).is_err());
     }
@@ -3034,7 +3134,10 @@ mod tests {
         let mut s = TySubst::new();
         let o1 = s.alloc_identity(false);
         let o2 = s.alloc_identity(false);
-        let a = Ty::Deque(Box::new(Ty::Deque(Box::new(Ty::Int), Box::new(o1))), Box::new(o2.clone()));
+        let a = Ty::Deque(
+            Box::new(Ty::Deque(Box::new(Ty::Int), Box::new(o1))),
+            Box::new(o2.clone()),
+        );
         let b = Ty::Deque(Box::new(Ty::List(Box::new(Ty::Int))), Box::new(o2));
         assert!(s.unify(&a, &b, Invariant).is_err());
     }
@@ -3126,8 +3229,12 @@ mod tests {
         let o2 = s.alloc_identity(false);
         let v = s.fresh_param();
         assert!(
-            s.unify(&v, &Ty::Deque(Box::new(Ty::Int), Box::new(o1.clone())), Invariant)
-                .is_ok()
+            s.unify(
+                &v,
+                &Ty::Deque(Box::new(Ty::Int), Box::new(o1.clone())),
+                Invariant
+            )
+            .is_ok()
         );
 
         let snap = s.snapshot();
@@ -3140,8 +3247,12 @@ mod tests {
 
         // After rollback, v is still Deque(o1). Same-identity unify should work.
         assert!(
-            s.unify(&v, &Ty::Deque(Box::new(Ty::Int), Box::new(o1.clone())), Invariant)
-                .is_ok()
+            s.unify(
+                &v,
+                &Ty::Deque(Box::new(Ty::Int), Box::new(o1.clone())),
+                Invariant
+            )
+            .is_ok()
         );
         assert_eq!(s.resolve(&v), Ty::Deque(Box::new(Ty::Int), Box::new(o1)));
     }
@@ -3563,12 +3674,20 @@ mod tests {
         let o = s.alloc_identity(false);
         let v = s.fresh_param();
         assert!(
-            s.unify(&v, &Ty::Deque(Box::new(Ty::Int), Box::new(o.clone())), Covariant)
-                .is_ok()
+            s.unify(
+                &v,
+                &Ty::Deque(Box::new(Ty::Int), Box::new(o.clone())),
+                Covariant
+            )
+            .is_ok()
         );
         assert!(
-            s.unify(&v, &Ty::Deque(Box::new(Ty::Int), Box::new(o.clone())), Covariant)
-                .is_ok()
+            s.unify(
+                &v,
+                &Ty::Deque(Box::new(Ty::Int), Box::new(o.clone())),
+                Covariant
+            )
+            .is_ok()
         );
         assert_eq!(s.resolve(&v), Ty::Deque(Box::new(Ty::Int), Box::new(o)));
     }
@@ -3585,8 +3704,12 @@ mod tests {
                 .is_ok()
         );
         assert!(
-            s.unify(&v, &Ty::Deque(Box::new(Ty::Int), Box::new(c.clone())), Covariant)
-                .is_ok()
+            s.unify(
+                &v,
+                &Ty::Deque(Box::new(Ty::Int), Box::new(c.clone())),
+                Covariant
+            )
+            .is_ok()
         );
         // ov now bound to c. Second concrete same as c → no mismatch.
         assert!(
@@ -3606,7 +3729,11 @@ mod tests {
     // ── UserDefined unification tests ───────────────────────────────
 
     fn ud(id: QualifiedRef, type_args: Vec<Ty>, effect_args: Vec<Effect>) -> Ty {
-        Ty::UserDefined { id, type_args, effect_args }
+        Ty::UserDefined {
+            id,
+            type_args,
+            effect_args,
+        }
     }
 
     // -- Completeness: valid UserDefined unifications --
@@ -3615,18 +3742,24 @@ mod tests {
     fn user_defined_same_id_empty_args_unifies() {
         let mut s = TySubst::new();
         let id = fresh_qref();
-        assert!(s.unify(&ud(id, vec![], vec![]), &ud(id, vec![], vec![]), Invariant).is_ok());
+        assert!(
+            s.unify(&ud(id, vec![], vec![]), &ud(id, vec![], vec![]), Invariant)
+                .is_ok()
+        );
     }
 
     #[test]
     fn user_defined_same_id_concrete_type_args_unifies() {
         let mut s = TySubst::new();
         let id = fresh_qref();
-        assert!(s.unify(
-            &ud(id, vec![Ty::Int], vec![]),
-            &ud(id, vec![Ty::Int], vec![]),
-            Invariant,
-        ).is_ok());
+        assert!(
+            s.unify(
+                &ud(id, vec![Ty::Int], vec![]),
+                &ud(id, vec![Ty::Int], vec![]),
+                Invariant,
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -3634,11 +3767,14 @@ mod tests {
         let mut s = TySubst::new();
         let id = fresh_qref();
         let p = s.fresh_param();
-        assert!(s.unify(
-            &ud(id, vec![p.clone()], vec![]),
-            &ud(id, vec![Ty::Int], vec![]),
-            Invariant,
-        ).is_ok());
+        assert!(
+            s.unify(
+                &ud(id, vec![p.clone()], vec![]),
+                &ud(id, vec![Ty::Int], vec![]),
+                Invariant,
+            )
+            .is_ok()
+        );
         assert_eq!(s.resolve(&p), Ty::Int);
     }
 
@@ -3647,11 +3783,14 @@ mod tests {
         let mut s = TySubst::new();
         let id = fresh_qref();
         let e = s.fresh_effect_var();
-        assert!(s.unify(
-            &ud(id, vec![], vec![e.clone()]),
-            &ud(id, vec![], vec![Effect::pure()]),
-            Covariant,
-        ).is_ok());
+        assert!(
+            s.unify(
+                &ud(id, vec![], vec![e.clone()]),
+                &ud(id, vec![], vec![Effect::pure()]),
+                Covariant,
+            )
+            .is_ok()
+        );
         assert_eq!(s.resolve_effect(&e), Effect::pure());
     }
 
@@ -3661,11 +3800,14 @@ mod tests {
         let mut s = TySubst::new();
         let id = fresh_qref();
         let p = s.fresh_param();
-        assert!(s.unify(
-            &ud(id, vec![Ty::List(Box::new(p.clone()))], vec![]),
-            &ud(id, vec![Ty::List(Box::new(Ty::Int))], vec![]),
-            Invariant,
-        ).is_ok());
+        assert!(
+            s.unify(
+                &ud(id, vec![Ty::List(Box::new(p.clone()))], vec![]),
+                &ud(id, vec![Ty::List(Box::new(Ty::Int))], vec![]),
+                Invariant,
+            )
+            .is_ok()
+        );
         assert_eq!(s.resolve(&p), Ty::Int);
     }
 
@@ -3676,37 +3818,56 @@ mod tests {
         let mut s = TySubst::new();
         let id_a = fresh_qref();
         let id_b = fresh_qref();
-        assert!(s.unify(&ud(id_a, vec![], vec![]), &ud(id_b, vec![], vec![]), Invariant).is_err());
+        assert!(
+            s.unify(
+                &ud(id_a, vec![], vec![]),
+                &ud(id_b, vec![], vec![]),
+                Invariant
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn user_defined_type_arg_mismatch_fails() {
         let mut s = TySubst::new();
         let id = fresh_qref();
-        assert!(s.unify(
-            &ud(id, vec![Ty::Int], vec![]),
-            &ud(id, vec![Ty::String], vec![]),
-            Invariant,
-        ).is_err());
+        assert!(
+            s.unify(
+                &ud(id, vec![Ty::Int], vec![]),
+                &ud(id, vec![Ty::String], vec![]),
+                Invariant,
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn user_defined_effect_arg_mismatch_fails() {
         let mut s = TySubst::new();
         let id = fresh_qref();
-        assert!(s.unify(
-            &ud(id, vec![], vec![Effect::pure()]),
-            &ud(id, vec![], vec![Effect::io()]),
-            Invariant,
-        ).is_err());
+        assert!(
+            s.unify(
+                &ud(id, vec![], vec![Effect::pure()]),
+                &ud(id, vec![], vec![Effect::io()]),
+                Invariant,
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn user_defined_vs_other_ty_fails() {
         let mut s = TySubst::new();
         let id = fresh_qref();
-        assert!(s.unify(&ud(id, vec![], vec![]), &Ty::Int, Invariant).is_err());
-        assert!(s.unify(&Ty::String, &ud(id, vec![], vec![]), Invariant).is_err());
+        assert!(
+            s.unify(&ud(id, vec![], vec![]), &Ty::Int, Invariant)
+                .is_err()
+        );
+        assert!(
+            s.unify(&Ty::String, &ud(id, vec![], vec![]), Invariant)
+                .is_err()
+        );
     }
 
     // -- Resolve --
@@ -3725,7 +3886,11 @@ mod tests {
 
         let resolved = s.resolve(&ty);
         match resolved {
-            Ty::UserDefined { id: rid, type_args, effect_args } => {
+            Ty::UserDefined {
+                id: rid,
+                type_args,
+                effect_args,
+            } => {
                 assert_eq!(rid, id);
                 assert_eq!(type_args, vec![Ty::Int]);
                 assert_eq!(effect_args, vec![Effect::io()]);
@@ -3771,8 +3936,16 @@ mod tests {
     fn type_registry_duplicate_panics() {
         let mut reg = TypeRegistry::new();
         let id = fresh_qref();
-        reg.register(UserDefinedDecl { qref: id, type_params: vec![], effect_params: vec![] });
-        reg.register(UserDefinedDecl { qref: id, type_params: vec![], effect_params: vec![] });
+        reg.register(UserDefinedDecl {
+            qref: id,
+            type_params: vec![],
+            effect_params: vec![],
+        });
+        reg.register(UserDefinedDecl {
+            qref: id,
+            type_params: vec![],
+            effect_params: vec![],
+        });
     }
 
     #[test]
@@ -3795,7 +3968,9 @@ mod tests {
         let i = acvus_utils::Interner::new();
         let fn_id = QualifiedRef::root(i.intern("cast_fn"));
         let mut rule_subst = TySubst::new();
-        let params: Vec<Ty> = (0..type_param_count).map(|_| rule_subst.fresh_param()).collect();
+        let params: Vec<Ty> = (0..type_param_count)
+            .map(|_| rule_subst.fresh_param())
+            .collect();
         let from = Ty::UserDefined {
             id,
             type_args: params.clone(),
@@ -3808,7 +3983,11 @@ mod tests {
             type_params: vec![None; type_param_count],
             effect_params: vec![],
         });
-        reg.register_cast(CastRule { from, to, fn_ref: fn_id });
+        reg.register_cast(CastRule {
+            from,
+            to,
+            fn_ref: fn_id,
+        });
         let subst = TySubst::with_registry(Freeze::new(reg));
         (id, fn_id, subst)
     }
@@ -3820,7 +3999,11 @@ mod tests {
         // UserDefined(A, [T]) → List<T>
         let (id, fn_id, mut s) = make_cast_subst(1, |p| Ty::List(Box::new(p[0].clone())));
 
-        let from = Ty::UserDefined { id, type_args: vec![Ty::Int], effect_args: vec![] };
+        let from = Ty::UserDefined {
+            id,
+            type_args: vec![Ty::Int],
+            effect_args: vec![],
+        };
         let to = Ty::List(Box::new(Ty::Int));
         assert!(s.unify(&from, &to, Covariant).is_ok());
         assert_eq!(s.last_extern_cast, Some(fn_id));
@@ -3831,7 +4014,11 @@ mod tests {
         // UserDefined(A, [T]) → List<T>, where T is a fresh param on the consumer side
         let (id, _fn_id, mut s) = make_cast_subst(1, |p| Ty::List(Box::new(p[0].clone())));
 
-        let from = Ty::UserDefined { id, type_args: vec![Ty::Int], effect_args: vec![] };
+        let from = Ty::UserDefined {
+            id,
+            type_args: vec![Ty::Int],
+            effect_args: vec![],
+        };
         let consumer_param = s.fresh_param();
         let to = Ty::List(Box::new(consumer_param.clone()));
         assert!(s.unify(&from, &to, Covariant).is_ok());
@@ -3843,7 +4030,11 @@ mod tests {
         // UserDefined(A, []) → Int
         let (id, _fn_id, mut s) = make_cast_subst(0, |_| Ty::Int);
 
-        let from = Ty::UserDefined { id, type_args: vec![], effect_args: vec![] };
+        let from = Ty::UserDefined {
+            id,
+            type_args: vec![],
+            effect_args: vec![],
+        };
         assert!(s.unify(&from, &Ty::Int, Covariant).is_ok());
     }
 
@@ -3854,7 +4045,11 @@ mod tests {
         // Rule: A → List<T>, but expected String
         let (id, _fn_id, mut s) = make_cast_subst(1, |p| Ty::List(Box::new(p[0].clone())));
 
-        let from = Ty::UserDefined { id, type_args: vec![Ty::Int], effect_args: vec![] };
+        let from = Ty::UserDefined {
+            id,
+            type_args: vec![Ty::Int],
+            effect_args: vec![],
+        };
         assert!(s.unify(&from, &Ty::String, Covariant).is_err());
     }
 
@@ -3864,7 +4059,11 @@ mod tests {
         let id = fresh_qref();
         let mut s = TySubst::new();
 
-        let from = Ty::UserDefined { id, type_args: vec![], effect_args: vec![] };
+        let from = Ty::UserDefined {
+            id,
+            type_args: vec![],
+            effect_args: vec![],
+        };
         assert!(s.unify(&from, &Ty::Int, Covariant).is_err());
     }
 
@@ -3873,7 +4072,11 @@ mod tests {
         // ExternCast only works in covariant/contravariant, not invariant
         let (id, _fn_id, mut s) = make_cast_subst(0, |_| Ty::Int);
 
-        let from = Ty::UserDefined { id, type_args: vec![], effect_args: vec![] };
+        let from = Ty::UserDefined {
+            id,
+            type_args: vec![],
+            effect_args: vec![],
+        };
         assert!(s.unify(&from, &Ty::Int, Invariant).is_err());
     }
 
@@ -3891,14 +4094,22 @@ mod tests {
         let mut s1 = TySubst::new();
         let t1 = s1.fresh_param();
         let rule_a = CastRule {
-            from: Ty::UserDefined { id, type_args: vec![t1.clone()], effect_args: vec![] },
+            from: Ty::UserDefined {
+                id,
+                type_args: vec![t1.clone()],
+                effect_args: vec![],
+            },
             to: Ty::List(Box::new(t1)),
             fn_ref: fn_id_a,
         };
         let mut s2 = TySubst::new();
         let t2 = s2.fresh_param();
         let rule_b = CastRule {
-            from: Ty::UserDefined { id, type_args: vec![t2.clone()], effect_args: vec![] },
+            from: Ty::UserDefined {
+                id,
+                type_args: vec![t2.clone()],
+                effect_args: vec![],
+            },
             to: Ty::List(Box::new(t2)),
             fn_ref: fn_id_b,
         };
@@ -3906,14 +4117,23 @@ mod tests {
         // Build registry manually (bypassing register_cast duplicate check)
         let mut reg = TypeRegistry::new();
         reg.register(UserDefinedDecl {
-            qref: id, type_params: vec![None], effect_params: vec![],
+            qref: id,
+            type_params: vec![None],
+            effect_params: vec![],
         });
         reg.from_rules.entry(id).or_default().push(rule_a);
         reg.from_rules.entry(id).or_default().push(rule_b);
         let mut s = TySubst::with_registry(Freeze::new(reg));
 
-        let from = Ty::UserDefined { id, type_args: vec![Ty::Int], effect_args: vec![] };
-        assert!(s.unify(&from, &Ty::List(Box::new(Ty::Int)), Covariant).is_err());
+        let from = Ty::UserDefined {
+            id,
+            type_args: vec![Ty::Int],
+            effect_args: vec![],
+        };
+        assert!(
+            s.unify(&from, &Ty::List(Box::new(Ty::Int)), Covariant)
+                .is_err()
+        );
     }
 
     // -- TypeRegistry cast rules --
@@ -3930,10 +4150,16 @@ mod tests {
 
         let mut reg = TypeRegistry::new();
         reg.register(UserDefinedDecl {
-            qref: id, type_params: vec![None], effect_params: vec![],
+            qref: id,
+            type_params: vec![None],
+            effect_params: vec![],
         });
         reg.register_cast(CastRule {
-            from: Ty::UserDefined { id, type_args: vec![t.clone()], effect_args: vec![] },
+            from: Ty::UserDefined {
+                id,
+                type_args: vec![t.clone()],
+                effect_args: vec![],
+            },
             to: Ty::List(Box::new(t.clone())),
             fn_ref: fn_id_a,
         });
@@ -3941,7 +4167,11 @@ mod tests {
         let mut s2 = TySubst::new();
         let t2 = s2.fresh_param();
         reg.register_cast(CastRule {
-            from: Ty::UserDefined { id, type_args: vec![t2.clone()], effect_args: vec![] },
+            from: Ty::UserDefined {
+                id,
+                type_args: vec![t2.clone()],
+                effect_args: vec![],
+            },
             to: Ty::List(Box::new(t2)),
             fn_ref: fn_id_b,
         });
@@ -3956,12 +4186,18 @@ mod tests {
 
         let mut reg = TypeRegistry::new();
         reg.register(UserDefinedDecl {
-            qref: id, type_params: vec![None], effect_params: vec![],
+            qref: id,
+            type_params: vec![None],
+            effect_params: vec![],
         });
         let mut s1 = TySubst::new();
         let t1 = s1.fresh_param();
         reg.register_cast(CastRule {
-            from: Ty::UserDefined { id, type_args: vec![t1.clone()], effect_args: vec![] },
+            from: Ty::UserDefined {
+                id,
+                type_args: vec![t1.clone()],
+                effect_args: vec![],
+            },
             to: Ty::List(Box::new(t1)),
             fn_ref: fn_id_a,
         });
@@ -3969,7 +4205,11 @@ mod tests {
         let mut s2 = TySubst::new();
         let t2 = s2.fresh_param();
         reg.register_cast(CastRule {
-            from: Ty::UserDefined { id, type_args: vec![t2.clone()], effect_args: vec![] },
+            from: Ty::UserDefined {
+                id,
+                type_args: vec![t2.clone()],
+                effect_args: vec![],
+            },
             to: Ty::Option(Box::new(t2)),
             fn_ref: fn_id_b,
         });
@@ -4054,10 +4294,7 @@ mod tests {
 
     #[test]
     fn purity_user_defined_is_unpure() {
-        assert_eq!(
-            test_user_defined().materiality(),
-            Materiality::Ephemeral
-        );
+        assert_eq!(test_user_defined().materiality(), Materiality::Ephemeral);
     }
 
     #[test]

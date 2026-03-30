@@ -70,11 +70,19 @@ pub fn build_list(
 /// Group → multiple params, Paren(Ident) → 1 param.
 pub fn expr_to_lambda(interner: &Interner, params_expr: Expr, body: Expr, span: Span) -> Expr {
     let params = match params_expr {
-        Expr::Ident { name, span, .. } => vec![LambdaParam { id: AstId::alloc(), name, span }],
+        Expr::Ident { name, span, .. } => vec![LambdaParam {
+            id: AstId::alloc(),
+            name: name.name,
+            span,
+        }],
         Expr::Tuple { elements, .. } => elements
             .into_iter()
             .map(|elem| match elem {
-                TupleElem::Expr(Expr::Ident { name, span, .. }) => LambdaParam { id: AstId::alloc(), name, span },
+                TupleElem::Expr(Expr::Ident { name, span, .. }) => LambdaParam {
+                    id: AstId::alloc(),
+                    name: name.name,
+                    span,
+                },
                 TupleElem::Expr(other) => LambdaParam {
                     id: AstId::alloc(),
                     name: interner.intern(&format!("<invalid:{:?}>", other.span())),
@@ -88,7 +96,11 @@ pub fn expr_to_lambda(interner: &Interner, params_expr: Expr, body: Expr, span: 
             })
             .collect(),
         Expr::Paren { inner, .. } => match *inner {
-            Expr::Ident { name, span, .. } => vec![LambdaParam { id: AstId::alloc(), name, span }],
+            Expr::Ident { name, span, .. } => vec![LambdaParam {
+                id: AstId::alloc(),
+                name: name.name,
+                span,
+            }],
             other => vec![LambdaParam {
                 id: AstId::alloc(),
                 name: interner.intern(&format!("<invalid:{:?}>", other.span())),

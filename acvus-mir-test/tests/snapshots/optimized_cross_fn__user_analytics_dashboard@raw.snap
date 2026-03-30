@@ -1,0 +1,396 @@
+---
+source: acvus-mir-test/tests/optimized_cross_fn.rs
+expression: raw
+---
+── build_summary ──
+=== literals ===
+  T0 = "S:"
+  T1 = " A:"
+  T2 = " M:"
+  T3 = " age:"
+  T4 = " | "
+
+=== main ===
+     0 │   r0 = ref @adult_count
+     1 │   r1 = load r0
+     2 │   r2 = ref @minor_count
+     3 │   r3 = load r2
+     4 │   r4 = ref @name_list
+     5 │   r5 = load r4
+     6 │   r6 = ref @output
+     7 │   r7 = load r6
+     8 │   r8 = ref @senior_count
+     9 │   r9 = load r8
+    10 │   r10 = ref @total_age
+    11 │   r11 = load r10
+    12 │   r12 = ref @users
+    13 │   r13 = load r12
+    15 │   r14 = ref $v1
+    16 │   r15 = load r14
+    17 │   r16 = call #0(r15)
+    18 │   r17 = T0 + r16
+    20 │   r18 = r17 + T1
+    21 │   r19 = ref $v2
+    22 │   r20 = load r19
+    23 │   r21 = call #0(r20)
+    24 │   r22 = r18 + r21
+    26 │   r23 = r22 + T2
+    27 │   r24 = ref $v3
+    28 │   r25 = load r24
+    29 │   r26 = call #0(r25)
+    30 │   r27 = r23 + r26
+    32 │   r28 = r27 + T3
+    33 │   r29 = ref $v4
+    34 │   r30 = load r29
+    35 │   r31 = call #0(r30)
+    36 │   r32 = r28 + r31
+    38 │   r33 = r32 + T4
+    39 │   r34 = ref $v5
+    40 │   r35 = load r34
+    41 │   r36 = r33 + r35
+    42 │   return r36
+
+    ; r0 (@adult_count) : Ref<Int>
+    ; r1 (@adult_count) : Int
+    ; r2 (@minor_count) : Ref<Int>
+    ; r3 (@minor_count) : Int
+    ; r4 (@name_list) : Ref<String>
+    ; r5 (@name_list) : String
+    ; r6 (@output) : Ref<String>
+    ; r7 (@output) : String
+    ; r8 (@senior_count) : Ref<Int>
+    ; r9 (@senior_count) : Int
+    ; r10 (@total_age) : Ref<Int>
+    ; r11 (@total_age) : Int
+    ; r12 (@users) : Ref<List<{age: Int, name: String}>>
+    ; r13 (@users) : List<{age: Int, name: String}>
+    ; r14 (v21) : Ref<Int>
+    ; r15 ($seniors) : Int
+    ; r16 (to_string(...)) : String
+    ; r17 (v24) : String
+    ; r18 (v26) : String
+    ; r19 (v27) : Ref<Int>
+    ; r20 ($adults) : Int
+    ; r21 (to_string(...)) : String
+    ; r22 (v30) : String
+    ; r23 (v32) : String
+    ; r24 (v33) : Ref<Int>
+    ; r25 ($minors) : Int
+    ; r26 (to_string(...)) : String
+    ; r27 (v36) : String
+    ; r28 (v38) : String
+    ; r29 (v39) : Ref<Int>
+    ; r30 ($total_age) : Int
+    ; r31 (to_string(...)) : String
+    ; r32 (v42) : String
+    ; r33 (v44) : String
+    ; r34 (v45) : Ref<String>
+    ; r35 ($names) : String
+    ; r36 (v47) : String
+    ; r37 (v3) : Int
+    ; r38 (v25) : String
+    ; r39 (v2) : Int
+    ; r40 (v43) : String
+    ; r41 (v5) : String
+    ; r42 (v31) : String
+    ; r43 (v37) : String
+    ; r44 (v20) : String
+    ; r45 (v1) : Int
+    ; r46 (v4) : Int
+
+── classify_age ──
+=== main ===
+     0 │   r0 = ref @adult_count
+     1 │   r1 = load r0
+     2 │   r2 = ref @minor_count
+     3 │   r3 = load r2
+     4 │   r4 = ref @name_list
+     5 │   r5 = load r4
+     6 │   r6 = ref @output
+     7 │   r7 = load r6
+     8 │   r8 = ref @senior_count
+     9 │   r9 = load r8
+    10 │   r10 = ref @total_age
+    11 │   r11 = load r10
+    12 │   r12 = ref @users
+    13 │   r13 = load r12
+    15 │   r14 = ref r
+    16 │   store r14 = 0 (r15)
+    17 │   r16 = ref $v1
+    18 │   r17 = load r16
+    20 │   r18 = r17 >= 65 (r19)
+    21 │   r20 = test r18 == true
+    22 │   jump_if r20 then L0 else L1
+    23 │ L0:
+    25 │   r21 = ref r
+    26 │   store r21 = 2 (r22)
+    27 │   jump L1
+    28 │ L1:
+    29 │   r23 = ref $v1
+    30 │   r24 = load r23
+    32 │   r25 = r24 >= 18 (r26)
+    33 │   r27 = test r25 == true
+    34 │   jump_if r27 then L2 else L3
+    35 │ L2:
+    37 │   r28 = ref r
+    38 │   store r28 = 1 (r29)
+    39 │   jump L3
+    40 │ L3:
+    41 │   r30 = ref r
+    42 │   r31 = load r30
+    43 │   return r31
+
+    ; r0 (@adult_count) : Ref<Int>
+    ; r1 (@adult_count) : Int
+    ; r2 (@minor_count) : Ref<Int>
+    ; r3 (@minor_count) : Int
+    ; r4 (@name_list) : Ref<String>
+    ; r5 (@name_list) : String
+    ; r6 (@output) : Ref<String>
+    ; r7 (@output) : String
+    ; r8 (@senior_count) : Ref<Int>
+    ; r9 (@senior_count) : Int
+    ; r10 (@total_age) : Ref<Int>
+    ; r11 (@total_age) : Int
+    ; r12 (@users) : Ref<List<{age: Int, name: String}>>
+    ; r13 (@users) : List<{age: Int, name: String}>
+    ; r14 (v18) : Ref<Int>
+    ; r15 (v16) : Int
+    ; r16 (v19) : Ref<Int>
+    ; r17 ($age) : Int
+    ; r18 (v22) : Bool
+    ; r19 (v21) : Int
+    ; r20 (v23) : Bool
+    ; r21 (v25) : Ref<Int>
+    ; r22 (v24) : Int
+    ; r23 (v26) : Ref<Int>
+    ; r24 ($age) : Int
+    ; r25 (v29) : Bool
+    ; r26 (v28) : Int
+    ; r27 (v30) : Bool
+    ; r28 (v32) : Ref<Int>
+    ; r29 (v31) : Int
+    ; r30 (v33) : Ref<Int>
+    ; r31 (r) : Int
+    ; r32 (v1) : Int
+
+── main ──
+=== literals ===
+  T0 = ", "
+
+=== main ===
+     0 │   r0 = ref @adult_count
+     1 │   r1 = load r0
+     2 │   r2 = ref @minor_count
+     3 │   r3 = load r2
+     4 │   r4 = ref @name_list
+     5 │   r5 = load r4
+     6 │   r6 = ref @output
+     7 │   r7 = load r6
+     8 │   r8 = ref @senior_count
+     9 │   r9 = load r8
+    10 │   r10 = ref @total_age
+    11 │   r11 = load r10
+    12 │   r12 = ref @users
+    13 │   r13 = load r12
+    14 │   r14 = ref @users
+    15 │   r15 = load r14
+    17 │   jump L0(0 (r16))
+    18 │ L0(r17: Int):
+    19 │   list_step r18, r19 = r15[r17] else L1()
+    20 │ L2:
+    21 │   r20 = ref user
+    22 │   store r20 = r18
+    23 │   r21 = ref user.age
+    24 │   r22 = load r21
+    25 │   r23 = call #0(r22)
+    26 │   r24 = ref group
+    27 │   store r24 = r23
+    28 │   r25 = ref group
+    29 │   r26 = load r25
+    31 │   r27 = r26 > 1 (r28)
+    32 │   r29 = test r27 == true
+    33 │   jump_if r29 then L3 else L4
+    34 │ L3:
+    35 │   r30 = ref @senior_count
+    36 │   r31 = load r30
+    38 │   r32 = r31 + 1 (r33)
+    39 │   r34 = ref @senior_count
+    40 │   store r34 = r32
+    41 │   jump L4
+    42 │ L4:
+    43 │   r35 = ref group
+    44 │   r36 = load r35
+    46 │   r37 = r36 == 1 (r38)
+    47 │   r39 = test r37 == true
+    48 │   jump_if r39 then L5 else L6
+    49 │ L5:
+    50 │   r40 = ref @adult_count
+    51 │   r41 = load r40
+    53 │   r42 = r41 + 1 (r43)
+    54 │   r44 = ref @adult_count
+    55 │   store r44 = r42
+    56 │   jump L6
+    57 │ L6:
+    58 │   r45 = ref group
+    59 │   r46 = load r45
+    61 │   r47 = r46 == 0 (r48)
+    62 │   r49 = test r47 == true
+    63 │   jump_if r49 then L7 else L8
+    64 │ L7:
+    65 │   r50 = ref @minor_count
+    66 │   r51 = load r50
+    68 │   r52 = r51 + 1 (r53)
+    69 │   r54 = ref @minor_count
+    70 │   store r54 = r52
+    71 │   jump L8
+    72 │ L8:
+    73 │   r55 = ref @total_age
+    74 │   r56 = load r55
+    75 │   r57 = ref user.age
+    76 │   r58 = load r57
+    77 │   r59 = r56 + r58
+    78 │   r60 = ref @total_age
+    79 │   store r60 = r59
+    80 │   r61 = ref @name_list
+    81 │   r62 = load r61
+    82 │   r63 = ref user.name
+    83 │   r64 = load r63
+    84 │   r65 = r62 + r64
+    86 │   r66 = r65 + T0
+    87 │   r67 = ref @name_list
+    88 │   store r67 = r66
+    89 │   jump L0(r19)
+    90 │ L1:
+    91 │   r68 = ref @senior_count
+    92 │   r69 = load r68
+    93 │   r70 = ref @adult_count
+    94 │   r71 = load r70
+    95 │   r72 = r69 + r71
+    96 │   r73 = ref @minor_count
+    97 │   r74 = load r73
+    98 │   r75 = r72 + r74
+    99 │   r76 = ref total_users
+   100 │   store r76 = r75
+   101 │   r77 = ref @senior_count
+   102 │   r78 = load r77
+   103 │   r79 = ref @adult_count
+   104 │   r80 = load r79
+   105 │   r81 = ref @minor_count
+   106 │   r82 = load r81
+   107 │   r83 = ref @total_age
+   108 │   r84 = load r83
+   109 │   r85 = ref @name_list
+   110 │   r86 = load r85
+   111 │   r87 = call #1(r78, r80, r82, r84, r86)
+   112 │   r88 = ref summary
+   113 │   store r88 = r87
+   114 │   r89 = ref summary
+   115 │   r90 = load r89
+   116 │   r91 = call #2(r90)
+   117 │   r92 = ref summary
+   118 │   r93 = load r92
+   119 │   r94 = ref @output
+   120 │   store r94 = r93
+   121 │   r95 = ref summary
+   122 │   r96 = load r95
+   123 │   return r96
+
+    ; r0 (@adult_count) : Ref<Int>
+    ; r1 (@adult_count) : Int
+    ; r2 (@minor_count) : Ref<Int>
+    ; r3 (@minor_count) : Int
+    ; r4 (@name_list) : Ref<String>
+    ; r5 (@name_list) : String
+    ; r6 (@output) : Ref<String>
+    ; r7 (@output) : String
+    ; r8 (@senior_count) : Ref<Int>
+    ; r9 (@senior_count) : Int
+    ; r10 (@total_age) : Ref<Int>
+    ; r11 (@total_age) : Int
+    ; r12 (@users) : Ref<List<{age: Int, name: String}>>
+    ; r13 (@users) : List<{age: Int, name: String}>
+    ; r14 (@users) : Ref<List<{age: Int, name: String}>>
+    ; r15 (v16) : List<{age: Int, name: String}>
+    ; r16 (v17) : Int
+    ; r17 (v18) : Int
+    ; r18 (user) : {age: Int, name: String}
+    ; r19 (v20) : Int
+    ; r20 (v22) : Ref<{age: Int, name: String}>
+    ; r21 (user.age) : Ref<Int>
+    ; r22 (v24) : Int
+    ; r23 (classify_age(...)) : Int
+    ; r24 (v27) : Ref<Int>
+    ; r25 (v28) : Ref<Int>
+    ; r26 (group) : Int
+    ; r27 (v31) : Bool
+    ; r28 (v30) : Int
+    ; r29 (v32) : Bool
+    ; r30 (@senior_count) : Ref<Int>
+    ; r31 (v34) : Int
+    ; r32 (v36) : Int
+    ; r33 (v35) : Int
+    ; r34 (@senior_count) : Ref<Int>
+    ; r35 (v38) : Ref<Int>
+    ; r36 (group) : Int
+    ; r37 (v41) : Bool
+    ; r38 (v40) : Int
+    ; r39 (v42) : Bool
+    ; r40 (@adult_count) : Ref<Int>
+    ; r41 (v44) : Int
+    ; r42 (v46) : Int
+    ; r43 (v45) : Int
+    ; r44 (@adult_count) : Ref<Int>
+    ; r45 (v48) : Ref<Int>
+    ; r46 (group) : Int
+    ; r47 (v51) : Bool
+    ; r48 (v50) : Int
+    ; r49 (v52) : Bool
+    ; r50 (@minor_count) : Ref<Int>
+    ; r51 (v54) : Int
+    ; r52 (v56) : Int
+    ; r53 (v55) : Int
+    ; r54 (@minor_count) : Ref<Int>
+    ; r55 (@total_age) : Ref<Int>
+    ; r56 (v59) : Int
+    ; r57 (user.age) : Ref<Int>
+    ; r58 (v61) : Int
+    ; r59 (v62) : Int
+    ; r60 (@total_age) : Ref<Int>
+    ; r61 (@name_list) : Ref<String>
+    ; r62 (v65) : String
+    ; r63 (user.name) : Ref<String>
+    ; r64 (v67) : String
+    ; r65 (v68) : String
+    ; r66 (v70) : String
+    ; r67 (@name_list) : Ref<String>
+    ; r68 (@senior_count) : Ref<Int>
+    ; r69 (v73) : Int
+    ; r70 (@adult_count) : Ref<Int>
+    ; r71 (v75) : Int
+    ; r72 (v76) : Int
+    ; r73 (@minor_count) : Ref<Int>
+    ; r74 (v78) : Int
+    ; r75 (v79) : Int
+    ; r76 (v81) : Ref<Int>
+    ; r77 (@senior_count) : Ref<Int>
+    ; r78 (v83) : Int
+    ; r79 (@adult_count) : Ref<Int>
+    ; r80 (v85) : Int
+    ; r81 (@minor_count) : Ref<Int>
+    ; r82 (v87) : Int
+    ; r83 (@total_age) : Ref<Int>
+    ; r84 (v89) : Int
+    ; r85 (@name_list) : Ref<String>
+    ; r86 (v91) : String
+    ; r87 (build_summary(...)) : String
+    ; r88 (v94) : Ref<String>
+    ; r89 (v95) : Ref<String>
+    ; r90 (summary) : String
+    ; r91 (send_report(...)) : Int
+    ; r92 (v98) : Ref<String>
+    ; r93 (summary) : String
+    ; r94 (@output) : Ref<String>
+    ; r95 (v101) : Ref<String>
+    ; r96 (summary) : String
+    ; r97 (v69) : String

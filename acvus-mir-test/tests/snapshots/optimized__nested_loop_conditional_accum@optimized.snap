@@ -1,0 +1,68 @@
+---
+source: acvus-mir-test/tests/optimized.rs
+expression: opt
+---
+=== main ===
+     0 │   r0 = undef
+     1 │   r1 = undef
+     2 │   r2 = ref @neg_sum
+     3 │   r3 = ref @pos_sum
+     4 │   r4 = ref @matrix
+     5 │   r5 = ref @neg_sum
+     6 │   r6 = ref @pos_sum
+    11 │   r7 = load r4
+    12 │   r8 = load r5
+    13 │   r9 = load r6
+    14 │   jump L0(0 (r10), r8, r9, r0, r1)
+    15 │ L0(r1: Int, r10: Int, r8: Int, r0: List<Int>, r9: Int):
+    16 │   store r2 = 0 (r10)
+    17 │   store r3 = r8
+    18 │   r11 = object {pos: r8, neg: 0 (r10)}
+    19 │   list_step r12, r13 = r7[r1] else L1()
+    20 │ L2:
+    21 │   jump L3(0 (r14), 0 (r10), r8, r9)
+    22 │ L3(r1: Int, r10: Int, r8: Int, r9: Int):
+    23 │   list_step r15, r16 = r12[r1] else L4()
+    24 │ L5:
+    25 │   r17 = r15 > 0 (r18)
+    26 │   r19 = test r17 == true
+    27 │   r1 = r8 + r15
+    28 │   r17 = r15 < 0 (r20)
+    29 │   r21 = test r17 == true
+    30 │   r9 = 0 (r10) + r15
+    31 │   jump_if r19 then L6 else L7(r8)
+    32 │ L6:
+    33 │   jump L7(r1)
+    34 │ L7(r1: Int):
+    35 │   jump_if r21 then L8 else L9(0 (r10))
+    36 │ L8:
+    37 │   jump L9(r9)
+    38 │ L9(r10: Int):
+    39 │   jump L3(r16, 0 (r10), r1, r15)
+    40 │ L4:
+    41 │   jump L0(r13, 0 (r10), r8, r12, r9)
+    42 │ L1:
+    43 │   return r11
+
+    ; r0 (v1) : List<Int>
+    ; r1 (v2) : Int
+    ; r2 (@neg_sum) : Ref<Int>
+    ; r3 (@pos_sum) : Ref<Int>
+    ; r4 (@matrix) : Ref<List<List<Int>>>
+    ; r5 (@neg_sum) : Ref<Int>
+    ; r6 (@pos_sum) : Ref<Int>
+    ; r7 (@matrix) : List<List<Int>>
+    ; r8 (@neg_sum) : Int
+    ; r9 (@pos_sum) : Int
+    ; r10 (v8) : Int
+    ; r11 (v15) : {neg: Int, pos: Int}
+    ; r12 (v16) : List<Int>
+    ; r13 (v17) : Int
+    ; r14 (v9) : Int
+    ; r15 (v18) : Int
+    ; r16 (v19) : Int
+    ; r17 (v20) : Bool
+    ; r18 (v10) : Int
+    ; r19 (v21) : Bool
+    ; r20 (v11) : Int
+    ; r21 (v22) : Bool

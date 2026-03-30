@@ -1,5 +1,4 @@
 use std::marker::PhantomData;
-use std::num::NonZero;
 
 // ── Global unique Id ─────────────────────────────────────────────────
 
@@ -109,6 +108,12 @@ pub trait LocalIdOps: Copy + Eq + std::hash::Hash + std::fmt::Debug {
 pub struct LocalFactory<I: LocalIdOps> {
     next: usize,
     _phantom: PhantomData<I>,
+}
+
+impl<I: LocalIdOps> Default for LocalFactory<I> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<I: LocalIdOps> LocalFactory<I> {

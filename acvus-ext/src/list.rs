@@ -9,14 +9,22 @@ use acvus_utils::Interner;
 
 // ── Handlers ────────────────────────────────────────────────────────
 
-fn h_len(_: &Interner, (val,): (Value,), Uses(()): Uses<()>) -> Result<(i64, Defs<()>), RuntimeError> {
+fn h_len(
+    _: &Interner,
+    (val,): (Value,),
+    Uses(()): Uses<()>,
+) -> Result<(i64, Defs<()>), RuntimeError> {
     Ok((val.as_list().len() as i64, Defs(())))
 }
 
-fn h_reverse(_: &Interner, (val,): (Value,), Uses(()): Uses<()>) -> Result<(Value, Defs<()>), RuntimeError> {
+fn h_reverse(
+    _: &Interner,
+    (val,): (Value,),
+    Uses(()): Uses<()>,
+) -> Result<(Value, Defs<()>), RuntimeError> {
     let list = val.into_list();
-    let mut items: Vec<Value> = Arc::try_unwrap(list)
-        .unwrap_or_else(|arc| arc.iter().map(|v| v.share()).collect());
+    let mut items: Vec<Value> =
+        Arc::try_unwrap(list).unwrap_or_else(|arc| arc.iter().map(|v| v.share()).collect());
     items.reverse();
     Ok((Value::list(items), Defs(())))
 }
@@ -28,7 +36,9 @@ fn build_len(interner: &Interner) -> acvus_interpreter::ExternFn {
     let t = s.fresh_param();
     let named = vec![Param::new(interner.intern("_0"), Ty::List(Box::new(t)))];
     let constraint = FnConstraint {
-        signature: Some(Signature { params: named.clone() }),
+        signature: Some(Signature {
+            params: named.clone(),
+        }),
         output: Constraint::Exact(Ty::Fn {
             params: named,
             ret: Box::new(Ty::Int),
@@ -43,9 +53,14 @@ fn build_len(interner: &Interner) -> acvus_interpreter::ExternFn {
 fn build_reverse(interner: &Interner) -> acvus_interpreter::ExternFn {
     let mut s = TySubst::new();
     let t = s.fresh_param();
-    let named = vec![Param::new(interner.intern("_0"), Ty::List(Box::new(t.clone())))];
+    let named = vec![Param::new(
+        interner.intern("_0"),
+        Ty::List(Box::new(t.clone())),
+    )];
     let constraint = FnConstraint {
-        signature: Some(Signature { params: named.clone() }),
+        signature: Some(Signature {
+            params: named.clone(),
+        }),
         output: Constraint::Exact(Ty::Fn {
             params: named,
             ret: Box::new(Ty::List(Box::new(t))),

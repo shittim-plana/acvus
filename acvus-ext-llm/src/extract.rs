@@ -76,11 +76,11 @@ pub fn split_system(messages: &[Message]) -> (Option<String>, Vec<&Message>) {
             role,
             content: Content::Text(text),
         } = m
+            && role == "system"
+            && system.is_none()
         {
-            if role == "system" && system.is_none() {
-                system = Some(text.clone());
-                continue;
-            }
+            system = Some(text.clone());
+            continue;
         }
         rest.push(m);
     }

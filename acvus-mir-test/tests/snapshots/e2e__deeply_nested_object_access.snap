@@ -6,20 +6,22 @@ expression: ir
   T0 = ""
 
 === main ===
-     0 │   r0 = context_project @data
-     1 │   r1 = context_load r0
-     3 │   r2 = r1.user
-     4 │   r3 = r2.address
-     5 │   r4 = r3.city
-     6 │   r5 = T0 + r4
-     7 │   return r5
+     0 │   r0 = ref @data
+     1 │   r1 = load r0
+     3 │   r2 = ref @data
+     4 │   r3 = r1.user
+     5 │   r4 = r3.address
+     6 │   r5 = r4.city
+     7 │   r6 = T0 + r5
+     8 │   return r6
 
-    ; r0 (@data) : {user: {address: {city: String}}}
-    ; r1 (v2) : {user: {address: {city: String}}}
-    ; r2 (user) : {address: {city: String}}
-    ; r3 (address) : {city: String}
-    ; r4 (city) : String
-    ; r5 (v9) : String
-    ; r6 (v3) : String
-    ; r7 (v5) : {user: {address: {city: String}}}
-    ; r8 (@data) : {user: {address: {city: String}}}
+    ; r0 (@data) : Ref<{user: {address: {city: String}}}>
+    ; r1 (@data) : {user: {address: {city: String}}}
+    ; r2 (v9) : Ref<{user: {address: {city: String}}}>
+    ; r3 (v5) : {address: {city: String}}
+    ; r4 (address) : {city: String}
+    ; r5 (city) : String
+    ; r6 (v8) : String
+    ; r7 (v3) : String
+    ; r8 (v10) : {user: {address: {city: String}}}
+    ; r9 (@data.user) : Ref<{address: {city: String}}>

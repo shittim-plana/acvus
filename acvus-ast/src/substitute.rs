@@ -57,7 +57,7 @@ fn sub_expr_seq(expr: Expr, subs: &FxHashMap<Astr, SubstValue>) -> Vec<Expr> {
             name,
             ref_kind: RefKind::Value,
             ..
-        } => match subs.get(name) {
+        } => match subs.get(&name.name) {
             Some(SubstValue::Splice(exprs)) => exprs.clone(),
             Some(SubstValue::Single(e)) => vec![e.clone()],
             None => vec![expr],
@@ -72,7 +72,7 @@ fn sub_expr(expr: Expr, subs: &FxHashMap<Astr, SubstValue>) -> Expr {
             name,
             ref_kind: RefKind::Value,
             ..
-        } => match subs.get(&name) {
+        } => match subs.get(&name.name) {
             Some(SubstValue::Single(replacement)) => replacement.clone(),
             Some(SubstValue::Splice(_)) => panic!(
                 "splice placeholder in non-sequence context \
@@ -98,7 +98,9 @@ fn sub_expr(expr: Expr, subs: &FxHashMap<Astr, SubstValue>) -> Expr {
             fold_binop(spliced, op, span)
         }
 
-        Expr::UnaryOp { op, operand, span, .. } => Expr::UnaryOp {
+        Expr::UnaryOp {
+            op, operand, span, ..
+        } => Expr::UnaryOp {
             id: AstId::alloc(),
             op,
             operand: Box::new(sub_expr(*operand, subs)),
@@ -117,7 +119,9 @@ fn sub_expr(expr: Expr, subs: &FxHashMap<Astr, SubstValue>) -> Expr {
         },
 
         // Function args: sequence context.
-        Expr::FuncCall { func, args, span, .. } => Expr::FuncCall {
+        Expr::FuncCall {
+            func, args, span, ..
+        } => Expr::FuncCall {
             id: AstId::alloc(),
             func: Box::new(sub_expr(*func, subs)),
             args: args
@@ -128,7 +132,9 @@ fn sub_expr(expr: Expr, subs: &FxHashMap<Astr, SubstValue>) -> Expr {
         },
 
         // Pipe chains: flatten → splice → re-fold (left-associative).
-        Expr::Pipe { left, right, span, .. } => {
+        Expr::Pipe {
+            left, right, span, ..
+        } => {
             let stages = flatten_pipe(*left, *right);
             let spliced: Vec<Expr> = stages
                 .into_iter()
@@ -137,7 +143,9 @@ fn sub_expr(expr: Expr, subs: &FxHashMap<Astr, SubstValue>) -> Expr {
             fold_pipe(spliced, span)
         }
 
-        Expr::Lambda { params, body, span, .. } => Expr::Lambda {
+        Expr::Lambda {
+            params, body, span, ..
+        } => Expr::Lambda {
             id: AstId::alloc(),
             params,
             body: Box::new(sub_expr(*body, subs)),
@@ -223,7 +231,9 @@ fn sub_expr(expr: Expr, subs: &FxHashMap<Astr, SubstValue>) -> Expr {
             span,
         },
 
-        Expr::Block { stmts, tail, span, .. } => Expr::Block {
+        Expr::Block {
+            stmts, tail, span, ..
+        } => Expr::Block {
             id: AstId::alloc(),
             stmts: stmts.into_iter().map(|s| sub_stmt(s, subs)).collect(),
             tail: Box::new(sub_expr(*tail, subs)),
@@ -311,13 +321,17 @@ fn fold_binop(parts: Vec<Expr>, op: BinOp, span: Span) -> Expr {
 
 fn sub_stmt(stmt: Stmt, subs: &FxHashMap<Astr, SubstValue>) -> Stmt {
     match stmt {
-        Stmt::Bind { name, expr, span, .. } => Stmt::Bind {
+        Stmt::Bind {
+            name, expr, span, ..
+        } => Stmt::Bind {
             id: AstId::alloc(),
             name,
             expr: sub_expr(expr, subs),
             span,
         },
-        Stmt::ContextStore { name, expr, span, .. } => Stmt::ContextStore {
+        Stmt::ContextStore {
+            name, expr, span, ..
+        } => Stmt::ContextStore {
             id: AstId::alloc(),
             name,
             expr: sub_expr(expr, subs),
@@ -448,8 +462,8 @@ fn validate_splice_expr(
             span,
             ..
         } => {
-            if splice_names.contains(name) && !in_seq {
-                errors.push((*name, *span));
+            if splice_names.contains(&name.name) && !in_seq {
+                errors.push((name.name, *span));
             }
         }
         Expr::Ident { .. } | Expr::Literal { .. } | Expr::ContextRef { .. } => {}

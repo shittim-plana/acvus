@@ -74,7 +74,11 @@ impl Effect {
     pub fn to_ser(&self, interner: &Interner) -> SerEffect {
         match self {
             Effect::Resolved(set) => SerEffect::Resolved(SerEffectSet {
-                reads: set.reads.iter().map(|r| target_to_ser(r, interner)).collect(),
+                reads: set
+                    .reads
+                    .iter()
+                    .map(|r| target_to_ser(r, interner))
+                    .collect(),
                 writes: set
                     .writes
                     .iter()
@@ -92,7 +96,11 @@ impl SerEffect {
     pub fn to_effect(&self, interner: &Interner) -> Effect {
         match self {
             SerEffect::Resolved(set) => Effect::Resolved(EffectSet {
-                reads: set.reads.iter().map(|r| ser_to_target(r, interner)).collect(),
+                reads: set
+                    .reads
+                    .iter()
+                    .map(|r| ser_to_target(r, interner))
+                    .collect(),
                 writes: set
                     .writes
                     .iter()
@@ -246,10 +254,15 @@ impl Ty {
                 identity: Box::new(identity.to_ser(interner)),
             },
             Ty::Identity(id) => SerTy::Identity(match id {
-                Identity::Concrete(cid) => SerIdentity::Concrete { id: cid.to_raw() as u32 },
-                Identity::Fresh(fid) => SerIdentity::Fresh { id: fid.to_raw() as u32 },
+                Identity::Concrete(cid) => SerIdentity::Concrete {
+                    id: cid.to_raw() as u32,
+                },
+                Identity::Fresh(fid) => SerIdentity::Fresh {
+                    id: fid.to_raw() as u32,
+                },
             }),
             Ty::Handle(..) => todo!("Handle serialization not yet implemented"),
+            Ty::Ref(..) => todo!("Ref serialization not yet implemented"),
             Ty::Param { token: p, .. } => SerTy::Param { id: p.id() },
         }
     }
@@ -313,11 +326,14 @@ impl SerTy {
                     })
                     .collect(),
             },
-            SerTy::Deque { elem, identity } => {
-                Ty::Deque(Box::new(elem.to_ty(interner)), Box::new(identity.to_ty(interner)))
-            }
+            SerTy::Deque { elem, identity } => Ty::Deque(
+                Box::new(elem.to_ty(interner)),
+                Box::new(identity.to_ty(interner)),
+            ),
             SerTy::Identity(ser_id) => Ty::Identity(match ser_id {
-                SerIdentity::Concrete { id } => Identity::Concrete(IdentityId::from_raw(*id as usize)),
+                SerIdentity::Concrete { id } => {
+                    Identity::Concrete(IdentityId::from_raw(*id as usize))
+                }
                 SerIdentity::Fresh { id } => Identity::Fresh(IdentityId::from_raw(*id as usize)),
             }),
         }

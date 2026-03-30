@@ -27,7 +27,7 @@ use crate::analysis::inst_info;
 use crate::cfg::CfgBody;
 use crate::graph::QualifiedRef;
 use crate::ir::*;
-use crate::ty::{Effect, EffectTarget, Ty, TokenId};
+use crate::ty::{Effect, EffectTarget, TokenId, Ty};
 
 /// Reorder instructions within each basic block for optimal Spawn/Eval scheduling.
 ///
@@ -138,10 +138,10 @@ fn build_dependency_graph(
     // SSA use-def: if B uses a value defined by A, then A → B.
     for (i, inst) in insts.iter().enumerate() {
         for u in inst_info::uses(&inst.kind) {
-            if let Some(&def_idx) = def_map.get(&u) {
-                if def_idx != i {
-                    deps[i].push(def_idx);
-                }
+            if let Some(&def_idx) = def_map.get(&u)
+                && def_idx != i
+            {
+                deps[i].push(def_idx);
             }
         }
     }
@@ -157,20 +157,22 @@ fn build_dependency_graph(
         }
     }
 
-    // ContextStore ordering: stores to the same context preserve original order.
+    // Store ordering: stores to the same context preserve original order.
     let mut last_ctx_store: FxHashMap<QualifiedRef, usize> = FxHashMap::default();
     for (i, inst) in insts.iter().enumerate() {
-        if let InstKind::ContextStore { dst, .. } = &inst.kind {
-            if let Some(&def_idx) = def_map.get(dst) {
-                if let InstKind::ContextProject { ctx, .. } = &insts[def_idx].kind {
-                    if let Some(&prev) = last_ctx_store.get(ctx) {
-                        if prev != i {
-                            deps[i].push(prev);
-                        }
-                    }
-                    last_ctx_store.insert(*ctx, i);
-                }
+        if let InstKind::Store { dst, .. } = &inst.kind
+            && let Some(&def_idx) = def_map.get(dst)
+            && let InstKind::Ref {
+                target: crate::ir::RefTarget::Context(ctx),
+                ..
+            } = &insts[def_idx].kind
+        {
+            if let Some(&prev) = last_ctx_store.get(ctx)
+                && prev != i
+            {
+                deps[i].push(prev);
             }
+            last_ctx_store.insert(*ctx, i);
         }
     }
 
@@ -244,8 +246,10 @@ fn priority_topo_sort(
     }
 
     assert_eq!(
-        result.len(), n,
-        "reorder: cycle in dependency graph ({} emitted, {n} total)", result.len()
+        result.len(),
+        n,
+        "reorder: cycle in dependency graph ({} emitted, {n} total)",
+        result.len()
     );
 
     result
@@ -255,7 +259,7 @@ fn priority_topo_sort(
 mod tests {
     use super::*;
     use crate::cfg::{self, CfgBody};
-    use crate::ty::{Effect, EffectSet, Param};
+    use crate::ty::{Effect, EffectSet};
     use acvus_utils::{Interner, LocalFactory, LocalIdOps};
 
     fn v(n: usize) -> ValueId {
@@ -278,8 +282,8 @@ mod tests {
                 })
                 .collect(),
             val_types,
-            param_regs: Vec::new(),
-            capture_regs: Vec::new(),
+            params: Vec::new(),
+            captures: Vec::new(),
             debug: DebugInfo::new(),
             val_factory: factory,
             label_count: 0,
@@ -387,15 +391,37 @@ mod tests {
         run(&mut cfg, &fn_types);
 
         // Both spawns should come before both evals.
-        let spawn_a = find_idx(&cfg, |k| matches!(k, InstKind::Spawn { dst, .. } if *dst == v(0))).unwrap();
-        let spawn_b = find_idx(&cfg, |k| matches!(k, InstKind::Spawn { dst, .. } if *dst == v(2))).unwrap();
-        let eval_a = find_idx(&cfg, |k| matches!(k, InstKind::Eval { src, .. } if *src == v(0))).unwrap();
-        let eval_b = find_idx(&cfg, |k| matches!(k, InstKind::Eval { src, .. } if *src == v(2))).unwrap();
+        let spawn_a = find_idx(
+            &cfg,
+            |k| matches!(k, InstKind::Spawn { dst, .. } if *dst == v(0)),
+        )
+        .unwrap();
+        let spawn_b = find_idx(
+            &cfg,
+            |k| matches!(k, InstKind::Spawn { dst, .. } if *dst == v(2)),
+        )
+        .unwrap();
+        let eval_a = find_idx(
+            &cfg,
+            |k| matches!(k, InstKind::Eval { src, .. } if *src == v(0)),
+        )
+        .unwrap();
+        let eval_b = find_idx(
+            &cfg,
+            |k| matches!(k, InstKind::Eval { src, .. } if *src == v(2)),
+        )
+        .unwrap();
 
         assert!(spawn_a < eval_a, "spawn_a must come before eval_a");
         assert!(spawn_b < eval_b, "spawn_b must come before eval_b");
-        assert!(spawn_a < eval_b, "spawn_a should come before eval_b (parallelism)");
-        assert!(spawn_b < eval_a, "spawn_b should come before eval_a (parallelism)");
+        assert!(
+            spawn_a < eval_b,
+            "spawn_a should come before eval_b (parallelism)"
+        );
+        assert!(
+            spawn_b < eval_a,
+            "spawn_b should come before eval_a (parallelism)"
+        );
     }
 
     // ── Dependency: Eval must wait for its Spawn ────────────────────
@@ -426,7 +452,13 @@ mod tests {
         );
         cfg.val_types.insert(
             v(0),
-            Ty::Handle(Box::new(Ty::String), Effect::Resolved(EffectSet { io: true, ..Default::default() })),
+            Ty::Handle(
+                Box::new(Ty::String),
+                Effect::Resolved(EffectSet {
+                    io: true,
+                    ..Default::default()
+                }),
+            ),
         );
 
         run(&mut cfg, &fn_types);
@@ -480,7 +512,13 @@ mod tests {
         );
         cfg.val_types.insert(
             v(0),
-            Ty::Handle(Box::new(Ty::String), Effect::Resolved(EffectSet { io: true, ..Default::default() })),
+            Ty::Handle(
+                Box::new(Ty::String),
+                Effect::Resolved(EffectSet {
+                    io: true,
+                    ..Default::default()
+                }),
+            ),
         );
 
         run(&mut cfg, &fn_types);
@@ -548,16 +586,34 @@ mod tests {
             ],
             4,
         );
-        cfg.val_types.insert(v(0), Ty::Handle(Box::new(Ty::Unit), token_effect.clone()));
-        cfg.val_types.insert(v(2), Ty::Handle(Box::new(Ty::Unit), token_effect.clone()));
+        cfg.val_types
+            .insert(v(0), Ty::Handle(Box::new(Ty::Unit), token_effect.clone()));
+        cfg.val_types
+            .insert(v(2), Ty::Handle(Box::new(Ty::Unit), token_effect.clone()));
 
         run(&mut cfg, &fn_types);
 
         // With shared token: spawn_a must come before spawn_b (original order preserved).
-        let spawn_a = find_idx(&cfg, |k| matches!(k, InstKind::Spawn { dst, .. } if *dst == v(0))).unwrap();
-        let spawn_b = find_idx(&cfg, |k| matches!(k, InstKind::Spawn { dst, .. } if *dst == v(2))).unwrap();
-        let eval_a = find_idx(&cfg, |k| matches!(k, InstKind::Eval { src, .. } if *src == v(0))).unwrap();
-        let eval_b = find_idx(&cfg, |k| matches!(k, InstKind::Eval { src, .. } if *src == v(2))).unwrap();
+        let spawn_a = find_idx(
+            &cfg,
+            |k| matches!(k, InstKind::Spawn { dst, .. } if *dst == v(0)),
+        )
+        .unwrap();
+        let spawn_b = find_idx(
+            &cfg,
+            |k| matches!(k, InstKind::Spawn { dst, .. } if *dst == v(2)),
+        )
+        .unwrap();
+        let eval_a = find_idx(
+            &cfg,
+            |k| matches!(k, InstKind::Eval { src, .. } if *src == v(0)),
+        )
+        .unwrap();
+        let eval_b = find_idx(
+            &cfg,
+            |k| matches!(k, InstKind::Eval { src, .. } if *src == v(2)),
+        )
+        .unwrap();
 
         // Token forces sequential: a before b entirely.
         assert!(spawn_a < spawn_b, "token: spawn_a before spawn_b");
@@ -589,9 +645,15 @@ mod tests {
             3,
         );
 
-        let original: Vec<_> = all_insts(&cfg).iter().map(|i| std::mem::discriminant(&i.kind)).collect();
+        let original: Vec<_> = all_insts(&cfg)
+            .iter()
+            .map(|i| std::mem::discriminant(&i.kind))
+            .collect();
         run(&mut cfg, &FxHashMap::default());
-        let after: Vec<_> = all_insts(&cfg).iter().map(|i| std::mem::discriminant(&i.kind)).collect();
+        let after: Vec<_> = all_insts(&cfg)
+            .iter()
+            .map(|i| std::mem::discriminant(&i.kind))
+            .collect();
 
         assert_eq!(original, after, "no spawns → order unchanged");
     }

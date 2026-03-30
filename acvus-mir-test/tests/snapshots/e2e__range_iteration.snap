@@ -23,7 +23,7 @@ expression: ir
     20 │   r16 = T0 + r15
     21 │   return r16
 
-    ; r0 (v20) : Int
+    ; r0 (v23) : Int
     ; r1 (v4) : Range
     ; r2 (v2) : Int
     ; r3 (v3) : Int
@@ -31,16 +31,18 @@ expression: ir
     ; r5 (v6) : Int
     ; r6 (v8) : Int
     ; r7 (v9) : String
-    ; r8 (v21) : Int
+    ; r8 (v24) : Int
     ; r9 (x) : Int
     ; r10 (v11) : Int
     ; r11 (to_string(...)) : String
-    ; r12 (v15) : String
-    ; r13 (v16) : String
-    ; r14 (v17) : String
-    ; r15 (v18) : String
-    ; r16 (v19) : String
-    ; r17 (v1) : String
+    ; r12 (v18) : String
+    ; r13 (v19) : String
+    ; r14 (v20) : String
+    ; r15 (v21) : String
+    ; r16 (v22) : String
+    ; r17 (v14) : String
     ; r18 (v7) : String
-    ; r19 (x) : Int
-    ; r20 (v12) : String
+    ; r19 (v15) : Ref<Int>
+    ; r20 (v13) : Ref<Int>
+    ; r21 (v1) : String
+    ; r22 (x) : Int

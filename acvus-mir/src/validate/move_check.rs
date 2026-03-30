@@ -9,12 +9,12 @@
 //! - `Ty::Error` / `Ty::Param` / `Effect::Var` → skip (analysis mode).
 //! - `Fn` with move-only captures → FnOnce (transitive).
 //! - Join at merge points: `Alive ⊔ Moved = Moved` (conservative).
-//! - $variables: tracked by name. `VarStore` revives, `VarLoad` of move-only consumes.
+//! - $variables: tracked by name. `Store` (via Ref) revives, `Load` of move-only consumes.
 
 use std::collections::VecDeque;
 
 use acvus_ast::Span;
-use acvus_utils::{Astr, LocalIdOps};
+use acvus_utils::LocalIdOps;
 use rustc_hash::FxHashMap;
 
 use crate::cfg::{BlockIdx, Terminator, promote};
@@ -96,6 +96,9 @@ pub fn is_move_only(ty: &Ty) -> Option<bool> {
         // Identity — always copyable (just an id)
         Ty::Identity(_) => Some(false),
 
+        // Ref — ephemeral, always immediately consumed. Skip (not subject to move analysis).
+        Ty::Ref(..) => None,
+
         // Unknown — skip
         Ty::Param { .. } | Ty::Error(_) => None,
     }
@@ -129,7 +132,8 @@ impl Liveness {
 #[derive(Debug, Clone)]
 struct MoveState {
     values: FxHashMap<ValueId, Liveness>,
-    vars: FxHashMap<Astr, Liveness>,
+    /// Variable/param liveness, keyed by storage slot ValueId.
+    vars: FxHashMap<ValueId, Liveness>,
 }
 
 impl MoveState {
@@ -148,12 +152,12 @@ impl MoveState {
         self.values.insert(id, liveness);
     }
 
-    fn get_var(&self, name: Astr) -> Option<Liveness> {
-        self.vars.get(&name).copied()
+    fn get_var(&self, slot: ValueId) -> Option<Liveness> {
+        self.vars.get(&slot).copied()
     }
 
-    fn set_var(&mut self, name: Astr, liveness: Liveness) {
-        self.vars.insert(name, liveness);
+    fn set_var(&mut self, slot: ValueId, liveness: Liveness) {
+        self.vars.insert(slot, liveness);
     }
 
     /// Join another state into this one. Returns true if anything changed.
@@ -216,6 +220,16 @@ fn check_body(scope: &str, body: &MirBody, errors: &mut Vec<ValidationError>) {
         return;
     }
 
+    // Build ref_target map: Ref dst → RefTarget.
+    let mut ref_target: FxHashMap<ValueId, crate::ir::RefTarget> = FxHashMap::default();
+    for block in &cfg.blocks {
+        for inst in &block.insts {
+            if let InstKind::Ref { dst, target, .. } = &inst.kind {
+                ref_target.insert(*dst, target.clone());
+            }
+        }
+    }
+
     let n = cfg.blocks.len();
     let mut block_entry: Vec<MoveState> = (0..n).map(|_| MoveState::new()).collect();
     let mut block_exit: Vec<MoveState> = (0..n).map(|_| MoveState::new()).collect();
@@ -236,6 +250,7 @@ fn check_body(scope: &str, body: &MirBody, errors: &mut Vec<ValidationError>) {
                 i,
                 inst,
                 &cfg.val_types,
+                &ref_target,
                 &mut state,
                 errors,
             );
@@ -285,7 +300,13 @@ fn check_body(scope: &str, body: &MirBody, errors: &mut Vec<ValidationError>) {
                     }
                 }
             }
-            Terminator::ListStep { dst, index_dst, done, done_args, .. } => {
+            Terminator::ListStep {
+                dst,
+                index_dst,
+                done,
+                done_args,
+                ..
+            } => {
                 // ListStep defines dst (element) and index_dst (new index).
                 // list is borrowed (not consumed), index_src is Int (copyable).
                 block_exit[idx.0].set_value(*dst, Liveness::Alive);
@@ -340,7 +361,7 @@ fn propagate_args(
     // If an arg is move-only and moved, the param inherits Moved.
     for (arg, param) in args.iter().zip(params.iter()) {
         let arg_liveness = source.get_value(*arg).unwrap_or(Liveness::Alive);
-        let is_move = val_types.get(param).and_then(|ty| is_move_only(ty)) == Some(true);
+        let is_move = val_types.get(param).and_then(is_move_only) == Some(true);
         if is_move {
             let entry = target_entry.values.entry(*param).or_insert(Liveness::Alive);
             let joined = entry.join(arg_liveness);
@@ -400,6 +421,7 @@ fn process_inst(
     inst_idx: usize,
     inst: &Inst,
     val_types: &FxHashMap<ValueId, Ty>,
+    ref_target: &FxHashMap<ValueId, crate::ir::RefTarget>,
     state: &mut MoveState,
     errors: &mut Vec<ValidationError>,
 ) {
@@ -407,62 +429,70 @@ fn process_inst(
 
     match &inst.kind {
         // === No operands / define only ===
-        InstKind::Const { dst, .. }
-        | InstKind::ContextProject { dst, .. }
-        | InstKind::Poison { dst }
-        | InstKind::Undef { dst } => {
+        InstKind::Const { dst, .. } | InstKind::Poison { dst } | InstKind::Undef { dst } => {
             state.set_value(*dst, Liveness::Alive);
         }
-        InstKind::ContextLoad { dst, src, .. } => {
-            try_consume_value(scope, inst_idx, span, *src, val_types, state, errors);
+        // Ref: register target for subsequent Load/Store lookup, define dst as alive.
+        InstKind::Ref { dst, target, .. } => {
+            // Note: ref_target is pre-built; just mark dst alive.
+            let _ = target;
             state.set_value(*dst, Liveness::Alive);
+        }
+        // Load: src is a Ref (not consumed as move-only — Refs are ephemeral).
+        // Define dst. Track variable liveness by name.
+        InstKind::Load { dst, src, .. } => {
+            // Note: do NOT try_consume_value on src — it's a Ref type which
+            // is ephemeral and not subject to move checking.
+            // Variable name tracking: if src points to a Var/Param, check var liveness.
+            if let Some(target) = ref_target.get(src) {
+                let name = match target {
+                    crate::ir::RefTarget::Var(n) | crate::ir::RefTarget::Param(n) => Some(*n),
+                    crate::ir::RefTarget::Context(_) => None,
+                };
+                if let Some(name) = name {
+                    // Check if variable has been moved
+                    if let Some(Liveness::Moved { at }) = state.get_var(name)
+                        && let Some(ty) = val_types.get(dst)
+                        && is_move_only(ty) == Some(true)
+                    {
+                        errors.push(ValidationError {
+                            scope: scope.to_string(),
+                            inst_index: inst_idx,
+                            span,
+                            kind: ValidationErrorKind::UseAfterMove {
+                                value_id: dst.to_raw() as u32,
+                                moved_at: at,
+                                ty: ty.clone(),
+                            },
+                        });
+                    }
+                    // Loading move-only → var is now moved
+                    if let Some(ty) = val_types.get(dst)
+                        && is_move_only(ty) == Some(true)
+                    {
+                        state.set_var(name, Liveness::Moved { at: inst_idx });
+                    }
+                }
+            }
+            state.set_value(*dst, Liveness::Alive);
+        }
+        // Store: dst is a Ref (ephemeral, not move-checked). Consume value. Revive variable.
+        InstKind::Store { dst, value, .. } => {
+            // Note: do NOT try_consume_value on dst — it's a Ref type.
+            try_consume_value(scope, inst_idx, span, *value, val_types, state, errors);
+            // Variable name tracking: Store revives the variable.
+            if let Some(target) = ref_target.get(dst)
+                && let crate::ir::RefTarget::Var(name) = target
+            {
+                state.set_var(*name, Liveness::Alive);
+            }
         }
         InstKind::BlockLabel { params, .. } => {
             for p in params {
-                // Only set Alive if not already set by propagate_args.
-                // If propagate_args already set it to Moved (from incoming),
-                // we must not override.
                 state.values.entry(*p).or_insert(Liveness::Alive);
             }
         }
         InstKind::Nop => {}
-
-        // === Variable operations ===
-        InstKind::VarLoad { dst, name } | InstKind::ParamLoad { dst, name } => {
-            // Check if $variable has been moved
-            if let Some(Liveness::Moved { at }) = state.get_var(*name)
-                && let Some(ty) = val_types.get(dst)
-                && is_move_only(ty) == Some(true)
-            {
-                errors.push(ValidationError {
-                    scope: scope.to_string(),
-                    inst_index: inst_idx,
-                    span,
-                    kind: ValidationErrorKind::UseAfterMove {
-                        value_id: dst.to_raw() as u32,
-                        moved_at: at,
-                        ty: ty.clone(),
-                    },
-                });
-            }
-            // Loading a move-only value from $var → var is now moved
-            if let Some(ty) = val_types.get(dst)
-                && is_move_only(ty) == Some(true)
-            {
-                state.set_var(*name, Liveness::Moved { at: inst_idx });
-            }
-            state.set_value(*dst, Liveness::Alive);
-        }
-        InstKind::VarStore { name, src } => {
-            // Consume the source value
-            try_consume_value(scope, inst_idx, span, *src, val_types, state, errors);
-            // Variable is now alive with new value
-            state.set_var(*name, Liveness::Alive);
-        }
-        InstKind::ContextStore { dst, value, .. } => {
-            try_consume_value(scope, inst_idx, span, *dst, val_types, state, errors);
-            try_consume_value(scope, inst_idx, span, *value, val_types, state, errors);
-        }
 
         // === Consuming operations (move operands) ===
         InstKind::Return(v) => {
@@ -472,11 +502,7 @@ fn process_inst(
             try_consume_value(scope, inst_idx, span, *src, val_types, state, errors);
             state.set_value(*dst, Liveness::Alive);
         }
-        InstKind::ListStep {
-            dst,
-            index_dst,
-            ..
-        } => {
+        InstKind::ListStep { dst, index_dst, .. } => {
             // list is borrowed (not consumed), index_src is Int (copyable).
             state.set_value(*dst, Liveness::Alive);
             state.set_value(*index_dst, Liveness::Alive);
@@ -551,6 +577,15 @@ fn process_inst(
         // === Non-consuming operations (borrow operands) ===
         // These read the value but don't take ownership.
         InstKind::FieldGet { dst, object: _, .. } => {
+            state.set_value(*dst, Liveness::Alive);
+        }
+        InstKind::FieldSet {
+            dst,
+            object: _,
+            value,
+            ..
+        } => {
+            try_consume_value(scope, inst_idx, span, *value, val_types, state, errors);
             state.set_value(*dst, Liveness::Alive);
         }
         InstKind::ObjectGet { dst, object: _, .. } => {
@@ -639,7 +674,7 @@ fn process_inst(
 mod tests {
     use super::*;
     use crate::graph::QualifiedRef;
-    use crate::ir::{Callee, DebugInfo, Inst, MirBody, MirModule};
+    use crate::ir::{Callee, DebugInfo, Inst, MirBody, MirModule, RefTarget};
     use crate::ty::{Effect, Param};
     use acvus_utils::{Interner, LocalFactory};
 
@@ -662,8 +697,8 @@ mod tests {
             main: MirBody {
                 insts,
                 val_types,
-                param_regs: Vec::new(),
-                capture_regs: Vec::new(),
+                params: Vec::new(),
+                captures: Vec::new(),
                 debug: DebugInfo::new(),
                 val_factory: LocalFactory::new(),
                 label_count: 10,
@@ -759,11 +794,7 @@ mod tests {
         );
 
         let errors = check_moves(&module);
-        assert_eq!(
-            errors.len(),
-            1,
-            "UserDefined reuse should be rejected"
-        );
+        assert_eq!(errors.len(), 1, "UserDefined reuse should be rejected");
         assert!(matches!(
             errors[0].kind,
             ValidationErrorKind::UseAfterMove { .. }
@@ -804,7 +835,12 @@ mod tests {
         let v3 = vf.next();
         let v4 = vf.next();
         let v5 = vf.next();
-        // $a = move-only (v0), VarLoad (v1) → moved, $a = new value (v2) → alive, VarLoad (v3) → OK
+        let r0 = vf.next(); // ref for first Store
+        let r1 = vf.next(); // ref for first Load
+        let r2 = vf.next(); // ref for second Store
+        let r3 = vf.next(); // ref for second Load
+        let a = vf.next(); // storage slot for variable "a"
+        // $a = move-only (v0), Load (v1) → moved, $a = new value (v2) → alive, Load (v3) → OK
         let mut val_types = FxHashMap::default();
         let move_ty = test_user_defined();
         val_types.insert(v0, move_ty.clone());
@@ -814,15 +850,30 @@ mod tests {
         val_types.insert(v4, Ty::List(Box::new(Ty::Int)));
         val_types.insert(v5, Ty::List(Box::new(Ty::Int)));
 
-        let interner = Interner::new();
-        let a = interner.intern("a");
-
         let module = make_module(
             vec![
                 // $a = v0 (move-only)
-                inst(InstKind::VarStore { name: a, src: v0 }),
+                inst(InstKind::Ref {
+                    dst: r0,
+                    target: RefTarget::Var(a),
+                    field: None,
+                }),
+                inst(InstKind::Store {
+                    dst: r0,
+                    value: v0,
+                    volatile: false,
+                }),
                 // v1 = $a → moves $a
-                inst(InstKind::VarLoad { dst: v1, name: a }),
+                inst(InstKind::Ref {
+                    dst: r1,
+                    target: RefTarget::Var(a),
+                    field: None,
+                }),
+                inst(InstKind::Load {
+                    dst: v1,
+                    src: r1,
+                    volatile: false,
+                }),
                 // use v1
                 inst(InstKind::FunctionCall {
                     dst: v4,
@@ -832,9 +883,27 @@ mod tests {
                     context_defs: vec![],
                 }),
                 // $a = v2 (new value) → revives $a
-                inst(InstKind::VarStore { name: a, src: v2 }),
+                inst(InstKind::Ref {
+                    dst: r2,
+                    target: RefTarget::Var(a),
+                    field: None,
+                }),
+                inst(InstKind::Store {
+                    dst: r2,
+                    value: v2,
+                    volatile: false,
+                }),
                 // v3 = $a → OK (new value)
-                inst(InstKind::VarLoad { dst: v3, name: a }),
+                inst(InstKind::Ref {
+                    dst: r3,
+                    target: RefTarget::Var(a),
+                    field: None,
+                }),
+                inst(InstKind::Load {
+                    dst: v3,
+                    src: r3,
+                    volatile: false,
+                }),
                 // use v3
                 inst(InstKind::FunctionCall {
                     dst: v5,
@@ -862,7 +931,11 @@ mod tests {
         let v2 = vf.next();
         let v3 = vf.next();
         let v4 = vf.next();
-        // $a = move-only, VarLoad → moved, VarLoad again → ERROR
+        let r0 = vf.next(); // ref for Store
+        let r1 = vf.next(); // ref for first Load
+        let r2 = vf.next(); // ref for second Load
+        let a = vf.next(); // storage slot for variable "a"
+        // $a = move-only, Load → moved, Load again → ERROR
         let mut val_types = FxHashMap::default();
         let move_ty = test_user_defined();
         val_types.insert(v0, move_ty.clone());
@@ -871,13 +944,28 @@ mod tests {
         val_types.insert(v3, Ty::List(Box::new(Ty::Int)));
         val_types.insert(v4, Ty::List(Box::new(Ty::Int)));
 
-        let interner = Interner::new();
-        let a = interner.intern("a");
-
         let module = make_module(
             vec![
-                inst(InstKind::VarStore { name: a, src: v0 }),
-                inst(InstKind::VarLoad { dst: v1, name: a }),
+                inst(InstKind::Ref {
+                    dst: r0,
+                    target: RefTarget::Var(a),
+                    field: None,
+                }),
+                inst(InstKind::Store {
+                    dst: r0,
+                    value: v0,
+                    volatile: false,
+                }),
+                inst(InstKind::Ref {
+                    dst: r1,
+                    target: RefTarget::Var(a),
+                    field: None,
+                }),
+                inst(InstKind::Load {
+                    dst: v1,
+                    src: r1,
+                    volatile: false,
+                }),
                 inst(InstKind::FunctionCall {
                     dst: v3,
                     callee: Callee::Direct(QualifiedRef::root(Interner::new().intern("test"))),
@@ -886,7 +974,16 @@ mod tests {
                     context_defs: vec![],
                 }),
                 // Second load — $a already moved
-                inst(InstKind::VarLoad { dst: v2, name: a }),
+                inst(InstKind::Ref {
+                    dst: r2,
+                    target: RefTarget::Var(a),
+                    field: None,
+                }),
+                inst(InstKind::Load {
+                    dst: v2,
+                    src: r2,
+                    volatile: false,
+                }),
                 inst(InstKind::FunctionCall {
                     dst: v4,
                     callee: Callee::Direct(QualifiedRef::root(Interner::new().intern("test"))),

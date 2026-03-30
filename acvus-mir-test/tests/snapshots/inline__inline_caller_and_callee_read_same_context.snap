@@ -3,28 +3,31 @@ source: acvus-mir-test/tests/inline.rs
 expression: ir
 ---
 === main ===
-     0 │   r0 = context_project @count
-     1 │   r1 = context_load r0
-     2 │   r2 = context_project @count
-     3 │   r3 = context_load r2
-     5 │   r4 = context_project @count
-     6 │   r5 = context_load r4
-     7 │   r6 = context_project @count
-     8 │   r7 = context_load r6
-     9 │   r8 = 1 (r9) + r7
-    10 │   r10 = r3 + r8
-    11 │   return r10
+     0 │   r0 = ref @count
+     1 │   r1 = load r0
+     2 │   r2 = ref @count
+     3 │   r3 = load r2
+     5 │   r4 = ref @count
+     6 │   r5 = load r4
+     7 │   r6 = ref $v5
+     8 │   r7 = load r6
+     9 │   r8 = ref @count
+    10 │   r9 = load r8
+    11 │   r10 = r7 + r9
+    12 │   r11 = r3 + r10
+    13 │   return r11
 
-    ; r0 (@count) : Int
-    ; r1 (v2) : Int
-    ; r2 (@count) : Int
+    ; r0 (@count) : Ref<Int>
+    ; r1 (@count) : Int
+    ; r2 (@count) : Ref<Int>
     ; r3 (v4) : Int
-    ; r4 (@count) : Int
-    ; r5 (v9) : Int
-    ; r6 (@count) : Int
-    ; r7 (v12) : Int
-    ; r8 (v13) : Int
-    ; r9 (v5) : Int
-    ; r10 (v7) : Int
-    ; r11 ($x) : Int
+    ; r4 (@count) : Ref<Int>
+    ; r5 (@count) : Int
+    ; r6 (v11) : Ref<Int>
+    ; r7 ($x) : Int
+    ; r8 (@count) : Ref<Int>
+    ; r9 (v14) : Int
+    ; r10 (v15) : Int
+    ; r11 (v7) : Int
     ; r12 (add_count(...)) : Int
+    ; r13 (v5) : Int

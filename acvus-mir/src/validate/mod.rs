@@ -12,7 +12,11 @@ use rustc_hash::FxHashMap;
 
 /// Run all validation passes on a MIR module.
 /// Returns errors found. Empty vec means valid.
-pub fn validate(module: &MirModule, fn_types: &FxHashMap<QualifiedRef, Ty>, policies: &FxHashMap<QualifiedRef, ContextPolicy>) -> Vec<ValidationError> {
+pub fn validate(
+    module: &MirModule,
+    fn_types: &FxHashMap<QualifiedRef, Ty>,
+    policies: &FxHashMap<QualifiedRef, ContextPolicy>,
+) -> Vec<ValidationError> {
     let mut errors = type_check::check_types(module, fn_types, policies);
     errors.extend(move_check::check_moves(module));
     errors

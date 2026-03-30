@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 use acvus_ast::{BinOp, Literal, RangeKind, UnaryOp};
 use acvus_mir::graph::QualifiedRef;
-use acvus_mir::ir::{Callee, CastKind, Inst, InstKind, Label, MirBody, MirModule, ValueId};
-use acvus_mir::ty::{Effect, Ty};
+use acvus_mir::ir::{
+    Callee, CastKind, Inst, InstKind, Label, MirBody, MirModule, RefTarget, ValueId,
+};
+use acvus_mir::ty::Ty;
 use acvus_utils::{Astr, Freeze, Interner, LocalFactory, LocalVec, TrackedDeque};
 use futures::future::BoxFuture;
 use rustc_hash::FxHashMap;
@@ -11,6 +13,165 @@ use smallvec::SmallVec;
 
 use crate::error::RuntimeError;
 use crate::value::{FnValue, Value};
+
+/// Runtime representation of a Ref instruction's target.
+#[derive(Debug, Clone)]
+enum RuntimeRef {
+    Var {
+        slot: ValueId,
+        field: Option<Astr>,
+    },
+    Param {
+        slot: ValueId,
+        field: Option<Astr>,
+    },
+    Context {
+        qref: QualifiedRef,
+        field: Option<Astr>,
+    },
+}
+
+impl RuntimeRef {
+    fn from_target(target: &RefTarget, field: Option<Astr>) -> Self {
+        match target {
+            RefTarget::Var(slot) => RuntimeRef::Var { slot: *slot, field },
+            RefTarget::Param(slot) => RuntimeRef::Param { slot: *slot, field },
+            RefTarget::Context(qref) => RuntimeRef::Context { qref: *qref, field },
+        }
+    }
+}
+
+/// Load a value from a RuntimeRef.
+fn load_ref(rt_ref: &RuntimeRef, ctx: &RunContext) -> Value {
+    let interner = &ctx.shared.interner;
+    match rt_ref {
+        RuntimeRef::Var { slot, field } | RuntimeRef::Param { slot, field } => {
+            let val = ctx
+                .variables
+                .get(slot)
+                .unwrap_or_else(|| panic!("undefined variable slot {:?}", slot))
+                .share();
+            match field {
+                None => val,
+                Some(f) => match &val {
+                    Value::Object(obj) => obj
+                        .get(f)
+                        .unwrap_or_else(|| panic!("missing field {}", interner.resolve(*f)))
+                        .share(),
+                    other => panic!("field load on non-object: {other:?}"),
+                },
+            }
+        }
+        RuntimeRef::Context { qref, field } => {
+            let name = ctx
+                .shared
+                .context_names
+                .get(qref)
+                .unwrap_or_else(|| panic!("context load: no name for {:?}", qref));
+            let key = interner.resolve(*name);
+            let val = ctx
+                .page
+                .get(key)
+                .unwrap_or_else(|| panic!("context load: undefined context '{}'", key));
+            match field {
+                None => val,
+                Some(f) => match &val {
+                    Value::Object(obj) => obj
+                        .get(f)
+                        .unwrap_or_else(|| panic!("missing field {}", interner.resolve(*f)))
+                        .share(),
+                    other => panic!("field load on non-object: {other:?}"),
+                },
+            }
+        }
+    }
+}
+
+/// Store a value through a RuntimeRef.
+fn store_ref(rt_ref: &RuntimeRef, ctx: &mut RunContext, value: Value) {
+    let interner = ctx.shared.interner.clone();
+    match rt_ref {
+        RuntimeRef::Var { slot, field: None } => {
+            ctx.variables.insert(*slot, value);
+        }
+        RuntimeRef::Var {
+            slot,
+            field: Some(f),
+        } => {
+            let entry = ctx
+                .variables
+                .get_mut(slot)
+                .unwrap_or_else(|| panic!("undefined variable slot {:?}", slot));
+            match entry {
+                Value::Object(obj) => {
+                    Arc::make_mut(obj).insert(*f, value);
+                }
+                other => panic!("field store on non-object: {other:?}"),
+            }
+        }
+        RuntimeRef::Param { slot, .. } => {
+            panic!("cannot store to param slot {:?}", slot);
+        }
+        RuntimeRef::Context { qref, field: None } => {
+            let name = ctx
+                .shared
+                .context_names
+                .get(qref)
+                .unwrap_or_else(|| panic!("context store: no name for {:?}", qref));
+            let key = interner.resolve(*name);
+            ctx.page.set(key, value);
+        }
+        RuntimeRef::Context {
+            qref,
+            field: Some(f),
+        } => {
+            let name = ctx
+                .shared
+                .context_names
+                .get(qref)
+                .unwrap_or_else(|| panic!("context store: no name for {:?}", qref));
+            let key = interner.resolve(*name);
+            let mut current = ctx
+                .page
+                .get(key)
+                .unwrap_or_else(|| panic!("context store: undefined context '{}'", key));
+            match &mut current {
+                Value::Object(obj) => {
+                    Arc::make_mut(obj).insert(*f, value);
+                }
+                other => panic!("field store on non-object: {other:?}"),
+            }
+            ctx.page.set(key, current);
+        }
+    }
+}
+
+/// Deep field set on a scalar Value::Object. Returns a new object with the field replaced.
+fn field_set_deep(
+    obj: Value,
+    field: &Astr,
+    rest: &[Astr],
+    value: Value,
+    interner: &Interner,
+) -> Value {
+    match obj {
+        Value::Object(arc_map) => {
+            let mut map = (*arc_map).clone();
+            if rest.is_empty() {
+                map.insert(*field, value);
+            } else {
+                let inner = map
+                    .get(field)
+                    .unwrap_or_else(|| panic!("missing field {}", interner.resolve(*field)))
+                    .share();
+                let updated = field_set_deep(inner, &rest[0], &rest[1..], value, interner);
+                map.insert(*field, updated);
+            }
+            Value::Object(Arc::new(map))
+        }
+        other => panic!("FieldSet on non-object: {other:?}"),
+    }
+}
 
 // ── Builtin dispatch ─────────────────────────────────────────────────
 
@@ -21,8 +182,7 @@ pub type Args = SmallVec<[Value; 4]>;
 pub type SyncBuiltinFn = fn(Args, &Interner) -> Result<Value, RuntimeError>;
 
 /// Async builtin — standalone, no Interpreter needed.
-pub type AsyncBuiltinFn =
-    fn(Args, Interner) -> BoxFuture<'static, Result<Value, RuntimeError>>;
+pub type AsyncBuiltinFn = fn(Args, Interner) -> BoxFuture<'static, Result<Value, RuntimeError>>;
 
 /// Builtin handler — sync or async.
 pub enum BuiltinHandler {
@@ -149,7 +309,7 @@ enum ApplyResult {
     Expand(Vec<Value>),
 }
 
-use crate::journal::{InMemoryContext, ContextWrite, RuntimeContext};
+use crate::journal::{ContextWrite, InMemoryContext, RuntimeContext};
 
 // ── Public types ────────────────────────────────────────────────────
 
@@ -219,7 +379,7 @@ impl InterpreterContext {
 struct RunContext {
     shared: InterpreterContext,
     page: InMemoryContext,
-    variables: FxHashMap<Astr, Value>,
+    variables: FxHashMap<ValueId, Value>,
 }
 
 // ── Standalone helpers (extracted from Interpreter methods) ──────────
@@ -237,10 +397,7 @@ fn resolve_context_key(
 
 /// Collect context values from SSA context_uses.
 /// context_uses is authoritative — if empty, the function doesn't read context.
-fn collect_context_uses(
-    context_uses: &[(QualifiedRef, ValueId)],
-    frame: &Frame,
-) -> Vec<Value> {
+fn collect_context_uses(context_uses: &[(QualifiedRef, ValueId)], frame: &Frame) -> Vec<Value> {
     context_uses
         .iter()
         .map(|(_, vid)| frame.share(*vid))
@@ -255,14 +412,20 @@ fn apply_context_defs(
     context_defs: &[(QualifiedRef, ValueId)],
     defs: Vec<Value>,
     frame: &mut Frame,
-    projection_map: &mut FxHashMap<ValueId, QualifiedRef>,
+    projection_map: &mut FxHashMap<ValueId, RuntimeRef>,
 ) -> Result<(), RuntimeError> {
     for ((ctx_id, vid), def_value) in context_defs.iter().zip(defs) {
         let key = resolve_context_key(shared, ctx_id)?;
         let for_page = def_value.share();
         frame.set(*vid, def_value);
         page.set(&key, for_page);
-        projection_map.insert(*vid, *ctx_id);
+        projection_map.insert(
+            *vid,
+            RuntimeRef::Context {
+                qref: *ctx_id,
+                field: None,
+            },
+        );
     }
     Ok(())
 }
@@ -277,10 +440,7 @@ fn lookup_function<'a>(shared: &'a InterpreterContext, id: &QualifiedRef) -> &'a
 fn lookup_module<'a>(shared: &'a InterpreterContext, id: &QualifiedRef) -> &'a MirModule {
     match lookup_function(shared, id) {
         Executable::Module(m) => m,
-        other => panic!(
-            "expected Module for {id:?}, got {}",
-            other.variant_name()
-        ),
+        other => panic!("expected Module for {id:?}, got {}", other.variant_name()),
     }
 }
 
@@ -291,7 +451,7 @@ fn run_loop<'s>(
     insts: &'s [Inst],
     closures: &'s FxHashMap<Label, MirBody>,
     frame: &'s mut Frame,
-    projection_map: &'s mut FxHashMap<ValueId, QualifiedRef>,
+    projection_map: &'s mut FxHashMap<ValueId, RuntimeRef>,
     val_types: &'s FxHashMap<ValueId, Ty>,
 ) -> BoxFuture<'s, Result<Value, RuntimeError>> {
     Box::pin(run_loop_inner(
@@ -309,7 +469,7 @@ async fn run_loop_inner(
     insts: &[Inst],
     closures: &FxHashMap<Label, MirBody>,
     frame: &mut Frame,
-    projection_map: &mut FxHashMap<ValueId, QualifiedRef>,
+    projection_map: &mut FxHashMap<ValueId, RuntimeRef>,
     val_types: &FxHashMap<ValueId, Ty>,
 ) -> Result<Value, RuntimeError> {
     let mut pc = 0;
@@ -330,7 +490,7 @@ async fn execute_inst(
     closures: &FxHashMap<Label, MirBody>,
     pc: usize,
     frame: &mut Frame,
-    projection_map: &mut FxHashMap<ValueId, QualifiedRef>,
+    projection_map: &mut FxHashMap<ValueId, RuntimeRef>,
     val_types: &FxHashMap<ValueId, Ty>,
 ) -> Result<Flow, RuntimeError> {
     match &insts[pc].kind {
@@ -339,67 +499,26 @@ async fn execute_inst(
             frame.set(*dst, literal_to_value(value));
         }
 
-        // ── Variables ────────────────────────────────────
-        InstKind::VarLoad { dst, name } => {
-            let val = ctx
-                .variables
-                .get(name)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "undefined variable ${}",
-                        ctx.shared.interner.resolve(*name)
-                    )
-                })
-                .share();
-            frame.set(*dst, val);
-        }
-        InstKind::VarStore { name, src } => {
-            let val = frame.share(*src);
-            ctx.variables.insert(*name, val);
-        }
-        InstKind::ParamLoad { dst, name } => {
-            let val = ctx
-                .variables
-                .get(name)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "undefined param ${}",
-                        ctx.shared.interner.resolve(*name)
-                    )
-                })
-                .share();
-            frame.set(*dst, val);
-        }
-
-        // ── Context ───────────────────────────────────────
-        InstKind::ContextProject { dst, ctx: ctx_ref, .. } => {
-            projection_map.insert(*dst, *ctx_ref);
+        // ── Projection ──────────────────────────────────
+        InstKind::Ref { dst, target, field } => {
+            projection_map.insert(*dst, RuntimeRef::from_target(target, *field));
             frame.set(*dst, Value::Unit);
         }
-        InstKind::ContextLoad { dst, src, .. } => {
-            let ctx_id = projection_map[src];
-            let name = ctx
-                .shared
-                .context_names
-                .get(&ctx_id)
-                .unwrap_or_else(|| panic!("context load: no name for {:?}", ctx_id));
-            let key = ctx.shared.interner.resolve(*name);
-            let val = ctx
-                .page
-                .get(key)
-                .unwrap_or_else(|| panic!("context load: undefined context '{}'", key));
+        InstKind::Load { dst, src, .. } => {
+            let rt_ref = projection_map
+                .get(src)
+                .unwrap_or_else(|| panic!("Load: no RuntimeRef for src {:?}", src))
+                .clone();
+            let val = load_ref(&rt_ref, ctx);
             frame.set(*dst, val);
         }
-        InstKind::ContextStore { dst, value, .. } => {
-            let ctx_id = projection_map[dst];
-            let name = ctx
-                .shared
-                .context_names
-                .get(&ctx_id)
-                .unwrap_or_else(|| panic!("context store: no name for {:?}", ctx_id));
-            let key = ctx.shared.interner.resolve(*name);
+        InstKind::Store { dst, value, .. } => {
+            let rt_ref = projection_map
+                .get(dst)
+                .unwrap_or_else(|| panic!("Store: no RuntimeRef for dst {:?}", dst))
+                .clone();
             let val = frame.share(*value);
-            ctx.page.set(key, val);
+            store_ref(&rt_ref, ctx, val);
         }
 
         // ── Arithmetic / Logic ───────────────────────────
@@ -418,8 +537,13 @@ async fn execute_inst(
         }
 
         // ── Field / Index access ─────────────────────────
-        InstKind::FieldGet { dst, object, field } => {
-            let val = match frame.get(*object) {
+        InstKind::FieldGet {
+            dst,
+            object,
+            field,
+            rest,
+        } => {
+            let mut val = match frame.get(*object) {
                 Value::Object(obj) => obj
                     .get(field)
                     .unwrap_or_else(|| {
@@ -428,7 +552,31 @@ async fn execute_inst(
                     .share(),
                 other => panic!("FieldGet on non-object: {other:?}"),
             };
+            // Follow rest path for multi-depth access.
+            for r in rest {
+                val = match &val {
+                    Value::Object(obj) => obj
+                        .get(r)
+                        .unwrap_or_else(|| {
+                            panic!("missing field {}", ctx.shared.interner.resolve(*r))
+                        })
+                        .share(),
+                    other => panic!("FieldGet rest on non-object: {other:?}"),
+                };
+            }
             frame.set(*dst, val);
+        }
+        InstKind::FieldSet {
+            dst,
+            object,
+            field,
+            rest,
+            value,
+        } => {
+            let obj_val = frame.share(*object);
+            let new_val = frame.share(*value);
+            let result = field_set_deep(obj_val, field, rest, new_val, &ctx.shared.interner);
+            frame.set(*dst, result);
         }
         InstKind::TupleIndex { dst, tuple, index } => {
             let val = match frame.get(*tuple) {
@@ -639,7 +787,8 @@ async fn execute_inst(
         } => {
             let result = match callee {
                 Callee::Direct(id) => {
-                    let is_extern = matches!(lookup_function(&ctx.shared, id), Executable::Extern(_));
+                    let is_extern =
+                        matches!(lookup_function(&ctx.shared, id), Executable::Extern(_));
                     if is_extern {
                         let handler = match lookup_function(&ctx.shared, id) {
                             Executable::Extern(h) => h.clone(),
@@ -647,8 +796,7 @@ async fn execute_inst(
                         };
                         let arg_vals: Vec<Value> =
                             args.iter().map(|a| frame.use_val(*a, val_types)).collect();
-                        let uses =
-                            collect_context_uses(context_uses, frame);
+                        let uses = collect_context_uses(context_uses, frame);
 
                         let output = match &handler {
                             crate::extern_fn::ExternHandler::Sync(f) => {
@@ -678,7 +826,8 @@ async fn execute_inst(
                 }
                 Callee::Indirect(val_id) => {
                     let fv = frame.take(*val_id).into_fn();
-                    let call_args: Vec<Value> = args.iter().map(|a| frame.use_val(*a, val_types)).collect();
+                    let call_args: Vec<Value> =
+                        args.iter().map(|a| frame.use_val(*a, val_types)).collect();
                     fn_value_call(&fv, call_args).await?
                 }
             };
@@ -694,11 +843,13 @@ async fn execute_inst(
                 Callee::Direct(id) => *id,
                 Callee::Indirect(_) => panic!("spawn: indirect callee not supported"),
             };
-            let is_extern = matches!(lookup_function(&ctx.shared, &callee_id), Executable::Extern(_));
+            let is_extern = matches!(
+                lookup_function(&ctx.shared, &callee_id),
+                Executable::Extern(_)
+            );
             let handle = if is_extern {
                 let spawn_args: Vec<Value> = args.iter().map(|a| frame.share(*a)).collect();
-                let uses =
-                    collect_context_uses(context_uses, frame);
+                let uses = collect_context_uses(context_uses, frame);
                 let handler = match lookup_function(&ctx.shared, &callee_id) {
                     Executable::Extern(h) => h.clone(),
                     _ => unreachable!(),
@@ -770,11 +921,23 @@ async fn execute_inst(
                 let for_page = def_value.share();
                 frame.set(*vid, def_value);
                 ctx.page.set(&key, for_page);
-                projection_map.insert(*vid, *ctx_id);
+                projection_map.insert(
+                    *vid,
+                    RuntimeRef::Context {
+                        qref: *ctx_id,
+                        field: None,
+                    },
+                );
             }
 
             for (ctx_id, vid) in context_defs.iter().skip(defs_count) {
-                projection_map.insert(*vid, *ctx_id);
+                projection_map.insert(
+                    *vid,
+                    RuntimeRef::Context {
+                        qref: *ctx_id,
+                        field: None,
+                    },
+                );
             }
 
             frame.set(*dst, result.value);
@@ -877,25 +1040,29 @@ async fn execute_function(
     let m = lookup_module(&ctx.shared, id);
     let insts: Arc<[Inst]> = m.main.insts.clone().into();
     let closures = m.closures.clone();
-    let param_regs = m.main.param_regs.clone();
     let val_types = m.main.val_types.clone();
     let label_map = build_label_map(&m.main);
     let mut frame = Frame::new(&m.main.val_factory, label_map);
-    for (reg, val) in param_regs.iter().zip(args.iter()) {
+    for ((_, reg), val) in m.main.params.iter().zip(args.iter()) {
         frame.set(*reg, val.clone());
     }
-    let mut projection_map: FxHashMap<ValueId, QualifiedRef> = FxHashMap::default();
-    run_loop(ctx, &insts, &closures, &mut frame, &mut projection_map, &val_types).await
+    let mut projection_map: FxHashMap<ValueId, RuntimeRef> = FxHashMap::default();
+    run_loop(
+        ctx,
+        &insts,
+        &closures,
+        &mut frame,
+        &mut projection_map,
+        &val_types,
+    )
+    .await
 }
 
 // ── Closure calling ─────────────────────────────────────────────────
 
 /// Execute a FnValue with the given arguments. Self-contained — uses the
 /// FnValue's own shared context and forked overlay.
-pub async fn fn_value_call(
-    f: &FnValue,
-    args: Vec<Value>,
-) -> Result<Value, RuntimeError> {
+pub async fn fn_value_call(f: &FnValue, args: Vec<Value>) -> Result<Value, RuntimeError> {
     let mut closure_ctx = RunContext {
         shared: f.shared.clone(),
         page: f.page.fork(),
@@ -907,10 +1074,10 @@ pub async fn fn_value_call(
     let mut frame = Frame::new(&body.val_factory, label_map);
     let mut projection_map = FxHashMap::default();
 
-    for (reg, cap) in body.capture_regs.iter().zip(f.captures.iter()) {
+    for ((_, reg), cap) in body.captures.iter().zip(f.captures.iter()) {
         frame.set(*reg, cap.clone());
     }
-    for (reg, arg) in body.param_regs.iter().zip(args) {
+    for ((_, reg), arg) in body.params.iter().zip(args) {
         frame.set(*reg, arg);
     }
 
@@ -930,9 +1097,7 @@ pub async fn fn_value_call(
 
 /// Pull one element from an iterator. Standalone — no Interpreter needed.
 /// FnValues in IterOps are self-contained and execute via fn_value_call.
-pub async fn exec_next(
-    iter: &mut crate::iter::IterHandle,
-) -> Result<Option<Value>, RuntimeError> {
+pub async fn exec_next(iter: &mut crate::iter::IterHandle) -> Result<Option<Value>, RuntimeError> {
     use crate::iter::{EffectfulState, IterHandle};
 
     match iter {
@@ -964,85 +1129,83 @@ pub async fn exec_next(
                 Ok(None)
             }
         }
-        IterHandle::Effectful { state, .. } => {
-            match state {
-                EffectfulState::Done => Ok(None),
-                EffectfulState::Suspended {
-                    source,
-                    elem_ops,
-                    offset,
-                    take_remaining,
-                } => {
-                    if let Some(0) = take_remaining {
-                        *state = EffectfulState::Done;
-                        return Ok(None);
-                    }
+        IterHandle::Effectful { state, .. } => match state {
+            EffectfulState::Done => Ok(None),
+            EffectfulState::Suspended {
+                source,
+                elem_ops,
+                offset,
+                take_remaining,
+            } => {
+                if let Some(0) = take_remaining {
+                    *state = EffectfulState::Done;
+                    return Ok(None);
+                }
 
-                    while *offset < source.len() {
-                        let val = source[*offset].clone();
-                        *offset += 1;
+                while *offset < source.len() {
+                    let val = source[*offset].clone();
+                    *offset += 1;
 
-                        let result = apply_ops(val, elem_ops).await?;
+                    let result = apply_ops(val, elem_ops).await?;
 
-                        match result {
-                            ApplyResult::Emit(v) => {
+                    match result {
+                        ApplyResult::Emit(v) => {
+                            if let Some(rem) = take_remaining {
+                                *rem -= 1;
+                            }
+                            return Ok(Some(v));
+                        }
+                        ApplyResult::Skip => continue,
+                        ApplyResult::Expand(items) => {
+                            if let Some(first) = items.into_iter().next() {
                                 if let Some(rem) = take_remaining {
                                     *rem -= 1;
                                 }
-                                return Ok(Some(v));
+                                return Ok(Some(first));
                             }
-                            ApplyResult::Skip => continue,
-                            ApplyResult::Expand(items) => {
-                                if let Some(first) = items.into_iter().next() {
-                                    if let Some(rem) = take_remaining {
-                                        *rem -= 1;
-                                    }
-                                    return Ok(Some(first));
-                                }
-                                continue;
-                            }
+                            continue;
                         }
                     }
-                    *state = EffectfulState::Done;
-                    Ok(None)
                 }
-                EffectfulState::Generator {
-                    next_fn,
-                    elem_ops,
-                    take_remaining,
-                } => {
-                    if let Some(0) = take_remaining {
-                        *state = EffectfulState::Done;
-                        return Ok(None);
-                    }
-
-                    while let Some(val) = next_fn.get_mut()() {
-                        let result = apply_ops(val, elem_ops).await?;
-
-                        match result {
-                            ApplyResult::Emit(v) => {
-                                if let Some(rem) = take_remaining {
-                                    *rem -= 1;
-                                }
-                                return Ok(Some(v));
-                            }
-                            ApplyResult::Skip => continue,
-                            ApplyResult::Expand(items) => {
-                                if let Some(first) = items.into_iter().next() {
-                                    if let Some(rem) = take_remaining {
-                                        *rem -= 1;
-                                    }
-                                    return Ok(Some(first));
-                                }
-                                continue;
-                            }
-                        }
-                    }
-                    *state = EffectfulState::Done;
-                    Ok(None)
-                }
+                *state = EffectfulState::Done;
+                Ok(None)
             }
-        }
+            EffectfulState::Generator {
+                next_fn,
+                elem_ops,
+                take_remaining,
+            } => {
+                if let Some(0) = take_remaining {
+                    *state = EffectfulState::Done;
+                    return Ok(None);
+                }
+
+                while let Some(val) = next_fn.get_mut()() {
+                    let result = apply_ops(val, elem_ops).await?;
+
+                    match result {
+                        ApplyResult::Emit(v) => {
+                            if let Some(rem) = take_remaining {
+                                *rem -= 1;
+                            }
+                            return Ok(Some(v));
+                        }
+                        ApplyResult::Skip => continue,
+                        ApplyResult::Expand(items) => {
+                            if let Some(first) = items.into_iter().next() {
+                                if let Some(rem) = take_remaining {
+                                    *rem -= 1;
+                                }
+                                return Ok(Some(first));
+                            }
+                            continue;
+                        }
+                    }
+                }
+                *state = EffectfulState::Done;
+                Ok(None)
+            }
+        },
     }
 }
 
@@ -1159,7 +1322,7 @@ pub struct Interpreter {
     shared: InterpreterContext,
     entry: QualifiedRef,
     page: InMemoryContext,
-    variables: FxHashMap<Astr, Value>,
+    variables: FxHashMap<ValueId, Value>,
     spawn_args: Vec<Value>,
 }
 

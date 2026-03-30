@@ -147,7 +147,10 @@ pub fn forward_analysis<A: DataflowAnalysis>(
     let mut block_exit: Vec<_> = (0..n).map(|_| DataflowState::new()).collect();
 
     if n == 0 {
-        return DataflowResult { block_entry, block_exit };
+        return DataflowResult {
+            block_entry,
+            block_exit,
+        };
     }
 
     block_entry[0] = initial;
@@ -169,12 +172,20 @@ pub fn forward_analysis<A: DataflowAnalysis>(
 
         // Propagate to successors.
         propagate_to_successors(
-            cfg, idx, &block.terminator, &block_exit[idx.0],
-            analysis, &mut block_entry, &mut worklist,
+            cfg,
+            idx,
+            &block.terminator,
+            &block_exit[idx.0],
+            analysis,
+            &mut block_entry,
+            &mut worklist,
         );
     }
 
-    DataflowResult { block_entry, block_exit }
+    DataflowResult {
+        block_entry,
+        block_exit,
+    }
 }
 
 // ── Backward analysis ──────────────────────────────────────────────
@@ -188,7 +199,10 @@ pub fn backward_analysis<A: DataflowAnalysis>(
     let mut block_exit: Vec<_> = (0..n).map(|_| DataflowState::new()).collect();
 
     if n == 0 {
-        return DataflowResult { block_entry, block_exit };
+        return DataflowResult {
+            block_entry,
+            block_exit,
+        };
     }
 
     let preds = cfg.predecessors();
@@ -203,7 +217,14 @@ pub fn backward_analysis<A: DataflowAnalysis>(
 
         // 1. Collect what successors need.
         let mut exit_state = DataflowState::new();
-        propagate_from_successors(cfg, idx, &block.terminator, analysis, &block_entry, &mut exit_state);
+        propagate_from_successors(
+            cfg,
+            idx,
+            &block.terminator,
+            analysis,
+            &block_entry,
+            &mut exit_state,
+        );
 
         // 2. Gen terminator uses → included in block_exit.
         analysis.terminator_uses(&block.terminator, &mut exit_state);
@@ -229,7 +250,10 @@ pub fn backward_analysis<A: DataflowAnalysis>(
         }
     }
 
-    DataflowResult { block_entry, block_exit }
+    DataflowResult {
+        block_entry,
+        block_exit,
+    }
 }
 
 // ── Edge propagation helpers ───────────────────────────────────────
@@ -248,40 +272,64 @@ fn propagate_to_successors<A: DataflowAnalysis>(
 
     match term {
         Terminator::Jump { label, args } => {
-            if let Some(&t) = cfg.label_to_block.get(label) {
-                if analysis.propagate_forward(exit_state, &cfg.blocks[t.0].params, args, &mut block_entry[t.0]) {
-                    worklist.push_back(t);
-                }
+            if let Some(&t) = cfg.label_to_block.get(label)
+                && analysis.propagate_forward(
+                    exit_state,
+                    &cfg.blocks[t.0].params,
+                    args,
+                    &mut block_entry[t.0],
+                )
+            {
+                worklist.push_back(t);
             }
         }
         Terminator::JumpIf {
-            cond, then_label, then_args, else_label, else_args,
+            cond,
+            then_label,
+            then_args,
+            else_label,
+            else_args,
         } => {
             let definite = analysis.eval_branch_cond(exit_state, cond);
-            if definite != Some(false) {
-                if let Some(&t) = cfg.label_to_block.get(then_label) {
-                    if analysis.propagate_forward(exit_state, &cfg.blocks[t.0].params, then_args, &mut block_entry[t.0]) {
-                        worklist.push_back(t);
-                    }
-                }
+            if definite != Some(false)
+                && let Some(&t) = cfg.label_to_block.get(then_label)
+                && analysis.propagate_forward(
+                    exit_state,
+                    &cfg.blocks[t.0].params,
+                    then_args,
+                    &mut block_entry[t.0],
+                )
+            {
+                worklist.push_back(t);
             }
-            if definite != Some(true) {
-                if let Some(&t) = cfg.label_to_block.get(else_label) {
-                    if analysis.propagate_forward(exit_state, &cfg.blocks[t.0].params, else_args, &mut block_entry[t.0]) {
-                        worklist.push_back(t);
-                    }
-                }
+            if definite != Some(true)
+                && let Some(&t) = cfg.label_to_block.get(else_label)
+                && analysis.propagate_forward(
+                    exit_state,
+                    &cfg.blocks[t.0].params,
+                    else_args,
+                    &mut block_entry[t.0],
+                )
+            {
+                worklist.push_back(t);
             }
         }
-        Terminator::ListStep { done, done_args, .. } => {
+        Terminator::ListStep {
+            done, done_args, ..
+        } => {
             let next = idx.0 + 1;
             if next < n && block_entry[next].join_from(exit_state) {
                 worklist.push_back(BlockIdx(next));
             }
-            if let Some(&t) = cfg.label_to_block.get(done) {
-                if analysis.propagate_forward(exit_state, &cfg.blocks[t.0].params, done_args, &mut block_entry[t.0]) {
-                    worklist.push_back(t);
-                }
+            if let Some(&t) = cfg.label_to_block.get(done)
+                && analysis.propagate_forward(
+                    exit_state,
+                    &cfg.blocks[t.0].params,
+                    done_args,
+                    &mut block_entry[t.0],
+                )
+            {
+                worklist.push_back(t);
             }
         }
         Terminator::Fallthrough => {
@@ -308,26 +356,52 @@ fn propagate_from_successors<A: DataflowAnalysis>(
     match term {
         Terminator::Jump { label, args } => {
             if let Some(&t) = cfg.label_to_block.get(label) {
-                analysis.propagate_backward(&block_entry[t.0], &cfg.blocks[t.0].params, args, exit_state);
+                analysis.propagate_backward(
+                    &block_entry[t.0],
+                    &cfg.blocks[t.0].params,
+                    args,
+                    exit_state,
+                );
             }
         }
         Terminator::JumpIf {
-            then_label, then_args, else_label, else_args, ..
+            then_label,
+            then_args,
+            else_label,
+            else_args,
+            ..
         } => {
             if let Some(&t) = cfg.label_to_block.get(then_label) {
-                analysis.propagate_backward(&block_entry[t.0], &cfg.blocks[t.0].params, then_args, exit_state);
+                analysis.propagate_backward(
+                    &block_entry[t.0],
+                    &cfg.blocks[t.0].params,
+                    then_args,
+                    exit_state,
+                );
             }
             if let Some(&t) = cfg.label_to_block.get(else_label) {
-                analysis.propagate_backward(&block_entry[t.0], &cfg.blocks[t.0].params, else_args, exit_state);
+                analysis.propagate_backward(
+                    &block_entry[t.0],
+                    &cfg.blocks[t.0].params,
+                    else_args,
+                    exit_state,
+                );
             }
         }
-        Terminator::ListStep { done, done_args, .. } => {
+        Terminator::ListStep {
+            done, done_args, ..
+        } => {
             let next = idx.0 + 1;
             if next < n {
                 exit_state.join_from(&block_entry[next]);
             }
             if let Some(&t) = cfg.label_to_block.get(done) {
-                analysis.propagate_backward(&block_entry[t.0], &cfg.blocks[t.0].params, done_args, exit_state);
+                analysis.propagate_backward(
+                    &block_entry[t.0],
+                    &cfg.blocks[t.0].params,
+                    done_args,
+                    exit_state,
+                );
             }
         }
         Terminator::Fallthrough => {

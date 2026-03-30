@@ -3,37 +3,41 @@ source: acvus-mir-test/tests/inline.rs
 expression: ir
 ---
 === main ===
-     0 │   r0 = context_project @count
-     1 │   r1 = context_load r0
-     2 │   r2 = context_project @count
-     3 │   r3 = context_load r2
-     4 │   r4 = context_project @count
-     5 │   r5 = context_load r4
+     0 │   r0 = ref @count
+     1 │   r1 = load r0
+     2 │   r2 = ref @count
+     3 │   r3 = load r2
+     4 │   r4 = ref @count
+     5 │   r5 = load r4
      7 │   r6 = r5 + 1 (r7)
-     8 │   r8 = context_project @count
-     9 │   ctx_store r8 = r6
-    10 │   r9 = context_project @count
-    11 │   r10 = context_load r9
-    12 │   var_store x = r10
-    13 │   r11 = var_load x
-    14 │   r12 = context_project @count
-    15 │   r13 = context_load r12
-    16 │   r14 = r11 + r13
-    17 │   return r14
+     8 │   r8 = ref @count
+     9 │   store r8 = r6
+    10 │   r9 = ref @count
+    11 │   r10 = load r9
+    12 │   r11 = ref x
+    13 │   store r11 = r10
+    14 │   r12 = ref x
+    15 │   r13 = load r12
+    16 │   r14 = ref @count
+    17 │   r15 = load r14
+    18 │   r16 = r13 + r15
+    19 │   return r16
 
-    ; r0 (@count) : Int
-    ; r1 (v2) : Int
-    ; r2 (@count) : Int
-    ; r3 (v9) : Int
-    ; r4 (@count) : Int
-    ; r5 (v11) : Int
-    ; r6 (v13) : Int
-    ; r7 (v12) : Int
-    ; r8 (v14) : Int
-    ; r9 (@count) : Int
-    ; r10 (v16) : Int
-    ; r11 (x) : Int
-    ; r12 (@count) : Int
-    ; r13 (v6) : Int
-    ; r14 (v7) : Int
-    ; r15 (bump(...)) : Int
+    ; r0 (@count) : Ref<Int>
+    ; r1 (@count) : Int
+    ; r2 (@count) : Ref<Int>
+    ; r3 (@count) : Int
+    ; r4 (@count) : Ref<Int>
+    ; r5 (v14) : Int
+    ; r6 (v16) : Int
+    ; r7 (v15) : Int
+    ; r8 (@count) : Ref<Int>
+    ; r9 (@count) : Ref<Int>
+    ; r10 (v19) : Int
+    ; r11 (v5) : Ref<Int>
+    ; r12 (v6) : Ref<Int>
+    ; r13 (x) : Int
+    ; r14 (@count) : Ref<Int>
+    ; r15 (v9) : Int
+    ; r16 (v10) : Int
+    ; r17 (bump(...)) : Int

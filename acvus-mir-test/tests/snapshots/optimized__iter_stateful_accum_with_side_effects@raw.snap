@@ -1,0 +1,97 @@
+---
+source: acvus-mir-test/tests/optimized.rs
+expression: raw
+---
+=== main ===
+     0 │   r0 = ref @balance
+     1 │   r1 = load r0
+     2 │   r2 = ref @last_overdraft
+     3 │   r3 = load r2
+     4 │   r4 = ref @overdraft_count
+     5 │   r5 = load r4
+     6 │   r6 = ref @transactions
+     7 │   r7 = load r6
+     8 │   r8 = ref @transactions
+     9 │   r9 = load r8
+    11 │   jump L0(0 (r10))
+    12 │ L0(r11: Int):
+    13 │   list_step r12, r13 = r9[r11] else L1()
+    14 │ L2:
+    15 │   r14 = ref x
+    16 │   store r14 = r12
+    17 │   r15 = ref @balance
+    18 │   r16 = load r15
+    19 │   r17 = ref x.amount
+    20 │   r18 = load r17
+    21 │   r19 = r16 + r18
+    22 │   r20 = ref @balance
+    23 │   store r20 = r19
+    24 │   r21 = ref @balance
+    25 │   r22 = load r21
+    27 │   r23 = r22 < 0 (r24)
+    28 │   r25 = test r23 == true
+    29 │   jump_if r25 then L3 else L4
+    30 │ L3:
+    31 │   r26 = ref @overdraft_count
+    32 │   r27 = load r26
+    34 │   r28 = r27 + 1 (r29)
+    35 │   r30 = ref @overdraft_count
+    36 │   store r30 = r28
+    37 │   r31 = ref x.id
+    38 │   r32 = load r31
+    39 │   r33 = ref @last_overdraft
+    40 │   store r33 = r32
+    41 │   jump L4
+    42 │ L4:
+    43 │   jump L0(r13)
+    44 │ L1:
+    45 │   r34 = ref @balance
+    46 │   r35 = load r34
+    47 │   r36 = ref @overdraft_count
+    48 │   r37 = load r36
+    49 │   r38 = ref @last_overdraft
+    50 │   r39 = load r38
+    51 │   r40 = object {balance: r35, overdrafts: r37, last: r39}
+    52 │   return r40
+
+    ; r0 (@balance) : Ref<Int>
+    ; r1 (@balance) : Int
+    ; r2 (@last_overdraft) : Ref<String>
+    ; r3 (@last_overdraft) : String
+    ; r4 (@overdraft_count) : Ref<Int>
+    ; r5 (@overdraft_count) : Int
+    ; r6 (@transactions) : Ref<List<{amount: Int, id: String}>>
+    ; r7 (@transactions) : List<{amount: Int, id: String}>
+    ; r8 (@transactions) : Ref<List<{amount: Int, id: String}>>
+    ; r9 (v10) : List<{amount: Int, id: String}>
+    ; r10 (v11) : Int
+    ; r11 (v12) : Int
+    ; r12 (x) : {amount: Int, id: String}
+    ; r13 (v14) : Int
+    ; r14 (v16) : Ref<{amount: Int, id: String}>
+    ; r15 (@balance) : Ref<Int>
+    ; r16 (v18) : Int
+    ; r17 (x.amount) : Ref<Int>
+    ; r18 (v20) : Int
+    ; r19 (v21) : Int
+    ; r20 (@balance) : Ref<Int>
+    ; r21 (@balance) : Ref<Int>
+    ; r22 (v24) : Int
+    ; r23 (v26) : Bool
+    ; r24 (v25) : Int
+    ; r25 (v27) : Bool
+    ; r26 (@overdraft_count) : Ref<Int>
+    ; r27 (v29) : Int
+    ; r28 (v31) : Int
+    ; r29 (v30) : Int
+    ; r30 (@overdraft_count) : Ref<Int>
+    ; r31 (x.id) : Ref<String>
+    ; r32 (v34) : String
+    ; r33 (@last_overdraft) : Ref<String>
+    ; r34 (@balance) : Ref<Int>
+    ; r35 (v37) : Int
+    ; r36 (@overdraft_count) : Ref<Int>
+    ; r37 (v39) : Int
+    ; r38 (@last_overdraft) : Ref<String>
+    ; r39 (v41) : String
+    ; r40 (v42) : {balance: Int, last: String, overdrafts: Int}

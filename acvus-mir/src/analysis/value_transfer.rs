@@ -4,9 +4,7 @@ use crate::ty::Ty;
 use acvus_ast::{BinOp, UnaryOp};
 use rustc_hash::FxHashMap;
 
-use crate::analysis::dataflow::{
-    value_propagate_forward, DataflowAnalysis, DataflowState,
-};
+use crate::analysis::dataflow::{DataflowAnalysis, DataflowState, value_propagate_forward};
 use crate::analysis::domain::{AbstractValue, FiniteSet, abstract_and, abstract_not, abstract_or};
 use crate::analysis::reachable_context::KnownValue;
 use smallvec::SmallVec;
@@ -26,7 +24,11 @@ impl<'a> DataflowAnalysis for ValueDomainTransfer<'a> {
                 state.set(*dst, AbstractValue::from_literal(value));
             }
 
-            InstKind::ContextProject { dst, ctx, .. } => {
+            InstKind::Ref {
+                dst,
+                target: crate::ir::RefTarget::Context(ctx),
+                ..
+            } => {
                 let val = if let Some(kv) = self.known_context.get(ctx) {
                     AbstractValue::from_known_value(kv)
                 } else {
@@ -34,8 +36,11 @@ impl<'a> DataflowAnalysis for ValueDomainTransfer<'a> {
                 };
                 state.set(*dst, val);
             }
+            InstKind::Ref { dst, .. } => {
+                state.set(*dst, AbstractValue::Top);
+            }
 
-            InstKind::ContextLoad { dst, src, .. } => {
+            InstKind::Load { dst, src, .. } => {
                 state.set(*dst, state.get(*src));
             }
 
@@ -137,9 +142,8 @@ impl<'a> DataflowAnalysis for ValueDomainTransfer<'a> {
             }
 
             // All other instructions that produce a value -> Top
-            InstKind::VarLoad { dst, .. }
-            | InstKind::ParamLoad { dst, .. }
-            | InstKind::FieldGet { dst, .. }
+            InstKind::FieldGet { dst, .. }
+            | InstKind::FieldSet { dst, .. }
             | InstKind::ObjectGet { dst, .. }
             | InstKind::FunctionCall { dst, .. }
             | InstKind::LoadFunction { dst, .. }
@@ -175,8 +179,7 @@ impl<'a> DataflowAnalysis for ValueDomainTransfer<'a> {
             }
 
             // Instructions that don't produce values
-            InstKind::VarStore { .. }
-            | InstKind::ContextStore { .. }
+            InstKind::Store { .. }
             | InstKind::Return(_)
             | InstKind::Jump { .. }
             | InstKind::JumpIf { .. }

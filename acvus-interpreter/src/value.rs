@@ -2,15 +2,15 @@ use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
 
-use acvus_mir::ir::MirBody;
 use acvus_mir::graph::QualifiedRef;
+use acvus_mir::ir::MirBody;
 use acvus_utils::{Astr, Interner, TrackedDeque};
 use rustc_hash::FxHashMap;
 
 use crate::error::RuntimeError;
 use crate::interpreter::InterpreterContext;
-use crate::journal::{InMemoryContext, RuntimeContext};
 pub use crate::iter::{IterHandle, SequenceChain};
+use crate::journal::{InMemoryContext, RuntimeContext};
 
 // ── Value ────────────────────────────────────────────────────────────
 

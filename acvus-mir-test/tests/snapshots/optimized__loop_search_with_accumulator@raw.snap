@@ -1,0 +1,80 @@
+---
+source: acvus-mir-test/tests/optimized.rs
+expression: raw
+---
+=== main ===
+     0 │   r0 = ref @found
+     1 │   r1 = load r0
+     2 │   r2 = ref @idx
+     3 │   r3 = load r2
+     4 │   r4 = ref @items
+     5 │   r5 = load r4
+     6 │   r6 = ref @target
+     7 │   r7 = load r6
+     8 │   r8 = ref @items
+     9 │   r9 = load r8
+    11 │   jump L0(0 (r10))
+    12 │ L0(r11: Int):
+    13 │   list_step r12, r13 = r9[r11] else L1()
+    14 │ L2:
+    15 │   r14 = ref x
+    16 │   store r14 = r12
+    17 │   r15 = ref x
+    18 │   r16 = load r15
+    19 │   r17 = ref @target
+    20 │   r18 = load r17
+    21 │   r19 = r16 == r18
+    22 │   r20 = test r19 == true
+    23 │   jump_if r20 then L3 else L4
+    24 │ L3:
+    26 │   r21 = ref @found
+    27 │   store r21 = true (r22)
+    28 │   jump L4
+    29 │ L4:
+    30 │   r23 = ref @idx
+    31 │   r24 = load r23
+    33 │   r25 = r24 + 1 (r26)
+    34 │   r27 = ref @idx
+    35 │   store r27 = r25
+    36 │   jump L0(r13)
+    37 │ L1:
+    38 │   r28 = ref @found
+    39 │   r29 = load r28
+    40 │   r30 = ref @idx
+    41 │   r31 = load r30
+    42 │   r32 = object {found: r29, index: r31}
+    43 │   return r32
+
+    ; r0 (@found) : Ref<Bool>
+    ; r1 (@found) : Bool
+    ; r2 (@idx) : Ref<Int>
+    ; r3 (@idx) : Int
+    ; r4 (@items) : Ref<List<Int>>
+    ; r5 (@items) : List<Int>
+    ; r6 (@target) : Ref<Int>
+    ; r7 (@target) : Int
+    ; r8 (@items) : Ref<List<Int>>
+    ; r9 (v10) : List<Int>
+    ; r10 (v11) : Int
+    ; r11 (v12) : Int
+    ; r12 (x) : Int
+    ; r13 (v14) : Int
+    ; r14 (v16) : Ref<Int>
+    ; r15 (v17) : Ref<Int>
+    ; r16 (x) : Int
+    ; r17 (@target) : Ref<Int>
+    ; r18 (v20) : Int
+    ; r19 (v21) : Bool
+    ; r20 (v22) : Bool
+    ; r21 (@found) : Ref<Bool>
+    ; r22 (v23) : Bool
+    ; r23 (@idx) : Ref<Int>
+    ; r24 (v26) : Int
+    ; r25 (v28) : Int
+    ; r26 (v27) : Int
+    ; r27 (@idx) : Ref<Int>
+    ; r28 (@found) : Ref<Bool>
+    ; r29 (v31) : Bool
+    ; r30 (@idx) : Ref<Int>
+    ; r31 (v33) : Int
+    ; r32 (v34) : {found: Bool, index: Int}

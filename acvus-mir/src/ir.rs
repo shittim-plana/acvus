@@ -52,6 +52,22 @@ impl CastKind {
     }
 }
 
+/// The kind of named storage a Ref points to.
+///
+/// Var and Param are identified by a **storage ValueId** (like LLVM's alloca),
+/// not by name. This ensures uniqueness after inlining — different functions'
+/// local variables have different ValueIds even if they share the same name.
+/// Names are stored in DebugInfo for human readability.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum RefTarget {
+    /// A local variable, identified by its storage slot ValueId.
+    Var(ValueId),
+    /// An extern parameter, identified by its param_reg ValueId.
+    Param(ValueId),
+    /// A context: `@name`. Globally unique by QualifiedRef.
+    Context(QualifiedRef),
+}
+
 /// Target of a function call.
 #[derive(Debug, Clone)]
 pub enum Callee {
@@ -63,49 +79,51 @@ pub enum Callee {
 
 #[derive(Debug, Clone)]
 pub enum InstKind {
-    // Constants / variables
+    // Constants
     Const {
         dst: ValueId,
         value: Literal,
     },
-    /// Create a projection handle to a context. This is a Ref (path),
-    /// not a value — use ContextLoad to materialize the value (copy).
-    /// `ty` is the context's root type (like alloca's type in LLVM).
-    /// `volatile`: if true, loads/stores through this projection must not be
-    /// elided or forwarded by SSA — the context is externally observable.
-    ContextProject {
+
+    // ── Projection (memory world) ────────────────────────────────
+    /// Create a projection to named storage. No-op at runtime — produces a path.
+    /// `field: None` = identity (root of the storage).
+    /// `field: Some(f)` = 1-depth field projection.
+    Ref {
         dst: ValueId,
-        ctx: QualifiedRef,
-        volatile: bool,
+        target: RefTarget,
+        field: Option<Astr>,
     },
-    /// Materialize a projection into a value (copy). Severs the store connection.
-    /// `src` must be a projection (from ContextProject or FieldAccess on a projection).
-    /// `volatile`: inherited from the source projection.
-    ContextLoad {
+    /// Materialize a projection into a value (copy). `src` must be `Ref<T>`.
+    /// `volatile`: if true, SSA must not elide or forward this load.
+    Load {
         dst: ValueId,
         src: ValueId,
         volatile: bool,
     },
-    /// Write a value through a projection.
-    /// `dst` must be a projection (from ContextProject or FieldAccess on a projection).
-    /// `volatile`: inherited from the destination projection.
-    ContextStore {
+    /// Write a value through a projection. `dst` must be `Ref<T>`.
+    /// `volatile`: if true, SSA must not elide this store.
+    Store {
         dst: ValueId,
         value: ValueId,
         volatile: bool,
     },
-    VarLoad {
+
+    // ── Scalar field access ──────────────────────────────────────
+    /// Extract a field from a scalar value. 1+ depth via `field` + `rest`.
+    FieldGet {
         dst: ValueId,
-        name: Astr,
+        object: ValueId,
+        field: Astr,
+        rest: Vec<Astr>,
     },
-    VarStore {
-        name: Astr,
-        src: ValueId,
-    },
-    /// Load an extern parameter `$name`. Immutable — no corresponding store.
-    ParamLoad {
+    /// Replace a field in a scalar value, producing a new value. 1+ depth.
+    FieldSet {
         dst: ValueId,
-        name: Astr,
+        object: ValueId,
+        field: Astr,
+        rest: Vec<Astr>,
+        value: ValueId,
     },
 
     // Arithmetic / logic
@@ -119,11 +137,6 @@ pub enum InstKind {
         dst: ValueId,
         op: UnaryOp,
         operand: ValueId,
-    },
-    FieldGet {
-        dst: ValueId,
-        object: ValueId,
-        field: Astr,
     },
 
     // Functions
@@ -325,8 +338,10 @@ pub enum ValOrigin {
     Context(Astr),
     /// An extern parameter: `$name`.
     ExternParam(Astr),
-    /// A field access: `user.name` -- (object val, field name).
+    /// A field access on a scalar value: `user.name` -- (object val, field name).
     Field(ValueId, Astr),
+    /// A field projection on named storage: `@ctx.field`, `x.field`.
+    RefField(RefTarget, Astr),
     /// Result of a function call: `to_string(...)`, `fetch(...)`.
     Call(Astr),
     /// An intermediate/anonymous value (arithmetic, pattern test, etc.).
@@ -366,6 +381,25 @@ impl DebugInfo {
             Some(ValOrigin::Context(name)) => format!("@{}", interner.resolve(*name)),
             Some(ValOrigin::ExternParam(name)) => format!("${}", interner.resolve(*name)),
             Some(ValOrigin::Field(_, field)) => interner.resolve(*field).to_string(),
+            Some(ValOrigin::RefField(target, field)) => {
+                let base = match target {
+                    RefTarget::Var(slot) => {
+                        // Look up debug name from val_origins for the slot.
+                        match self.val_origins.get(slot) {
+                            Some(ValOrigin::Named(n)) => interner.resolve(*n).to_string(),
+                            _ => format!("var_{}", slot.0),
+                        }
+                    }
+                    RefTarget::Param(slot) => {
+                        match self.val_origins.get(slot) {
+                            Some(ValOrigin::ExternParam(n)) => format!("${}", interner.resolve(*n)),
+                            _ => format!("$param_{}", slot.0),
+                        }
+                    }
+                    RefTarget::Context(qref) => format!("@{}", interner.resolve(qref.name)),
+                };
+                format!("{}.{}", base, interner.resolve(*field))
+            }
             Some(ValOrigin::Call(func)) => format!("{}(...)", interner.resolve(*func)),
             Some(ValOrigin::Expr) | None => format!("v{}", val.0),
         }
@@ -376,8 +410,10 @@ impl DebugInfo {
 pub struct MirBody {
     pub insts: Vec<Inst>,
     pub val_types: FxHashMap<ValueId, Ty>,
-    pub param_regs: Vec<ValueId>,
-    pub capture_regs: Vec<ValueId>,
+    /// Function parameters: (name, register). Register holds the initial SSA value.
+    pub params: Vec<(Astr, ValueId)>,
+    /// Captured variables: (name, register). Register holds the captured value.
+    pub captures: Vec<(Astr, ValueId)>,
     pub debug: DebugInfo,
     pub val_factory: LocalFactory<ValueId>,
     pub label_count: u32,
@@ -394,12 +430,22 @@ impl MirBody {
         Self {
             insts: Vec::new(),
             val_types: FxHashMap::default(),
-            param_regs: Vec::new(),
-            capture_regs: Vec::new(),
+            params: Vec::new(),
+            captures: Vec::new(),
             debug: DebugInfo::new(),
             val_factory: LocalFactory::new(),
             label_count: 0,
         }
+    }
+
+    /// Convenience: get param register ValueIds.
+    pub fn param_regs(&self) -> Vec<ValueId> {
+        self.params.iter().map(|(_, v)| *v).collect()
+    }
+
+    /// Convenience: get capture register ValueIds.
+    pub fn capture_regs(&self) -> Vec<ValueId> {
+        self.captures.iter().map(|(_, v)| *v).collect()
     }
 }
 
@@ -410,17 +456,25 @@ pub struct MirModule {
 }
 
 impl MirModule {
-    /// Extract all context keys (ContextProject refs) referenced by this module.
+    /// Extract all context keys (Ref(Context) targets) referenced by this module.
     pub fn extract_context_keys(&self) -> FxHashSet<QualifiedRef> {
         let mut keys = FxHashSet::default();
         for inst in &self.main.insts {
-            if let InstKind::ContextProject { ctx, .. } = &inst.kind {
+            if let InstKind::Ref {
+                target: RefTarget::Context(ctx),
+                ..
+            } = &inst.kind
+            {
                 keys.insert(*ctx);
             }
         }
         for closure in self.closures.values() {
             for inst in &closure.insts {
-                if let InstKind::ContextProject { ctx, .. } = &inst.kind {
+                if let InstKind::Ref {
+                    target: RefTarget::Context(ctx),
+                    ..
+                } = &inst.kind
+                {
                     keys.insert(*ctx);
                 }
             }

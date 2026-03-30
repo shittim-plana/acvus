@@ -149,24 +149,20 @@ fn main() {
 
     let parsed_ast = if is_script {
         ParsedAst::Script(
-            acvus_ast::parse_script(&interner, &source)
-                .unwrap_or_else(|e| {
-                    eprintln!("error: parse failed: {e:?}");
-                    process::exit(1);
-                }),
+            acvus_ast::parse_script(&interner, &source).unwrap_or_else(|e| {
+                eprintln!("error: parse failed: {e:?}");
+                process::exit(1);
+            }),
         )
     } else {
-        ParsedAst::Template(
-            acvus_ast::parse(&interner, &source)
-                .unwrap_or_else(|e| {
-                    eprintln!("error: parse failed: {e:?}");
-                    process::exit(1);
-                }),
-        )
+        ParsedAst::Template(acvus_ast::parse(&interner, &source).unwrap_or_else(|e| {
+            eprintln!("error: parse failed: {e:?}");
+            process::exit(1);
+        }))
     };
 
     let fn_qref = QualifiedRef::root(interner.intern("main"));
-    let mut functions = acvus_mir::builtins::standard_builtins(&interner);
+    let mut functions = Vec::new();
     let mut type_registry = acvus_mir::ty::TypeRegistry::new();
     let std_regs = acvus_ext::std_registries(&interner, &mut type_registry);
     for registry in std_regs {
@@ -190,7 +186,14 @@ fn main() {
 
     // Run pipeline: extract → infer → lower.
     let ext = extract::extract(&interner, &graph);
-    let inf = infer::infer(&interner, &graph, &ext, &FxHashMap::default(), Freeze::new(type_registry), &FxHashMap::default());
+    let inf = infer::infer(
+        &interner,
+        &graph,
+        &ext,
+        &FxHashMap::default(),
+        Freeze::new(type_registry),
+        &FxHashMap::default(),
+    );
     let result = graph_lower::lower(&interner, &graph, &ext, &inf, &FxHashMap::default());
     if result.has_errors() {
         for le in &result.errors {

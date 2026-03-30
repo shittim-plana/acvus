@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use acvus_interpreter::{
-    ExecResult, Executable, ExternFn, ExternRegistry, InMemoryContext, Interpreter,
-    InterpreterContext, Registered, SequentialExecutor, Value,
+    ExecResult, Executable, ExternRegistry, InMemoryContext, Interpreter, InterpreterContext,
+    SequentialExecutor, Value,
 };
 use acvus_mir::graph::*;
 use acvus_mir::graph::{extract, lower as graph_lower, optimize as graph_optimize};
@@ -61,7 +61,7 @@ pub fn compile_source_with_externs(
         .collect();
 
     let entry_qref = QualifiedRef::root(interner.intern("test"));
-    let mut functions = acvus_mir::builtins::standard_builtins(interner);
+    let mut functions = Vec::new();
     functions.push(Function {
         qref: entry_qref,
         kind: FnKind::Local(ast),
@@ -93,19 +93,26 @@ pub fn compile_source_with_externs(
     };
 
     let ext = extract::extract(interner, &graph);
-    let inf = infer::infer(interner, &graph, &ext, &FxHashMap::default(), Freeze::new(type_registry), &FxHashMap::default());
+    let inf = infer::infer(
+        interner,
+        &graph,
+        &ext,
+        &FxHashMap::default(),
+        Freeze::new(type_registry),
+        &FxHashMap::default(),
+    );
 
     // Collect all errors: infer (unresolved functions) + lower.
     let mut all_errors: Vec<String> = Vec::new();
 
     // Report infer-level errors (unresolved functions).
     for (qref, outcome) in &inf.outcomes {
-        if let acvus_mir::graph::infer::FnInferOutcome::Incomplete { errors, .. } = outcome {
-            if !errors.is_empty() {
-                let fn_name = interner.resolve(qref.name);
-                for e in errors {
-                    all_errors.push(format!("[{fn_name}] {}", e.display(interner)));
-                }
+        if let acvus_mir::graph::infer::FnInferOutcome::Incomplete { errors, .. } = outcome
+            && !errors.is_empty()
+        {
+            let fn_name = interner.resolve(qref.name);
+            for e in errors {
+                all_errors.push(format!("[{fn_name}] {}", e.display(interner)));
             }
         }
     }
@@ -129,7 +136,7 @@ pub fn compile_source_with_externs(
         .collect();
 
     // Run full optimization pipeline: SSA → Inline → SpawnSplit → Reorder → SSA → RegColor → Validate.
-    let opt_result = graph_optimize::optimize(raw_modules, &fn_types, &FxHashSet::default());
+    let opt_result = graph_optimize::optimize(raw_modules, &fn_types, &inf.context_types, &FxHashSet::default());
 
     // Report validation errors from optimization.
     for (qref, errs) in &opt_result.errors {
@@ -157,8 +164,11 @@ pub fn compile_source_with_externs(
         .collect();
 
     // Build builtin name → qref mapping from the same graph functions.
-    let builtin_ids: FxHashMap<Astr, QualifiedRef> =
-        graph.functions.iter().map(|f| (f.qref.name, f.qref)).collect();
+    let builtin_ids: FxHashMap<Astr, QualifiedRef> = graph
+        .functions
+        .iter()
+        .map(|f| (f.qref.name, f.qref))
+        .collect();
 
     CompileResult {
         entry_qref,
@@ -168,20 +178,6 @@ pub fn compile_source_with_externs(
         fn_types,
         extern_executables,
     }
-}
-
-/// Build builtin qref mapping from the graph functions.
-fn builtin_qref_map(
-    interner: &Interner,
-    modules: &FxHashMap<QualifiedRef, acvus_mir::ir::MirModule>,
-) -> FxHashMap<Astr, QualifiedRef> {
-    // Standard builtins have known names — rebuild them to get name→qref.
-    let builtins = acvus_mir::builtins::standard_builtins(interner);
-    builtins
-        .into_iter()
-        .map(|f| (f.qref.name, f.qref))
-        .filter(|(_, qref)| !modules.contains_key(qref)) // builtins don't have modules
-        .collect()
 }
 
 /// Parse + compile + execute a template, returning the output string.

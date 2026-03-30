@@ -9,21 +9,12 @@
 use acvus_utils::{Astr, Freeze, Interner};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use std::collections::BTreeSet;
-
 use crate::ty::{Effect, EffectSet, Param, Ty, TySubst, TypeRegistry};
 
 use super::extract::{ExtractResult, ParsedSource};
 use super::types::*;
 
 // ── Phase 1 output ──────────────────────────────────────────────────
-
-/// Inferred context parameter for a single context.
-#[derive(Debug, Clone)]
-pub struct InferredParam {
-    pub name: QualifiedRef,
-    pub ty: Ty,
-}
 
 /// Inferred metadata for a single function.
 #[derive(Debug, Clone)]
@@ -48,7 +39,7 @@ pub enum FnInferOutcome {
     },
     /// Type incomplete. Cannot lower.
     Incomplete {
-        unknown_contexts: Vec<InferredParam>,
+        unknown_contexts: Vec<(QualifiedRef, Ty)>,
         unknown_extern_params: Vec<(Astr, Ty)>,
         meta: FunctionMeta,
         errors: Vec<crate::error::MirError>,
@@ -86,16 +77,16 @@ impl FnInferOutcome {
 }
 
 /// Phase 1 output: inferred context parameters and function types.
+/// All type information is frozen — immutable after inference.
 #[derive(Debug)]
 pub struct InferResult {
     /// Per-function inference outcome (Complete or Incomplete).
     pub outcomes: FxHashMap<QualifiedRef, FnInferOutcome>,
-    /// Per-function inferred context parameters (for UI display).
-    pub fn_params: FxHashMap<QualifiedRef, Vec<InferredParam>>,
-    /// All context parameters across all functions, deduplicated.
-    pub all_params: Vec<InferredParam>,
-    /// Resolved context types (known + inferred).
-    pub context_types: FxHashMap<QualifiedRef, Ty>,
+    /// Resolved context types (known + inferred). Frozen after inference.
+    pub context_types: Freeze<FxHashMap<QualifiedRef, Ty>>,
+    /// Resolved function types: QualifiedRef → Ty::Fn. Frozen after inference.
+    /// Single source of truth for all function types post-inference.
+    pub fn_types: Freeze<FxHashMap<QualifiedRef, Ty>>,
 }
 
 impl InferResult {
@@ -114,7 +105,7 @@ impl InferResult {
 
     /// Get the context type for a QualifiedRef.
     pub fn context_type(&self, qref: &QualifiedRef) -> Option<&Ty> {
-        self.context_types.get(qref)
+        (*self.context_types).get(qref)
     }
 
     /// Whether any function has errors.
@@ -184,7 +175,10 @@ fn build_call_graph(
         let Some(parsed) = extract.parsed.get(&func.qref) else {
             continue;
         };
-        edges.insert(func.qref, extract_call_edges(parsed, &name_to_id, func.qref));
+        edges.insert(
+            func.qref,
+            extract_call_edges(parsed, &name_to_id, func.qref),
+        );
     }
     edges
 }
@@ -261,7 +255,7 @@ fn collect_value_refs_expr(expr: &acvus_ast::Expr, refs: &mut Vec<Astr>) {
             name,
             ref_kind: RefKind::Value,
             ..
-        } => refs.push(*name),
+        } => refs.push(name.name),
         Expr::Ident { .. } | Expr::Literal { .. } | Expr::ContextRef { .. } => {}
         Expr::BinaryOp { left, right, .. } | Expr::Pipe { left, right, .. } => {
             collect_value_refs_expr(left, refs);
@@ -408,10 +402,8 @@ pub fn tarjan_scc(
 pub struct SccInferResult {
     /// Per-function metadata (type, params, effect).
     pub fn_metas: FxHashMap<QualifiedRef, FunctionMeta>,
-    /// Per-function inferred context parameters.
-    pub fn_params: FxHashMap<QualifiedRef, Vec<InferredParam>>,
-    /// Function name → resolved Ty::Fn (for passing to next SCC).
-    pub resolved_types: FxHashMap<Astr, Ty>,
+    /// QualifiedRef → resolved Ty::Fn (for passing to next SCC).
+    pub resolved_types: FxHashMap<QualifiedRef, Ty>,
     /// Per-function direct effects from typechecker (before call-graph propagation).
     pub fn_direct_effects: FxHashMap<QualifiedRef, EffectSet>,
 }
@@ -426,17 +418,16 @@ pub fn infer_scc(
     fn_by_id: &FxHashMap<QualifiedRef, &Function>,
     extract_parsed: &FxHashMap<QualifiedRef, &ParsedSource>,
     known_ctx: &FxHashMap<QualifiedRef, Ty>,
-    resolved_fn_types: &FxHashMap<Astr, Ty>,
+    resolved_fn_types: &FxHashMap<QualifiedRef, Ty>,
 ) -> SccInferResult {
     let mut subst = TySubst::new();
-    let mut fn_params: FxHashMap<QualifiedRef, Vec<InferredParam>> = FxHashMap::default();
     let mut fn_bind_params: FxHashMap<QualifiedRef, Vec<Param>> = FxHashMap::default();
     let mut fn_ret_vars: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
     let mut fn_effect_vars: FxHashMap<QualifiedRef, Effect> = FxHashMap::default();
     let mut fn_direct_effects: FxHashMap<QualifiedRef, EffectSet> = FxHashMap::default();
 
     // Build Ty::Fn for functions in this SCC (with fresh ret/effect vars).
-    let mut scc_fn_types: FxHashMap<Astr, Ty> = FxHashMap::default();
+    let mut scc_fn_types: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
 
     for &fid in scc {
         let func = fn_by_id[&fid];
@@ -461,7 +452,7 @@ pub fn infer_scc(
             captures: vec![],
             effect,
         };
-        scc_fn_types.insert(func.qref.name, fn_ty);
+        scc_fn_types.insert(func.qref, fn_ty);
     }
 
     // Build TypeEnv: already-resolved functions + this SCC's unresolved functions.
@@ -513,12 +504,10 @@ pub fn infer_scc(
             fn_bind_params.insert(fid, bind);
         }
 
-        // All contexts are now known — no unknown context params to infer.
-        fn_params.insert(fid, vec![]);
     }
 
     // Resolve all functions in this SCC.
-    let mut resolved_types: FxHashMap<Astr, Ty> = FxHashMap::default();
+    let mut resolved_types: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
     let mut fn_metas: FxHashMap<QualifiedRef, FunctionMeta> = FxHashMap::default();
 
     for &fid in scc {
@@ -546,7 +535,7 @@ pub fn infer_scc(
             captures: vec![],
             effect,
         };
-        resolved_types.insert(func.qref.name, fn_ty.clone());
+        resolved_types.insert(func.qref, fn_ty.clone());
         fn_metas.insert(
             fid,
             FunctionMeta {
@@ -559,7 +548,6 @@ pub fn infer_scc(
 
     SccInferResult {
         fn_metas,
-        fn_params,
         resolved_types,
         fn_direct_effects,
     }
@@ -584,32 +572,31 @@ pub fn infer(
     policies: &FxHashMap<QualifiedRef, ContextPolicy>,
 ) -> InferResult {
     let mut subst = TySubst::with_registry(type_registry);
-    let mut fn_params: FxHashMap<QualifiedRef, Vec<InferredParam>> = FxHashMap::default();
+
+    // Per-function state accumulated across SCCs.
     let mut fn_bind_params: FxHashMap<QualifiedRef, Vec<Param>> = FxHashMap::default();
-    // Direct effects per function, collected from typeck body_effect.
     let mut fn_direct_effects: FxHashMap<QualifiedRef, EffectSet> = FxHashMap::default();
-    // Typeck results per function — stored for check_completeness after SCC completes.
     let mut fn_unchecked: FxHashMap<
         QualifiedRef,
         crate::typeck::TypeResolution<crate::typeck::Unchecked>,
     > = FxHashMap::default();
-    // Typeck errors per function (from analysis mode).
     let mut fn_typeck_errors: FxHashMap<QualifiedRef, Vec<crate::error::MirError>> =
         FxHashMap::default();
+    let mut resolved_fn_types: FxHashMap<QualifiedRef, Ty> = Default::default();
+    let mut fn_metas: FxHashMap<QualifiedRef, FunctionMeta> = FxHashMap::default();
 
-    // Resolved function types — populated as SCCs complete.
-    let mut resolved_fn_types: FxHashMap<Astr, Ty> = crate::builtins::builtin_fn_types(interner);
+    // ── Setup ────────────────────────────────────────────────────────
 
-    // Add extern function types (these are always known upfront).
+    // Extern function types are always known upfront.
     for func in graph.functions.iter() {
-        if let FnKind::Extern = &func.kind {
-            if let Constraint::Exact(ty) = &func.constraint.output {
-                resolved_fn_types.insert(func.qref.name, ty.clone());
-            }
+        if let FnKind::Extern = &func.kind
+            && let Constraint::Exact(ty) = &func.constraint.output
+        {
+            resolved_fn_types.insert(func.qref, ty.clone());
         }
     }
 
-    // Collect known context types: graph declarations + user-provided.
+    // Known context types: graph declarations + user-provided.
     let mut known_ctx: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
     for ctx in graph.contexts.iter() {
         match &ctx.constraint {
@@ -617,7 +604,6 @@ pub fn infer(
                 known_ctx.insert(ctx.qref, ty.clone());
             }
             Constraint::Inferred => {
-                // Declared but type unknown — use fresh var. Infer will determine the type.
                 known_ctx.insert(ctx.qref, subst.fresh_param());
             }
             Constraint::DerivedFnOutput(_, _) | Constraint::DerivedContext(_, _) => {
@@ -626,10 +612,8 @@ pub fn infer(
             }
         }
     }
-    // User-provided types override.
     known_ctx.extend(user_context_types.iter().map(|(&k, v)| (k, v.clone())));
 
-    // Map QualifiedRef → Function for lookup.
     let fn_by_id: FxHashMap<QualifiedRef, &Function> = graph
         .functions
         .iter()
@@ -637,7 +621,7 @@ pub fn infer(
         .map(|f| (f.qref, f))
         .collect();
 
-    // ── STEP 1: Build call graph and compute SCCs ───────────────────
+    // ── STEP 1: Call graph + SCCs ────────────────────────────────────
 
     let call_graph = build_call_graph(graph, extract);
     let local_ids: Vec<QualifiedRef> = graph
@@ -648,26 +632,23 @@ pub fn infer(
         .collect();
     let sccs = tarjan_scc(&local_ids, &call_graph);
 
-    // ── STEP 2: Process each SCC in topological order ───────────────
-
-    // Track ret vars and effect vars per function (across all SCCs).
-    let mut fn_ret_vars: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
-    let mut fn_effect_vars: FxHashMap<QualifiedRef, Effect> = FxHashMap::default();
+    // ── STEP 2: Typecheck + resolve per SCC ─────────────────────────
 
     for scc in &sccs {
-        // Build Ty::Fn for functions in this SCC (with fresh ret/effect vars).
-        let mut scc_fn_types: FxHashMap<Astr, Ty> = FxHashMap::default();
+        // 2a. Build Ty::Fn for SCC members with fresh ret/effect vars.
+        let mut scc_fn_types: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
+        let mut scc_ret_vars: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
+        let mut scc_effect_vars: FxHashMap<QualifiedRef, Effect> = FxHashMap::default();
 
         for &fid in scc {
             let func = fn_by_id[&fid];
-
             let ret = match &func.constraint.output {
                 Constraint::Exact(ty) => ty.clone(),
                 _ => subst.fresh_param(),
             };
             let effect = subst.fresh_effect_var();
-            fn_ret_vars.insert(fid, ret.clone());
-            fn_effect_vars.insert(fid, effect.clone());
+            scc_ret_vars.insert(fid, ret.clone());
+            scc_effect_vars.insert(fid, effect.clone());
 
             let sig_params: Vec<Param> = func
                 .constraint
@@ -676,36 +657,33 @@ pub fn infer(
                 .map(|s| s.params.clone())
                 .unwrap_or_default();
 
-            let fn_ty = Ty::Fn {
-                params: sig_params,
-                ret: Box::new(ret),
-                captures: vec![],
-                effect,
-            };
-            scc_fn_types.insert(func.qref.name, fn_ty);
+            scc_fn_types.insert(
+                func.qref,
+                Ty::Fn {
+                    params: sig_params,
+                    ret: Box::new(ret),
+                    captures: vec![],
+                    effect,
+                },
+            );
         }
 
-        // Build TypeEnv: already-resolved functions + this SCC's unresolved functions.
+        // 2b. Typecheck each function with resolved + SCC-local type env.
         let mut env_functions = resolved_fn_types.clone();
         env_functions.extend(scc_fn_types);
 
-        // Typecheck each function in this SCC.
         for &fid in scc {
             let func = fn_by_id[&fid];
             let Some(parsed) = extract.parsed.get(&fid) else {
                 continue;
             };
 
-            // All graph contexts are available — typeck discovers actual usage
-            // via direct reference + callee effect propagation.
-            let ctx_types: FxHashMap<QualifiedRef, Ty> = known_ctx.clone();
-
             let env = crate::ty::TypeEnv {
-                contexts: ctx_types,
+                contexts: known_ctx.clone(),
                 functions: env_functions.clone(),
             };
 
-            let expected_tail = fn_ret_vars.get(&fid);
+            let expected_tail = scc_ret_vars.get(&fid);
             let declared_types: Vec<Ty> = func
                 .constraint
                 .signature
@@ -723,10 +701,9 @@ pub fn infer(
 
             match result {
                 Ok(unchecked) => {
-                    if let Some(effect_var) = fn_effect_vars.get(&fid) {
+                    if let Some(effect_var) = scc_effect_vars.get(&fid) {
                         let _ = subst.unify_effect(effect_var, &unchecked.body_effect);
                     }
-                    // Collect direct effects from typeck body_effect.
                     if let Effect::Resolved(ref effect_set) = unchecked.body_effect {
                         fn_direct_effects.insert(fid, effect_set.clone());
                     }
@@ -737,102 +714,52 @@ pub fn infer(
                         .map(|(name, ty)| Param::new(*name, subst.resolve(ty)))
                         .collect();
                     fn_bind_params.insert(fid, bind);
-
-                    // Store unchecked resolution for check_completeness after SCC.
                     fn_unchecked.insert(fid, unchecked);
                 }
                 Err(errors) => {
                     fn_typeck_errors.insert(fid, errors);
                 }
             }
-
-            // All contexts are now known — no unknown context params to infer.
-            fn_params.insert(fid, vec![]);
         }
 
-        // SCC complete: resolve all functions in this SCC and add to resolved_fn_types.
+        // 2c. Resolve SCC: build resolved fn types + fn_metas.
         for &fid in scc {
-            let func = fn_by_id[&fid];
-
-            let ret = fn_ret_vars
+            let ret = scc_ret_vars
                 .get(&fid)
                 .map(|r| subst.resolve(r))
                 .unwrap_or_else(Ty::error);
-            let effect = fn_effect_vars
+            let effect = scc_effect_vars
                 .get(&fid)
                 .map(|e| subst.resolve_effect(e))
                 .unwrap_or_else(Effect::pure);
-
-            let resolved_bind: Vec<Param> = fn_bind_params
+            let bind: Vec<Param> = fn_bind_params
                 .get(&fid)
-                .map(|bind| {
-                    bind.iter()
+                .map(|b| {
+                    b.iter()
                         .map(|p| Param::new(p.name, subst.resolve(&p.ty)))
                         .collect()
                 })
                 .unwrap_or_default();
 
-            let resolved_fn_ty = Ty::Fn {
-                params: resolved_bind,
+            let fn_ty = Ty::Fn {
+                params: bind.clone(),
                 ret: Box::new(ret),
                 captures: vec![],
                 effect,
             };
-            resolved_fn_types.insert(func.qref.name, resolved_fn_ty);
+            resolved_fn_types.insert(fid, fn_ty.clone());
+            fn_metas.insert(
+                fid,
+                FunctionMeta {
+                    ty: fn_ty,
+                    params: bind,
+                    effect: EffectSet::default(),
+                },
+            );
         }
     }
 
-    // ── STEP 3: Build FunctionMeta + compute transitive effects ─────
-
-    let mut all_map: FxHashMap<QualifiedRef, Ty> = FxHashMap::default();
-    for params in fn_params.values() {
-        for param in params {
-            all_map
-                .entry(param.name)
-                .or_insert_with(|| param.ty.clone());
-        }
-    }
-    let all_params: Vec<InferredParam> = all_map
-        .into_iter()
-        .map(|(name, ty)| InferredParam { name, ty })
-        .collect();
-
-    // Build FunctionMeta for each local function (initially with empty transitive effects).
-    let mut fn_metas: FxHashMap<QualifiedRef, FunctionMeta> = FxHashMap::default();
-
-    for &fid in &local_ids {
-        let ret = fn_ret_vars
-            .get(&fid)
-            .map(|r| subst.resolve(r))
-            .unwrap_or_else(Ty::error);
-        let effect = fn_effect_vars
-            .get(&fid)
-            .map(|e| subst.resolve_effect(e))
-            .unwrap_or_else(Effect::pure);
-        let bind: Vec<Param> = fn_bind_params
-            .get(&fid)
-            .map(|b| {
-                b.iter()
-                    .map(|p| Param::new(p.name, subst.resolve(&p.ty)))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let fn_ty = Ty::Fn {
-            params: bind.clone(),
-            ret: Box::new(ret),
-            captures: vec![],
-            effect,
-        };
-        fn_metas.insert(
-            fid,
-            FunctionMeta {
-                ty: fn_ty,
-                params: bind,
-                effect: EffectSet::default(), // filled below
-            },
-        );
-    }
+    // ── STEP 3: Effect propagation ──────────────────────────────────
 
     // Seed with direct effects + parameter-carried effects.
     for &fid in &local_ids {
@@ -884,7 +811,7 @@ pub fn infer(
         }
     }
 
-    // ── STEP 4: check_completeness + effect constraint → outcomes ──
+    // ── STEP 4: check_completeness + effect constraint → outcomes ───
 
     let mut outcomes: FxHashMap<QualifiedRef, FnInferOutcome> = FxHashMap::default();
 
@@ -897,11 +824,10 @@ pub fn infer(
 
         // If typeck failed, this function is Incomplete.
         if let Some(errors) = fn_typeck_errors.remove(&fid) {
-            let unknown_contexts = fn_params.get(&fid).cloned().unwrap_or_default();
             outcomes.insert(
                 fid,
                 FnInferOutcome::Incomplete {
-                    unknown_contexts,
+                    unknown_contexts: vec![],
                     unknown_extern_params: vec![],
                     meta,
                     errors,
@@ -915,7 +841,7 @@ pub fn infer(
             outcomes.insert(
                 fid,
                 FnInferOutcome::Incomplete {
-                    unknown_contexts: fn_params.get(&fid).cloned().unwrap_or_default(),
+                    unknown_contexts: vec![],
                     unknown_extern_params: vec![],
                     meta,
                     errors: vec![],
@@ -924,34 +850,25 @@ pub fn infer(
             continue;
         };
 
-        // If this function references undeclared contexts, it's Incomplete.
-        let unknown_ctxs = fn_params.get(&fid).cloned().unwrap_or_default();
-        if !unknown_ctxs.is_empty() {
-            outcomes.insert(
-                fid,
-                FnInferOutcome::Incomplete {
-                    unknown_contexts: unknown_ctxs,
-                    unknown_extern_params: unchecked.extern_params.clone(),
-                    meta,
-                    errors: vec![],
-                },
-            );
-            continue;
-        }
-
         // Try check_completeness.
         match crate::typeck::check_completeness(unchecked, &subst) {
             Ok(checked) => {
                 // Check read_only policy: writes to read_only contexts are forbidden.
                 if let Effect::Resolved(ref eff) = checked.body_effect {
-                    let mut ro_violations = Vec::new();
-                    for target in &eff.writes {
-                        if let crate::ty::EffectTarget::Context(qref) = target {
-                            if policies.get(qref).map_or(false, |p| p.read_only) {
-                                ro_violations.push(*qref);
+                    let ro_violations: Vec<QualifiedRef> = eff
+                        .writes
+                        .iter()
+                        .filter_map(|target| {
+                            if let crate::ty::EffectTarget::Context(qref) = target
+                                && policies.get(qref).is_some_and(|p| p.read_only)
+                            {
+                                Some(*qref)
+                            } else {
+                                None
                             }
-                        }
-                    }
+                        })
+                        .collect();
+
                     if !ro_violations.is_empty() {
                         let detail = ro_violations
                             .iter()
@@ -961,10 +878,7 @@ pub fn infer(
                         outcomes.insert(
                             fid,
                             FnInferOutcome::Incomplete {
-                                unknown_contexts: fn_params
-                                    .get(&fid)
-                                    .cloned()
-                                    .unwrap_or_default(),
+                                unknown_contexts: vec![],
                                 unknown_extern_params: checked.extern_params.clone(),
                                 meta,
                                 errors: vec![crate::error::MirError {
@@ -980,27 +894,21 @@ pub fn infer(
                 }
 
                 // Check effect constraint if present.
-                let func = fn_by_id.get(&fid);
-                if let Some(func) = func {
-                    if let Some(ref allowed) = func.constraint.effect {
-                        if let Err(err) =
-                            crate::typeck::check_effect_constraint(&checked.body_effect, allowed)
-                        {
-                            outcomes.insert(
-                                fid,
-                                FnInferOutcome::Incomplete {
-                                    unknown_contexts: fn_params
-                                        .get(&fid)
-                                        .cloned()
-                                        .unwrap_or_default(),
-                                    unknown_extern_params: checked.extern_params.clone(),
-                                    meta,
-                                    errors: vec![err],
-                                },
-                            );
-                            continue;
-                        }
-                    }
+                if let Some(func) = fn_by_id.get(&fid)
+                    && let Some(ref allowed) = func.constraint.effect
+                    && let Err(err) =
+                        crate::typeck::check_effect_constraint(&checked.body_effect, allowed)
+                {
+                    outcomes.insert(
+                        fid,
+                        FnInferOutcome::Incomplete {
+                            unknown_contexts: vec![],
+                            unknown_extern_params: checked.extern_params.clone(),
+                            meta,
+                            errors: vec![err],
+                        },
+                    );
+                    continue;
                 }
 
                 let tail_ty = checked.tail_ty.clone();
@@ -1017,7 +925,7 @@ pub fn infer(
                 outcomes.insert(
                     fid,
                     FnInferOutcome::Incomplete {
-                        unknown_contexts: fn_params.get(&fid).cloned().unwrap_or_default(),
+                        unknown_contexts: vec![],
                         unknown_extern_params: vec![],
                         meta,
                         errors,
@@ -1027,19 +935,22 @@ pub fn infer(
         }
     }
 
-    // ── STEP 5: Build context_types ─────────────────────────────────
+    // ── STEP 5: Build result ────────────────────────────────────────
 
     let mut context_types: FxHashMap<QualifiedRef, Ty> = known_ctx;
-    // Resolve any type vars in context types with final subst state.
     for ty in context_types.values_mut() {
         *ty = subst.resolve(ty);
     }
 
+    let mut fn_types: FxHashMap<QualifiedRef, Ty> = resolved_fn_types;
+    for (&qref, outcome) in &outcomes {
+        fn_types.insert(qref, outcome.meta().ty.clone());
+    }
+
     InferResult {
         outcomes,
-        fn_params,
-        all_params,
-        context_types,
+        context_types: Freeze::new(context_types),
+        fn_types: Freeze::new(fn_types),
     }
 }
 
@@ -1109,9 +1020,15 @@ mod tests {
         // Undeclared contexts no longer produce InferredParam entries.
         let graph = make_graph(&i, "@x + 1");
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
-        assert_eq!(result.all_params.len(), 0);
     }
 
     #[test]
@@ -1119,10 +1036,15 @@ mod tests {
         let i = Interner::new();
         let graph = make_graph_with_ctx(&i, "@x + @y", &[("x", Ty::Int)]);
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
-        // No context params inferred — all contexts are known or handled by typechecker.
-        assert_eq!(result.all_params.len(), 0);
     }
 
     // -- Soundness: no false inferences --
@@ -1132,9 +1054,15 @@ mod tests {
         let i = Interner::new();
         let graph = make_graph(&i, "1 + 2");
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
-        assert!(result.all_params.is_empty());
     }
 
     // ── Effect propagation tests ────────────────────────────────────
@@ -1194,14 +1122,27 @@ mod tests {
             &[("x", Ty::Int), ("y", Ty::Int)],
         );
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         let fid = ids[0].1;
         let effect = &result.outcomes[&fid].meta().effect;
         let ctx_x = QualifiedRef::root(i.intern("x"));
         let ctx_y = QualifiedRef::root(i.intern("y"));
-        assert!(effect.reads.contains(&EffectTarget::Context(ctx_x)), "should have @x in reads");
-        assert!(effect.reads.contains(&EffectTarget::Context(ctx_y)), "should have @y in reads");
+        assert!(
+            effect.reads.contains(&EffectTarget::Context(ctx_x)),
+            "should have @x in reads"
+        );
+        assert!(
+            effect.reads.contains(&EffectTarget::Context(ctx_y)),
+            "should have @y in reads"
+        );
         assert!(effect.writes.is_empty(), "read-only should have no writes");
     }
 
@@ -1214,12 +1155,22 @@ mod tests {
             &[("x", Ty::Int)],
         );
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         let fid = ids[0].1;
         let effect = &result.outcomes[&fid].meta().effect;
         let ctx_x = QualifiedRef::root(i.intern("x"));
-        assert!(effect.writes.contains(&EffectTarget::Context(ctx_x)), "should have @x in writes");
+        assert!(
+            effect.writes.contains(&EffectTarget::Context(ctx_x)),
+            "should have @x in writes"
+        );
         assert!(
             effect.reads.contains(&EffectTarget::Context(ctx_x)),
             "should also have @x in reads (tail)"
@@ -1231,7 +1182,14 @@ mod tests {
         let i = Interner::new();
         let (graph, ids) = make_multi_graph(&i, &[("pure_fn", "1 + 2", Some(vec![]))], &[]);
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         let fid = ids[0].1;
         let effect = &result.outcomes[&fid].meta().effect;
@@ -1247,7 +1205,14 @@ mod tests {
             &[("x", Ty::Int)],
         );
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         let ctx_x = QualifiedRef::root(i.intern("x"));
 
@@ -1276,7 +1241,14 @@ mod tests {
             &[("x", Ty::Int)],
         );
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         let ctx_x = QualifiedRef::root(i.intern("x"));
         // top → mid → read_x → @x. All should have @x in reads.
@@ -1302,7 +1274,14 @@ mod tests {
             &[("x", Ty::Int)],
         );
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         let ctx_x = QualifiedRef::root(i.intern("x"));
         // main calls pure_fn (not read_x) → should NOT have @x
@@ -1328,7 +1307,14 @@ mod tests {
             &[("x", Ty::Int), ("y", Ty::Int)],
         );
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         let ctx_x = QualifiedRef::root(i.intern("x"));
         let ctx_y = QualifiedRef::root(i.intern("y"));
@@ -1337,7 +1323,10 @@ mod tests {
         // After fixpoint: both should have reads = {@x, @y}.
         let a_effect = &result.outcomes[&ids[0].1].meta().effect;
         let b_effect = &result.outcomes[&ids[1].1].meta().effect;
-        assert!(a_effect.reads.contains(&EffectTarget::Context(ctx_x)), "a should read @x (direct)");
+        assert!(
+            a_effect.reads.contains(&EffectTarget::Context(ctx_x)),
+            "a should read @x (direct)"
+        );
         assert!(
             a_effect.reads.contains(&EffectTarget::Context(ctx_y)),
             "a should read @y (transitive from b)"
@@ -1346,7 +1335,10 @@ mod tests {
             b_effect.reads.contains(&EffectTarget::Context(ctx_x)),
             "b should read @x (transitive from a)"
         );
-        assert!(b_effect.reads.contains(&EffectTarget::Context(ctx_y)), "b should read @y (direct)");
+        assert!(
+            b_effect.reads.contains(&EffectTarget::Context(ctx_y)),
+            "b should read @y (direct)"
+        );
     }
 
     #[test]
@@ -1361,14 +1353,27 @@ mod tests {
             &[("x", Ty::Int)],
         );
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         let ctx_x = QualifiedRef::root(i.intern("x"));
 
         // writer writes @x → caller should transitively inherit
         let caller_effect = &result.outcomes[&ids[1].1].meta().effect;
-        assert!(caller_effect.writes.contains(&EffectTarget::Context(ctx_x)), "transitive write");
-        assert!(caller_effect.reads.contains(&EffectTarget::Context(ctx_x)), "transitive read");
+        assert!(
+            caller_effect.writes.contains(&EffectTarget::Context(ctx_x)),
+            "transitive write"
+        );
+        assert!(
+            caller_effect.reads.contains(&EffectTarget::Context(ctx_x)),
+            "transitive read"
+        );
     }
 
     // ── Parameter effect union tests ────────────────────────────────
@@ -1400,7 +1405,14 @@ mod tests {
             &[],
         );
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         let effect = &result.outcomes[&ids[0].1].meta().effect;
         assert!(
@@ -1439,7 +1451,14 @@ mod tests {
             &[("a", Ty::Int)],
         );
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         let ctx_a = QualifiedRef::root(i.intern("a"));
         let caller_effect = &result.outcomes[&ids[2].1].meta().effect;
@@ -1494,15 +1513,28 @@ mod tests {
             &[],
         );
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         // fn_a has param effect reads @x
         let fn_a_effect = &result.outcomes[&ids[0].1].meta().effect;
-        assert!(fn_a_effect.reads.contains(&EffectTarget::Context(ctx_x)), "fn_a param's read");
+        assert!(
+            fn_a_effect.reads.contains(&EffectTarget::Context(ctx_x)),
+            "fn_a param's read"
+        );
 
         // fn_b has param effect writes @y
         let fn_b_effect = &result.outcomes[&ids[1].1].meta().effect;
-        assert!(fn_b_effect.writes.contains(&EffectTarget::Context(ctx_y)), "fn_b param's write");
+        assert!(
+            fn_b_effect.writes.contains(&EffectTarget::Context(ctx_y)),
+            "fn_b param's write"
+        );
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -1523,7 +1555,7 @@ mod tests {
                 constraint: Constraint::Exact(ty.clone()),
             })
             .collect();
-        let mut functions = crate::builtins::standard_builtins(interner);
+        let mut functions = Vec::new();
         let qref = QualifiedRef::root(interner.intern("test"));
         functions.push(Function {
             qref,
@@ -1571,7 +1603,7 @@ mod tests {
             })
             .collect();
 
-        let mut functions = crate::builtins::standard_builtins(interner);
+        let mut functions = Vec::new();
         let mut ids = Vec::new();
 
         for (name, source, sig, output) in fns {
@@ -1629,7 +1661,7 @@ mod tests {
             })
             .collect();
 
-        let mut functions = crate::builtins::standard_builtins(interner);
+        let mut functions = extern_fns.to_vec();
         let mut ids = Vec::new();
 
         for (name, source, sig, output) in local_fns {
@@ -1655,14 +1687,20 @@ mod tests {
                 },
             });
         }
-        functions.extend_from_slice(extern_fns);
 
         let graph = CompilationGraph {
             functions: Freeze::new(functions),
             contexts: Freeze::new(contexts),
         };
         let ext = extract::extract(interner, &graph);
-        let result = infer(interner, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            interner,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
         (result, ids)
     }
 
@@ -1731,26 +1769,32 @@ mod tests {
             })
             .collect();
 
-        let mut functions = crate::builtins::standard_builtins(interner);
         let fid = QualifiedRef::root(interner.intern("test"));
-        functions.push(Function {
-            qref: fid,
-            kind: FnKind::Local(ParsedAst::Script(
-                acvus_ast::parse_script(interner, source).expect("parse"),
-            )),
-            constraint: FnConstraint {
-                signature: None,
-                output: Constraint::Inferred,
-                effect: Some(effect),
-            },
-        });
+        let parsed = ParsedAst::Script(
+            acvus_ast::parse_script(interner, source).expect("parse"),
+        );
 
         let graph = CompilationGraph {
-            functions: Freeze::new(functions),
+            functions: Freeze::new(vec![Function {
+                qref: fid,
+                kind: FnKind::Local(parsed),
+                constraint: FnConstraint {
+                    signature: None,
+                    output: Constraint::Inferred,
+                    effect: Some(effect),
+                },
+            }]),
             contexts: Freeze::new(contexts),
         };
         let ext = extract::extract(interner, &graph);
-        let result = infer(interner, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            interner,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
         (result, fid)
     }
 
@@ -1761,7 +1805,14 @@ mod tests {
         let i = Interner::new();
         let graph = make_graph_no_ctx_with_builtins(&i, "1 + 2");
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         assert!(
             !result.has_errors(),
@@ -1778,7 +1829,14 @@ mod tests {
         let i = Interner::new();
         let graph = make_graph_with_ctx_and_builtins(&i, "@x + 1", &[("x", Ty::Int)]);
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         assert!(
             !result.has_errors(),
@@ -1796,7 +1854,14 @@ mod tests {
         let ext = extract::extract(&i, &graph);
         let mut user = FxHashMap::default();
         user.insert(QualifiedRef::root(i.intern("x")), Ty::Int);
-        let result = infer(&i, &graph, &ext, &user, Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &user,
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         assert!(
             !result.has_errors(),
@@ -1812,7 +1877,14 @@ mod tests {
         let i = Interner::new();
         let graph = make_graph_with_ctx_and_builtins(&i, "@name", &[("name", Ty::String)]);
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         assert!(
             !result.has_errors(),
@@ -1829,7 +1901,14 @@ mod tests {
         let obj_ty = Ty::Object(FxHashMap::from_iter([(i.intern("name"), Ty::String)]));
         let graph = make_graph_with_ctx_and_builtins(&i, "@user.name", &[("user", obj_ty)]);
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         assert!(
             !result.has_errors(),
@@ -1847,7 +1926,14 @@ mod tests {
         let i = Interner::new();
         let graph = make_graph_with_ctx_and_builtins(&i, "@x + 1", &[("x", Ty::String)]);
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         assert!(result.has_errors(), "should detect type mismatch");
     }
@@ -1859,7 +1945,14 @@ mod tests {
         let i = Interner::new();
         let graph = make_graph_with_ctx_and_builtins(&i, "@x", &[("x", Ty::Int)]);
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         let ctx_ref = graph.contexts[0].qref;
         assert_eq!(*result.context_type(&ctx_ref).unwrap(), Ty::Int);
@@ -3133,7 +3226,9 @@ mod tests {
         let i = Interner::new();
         let qref = QualifiedRef::root(i.intern("x"));
         let allowed = EffectConstraint {
-            reads: EffectBound::Only(std::collections::BTreeSet::from([EffectTarget::Context(qref)])),
+            reads: EffectBound::Only(std::collections::BTreeSet::from([EffectTarget::Context(
+                qref,
+            )])),
             writes: EffectBound::Only(std::collections::BTreeSet::new()),
             io: false,
             self_modifying: false,
@@ -3150,7 +3245,9 @@ mod tests {
         let i = Interner::new();
         let qref = QualifiedRef::root(i.intern("x"));
         let allowed = EffectConstraint {
-            reads: EffectBound::Only(std::collections::BTreeSet::from([EffectTarget::Context(qref)])),
+            reads: EffectBound::Only(std::collections::BTreeSet::from([EffectTarget::Context(
+                qref,
+            )])),
             writes: EffectBound::Only(std::collections::BTreeSet::new()),
             io: false,
             self_modifying: false,
@@ -3173,8 +3270,12 @@ mod tests {
         let i = Interner::new();
         let qref = QualifiedRef::root(i.intern("x"));
         let allowed = EffectConstraint {
-            reads: EffectBound::Only(std::collections::BTreeSet::from([EffectTarget::Context(qref)])),
-            writes: EffectBound::Only(std::collections::BTreeSet::from([EffectTarget::Context(qref)])),
+            reads: EffectBound::Only(std::collections::BTreeSet::from([EffectTarget::Context(
+                qref,
+            )])),
+            writes: EffectBound::Only(std::collections::BTreeSet::from([EffectTarget::Context(
+                qref,
+            )])),
             io: false,
             self_modifying: false,
         };
@@ -3190,8 +3291,12 @@ mod tests {
         let i = Interner::new();
         let qref_x = QualifiedRef::root(i.intern("x"));
         let allowed = EffectConstraint {
-            reads: EffectBound::Only(std::collections::BTreeSet::from([EffectTarget::Context(qref_x)])),
-            writes: EffectBound::Only(std::collections::BTreeSet::from([EffectTarget::Context(qref_x)])),
+            reads: EffectBound::Only(std::collections::BTreeSet::from([EffectTarget::Context(
+                qref_x,
+            )])),
+            writes: EffectBound::Only(std::collections::BTreeSet::from([EffectTarget::Context(
+                qref_x,
+            )])),
             io: false,
             self_modifying: false,
         };
@@ -3237,24 +3342,32 @@ mod tests {
         let i = Interner::new();
         let graph = make_graph(&i, "@x + 1");
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
-        let fid = graph.functions[0].qref;
-        let params = &result.fn_params[&fid];
-        // FnRefs removed: undeclared contexts no longer produce InferredParam.
-        assert_eq!(params.len(), 0);
     }
 
-    /// Multiple contexts — fn_params is empty without FnRefs.
+    /// Multiple contexts.
     #[test]
     fn context_extract_multiple() {
         let i = Interner::new();
         let graph = make_graph(&i, "@x + @y");
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
-        // FnRefs removed: undeclared contexts no longer produce InferredParam.
-        assert_eq!(result.all_params.len(), 0);
     }
 
     /// Context store — writes tracked in effect.
@@ -3263,13 +3376,26 @@ mod tests {
         let i = Interner::new();
         let graph = make_graph_with_ctx(&i, "@x = 42; @x", &[("x", Ty::Int)]);
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         let fid = graph.functions[0].qref;
         let effect = &result.outcomes[&fid].meta().effect;
         let qref = QualifiedRef::root(i.intern("x"));
-        assert!(effect.writes.contains(&EffectTarget::Context(qref)), "should track context write");
-        assert!(effect.reads.contains(&EffectTarget::Context(qref)), "should track context read");
+        assert!(
+            effect.writes.contains(&EffectTarget::Context(qref)),
+            "should track context write"
+        );
+        assert!(
+            effect.reads.contains(&EffectTarget::Context(qref)),
+            "should track context read"
+        );
     }
 
     /// Context inside nested block — still extracted.
@@ -3278,10 +3404,15 @@ mod tests {
         let i = Interner::new();
         let graph = make_graph(&i, "{ @x + 1 }");
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
-        // FnRefs removed: undeclared contexts no longer produce InferredParam.
-        assert_eq!(result.all_params.len(), 0);
     }
 
     // context_extract_in_lambda: migrated to acvus-mir-test (depends on ExternFn `map`, `collect`)
@@ -3294,7 +3425,14 @@ mod tests {
         let i = Interner::new();
         let graph = make_graph_with_ctx(&i, "@x + 1", &[("x", Ty::Int)]);
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         let fid = graph.functions[0].qref;
         assert!(
@@ -3327,7 +3465,14 @@ mod tests {
             contexts: Freeze::new(contexts),
         };
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         let fid = graph.functions[0].qref;
         assert!(
@@ -3348,7 +3493,14 @@ mod tests {
         // No contexts declared, but source uses @x. Typechecker infers @x : Int.
         let graph = make_graph(&i, "@x + 1");
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         let fid = graph.functions[0].qref;
         assert!(
@@ -3365,7 +3517,14 @@ mod tests {
         let ext = extract::extract(&i, &graph);
         let mut user = FxHashMap::default();
         user.insert(QualifiedRef::root(i.intern("x")), Ty::Int);
-        let result = infer(&i, &graph, &ext, &user, Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &user,
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         let fid = graph.functions[0].qref;
         assert!(
@@ -3383,7 +3542,14 @@ mod tests {
         // @x is String but used in arithmetic.
         let graph = make_graph_with_ctx(&i, "@x + 1", &[("x", Ty::String)]);
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         let fid = graph.functions[0].qref;
         assert!(
@@ -3612,7 +3778,7 @@ mod tests {
             qref: QualifiedRef::root(i.intern("x")),
             constraint: Constraint::Exact(Ty::Int),
         }];
-        let mut functions = crate::builtins::standard_builtins(&i);
+        let mut functions = Vec::new();
         let reader_id = QualifiedRef::root(i.intern("reader"));
         functions.push(Function {
             qref: reader_id,
@@ -3642,7 +3808,14 @@ mod tests {
             contexts: Freeze::new(contexts),
         };
         let ext = extract::extract(&i, &graph);
-        let result = infer(&i, &graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let result = infer(
+            &i,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         // reader should be Complete (no constraint).
         assert!(
@@ -3673,26 +3846,31 @@ mod tests {
             })
             .collect();
 
-        let mut functions = crate::builtins::standard_builtins(interner);
         let fid = QualifiedRef::root(interner.intern("test"));
-        functions.push(Function {
-            qref: fid,
-            kind: FnKind::Local(ParsedAst::Script(
-                acvus_ast::parse_script(interner, source).expect("parse"),
-            )),
-            constraint: FnConstraint {
-                signature: None,
-                output: Constraint::Inferred,
-                effect: None,
-            },
-        });
-
+        let parsed = ParsedAst::Script(
+            acvus_ast::parse_script(interner, source).expect("parse"),
+        );
         let graph = CompilationGraph {
-            functions: Freeze::new(functions),
+            functions: Freeze::new(vec![Function {
+                qref: fid,
+                kind: FnKind::Local(parsed),
+                constraint: FnConstraint {
+                    signature: None,
+                    output: Constraint::Inferred,
+                    effect: None,
+                },
+            }]),
             contexts: Freeze::new(contexts),
         };
         let ext = extract::extract(interner, &graph);
-        let result = infer(interner, &graph, &ext, &FxHashMap::default(), Freeze::default(), policies);
+        let result = infer(
+            interner,
+            &graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            policies,
+        );
         (result, fid)
     }
 
@@ -3700,10 +3878,19 @@ mod tests {
     fn read_only_context_read_passes() {
         let i = Interner::new();
         let qref = QualifiedRef::root(i.intern("x"));
-        let policies = FxHashMap::from_iter([(qref, ContextPolicy { volatile: false, read_only: true })]);
+        let policies = FxHashMap::from_iter([(
+            qref,
+            ContextPolicy {
+                volatile: false,
+                read_only: true,
+            },
+        )]);
         let (result, fid) = infer_with_policies(&i, "@x + 1", &[("x", Ty::Int)], &policies);
         let errs = error_strings(&i, &result);
-        assert!(errs.is_empty(), "read from read_only should be allowed: {errs:?}");
+        assert!(
+            errs.is_empty(),
+            "read from read_only should be allowed: {errs:?}"
+        );
         assert!(result.try_resolution(fid).is_some());
     }
 
@@ -3711,7 +3898,13 @@ mod tests {
     fn read_only_context_write_rejected() {
         let i = Interner::new();
         let qref = QualifiedRef::root(i.intern("x"));
-        let policies = FxHashMap::from_iter([(qref, ContextPolicy { volatile: false, read_only: true })]);
+        let policies = FxHashMap::from_iter([(
+            qref,
+            ContextPolicy {
+                volatile: false,
+                read_only: true,
+            },
+        )]);
         let (result, _fid) = infer_with_policies(&i, "@x = 42; @x", &[("x", Ty::Int)], &policies);
         let errs = error_strings(&i, &result);
         assert!(
@@ -3728,10 +3921,19 @@ mod tests {
     fn non_read_only_context_write_passes() {
         let i = Interner::new();
         let qref = QualifiedRef::root(i.intern("x"));
-        let policies = FxHashMap::from_iter([(qref, ContextPolicy { volatile: false, read_only: false })]);
+        let policies = FxHashMap::from_iter([(
+            qref,
+            ContextPolicy {
+                volatile: false,
+                read_only: false,
+            },
+        )]);
         let (result, fid) = infer_with_policies(&i, "@x = 42; @x", &[("x", Ty::Int)], &policies);
         let errs = error_strings(&i, &result);
-        assert!(errs.is_empty(), "write to non-read_only should pass: {errs:?}");
+        assert!(
+            errs.is_empty(),
+            "write to non-read_only should pass: {errs:?}"
+        );
         assert!(result.try_resolution(fid).is_some());
     }
 }

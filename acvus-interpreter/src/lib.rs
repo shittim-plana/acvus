@@ -17,7 +17,7 @@ pub use interpreter::{
     SyncBuiltinFn, exec_next,
 };
 pub use iter::{IterHandle, SequenceChain};
-pub use journal::{RuntimeContext, ContextWrite, InMemoryContext};
+pub use journal::{ContextWrite, InMemoryContext, RuntimeContext};
 pub use value::{
     FnValue, FromValue, FromValues, HandleValue, IntoValue, IntoValues, OpaqueValue, RangeValue,
     Value,

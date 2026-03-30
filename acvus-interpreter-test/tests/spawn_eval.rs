@@ -69,8 +69,8 @@ async fn spawn_eval_basic() {
             main: MirBody {
                 insts,
                 val_types: FxHashMap::default(),
-                param_regs: vec![vids[0]],
-                capture_regs: vec![],
+                params: vec![(interner.intern("p0"), vids[0])],
+                captures: vec![],
                 debug: DebugInfo::new(),
                 val_factory: f,
                 label_count: 0,
@@ -105,8 +105,8 @@ async fn spawn_eval_basic() {
             main: MirBody {
                 insts,
                 val_types: FxHashMap::default(),
-                param_regs: vec![],
-                capture_regs: vec![],
+                params: vec![],
+                captures: vec![],
                 debug: DebugInfo::new(),
                 val_factory: f,
                 label_count: 0,
@@ -144,16 +144,16 @@ async fn spawn_eval_context_defs() {
         let vids = alloc_n(&mut f, 3);
         // v0=project(ctx), v1=const(99), v2=const(0) for return
         let insts = vec![
-            inst(InstKind::ContextProject {
+            inst(InstKind::Ref {
                 dst: vids[0],
-                ctx: ctx_id,
-                volatile: false,
+                target: acvus_mir::ir::RefTarget::Context(ctx_id),
+                field: None,
             }),
             inst(InstKind::Const {
                 dst: vids[1],
                 value: acvus_ast::Literal::Int(99),
             }),
-            inst(InstKind::ContextStore {
+            inst(InstKind::Store {
                 dst: vids[0],
                 value: vids[1],
                 volatile: false,
@@ -168,8 +168,8 @@ async fn spawn_eval_context_defs() {
             main: MirBody {
                 insts,
                 val_types: FxHashMap::default(),
-                param_regs: vec![],
-                capture_regs: vec![],
+                params: vec![],
+                captures: vec![],
                 debug: DebugInfo::new(),
                 val_factory: f,
                 label_count: 0,
@@ -197,8 +197,8 @@ async fn spawn_eval_context_defs() {
                 context_defs: vec![(ctx_id, vids[2])],
             }),
             // Now vids[2] is the new SSA name for ctx_id.
-            // ContextLoad reads from overlay using projection_map[vids[2]] → ctx_id.
-            inst(InstKind::ContextLoad {
+            // Load reads from overlay using projection_map[vids[2]] → ctx_id.
+            inst(InstKind::Load {
                 dst: vids[3],
                 src: vids[2],
                 volatile: false,
@@ -209,8 +209,8 @@ async fn spawn_eval_context_defs() {
             main: MirBody {
                 insts,
                 val_types: FxHashMap::default(),
-                param_regs: vec![],
-                capture_regs: vec![],
+                params: vec![],
+                captures: vec![],
                 debug: DebugInfo::new(),
                 val_factory: f,
                 label_count: 0,
@@ -231,7 +231,7 @@ async fn spawn_eval_context_defs() {
     let mut interp = Interpreter::new(shared, entry_id, page);
     let result = interp.execute().await.expect("execution failed");
 
-    // Callee wrote 99 to "counter", eval merged it, ContextLoad should read 99.
+    // Callee wrote 99 to "counter", eval merged it, Load should read 99.
     assert_eq!(result.value, Value::Int(99));
 }
 
@@ -260,8 +260,8 @@ async fn spawn_eval_multi_args() {
             main: MirBody {
                 insts,
                 val_types: FxHashMap::default(),
-                param_regs: vec![vids[0], vids[1]],
-                capture_regs: vec![],
+                params: vec![(interner.intern("p0"), vids[0]), (interner.intern("p1"), vids[1])],
+                captures: vec![],
                 debug: DebugInfo::new(),
                 val_factory: f,
                 label_count: 0,
@@ -300,8 +300,8 @@ async fn spawn_eval_multi_args() {
             main: MirBody {
                 insts,
                 val_types: FxHashMap::default(),
-                param_regs: vec![],
-                capture_regs: vec![],
+                params: vec![],
+                captures: vec![],
                 debug: DebugInfo::new(),
                 val_factory: f,
                 label_count: 0,

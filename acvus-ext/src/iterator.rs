@@ -7,10 +7,10 @@
 use std::sync::Arc;
 
 use acvus_interpreter::{
-    exec_next, Args, ExternFnBuilder, ExternRegistry, IterHandle, RuntimeError, Value,
+    Args, ExternFnBuilder, ExternRegistry, IterHandle, RuntimeError, Value, exec_next,
 };
 use acvus_mir::graph::{Constraint, FnConstraint, QualifiedRef, Signature};
-use acvus_mir::ty::{CastRule, Effect, Param, Ty, TypeRegistry, TySubst, UserDefinedDecl};
+use acvus_mir::ty::{CastRule, Effect, Param, Ty, TySubst, TypeRegistry, UserDefinedDecl};
 use acvus_utils::Interner;
 use futures::future::BoxFuture;
 
@@ -27,7 +27,9 @@ fn make_sig(params: &[Ty], ret: Ty, interner: &Interner) -> FnConstraint {
         .map(|(i, ty)| p(interner, i, ty.clone()))
         .collect();
     FnConstraint {
-        signature: Some(Signature { params: named.clone() }),
+        signature: Some(Signature {
+            params: named.clone(),
+        }),
         output: Constraint::Exact(Ty::Fn {
             params: named,
             ret: Box::new(ret),
@@ -37,28 +39,7 @@ fn make_sig(params: &[Ty], ret: Ty, interner: &Interner) -> FnConstraint {
         effect: None,
     }
 }
-
-/// Build a FnConstraint with a specific effect on the Fn type's closure effect.
-fn make_sig_with_effect(params: &[Ty], ret: Ty, effect: Effect, interner: &Interner) -> FnConstraint {
-    let named: Vec<Param> = params
-        .iter()
-        .enumerate()
-        .map(|(i, ty)| p(interner, i, ty.clone()))
-        .collect();
-    FnConstraint {
-        signature: Some(Signature { params: named.clone() }),
-        output: Constraint::Exact(Ty::Fn {
-            params: named,
-            ret: Box::new(ret),
-            captures: vec![],
-            effect,
-        }),
-        effect: None,
-    }
-}
-
 // ── Sync handlers — constructors ────────────────────────────────────
-
 fn h_iter(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
     let items = match args[0].take() {
         Value::List(l) => Arc::try_unwrap(l).unwrap_or_else(|arc| arc.as_ref().clone()),
@@ -68,7 +49,10 @@ fn h_iter(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
         }
         other => panic!("iter: expected List or Deque, got {other:?}"),
     };
-    Ok(Value::iterator(IterHandle::from_list(items, Effect::pure())))
+    Ok(Value::iterator(IterHandle::from_list(
+        items,
+        Effect::pure(),
+    )))
 }
 
 fn h_rev_iter(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
@@ -81,7 +65,10 @@ fn h_rev_iter(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeErro
         other => panic!("rev_iter: expected List or Deque, got {other:?}"),
     };
     items.reverse();
-    Ok(Value::iterator(IterHandle::from_list(items, Effect::pure())))
+    Ok(Value::iterator(IterHandle::from_list(
+        items,
+        Effect::pure(),
+    )))
 }
 
 // ── Sync handlers — lazy combinators ────────────────────────────────
@@ -140,7 +127,10 @@ fn h_pchain(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError>
     // For now, flatten the list of iterators into a single iterator by chaining sources.
     // Since iterators may not be collectible here, use a simpler approach:
     // convert list to iterator directly.
-    Ok(Value::iterator(IterHandle::from_list(combined, Effect::pure())))
+    Ok(Value::iterator(IterHandle::from_list(
+        combined,
+        Effect::pure(),
+    )))
 }
 
 fn h_flatten(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeError> {
@@ -156,7 +146,10 @@ fn h_flat_map(mut args: Args, _interner: &Interner) -> Result<Value, RuntimeErro
 
 // ── Async handlers — consumers ──────────────────────────────────────
 
-fn h_collect(mut args: Args, _interner: Interner) -> BoxFuture<'static, Result<Value, RuntimeError>> {
+fn h_collect(
+    mut args: Args,
+    _interner: Interner,
+) -> BoxFuture<'static, Result<Value, RuntimeError>> {
     Box::pin(async move {
         let mut iter = *args[0].take().into_iterator();
         let mut items = Vec::new();
@@ -203,7 +196,10 @@ fn h_last(mut args: Args, interner: Interner) -> BoxFuture<'static, Result<Value
     })
 }
 
-fn h_contains(mut args: Args, _interner: Interner) -> BoxFuture<'static, Result<Value, RuntimeError>> {
+fn h_contains(
+    mut args: Args,
+    _interner: Interner,
+) -> BoxFuture<'static, Result<Value, RuntimeError>> {
     Box::pin(async move {
         let mut iter = *args[0].take().into_iterator();
         let needle = args[1].take();
@@ -245,7 +241,10 @@ fn h_find(mut args: Args, _interner: Interner) -> BoxFuture<'static, Result<Valu
     })
 }
 
-fn h_reduce(mut args: Args, _interner: Interner) -> BoxFuture<'static, Result<Value, RuntimeError>> {
+fn h_reduce(
+    mut args: Args,
+    _interner: Interner,
+) -> BoxFuture<'static, Result<Value, RuntimeError>> {
     Box::pin(async move {
         let mut iter = *args[0].take().into_iterator();
         let f = args[1].take().into_fn();
@@ -317,7 +316,11 @@ pub fn iterator_registry(interner: &Interner, type_registry: &mut TypeRegistry) 
         let t = s.fresh_param();
         type_registry.register_cast(CastRule {
             from: Ty::List(Box::new(t.clone())),
-            to: Ty::UserDefined { id: iter_qref, type_args: vec![t], effect_args: vec![Effect::pure()] },
+            to: Ty::UserDefined {
+                id: iter_qref,
+                type_args: vec![t],
+                effect_args: vec![Effect::pure()],
+            },
             fn_ref: QualifiedRef::root(interner.intern("iter")),
         });
     }
@@ -327,15 +330,23 @@ pub fn iterator_registry(interner: &Interner, type_registry: &mut TypeRegistry) 
         let o = s.fresh_param();
         type_registry.register_cast(CastRule {
             from: Ty::Deque(Box::new(t.clone()), Box::new(o)),
-            to: Ty::UserDefined { id: iter_qref, type_args: vec![t], effect_args: vec![Effect::pure()] },
+            to: Ty::UserDefined {
+                id: iter_qref,
+                type_args: vec![t],
+                effect_args: vec![Effect::pure()],
+            },
             fn_ref: QualifiedRef::root(interner.intern("__cast_deque_to_iter")),
         });
     }
 
-    let registry = ExternRegistry::new(move |interner| {
+    ExternRegistry::new(move |interner| {
         // Helper: Iterator<T, E>
         let it = |t: Ty, e: Effect| -> Ty {
-            Ty::UserDefined { id: iter_qref, type_args: vec![t], effect_args: vec![e] }
+            Ty::UserDefined {
+                id: iter_qref,
+                type_args: vec![t],
+                effect_args: vec![e],
+            }
         };
 
         let mut fns = Vec::new();
@@ -345,16 +356,30 @@ pub fn iterator_registry(interner: &Interner, type_registry: &mut TypeRegistry) 
             let mut s = TySubst::new();
             let t = s.fresh_param();
             fns.push(
-                ExternFnBuilder::new("iter", make_sig(&[Ty::List(Box::new(t.clone()))], it(t, Effect::pure()), interner))
-                    .sync_handler(h_iter),
+                ExternFnBuilder::new(
+                    "iter",
+                    make_sig(
+                        &[Ty::List(Box::new(t.clone()))],
+                        it(t, Effect::pure()),
+                        interner,
+                    ),
+                )
+                .sync_handler(h_iter),
             );
         }
         {
             let mut s = TySubst::new();
             let t = s.fresh_param();
             fns.push(
-                ExternFnBuilder::new("rev_iter", make_sig(&[Ty::List(Box::new(t.clone()))], it(t, Effect::pure()), interner))
-                    .sync_handler(h_rev_iter),
+                ExternFnBuilder::new(
+                    "rev_iter",
+                    make_sig(
+                        &[Ty::List(Box::new(t.clone()))],
+                        it(t, Effect::pure()),
+                        interner,
+                    ),
+                )
+                .sync_handler(h_rev_iter),
             );
         }
         // Cast helpers (used by CastRule, not meant to be called directly).
@@ -363,8 +388,15 @@ pub fn iterator_registry(interner: &Interner, type_registry: &mut TypeRegistry) 
             let t = s.fresh_param();
             let o = s.fresh_param();
             fns.push(
-                ExternFnBuilder::new("__cast_deque_to_iter", make_sig(&[Ty::Deque(Box::new(t.clone()), Box::new(o))], it(t, Effect::pure()), interner))
-                    .sync_handler(h_iter),
+                ExternFnBuilder::new(
+                    "__cast_deque_to_iter",
+                    make_sig(
+                        &[Ty::Deque(Box::new(t.clone()), Box::new(o))],
+                        it(t, Effect::pure()),
+                        interner,
+                    ),
+                )
+                .sync_handler(h_iter),
             );
         }
 
@@ -381,8 +413,11 @@ pub fn iterator_registry(interner: &Interner, type_registry: &mut TypeRegistry) 
                 effect: e.clone(),
             };
             fns.push(
-                ExternFnBuilder::new("map", make_sig(&[it(t, e.clone()), fn_ty], it(u, e), interner))
-                    .sync_handler(h_map),
+                ExternFnBuilder::new(
+                    "map",
+                    make_sig(&[it(t, e.clone()), fn_ty], it(u, e), interner),
+                )
+                .sync_handler(h_map),
             );
         }
         {
@@ -397,8 +432,11 @@ pub fn iterator_registry(interner: &Interner, type_registry: &mut TypeRegistry) 
                 effect: e.clone(),
             };
             fns.push(
-                ExternFnBuilder::new("pmap", make_sig(&[it(t, e.clone()), fn_ty], it(u, e), interner))
-                    .sync_handler(h_pmap),
+                ExternFnBuilder::new(
+                    "pmap",
+                    make_sig(&[it(t, e.clone()), fn_ty], it(u, e), interner),
+                )
+                .sync_handler(h_pmap),
             );
         }
         {
@@ -412,8 +450,11 @@ pub fn iterator_registry(interner: &Interner, type_registry: &mut TypeRegistry) 
                 effect: e.clone(),
             };
             fns.push(
-                ExternFnBuilder::new("filter", make_sig(&[it(t.clone(), e.clone()), fn_ty], it(t, e), interner))
-                    .sync_handler(h_filter),
+                ExternFnBuilder::new(
+                    "filter",
+                    make_sig(&[it(t.clone(), e.clone()), fn_ty], it(t, e), interner),
+                )
+                .sync_handler(h_filter),
             );
         }
         {
@@ -422,8 +463,11 @@ pub fn iterator_registry(interner: &Interner, type_registry: &mut TypeRegistry) 
             let e = s.fresh_effect_var();
             let iter_ty = it(t, e);
             fns.push(
-                ExternFnBuilder::new("take", make_sig(&[iter_ty.clone(), Ty::Int], iter_ty, interner))
-                    .sync_handler(h_take),
+                ExternFnBuilder::new(
+                    "take",
+                    make_sig(&[iter_ty.clone(), Ty::Int], iter_ty, interner),
+                )
+                .sync_handler(h_take),
             );
         }
         {
@@ -432,8 +476,11 @@ pub fn iterator_registry(interner: &Interner, type_registry: &mut TypeRegistry) 
             let e = s.fresh_effect_var();
             let iter_ty = it(t, e);
             fns.push(
-                ExternFnBuilder::new("skip", make_sig(&[iter_ty.clone(), Ty::Int], iter_ty, interner))
-                    .sync_handler(h_skip),
+                ExternFnBuilder::new(
+                    "skip",
+                    make_sig(&[iter_ty.clone(), Ty::Int], iter_ty, interner),
+                )
+                .sync_handler(h_skip),
             );
         }
         {
@@ -442,8 +489,11 @@ pub fn iterator_registry(interner: &Interner, type_registry: &mut TypeRegistry) 
             let e = s.fresh_effect_var();
             let iter_ty = it(t, e);
             fns.push(
-                ExternFnBuilder::new("chain", make_sig(&[iter_ty.clone(), iter_ty.clone()], iter_ty, interner))
-                    .sync_handler(h_chain),
+                ExternFnBuilder::new(
+                    "chain",
+                    make_sig(&[iter_ty.clone(), iter_ty.clone()], iter_ty, interner),
+                )
+                .sync_handler(h_chain),
             );
         }
         {
@@ -452,8 +502,11 @@ pub fn iterator_registry(interner: &Interner, type_registry: &mut TypeRegistry) 
             let e = s.fresh_effect_var();
             let iter_ty = it(t, e);
             fns.push(
-                ExternFnBuilder::new("pchain", make_sig(&[Ty::List(Box::new(iter_ty.clone()))], iter_ty, interner))
-                    .sync_handler(h_pchain),
+                ExternFnBuilder::new(
+                    "pchain",
+                    make_sig(&[Ty::List(Box::new(iter_ty.clone()))], iter_ty, interner),
+                )
+                .sync_handler(h_pchain),
             );
         }
         {
@@ -461,8 +514,15 @@ pub fn iterator_registry(interner: &Interner, type_registry: &mut TypeRegistry) 
             let t = s.fresh_param();
             let e = s.fresh_effect_var();
             fns.push(
-                ExternFnBuilder::new("flatten", make_sig(&[it(Ty::List(Box::new(t.clone())), e.clone())], it(t, e), interner))
-                    .sync_handler(h_flatten),
+                ExternFnBuilder::new(
+                    "flatten",
+                    make_sig(
+                        &[it(Ty::List(Box::new(t.clone())), e.clone())],
+                        it(t, e),
+                        interner,
+                    ),
+                )
+                .sync_handler(h_flatten),
             );
         }
         {
@@ -477,8 +537,11 @@ pub fn iterator_registry(interner: &Interner, type_registry: &mut TypeRegistry) 
                 effect: e.clone(),
             };
             fns.push(
-                ExternFnBuilder::new("flat_map", make_sig(&[it(t, e.clone()), fn_ty], it(u, e), interner))
-                    .sync_handler(h_flat_map),
+                ExternFnBuilder::new(
+                    "flat_map",
+                    make_sig(&[it(t, e.clone()), fn_ty], it(u, e), interner),
+                )
+                .sync_handler(h_flat_map),
             );
         }
 
@@ -488,34 +551,22 @@ pub fn iterator_registry(interner: &Interner, type_registry: &mut TypeRegistry) 
             let t = s.fresh_param();
             let e = s.fresh_effect_var();
             fns.push(
-                ExternFnBuilder::new("collect", make_sig(&[it(t.clone(), e)], Ty::List(Box::new(t)), interner))
-                    .async_handler(h_collect),
+                ExternFnBuilder::new(
+                    "collect",
+                    make_sig(&[it(t.clone(), e)], Ty::List(Box::new(t)), interner),
+                )
+                .async_handler(h_collect),
             );
         }
         {
             let mut s = TySubst::new();
             let e = s.fresh_effect_var();
             fns.push(
-                ExternFnBuilder::new("join", make_sig(&[it(Ty::String, e), Ty::String], Ty::String, interner))
-                    .async_handler(h_join),
-            );
-        }
-        {
-            let mut s = TySubst::new();
-            let t = s.fresh_param();
-            let e = s.fresh_effect_var();
-            fns.push(
-                ExternFnBuilder::new("first", make_sig(&[it(t.clone(), e)], Ty::Option(Box::new(t)), interner))
-                    .async_handler(h_first),
-            );
-        }
-        {
-            let mut s = TySubst::new();
-            let t = s.fresh_param();
-            let e = s.fresh_effect_var();
-            fns.push(
-                ExternFnBuilder::new("last", make_sig(&[it(t.clone(), e)], Ty::Option(Box::new(t)), interner))
-                    .async_handler(h_last),
+                ExternFnBuilder::new(
+                    "join",
+                    make_sig(&[it(Ty::String, e), Ty::String], Ty::String, interner),
+                )
+                .async_handler(h_join),
             );
         }
         {
@@ -523,8 +574,35 @@ pub fn iterator_registry(interner: &Interner, type_registry: &mut TypeRegistry) 
             let t = s.fresh_param();
             let e = s.fresh_effect_var();
             fns.push(
-                ExternFnBuilder::new("contains", make_sig(&[it(t.clone(), e), t], Ty::Bool, interner))
-                    .async_handler(h_contains),
+                ExternFnBuilder::new(
+                    "first",
+                    make_sig(&[it(t.clone(), e)], Ty::Option(Box::new(t)), interner),
+                )
+                .async_handler(h_first),
+            );
+        }
+        {
+            let mut s = TySubst::new();
+            let t = s.fresh_param();
+            let e = s.fresh_effect_var();
+            fns.push(
+                ExternFnBuilder::new(
+                    "last",
+                    make_sig(&[it(t.clone(), e)], Ty::Option(Box::new(t)), interner),
+                )
+                .async_handler(h_last),
+            );
+        }
+        {
+            let mut s = TySubst::new();
+            let t = s.fresh_param();
+            let e = s.fresh_effect_var();
+            fns.push(
+                ExternFnBuilder::new(
+                    "contains",
+                    make_sig(&[it(t.clone(), e), t], Ty::Bool, interner),
+                )
+                .async_handler(h_contains),
             );
         }
         {
@@ -533,8 +611,15 @@ pub fn iterator_registry(interner: &Interner, type_registry: &mut TypeRegistry) 
             let e = s.fresh_effect_var();
             let iter_ty = it(t.clone(), e);
             fns.push(
-                ExternFnBuilder::new("next", make_sig(&[iter_ty.clone()], Ty::Option(Box::new(Ty::Tuple(vec![t, iter_ty]))), interner))
-                    .async_handler(h_next),
+                ExternFnBuilder::new(
+                    "next",
+                    make_sig(
+                        &[iter_ty.clone()],
+                        Ty::Option(Box::new(Ty::Tuple(vec![t, iter_ty]))),
+                        interner,
+                    ),
+                )
+                .async_handler(h_next),
             );
         }
         {
@@ -615,7 +700,5 @@ pub fn iterator_registry(interner: &Interner, type_registry: &mut TypeRegistry) 
         }
 
         fns
-    });
-
-    registry
+    })
 }

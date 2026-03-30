@@ -272,15 +272,11 @@ fn literal_eq(a: &Literal, b: &Literal) -> bool {
 impl AbstractValue {
     pub fn from_literal(lit: &Literal) -> Self {
         match lit {
-            Literal::Int(v) => {
-                AbstractValue::Finite(FiniteSet::Intervals(SmallVec::from_elem(
-                    Interval::point(*v),
-                    1,
-                )))
-            }
-            Literal::Bool(b) => {
-                AbstractValue::Finite(FiniteSet::Bools(SmallVec::from_elem(*b, 1)))
-            }
+            Literal::Int(v) => AbstractValue::Finite(FiniteSet::Intervals(SmallVec::from_elem(
+                Interval::point(*v),
+                1,
+            ))),
+            Literal::Bool(b) => AbstractValue::Finite(FiniteSet::Bools(SmallVec::from_elem(*b, 1))),
             // Float, Byte, String, List — no arithmetic structure, store as literal.
             Literal::Float(_) | Literal::Byte(_) | Literal::String(_) | Literal::List(_) => {
                 AbstractValue::Finite(FiniteSet::Literals(SmallVec::from_elem(lit.clone(), 1)))
@@ -388,7 +384,8 @@ impl AbstractValue {
             AbstractValue::Top => bool_unknown(),
             AbstractValue::Finite(FiniteSet::Intervals(ivs)) => {
                 let any_in = ivs.iter().any(|iv| iv.hi >= range_lo && iv.lo <= range_hi);
-                let all_in = !ivs.is_empty() && ivs.iter().all(|iv| iv.lo >= range_lo && iv.hi <= range_hi);
+                let all_in =
+                    !ivs.is_empty() && ivs.iter().all(|iv| iv.lo >= range_lo && iv.hi <= range_hi);
                 if all_in {
                     definite_bool(true)
                 } else if !any_in {

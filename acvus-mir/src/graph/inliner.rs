@@ -55,10 +55,9 @@ fn inline_module(
     // Inline within closures too.
     let mut closures = FxHashMap::default();
     for (label, closure) in &module.closures {
-        let mut inlined_body =
-            inline_body(closure, all_modules, recursive_fns, &module.closures);
-        inlined_body.capture_regs = remap_value_ids(&closure.capture_regs, &FxHashMap::default());
-        inlined_body.param_regs = remap_value_ids(&closure.param_regs, &FxHashMap::default());
+        let mut inlined_body = inline_body(closure, all_modules, recursive_fns, &module.closures);
+        inlined_body.captures = closure.captures.clone();
+        inlined_body.params = closure.params.clone();
         closures.insert(*label, inlined_body);
     }
 
@@ -109,9 +108,7 @@ fn inline_body(
                     callee: Callee::Direct(callee_id),
                     args,
                     ..
-                } if !recursive_fns.contains(callee_id)
-                    && all_modules.contains_key(callee_id) =>
-                {
+                } if !recursive_fns.contains(callee_id) && all_modules.contains_key(callee_id) => {
                     let callee_body = &all_modules[callee_id].main;
                     Some((*dst, callee_body, args.clone(), Vec::new()))
                 }
@@ -124,9 +121,8 @@ fn inline_body(
                     ..
                 } => {
                     let callee_val = remap_one(*callee_val, &val_remap);
-                    try_devirt(&current.insts, &def_map, callee_val, closures).map(
-                        |(callee_body, captures)| (*dst, callee_body, args.clone(), captures),
-                    )
+                    try_devirt(&current.insts, &def_map, callee_val, closures)
+                        .map(|(callee_body, captures)| (*dst, callee_body, args.clone(), captures))
                 }
 
                 _ => None,
@@ -153,19 +149,26 @@ fn inline_body(
                 let label_offset = current.label_count;
                 current.label_count += callee_body.label_count;
 
-                // Map callee params to caller args.
-                //
-                // Parameters are loaded via VarLoad (templates) or ParamLoad (scripts).
-                // A parameter name may appear multiple times (e.g. `$x + $x` produces
-                // two ParamLoads for the same `$x`). We use name-based mapping:
-                // first occurrence of a new name → assign next arg index,
-                // subsequent occurrences → reuse the same arg.
-                let mut param_idx = 0;
-                let mut param_name_to_arg: FxHashMap<acvus_utils::Astr, ValueId> =
-                    FxHashMap::default();
+                // Map callee capture_regs and param_regs directly to caller args.
+                // LLVM-style: direct SSA value substitution.
+                let n_captures = callee_body.captures.len();
+                let mut substituted_regs: FxHashSet<ValueId> = FxHashSet::default();
+                for ((_, cap_reg), arg) in callee_body.captures.iter().zip(args.iter()) {
+                    callee_remap.insert(*cap_reg, *arg);
+                    substituted_regs.insert(*cap_reg);
+                }
+                for ((_, param_reg), arg) in callee_body.params.iter().zip(args[n_captures..].iter())
+                {
+                    callee_remap.insert(*param_reg, *arg);
+                    substituted_regs.insert(*param_reg);
+                }
 
                 // Copy callee's val_types (remapped).
+                // Skip types for substituted regs — caller already has types for those.
                 for (&old_val, ty) in &callee_body.val_types {
+                    if substituted_regs.contains(&old_val) {
+                        continue;
+                    }
                     if let Some(&new_val) = callee_remap.get(&old_val) {
                         current.val_types.insert(new_val, ty.clone());
                     }
@@ -173,6 +176,9 @@ fn inline_body(
 
                 // Copy callee's debug info (remapped).
                 for (&old_val, origin) in &callee_body.debug.val_origins {
+                    if substituted_regs.contains(&old_val) {
+                        continue;
+                    }
                     if let Some(&new_val) = callee_remap.get(&old_val) {
                         current.debug.val_origins.insert(new_val, origin.clone());
                     }
@@ -181,32 +187,11 @@ fn inline_body(
                 // Emit callee instructions with remapped ids.
                 for callee_inst in &callee_body.insts {
                     match &callee_inst.kind {
-                        // VarLoad/ParamLoad = parameter load.
-                        // Map to the corresponding caller argument by name.
-                        InstKind::VarLoad { dst, name }
-                        | InstKind::ParamLoad { dst, name }
-                            if param_idx < args.len()
-                                || param_name_to_arg.contains_key(name) =>
-                        {
-                            let arg = if let Some(&arg) = param_name_to_arg.get(name) {
-                                arg
-                            } else {
-                                let arg = args[param_idx];
-                                param_name_to_arg.insert(*name, arg);
-                                param_idx += 1;
-                                arg
-                            };
-                            callee_remap.insert(*dst, arg);
-                        }
-
-                        // Return → map result to caller's dst.
                         InstKind::Return(val) => {
                             let remapped_val = remap_one(*val, &callee_remap);
                             val_remap.insert(dst, remapped_val);
-                            // Don't emit Return.
                         }
 
-                        // All other instructions: remap and emit.
                         _ => {
                             let remapped =
                                 remap_inst(&callee_inst.kind, &callee_remap, label_offset);
@@ -250,9 +235,7 @@ fn try_devirt<'a>(
     let &def_idx = def_map.get(&callee_val)?;
     let inst = &insts[def_idx];
     match &inst.kind {
-        InstKind::MakeClosure {
-            body, captures, ..
-        } => {
+        InstKind::MakeClosure { body, captures, .. } => {
             let closure_body = closures.get(body)?;
             Some((closure_body, captures.clone()))
         }
@@ -296,35 +279,58 @@ fn remap_inst(
             value: value.clone(),
         },
 
-        // Context
-        InstKind::ContextProject { dst, ctx, volatile } => InstKind::ContextProject {
-            dst: r(*dst),
-            ctx: *ctx,
-            volatile: *volatile,
-        },
-        InstKind::ContextLoad { dst, src, volatile } => InstKind::ContextLoad {
+        // Projection
+        InstKind::Ref { dst, target, field } => {
+            let new_target = match target {
+                crate::ir::RefTarget::Var(slot) => crate::ir::RefTarget::Var(r(*slot)),
+                crate::ir::RefTarget::Param(slot) => crate::ir::RefTarget::Param(r(*slot)),
+                crate::ir::RefTarget::Context(qref) => crate::ir::RefTarget::Context(*qref),
+            };
+            InstKind::Ref {
+                dst: r(*dst),
+                target: new_target,
+                field: *field,
+            }
+        }
+        InstKind::Load { dst, src, volatile } => InstKind::Load {
             dst: r(*dst),
             src: r(*src),
             volatile: *volatile,
         },
-        InstKind::ContextStore { dst, value, volatile } => InstKind::ContextStore {
+        InstKind::Store {
+            dst,
+            value,
+            volatile,
+        } => InstKind::Store {
             dst: r(*dst),
             value: r(*value),
             volatile: *volatile,
         },
 
-        // Variables
-        InstKind::VarLoad { dst, name } => InstKind::VarLoad {
+        // Scalar field access
+        InstKind::FieldGet {
+            dst,
+            object,
+            field,
+            rest,
+        } => InstKind::FieldGet {
             dst: r(*dst),
-            name: *name,
+            object: r(*object),
+            field: *field,
+            rest: rest.clone(),
         },
-        InstKind::ParamLoad { dst, name } => InstKind::ParamLoad {
+        InstKind::FieldSet {
+            dst,
+            object,
+            field,
+            rest,
+            value,
+        } => InstKind::FieldSet {
             dst: r(*dst),
-            name: *name,
-        },
-        InstKind::VarStore { name, src } => InstKind::VarStore {
-            name: *name,
-            src: r(*src),
+            object: r(*object),
+            field: *field,
+            rest: rest.clone(),
+            value: r(*value),
         },
 
         // Arithmetic
@@ -343,11 +349,6 @@ fn remap_inst(
             dst: r(*dst),
             op: *op,
             operand: r(*operand),
-        },
-        InstKind::FieldGet { dst, object, field } => InstKind::FieldGet {
-            dst: r(*dst),
-            object: r(*object),
-            field: *field,
         },
 
         // Functions
@@ -602,15 +603,15 @@ mod tests {
     fn make_body(insts: Vec<InstKind>, val_count: usize) -> MirBody {
         let mut factory = LocalFactory::<ValueId>::new();
         let mut val_types = FxHashMap::default();
-        for i in 0..val_count {
+        for _ in 0..val_count {
             let v = factory.next();
             val_types.insert(v, Ty::Int);
         }
         MirBody {
             insts: insts.into_iter().map(make_inst).collect(),
             val_types,
-            param_regs: Vec::new(),
-            capture_regs: Vec::new(),
+            params: Vec::new(),
+            captures: Vec::new(),
             debug: DebugInfo::new(),
             val_factory: factory,
             label_count: 0,
@@ -635,12 +636,8 @@ mod tests {
         let i = acvus_utils::Interner::new();
         let callee_id = QualifiedRef::root(i.intern("callee"));
 
-        let callee_body = make_body(
+        let mut callee_body = make_body(
             vec![
-                InstKind::VarLoad {
-                    dst: v(0),
-                    name: i.intern("_0"),
-                },
                 InstKind::BinOp {
                     dst: v(1),
                     op: acvus_ast::BinOp::Add,
@@ -651,6 +648,7 @@ mod tests {
             ],
             2,
         );
+        callee_body.params = vec![(i.intern("p0"), v(0))];
 
         let caller_body = make_body(
             vec![

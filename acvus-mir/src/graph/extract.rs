@@ -41,7 +41,7 @@ pub fn extract(interner: &Interner, graph: &CompilationGraph) -> ExtractResult {
 }
 
 /// Parse a single local function. Returns None for Extern functions.
-pub fn extract_one(interner: &Interner, func: &Function) -> Option<ParsedSource> {
+pub fn extract_one(_interner: &Interner, func: &Function) -> Option<ParsedSource> {
     match &func.kind {
         FnKind::Local(ast) => match ast {
             ParsedAst::Script(script) => {

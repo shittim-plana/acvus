@@ -187,10 +187,14 @@ fn write_body(
 ) -> fmt::Result {
     let mut vn = ValNormalizer::new();
 
-    // Build QualifiedRef → name mapping from ContextProject instructions + debug info.
+    // Build QualifiedRef → name mapping from Ref(Context) instructions + debug info.
     let mut ctx_ref_to_name: FxHashMap<crate::graph::QualifiedRef, String> = FxHashMap::default();
     for inst in &body.insts {
-        if let InstKind::ContextProject { dst, ctx: qref, .. } = &inst.kind
+        if let InstKind::Ref {
+            dst,
+            target: crate::ir::RefTarget::Context(qref),
+            ..
+        } = &inst.kind
             && let Some(crate::ir::ValOrigin::Context(name)) = body.debug.get(*dst)
         {
             ctx_ref_to_name
@@ -246,46 +250,96 @@ fn write_body(
         match &inst.kind {
             // Constants -- all skipped above, unreachable here.
             InstKind::Const { .. } => unreachable!(),
-            InstKind::ContextProject { dst, ctx: qref, volatile, .. } => {
-                let name = ctx_ref_to_name.get(qref).map(|s| s.as_str()).unwrap_or("?");
-                let vol = if *volatile { " volatile" } else { "" };
-                writeln!(f, "{} = context_project @{}{}", vn.fmt_val(*dst), name, vol)?
+            // Projection
+            InstKind::Ref { dst, target, field } => {
+                let base = match target {
+                    crate::ir::RefTarget::Var(slot) => {
+                        body.debug.label(*slot, ctx.interner)
+                    }
+                    crate::ir::RefTarget::Param(slot) => {
+                        let name = body.debug.label(*slot, ctx.interner);
+                        if name.starts_with('$') { name } else { format!("${name}") }
+                    }
+                    crate::ir::RefTarget::Context(qref) => {
+                        let name = ctx_ref_to_name.get(qref).map(|s| s.as_str()).unwrap_or("?");
+                        format!("@{name}")
+                    }
+                };
+                if let Some(f_name) = field {
+                    writeln!(
+                        f,
+                        "{} = ref {}.{}",
+                        vn.fmt_val(*dst),
+                        base,
+                        ctx.interner.resolve(*f_name)
+                    )?
+                } else {
+                    writeln!(f, "{} = ref {}", vn.fmt_val(*dst), base)?
+                }
             }
-            InstKind::ContextLoad { dst, src, volatile } => {
+            InstKind::Load { dst, src, volatile } => {
                 let vol = if *volatile { " volatile" } else { "" };
                 writeln!(
                     f,
-                    "{} = context_load{} {}",
+                    "{} = load{} {}",
                     vn.fmt_val(*dst),
                     vol,
                     vn.fmt_use(*src, &consts, &texts)
                 )?
             }
-            InstKind::VarLoad { dst, name } => writeln!(
-                f,
-                "{} = var_load {}",
-                vn.fmt_val(*dst),
-                ctx.interner.resolve(*name)
-            )?,
-            InstKind::ParamLoad { dst, name } => writeln!(
-                f,
-                "{} = param_load ${}",
-                vn.fmt_val(*dst),
-                ctx.interner.resolve(*name)
-            )?,
-            InstKind::VarStore { name, src } => writeln!(
-                f,
-                "var_store {} = {}",
-                ctx.interner.resolve(*name),
-                vn.fmt_use(*src, &consts, &texts)
-            )?,
-            InstKind::ContextStore { dst, value, volatile } => {
+            InstKind::Store {
+                dst,
+                value,
+                volatile,
+            } => {
                 let vol = if *volatile { " volatile" } else { "" };
                 writeln!(
                     f,
-                    "ctx_store{} {} = {}",
+                    "store{} {} = {}",
                     vol,
                     vn.fmt_use(*dst, &consts, &texts),
+                    vn.fmt_use(*value, &consts, &texts)
+                )?
+            }
+
+            // Scalar field access
+            InstKind::FieldGet {
+                dst,
+                object,
+                field,
+                rest,
+            } => {
+                let mut path = ctx.interner.resolve(*field).to_string();
+                for r in rest {
+                    path.push('.');
+                    path.push_str(ctx.interner.resolve(*r));
+                }
+                writeln!(
+                    f,
+                    "{} = {}.{}",
+                    vn.fmt_val(*dst),
+                    vn.fmt_use(*object, &consts, &texts),
+                    path
+                )?
+            }
+            InstKind::FieldSet {
+                dst,
+                object,
+                field,
+                rest,
+                value,
+            } => {
+                let mut path = ctx.interner.resolve(*field).to_string();
+                for r in rest {
+                    path.push('.');
+                    path.push_str(ctx.interner.resolve(*r));
+                }
+                writeln!(
+                    f,
+                    "{} = field_set {}.{} = {}",
+                    vn.fmt_val(*dst),
+                    vn.fmt_use(*object, &consts, &texts),
+                    path,
                     vn.fmt_use(*value, &consts, &texts)
                 )?
             }
@@ -310,13 +364,6 @@ fn write_body(
                 vn.fmt_val(*dst),
                 fmt_unaryop(*op),
                 vn.fmt_use(*operand, &consts, &texts)
-            )?,
-            InstKind::FieldGet { dst, object, field } => writeln!(
-                f,
-                "{} = {}.{}",
-                vn.fmt_val(*dst),
-                vn.fmt_use(*object, &consts, &texts),
-                ctx.interner.resolve(*field),
             )?,
 
             // Functions
@@ -785,15 +832,16 @@ fn write_closure(
 ) -> fmt::Result {
     writeln!(f)?;
     write!(f, "=== closure {} (", fmt_label(label))?;
-    for (i, reg) in body.param_regs.iter().enumerate() {
+    for (i, (_, reg)) in body.params.iter().enumerate() {
         if i > 0 {
             write!(f, ", ")?;
         }
         write!(f, "{reg:?}")?;
     }
     write!(f, ")")?;
-    if !body.capture_regs.is_empty() {
-        write!(f, " [captures: {:?}]", body.capture_regs)?;
+    if !body.captures.is_empty() {
+        let cap_regs: Vec<_> = body.captures.iter().map(|(_, v)| v).collect();
+        write!(f, " [captures: {:?}]", cap_regs)?;
     }
     writeln!(f, " ===")?;
     write_body(f, body, "  ", ctx)?;

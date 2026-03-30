@@ -1,0 +1,17 @@
+---
+source: acvus-mir-test/tests/e2e.rs
+expression: ir
+---
+=== main ===
+     0 │   r0 = ref @obj
+     1 │   r1 = load r0
+     2 │   r2 = ref @obj
+     3 │   r3 = r1.name
+     4 │   return r3
+
+    ; r0 (@obj) : Ref<{name: String}>
+    ; r1 (@obj) : {name: String}
+    ; r2 (v5) : Ref<{name: String}>
+    ; r3 (v4) : String
+    ; r4 (@obj.name) : Ref<String>
+    ; r5 (v6) : {name: String}

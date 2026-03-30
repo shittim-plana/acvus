@@ -250,7 +250,9 @@ pub fn openai_registry<F: Fetch + Send + Sync + 'static>(fetch: Arc<F>) -> Exter
             .map(|(i, ty)| Param::new(interner.intern(&format!("_{i}")), ty))
             .collect();
         let constraint = FnConstraint {
-            signature: Some(Signature { params: named.clone() }),
+            signature: Some(Signature {
+                params: named.clone(),
+            }),
             output: Constraint::Exact(Ty::Fn {
                 params: named,
                 ret: Box::new(ret),
@@ -261,89 +263,85 @@ pub fn openai_registry<F: Fetch + Send + Sync + 'static>(fetch: Arc<F>) -> Exter
         };
 
         vec![
-            ExternFnBuilder::new("openai_chat", constraint)
-                .handler_async(
-                    move |interner: Interner,
-                          (messages_val, config_val): (Value, Value),
-                          Uses(()): Uses<()>| {
-                        let fetch = Arc::clone(&fetch);
-                        async move {
-                            // Extract messages from Value::List
-                            let messages_list = match &messages_val {
-                                Value::List(l) => l.as_slice(),
-                                other => {
-                                    return Err(RuntimeError::fetch(format!(
-                                        "openai_chat: expected List for messages, got {:?}",
-                                        other.kind()
-                                    )));
-                                }
-                            };
-                            let messages =
-                                values_to_messages(messages_list, &interner, "openai_chat")?;
+            ExternFnBuilder::new("openai_chat", constraint).handler_async(
+                move |interner: Interner,
+                      (messages_val, config_val): (Value, Value),
+                      Uses(()): Uses<()>| {
+                    let fetch = Arc::clone(&fetch);
+                    async move {
+                        // Extract messages from Value::List
+                        let messages_list = match &messages_val {
+                            Value::List(l) => l.as_slice(),
+                            other => {
+                                return Err(RuntimeError::fetch(format!(
+                                    "openai_chat: expected List for messages, got {:?}",
+                                    other.kind()
+                                )));
+                            }
+                        };
+                        let messages = values_to_messages(messages_list, &interner, "openai_chat")?;
 
-                            // Extract config from Value::Object
-                            let config_obj = match &config_val {
-                                Value::Object(o) => o,
-                                other => {
-                                    return Err(RuntimeError::fetch(format!(
-                                        "openai_chat: expected Object for config, got {:?}",
-                                        other.kind()
-                                    )));
-                                }
-                            };
+                        // Extract config from Value::Object
+                        let config_obj = match &config_val {
+                            Value::Object(o) => o,
+                            other => {
+                                return Err(RuntimeError::fetch(format!(
+                                    "openai_chat: expected Object for config, got {:?}",
+                                    other.kind()
+                                )));
+                            }
+                        };
 
-                            let endpoint =
-                                obj_get_str(config_obj, endpoint_key).ok_or_else(|| {
-                                    RuntimeError::fetch("openai_chat: missing 'endpoint' in config")
-                                })?;
-                            let api_key =
-                                obj_get_str(config_obj, api_key_key).ok_or_else(|| {
-                                    RuntimeError::fetch("openai_chat: missing 'api_key' in config")
-                                })?;
-                            let model = obj_get_str(config_obj, model_key).ok_or_else(|| {
-                                RuntimeError::fetch("openai_chat: missing 'model' in config")
-                            })?;
-                            let temperature = obj_get_decimal(config_obj, temperature_key);
-                            let top_p = obj_get_decimal(config_obj, top_p_key);
-                            let max_tokens = obj_get_u32(config_obj, max_tokens_key);
+                        let endpoint = obj_get_str(config_obj, endpoint_key).ok_or_else(|| {
+                            RuntimeError::fetch("openai_chat: missing 'endpoint' in config")
+                        })?;
+                        let api_key = obj_get_str(config_obj, api_key_key).ok_or_else(|| {
+                            RuntimeError::fetch("openai_chat: missing 'api_key' in config")
+                        })?;
+                        let model = obj_get_str(config_obj, model_key).ok_or_else(|| {
+                            RuntimeError::fetch("openai_chat: missing 'model' in config")
+                        })?;
+                        let temperature = obj_get_decimal(config_obj, temperature_key);
+                        let top_p = obj_get_decimal(config_obj, top_p_key);
+                        let max_tokens = obj_get_u32(config_obj, max_tokens_key);
 
-                            // Build schema::Request
-                            let request_body = schema::Request {
-                                model,
-                                messages: messages.iter().map(convert_message).collect(),
-                                tools: None,
-                                temperature,
-                                top_p,
-                                max_tokens,
-                                reasoning_effort: None,
-                            };
+                        // Build schema::Request
+                        let request_body = schema::Request {
+                            model,
+                            messages: messages.iter().map(convert_message).collect(),
+                            tools: None,
+                            temperature,
+                            top_p,
+                            max_tokens,
+                            reasoning_effort: None,
+                        };
 
-                            let http_request = HttpRequest {
-                                url: endpoint,
-                                headers: vec![
-                                    ("Authorization".into(), format!("Bearer {api_key}")),
-                                    ("Content-Type".into(), "application/json".into()),
-                                ],
-                                body: serde_json::to_value(&request_body).map_err(|e| {
-                                    RuntimeError::fetch(format!(
-                                        "openai_chat: serialization failed: {e}"
-                                    ))
-                                })?,
-                            };
+                        let http_request = HttpRequest {
+                            url: endpoint,
+                            headers: vec![
+                                ("Authorization".into(), format!("Bearer {api_key}")),
+                                ("Content-Type".into(), "application/json".into()),
+                            ],
+                            body: serde_json::to_value(&request_body).map_err(|e| {
+                                RuntimeError::fetch(format!(
+                                    "openai_chat: serialization failed: {e}"
+                                ))
+                            })?,
+                        };
 
-                            let response_json = fetch
-                                .fetch(&http_request)
-                                .await
-                                .map_err(RuntimeError::fetch)?;
+                        let response_json = fetch
+                            .fetch(&http_request)
+                            .await
+                            .map_err(RuntimeError::fetch)?;
 
-                            let (response, usage) = parse_response(response_json)
-                                .map_err(|e| RuntimeError::fetch(e.to_string()))?;
+                        let (response, usage) = parse_response(response_json)
+                            .map_err(|e| RuntimeError::fetch(e.to_string()))?;
 
-                            let result = response_to_value(&response, &usage, &interner);
-                            Ok((result, Defs(())))
-                        }
-                    },
-                ),
+                        let result = response_to_value(&response, &usage, &interner);
+                        Ok((result, Defs(())))
+                    }
+                },
+            ),
         ]
     })
 }

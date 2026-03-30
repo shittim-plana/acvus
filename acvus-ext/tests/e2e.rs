@@ -6,9 +6,9 @@ use std::sync::Arc;
 use acvus_ext::*;
 use acvus_interpreter::builtins::build_builtins;
 use acvus_interpreter::*;
-use acvus_mir::graph::{extract, infer, lower as graph_lower};
 use acvus_mir::graph::*;
-use acvus_mir::ty::{CastRule, Effect, Param, Ty, TySubst, TypeRegistry, UserDefinedDecl};
+use acvus_mir::graph::{extract, infer, lower as graph_lower};
+use acvus_mir::ty::{CastRule, Effect, Param, Ty, TypeRegistry, UserDefinedDecl};
 use acvus_utils::{Astr, Freeze, Interner};
 use rustc_hash::FxHashMap;
 
@@ -54,7 +54,7 @@ async fn run_ext_with_registry(
 
     // Build function list: builtins + ext + entry.
     let entry_qref = QualifiedRef::root(interner.intern("test"));
-    let mut functions = acvus_mir::builtins::standard_builtins(interner);
+    let mut functions = Vec::new();
     for reg in &registered {
         functions.extend(reg.functions.iter().cloned());
     }
@@ -77,7 +77,14 @@ async fn run_ext_with_registry(
 
     // Compile.
     let ext = extract::extract(interner, &graph);
-    let inf = infer::infer(interner, &graph, &ext, &FxHashMap::default(), Freeze::new(type_registry), &FxHashMap::default());
+    let inf = infer::infer(
+        interner,
+        &graph,
+        &ext,
+        &FxHashMap::default(),
+        Freeze::new(type_registry),
+        &FxHashMap::default(),
+    );
     let result = graph_lower::lower(interner, &graph, &ext, &inf, &FxHashMap::default());
 
     if result.has_errors() {
@@ -97,8 +104,11 @@ async fn run_ext_with_registry(
         .map(|(qref, (module, _))| (qref, Executable::Module(module)))
         .collect();
 
-    let builtin_ids: FxHashMap<Astr, QualifiedRef> =
-        graph.functions.iter().map(|f| (f.qref.name, f.qref)).collect();
+    let builtin_ids: FxHashMap<Astr, QualifiedRef> = graph
+        .functions
+        .iter()
+        .map(|f| (f.qref.name, f.qref))
+        .collect();
     for (qref, handler) in build_builtins(&builtin_ids, interner) {
         exec_fns.insert(qref, Executable::Builtin(handler));
     }
@@ -151,13 +161,6 @@ fn infer_value_ty(v: &Value) -> Ty {
         },
         _ => Ty::Unit,
     }
-}
-
-fn ctx(i: &Interner, entries: &[(&str, Value)]) -> FxHashMap<Astr, Value> {
-    entries
-        .iter()
-        .map(|(name, val)| (i.intern(name), val.clone()))
-        .collect()
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -366,7 +369,9 @@ fn sig(interner: &Interner, params: Vec<Ty>, ret: Ty) -> FnConstraint {
         .map(|(i, ty)| Param::new(interner.intern(&format!("_{i}")), ty))
         .collect();
     FnConstraint {
-        signature: Some(Signature { params: named.clone() }),
+        signature: Some(Signature {
+            params: named.clone(),
+        }),
         output: Constraint::Exact(Ty::Fn {
             params: named,
             ret: Box::new(ret),
@@ -403,29 +408,30 @@ fn extern_cast_setup(interner: &Interner, tr: &mut TypeRegistry) -> Vec<ExternRe
     let reg = ExternRegistry::new(move |interner| {
         vec![
             // make_num() → MyNum (wrapping 42)
-            ExternFnBuilder::new("make_num", sig(interner, vec![], ty_clone.clone()))
-                .handler(move |_interner: &acvus_utils::Interner, (): (), Uses(()): Uses<()>| {
+            ExternFnBuilder::new("make_num", sig(interner, vec![], ty_clone.clone())).handler(
+                move |_interner: &acvus_utils::Interner, (): (), Uses(()): Uses<()>| {
                     Ok((
                         Value::opaque(OpaqueValue::new(my_num_qref, 42i64)),
                         Defs(()),
                     ))
-                }),
+                },
+            ),
             // to_int(MyNum) → Int
-            ExternFnBuilder::new("to_int", sig(interner, vec![ty_clone.clone()], Ty::Int))
-                .handler(|_interner: &acvus_utils::Interner, (v,): (Value,), Uses(()): Uses<()>| {
-                    match v {
-                        Value::Opaque(o) => {
-                            let n = *o.downcast_ref::<i64>().unwrap();
-                            Ok((n, Defs(())))
-                        }
-                        _ => panic!("expected Opaque"),
+            ExternFnBuilder::new("to_int", sig(interner, vec![ty_clone.clone()], Ty::Int)).handler(
+                |_interner: &acvus_utils::Interner, (v,): (Value,), Uses(()): Uses<()>| match v {
+                    Value::Opaque(o) => {
+                        let n = *o.downcast_ref::<i64>().unwrap();
+                        Ok((n, Defs(())))
                     }
-                }),
+                    _ => panic!("expected Opaque"),
+                },
+            ),
             // double(Int) → Int
-            ExternFnBuilder::new("double", sig(interner, vec![Ty::Int], Ty::Int))
-                .handler(|_interner: &acvus_utils::Interner, (n,): (i64,), Uses(()): Uses<()>| {
+            ExternFnBuilder::new("double", sig(interner, vec![Ty::Int], Ty::Int)).handler(
+                |_interner: &acvus_utils::Interner, (n,): (i64,), Uses(()): Uses<()>| {
                     Ok((n * 2, Defs(())))
-                }),
+                },
+            ),
         ]
     });
 
@@ -453,10 +459,7 @@ async fn extern_cast_auto_coercion() {
     // Register stdlib + test registries into the same TypeRegistry.
     let mut all_registries = std_registries(&i, &mut tr);
     all_registries.extend(registries);
-    let registered: Vec<Registered> = all_registries
-        .into_iter()
-        .map(|r| r.register(&i))
-        .collect();
+    let registered: Vec<Registered> = all_registries.into_iter().map(|r| r.register(&i)).collect();
 
     // Find to_int's QualifiedRef for the CastRule.
     let to_int_qref = registered
@@ -484,7 +487,7 @@ async fn extern_cast_auto_coercion() {
 
     // Build graph manually (same as run_ext_with_registry but with pre-registered fns).
     let entry_qref = QualifiedRef::root(i.intern("test"));
-    let mut functions = acvus_mir::builtins::standard_builtins(&i);
+    let mut functions = Vec::new();
     for reg in &registered {
         functions.extend(reg.functions.iter().cloned());
     }
@@ -506,7 +509,14 @@ async fn extern_cast_auto_coercion() {
 
     // Compile.
     let ext = extract::extract(&i, &graph);
-    let inf = infer::infer(&i, &graph, &ext, &FxHashMap::default(), type_registry, &FxHashMap::default());
+    let inf = infer::infer(
+        &i,
+        &graph,
+        &ext,
+        &FxHashMap::default(),
+        type_registry,
+        &FxHashMap::default(),
+    );
     let compile_result = graph_lower::lower(&i, &graph, &ext, &inf, &FxHashMap::default());
 
     if compile_result.has_errors() {
@@ -530,7 +540,11 @@ async fn extern_cast_auto_coercion() {
             } if *qref == to_int_qref
         )
     });
-    assert!(has_cast_call, "expected FunctionCall to to_int (ExternCast), got: {:#?}", module.main.insts);
+    assert!(
+        has_cast_call,
+        "expected FunctionCall to to_int (ExternCast), got: {:#?}",
+        module.main.insts
+    );
 
     // Execute.
     let mut exec_fns: FxHashMap<QualifiedRef, Executable> = compile_result
@@ -539,8 +553,11 @@ async fn extern_cast_auto_coercion() {
         .map(|(qref, (module, _))| (qref, Executable::Module(module)))
         .collect();
 
-    let builtin_ids: FxHashMap<Astr, QualifiedRef> =
-        graph.functions.iter().map(|f| (f.qref.name, f.qref)).collect();
+    let builtin_ids: FxHashMap<Astr, QualifiedRef> = graph
+        .functions
+        .iter()
+        .map(|f| (f.qref.name, f.qref))
+        .collect();
     for (qref, handler) in acvus_interpreter::builtins::build_builtins(&builtin_ids, &i) {
         exec_fns.insert(qref, Executable::Builtin(handler));
     }

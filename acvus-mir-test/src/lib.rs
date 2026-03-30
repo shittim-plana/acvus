@@ -3,7 +3,7 @@ use acvus_mir::graph::*;
 use acvus_mir::graph::{extract, lower as graph_lower};
 use acvus_mir::ir::MirModule;
 use acvus_mir::printer::dump_with;
-use acvus_mir::ty::{Param, Ty};
+use acvus_mir::ty::Ty;
 use acvus_utils::{Astr, Freeze, Interner};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -23,7 +23,14 @@ fn run_pipeline_with_registry(
     type_registry: acvus_mir::ty::TypeRegistry,
 ) -> Result<MirModule, String> {
     let ext = extract::extract(interner, graph);
-    let inf = infer::infer(interner, graph, &ext, &FxHashMap::default(), Freeze::new(type_registry), &FxHashMap::default());
+    let inf = infer::infer(
+        interner,
+        graph,
+        &ext,
+        &FxHashMap::default(),
+        Freeze::new(type_registry),
+        &FxHashMap::default(),
+    );
 
     // Collect infer errors.
     let mut errors: Vec<String> = Vec::new();
@@ -32,7 +39,10 @@ fn run_pipeline_with_registry(
         for e in errs {
             errors.push(format!(
                 "[infer:{}] [{}..{}] {}",
-                fn_name, e.span.start, e.span.end, e.display(interner)
+                fn_name,
+                e.span.start,
+                e.span.end,
+                e.display(interner)
             ));
         }
     }
@@ -43,7 +53,9 @@ fn run_pipeline_with_registry(
     for e in result.errors.iter().flat_map(|le| le.errors.iter()) {
         errors.push(format!(
             "[lower] [{}..{}] {}",
-            e.span.start, e.span.end, e.display(interner)
+            e.span.start,
+            e.span.end,
+            e.display(interner)
         ));
     }
 
@@ -56,35 +68,29 @@ fn run_pipeline_with_registry(
         .cloned()
         .ok_or_else(|| "no module produced for target".to_string())?;
 
-    // Build fn_types for SSA + validate.
-    // Include both inferred (Complete) and declared (Exact constraint) function types.
-    let mut fn_types: FxHashMap<QualifiedRef, acvus_mir::ty::Ty> = FxHashMap::default();
-    for func in graph.functions.iter() {
-        if let Constraint::Exact(ty) = &func.constraint.output {
-            fn_types.insert(func.qref, ty.clone());
-        }
-    }
-    for (qref, outcome) in &inf.outcomes {
-        if let acvus_mir::graph::infer::FnInferOutcome::Complete { meta, .. } = outcome {
-            fn_types.insert(*qref, meta.ty.clone());
-        }
+    // Use InferResult.fn_types (authoritative, frozen).
+    let fn_types = &inf.fn_types;
+
+    // SROA: decompose field Refs into identity Refs + FieldGet/FieldSet.
+    acvus_mir::optimize::sroa::run_body(&mut module.main, &inf.context_types);
+    for closure in module.closures.values_mut() {
+        acvus_mir::optimize::sroa::run_body(closure, &inf.context_types);
     }
 
-    // Run SSA + validate (lower now outputs pre-SSA MIR).
-    // promote → ssa → demote per body (CfgBody transition).
+    // SSA: promote identity Refs to SSA form.
     let mut cfg_main = cfg::promote(std::mem::take(&mut module.main));
-    acvus_mir::optimize::ssa_pass::run(&mut cfg_main, &fn_types);
+    acvus_mir::optimize::ssa_pass::run(&mut cfg_main, fn_types);
     module.main = cfg::demote(cfg_main);
     for closure in module.closures.values_mut() {
         let mut cfg_closure = cfg::promote(std::mem::take(closure));
-        acvus_mir::optimize::ssa_pass::run(&mut cfg_closure, &fn_types);
+        acvus_mir::optimize::ssa_pass::run(&mut cfg_closure, fn_types);
         *closure = cfg::demote(cfg_closure);
     }
 
-    let validation_errors = acvus_mir::validate::validate(&module, &fn_types, &FxHashMap::default());
+    let validation_errors = acvus_mir::validate::validate(&module, fn_types, &FxHashMap::default());
     if !validation_errors.is_empty() {
         let msgs: Vec<String> = validation_errors
-            .iter() 
+            .iter()
             .map(|e| format!("{:?}", e))
             .collect();
         return Err(msgs.join("\n"));
@@ -221,6 +227,171 @@ pub fn compile_script_ir(
     Ok(dump_with(interner, &module))
 }
 
+/// Compile a **script** with **no optimization** — raw lowered MIR.
+pub fn compile_script_raw(
+    interner: &Interner,
+    source: &str,
+    context: &FxHashMap<Astr, Ty>,
+) -> Result<String, String> {
+    let contexts: Vec<Context> = context
+        .iter()
+        .map(|(name, ty)| Context {
+            qref: QualifiedRef::root(*name),
+            constraint: Constraint::Exact(ty.clone()),
+        })
+        .collect();
+    let test_qref = QualifiedRef::root(interner.intern("test"));
+    let ast = match acvus_ast::parse_script(interner, source) {
+        Ok(ast) => ast,
+        Err(e) => return Err(format!("parse error: {e:?}")),
+    };
+    let mut functions = vec![Function {
+        qref: test_qref,
+        kind: FnKind::Local(ParsedAst::Script(ast)),
+        constraint: FnConstraint {
+            signature: None,
+            output: Constraint::Inferred,
+            effect: None,
+        },
+    }];
+    let mut type_registry = acvus_mir::ty::TypeRegistry::new();
+    let std_regs = acvus_ext::std_registries(interner, &mut type_registry);
+    for registry in std_regs {
+        let registered = registry.register(interner);
+        functions.extend(registered.functions);
+    }
+    let graph = CompilationGraph {
+        functions: Freeze::new(functions),
+        contexts: Freeze::new(contexts),
+    };
+
+    let ext = extract::extract(interner, &graph);
+    let inf = infer::infer(
+        interner,
+        &graph,
+        &ext,
+        &FxHashMap::default(),
+        Freeze::new(type_registry),
+        &FxHashMap::default(),
+    );
+
+    let mut errors: Vec<String> = Vec::new();
+    for (qref, errs) in inf.errors() {
+        let fn_name = interner.resolve(qref.name);
+        for e in errs {
+            errors.push(format!("[infer:{}] {}", fn_name, e.display(interner)));
+        }
+    }
+
+    let result = graph_lower::lower(interner, &graph, &ext, &inf, &FxHashMap::default());
+    for e in result.errors.iter().flat_map(|le| le.errors.iter()) {
+        errors.push(format!("[lower] {}", e.display(interner)));
+    }
+    if !errors.is_empty() {
+        return Err(errors.join("\n"));
+    }
+
+    let module = result
+        .module(test_qref)
+        .ok_or_else(|| "no module produced for target".to_string())?;
+    Ok(dump_with(interner, module))
+}
+
+/// Compile a **script** with the **full optimization pipeline** (SROA → SSA → Inline → Pass2).
+/// Returns printed IR of the optimized module.
+pub fn compile_script_optimized(
+    interner: &Interner,
+    source: &str,
+    context: &FxHashMap<Astr, Ty>,
+) -> Result<String, String> {
+    let contexts: Vec<Context> = context
+        .iter()
+        .map(|(name, ty)| Context {
+            qref: QualifiedRef::root(*name),
+            constraint: Constraint::Exact(ty.clone()),
+        })
+        .collect();
+    let test_qref = QualifiedRef::root(interner.intern("test"));
+    let ast = match acvus_ast::parse_script(interner, source) {
+        Ok(ast) => ast,
+        Err(e) => return Err(format!("parse error: {e:?}")),
+    };
+    let mut functions = vec![Function {
+        qref: test_qref,
+        kind: FnKind::Local(ParsedAst::Script(ast)),
+        constraint: FnConstraint {
+            signature: None,
+            output: Constraint::Inferred,
+            effect: None,
+        },
+    }];
+    let mut type_registry = acvus_mir::ty::TypeRegistry::new();
+    let std_regs = acvus_ext::std_registries(interner, &mut type_registry);
+    for registry in std_regs {
+        let registered = registry.register(interner);
+        functions.extend(registered.functions);
+    }
+    let graph = CompilationGraph {
+        functions: Freeze::new(functions),
+        contexts: Freeze::new(contexts),
+    };
+
+    let ext = extract::extract(interner, &graph);
+    let inf = infer::infer(
+        interner,
+        &graph,
+        &ext,
+        &FxHashMap::default(),
+        Freeze::new(type_registry),
+        &FxHashMap::default(),
+    );
+
+    let mut errors: Vec<String> = Vec::new();
+    for (qref, errs) in inf.errors() {
+        let fn_name = interner.resolve(qref.name);
+        for e in errs {
+            errors.push(format!("[infer:{}] {}", fn_name, e.display(interner)));
+        }
+    }
+
+    let result = graph_lower::lower(interner, &graph, &ext, &inf, &FxHashMap::default());
+    for e in result.errors.iter().flat_map(|le| le.errors.iter()) {
+        errors.push(format!("[lower] {}", e.display(interner)));
+    }
+    if !errors.is_empty() {
+        return Err(errors.join("\n"));
+    }
+
+    let raw_modules: FxHashMap<QualifiedRef, acvus_mir::ir::MirModule> = result
+        .modules
+        .into_iter()
+        .map(|(qref, (module, _hints))| (qref, module))
+        .collect();
+
+    let opt_result = acvus_mir::graph::optimize::optimize(
+        raw_modules,
+        &inf.fn_types,
+        &inf.context_types,
+        &FxHashSet::default(),
+    );
+
+    for (qref, errs) in &opt_result.errors {
+        let fn_name = interner.resolve(qref.name);
+        for e in errs {
+            errors.push(format!("[validate:{}] {:?}", fn_name, e));
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors.join("\n"));
+    }
+
+    let module = opt_result
+        .modules
+        .get(&test_qref)
+        .ok_or_else(|| "no module produced for target".to_string())?;
+    Ok(dump_with(interner, module))
+}
+
 // ── Inline pipeline ─────────────────────────────────────────────────
 
 /// Compile multiple local functions, inline, and return the printed IR for the target.
@@ -312,7 +483,10 @@ pub fn compile_inline_ir_with(
         for e in errs {
             errors.push(format!(
                 "[infer:{}] [{}..{}] {}",
-                fn_name, e.span.start, e.span.end, e.display(interner)
+                fn_name,
+                e.span.start,
+                e.span.end,
+                e.display(interner)
             ));
         }
     }
@@ -321,7 +495,9 @@ pub fn compile_inline_ir_with(
     for e in result.errors.iter().flat_map(|le| le.errors.iter()) {
         errors.push(format!(
             "[lower] [{}..{}] {}",
-            e.span.start, e.span.end, e.display(interner)
+            e.span.start,
+            e.span.end,
+            e.display(interner)
         ));
     }
 
@@ -344,4 +520,228 @@ pub fn compile_inline_ir_with(
         .get(&target_qref)
         .map(|m| dump_with(interner, m))
         .ok_or_else(|| "no inlined module for target".to_string())
+}
+
+/// Compile multiple local functions — **raw lower only**, no optimization.
+/// Returns printed IR of ALL local modules (since no inlining happens).
+pub fn compile_multi_fn_raw(
+    interner: &Interner,
+    target: (&str, &str),
+    helpers: &[(&str, &str, Option<Signature>)],
+    contexts: &[(&str, Ty)],
+    extern_fns: &[Function],
+) -> Result<String, String> {
+    let ctx_vec: Vec<Context> = contexts
+        .iter()
+        .map(|(name, ty)| Context {
+            qref: QualifiedRef::root(interner.intern(name)),
+            constraint: Constraint::Exact(ty.clone()),
+        })
+        .collect();
+
+    let target_qref = QualifiedRef::root(interner.intern(target.0));
+    let target_ast = acvus_ast::parse_script(interner, target.1)
+        .map_err(|e| format!("parse error in target '{}': {e:?}", target.0))?;
+
+    let mut functions = vec![Function {
+        qref: target_qref,
+        kind: FnKind::Local(ParsedAst::Script(target_ast)),
+        constraint: FnConstraint {
+            signature: None,
+            output: Constraint::Inferred,
+            effect: None,
+        },
+    }];
+
+    for &(name, source, ref sig) in helpers {
+        let qref = QualifiedRef::root(interner.intern(name));
+        let ast = acvus_ast::parse_script(interner, source)
+            .map_err(|e| format!("parse error in helper '{}': {e:?}", name))?;
+        functions.push(Function {
+            qref,
+            kind: FnKind::Local(ParsedAst::Script(ast)),
+            constraint: FnConstraint {
+                signature: sig.clone(),
+                output: Constraint::Inferred,
+                effect: None,
+            },
+        });
+    }
+
+    let mut type_registry = acvus_mir::ty::TypeRegistry::new();
+    let std_regs = acvus_ext::std_registries(interner, &mut type_registry);
+    for registry in std_regs {
+        let registered = registry.register(interner);
+        functions.extend(registered.functions);
+    }
+    functions.extend_from_slice(extern_fns);
+
+    let graph = CompilationGraph {
+        functions: Freeze::new(functions),
+        contexts: Freeze::new(ctx_vec),
+    };
+
+    let ext = extract::extract(interner, &graph);
+    let inf = infer::infer(
+        interner,
+        &graph,
+        &ext,
+        &FxHashMap::default(),
+        Freeze::new(type_registry),
+        &FxHashMap::default(),
+    );
+
+    let mut errors: Vec<String> = Vec::new();
+    for (qref, errs) in inf.errors() {
+        let fn_name = interner.resolve(qref.name);
+        for e in errs {
+            errors.push(format!("[infer:{}] {}", fn_name, e.display(interner)));
+        }
+    }
+
+    let result = graph_lower::lower(interner, &graph, &ext, &inf, &FxHashMap::default());
+    for e in result.errors.iter().flat_map(|le| le.errors.iter()) {
+        errors.push(format!("[lower] {}", e.display(interner)));
+    }
+    if !errors.is_empty() {
+        return Err(errors.join("\n"));
+    }
+
+    // Print ALL local modules (sorted by name for determinism).
+    let mut output = String::new();
+    let mut entries: Vec<_> = result.modules.iter().collect();
+    entries.sort_by_key(|(qref, _)| interner.resolve(qref.name).to_string());
+
+    for (qref, (module, _)) in entries {
+        let fn_name = interner.resolve(qref.name);
+        // Skip extern functions (no meaningful body).
+        if module.main.insts.is_empty() {
+            continue;
+        }
+        output.push_str(&format!("── {} ──\n", fn_name));
+        output.push_str(&dump_with(interner, module));
+        output.push('\n');
+    }
+
+    Ok(output)
+}
+
+/// Compile multiple local functions through the **full optimization pipeline**.
+/// Includes: SROA → SSA → DSE → Inline → Pass2 (SpawnSplit → SSA → DSE → CodeMotion → Reorder → RegColor → Validate).
+///
+/// `target`: (name, script_source) — the function whose optimized IR is returned.
+/// `helpers`: (name, script_source, signature) — local functions callable from target.
+/// `contexts`: context types.
+/// `extern_fns`: additional extern function declarations.
+pub fn compile_multi_fn_optimized(
+    interner: &Interner,
+    target: (&str, &str),
+    helpers: &[(&str, &str, Option<Signature>)],
+    contexts: &[(&str, Ty)],
+    extern_fns: &[Function],
+) -> Result<String, String> {
+    let ctx_vec: Vec<Context> = contexts
+        .iter()
+        .map(|(name, ty)| Context {
+            qref: QualifiedRef::root(interner.intern(name)),
+            constraint: Constraint::Exact(ty.clone()),
+        })
+        .collect();
+
+    let target_qref = QualifiedRef::root(interner.intern(target.0));
+    let target_ast = acvus_ast::parse_script(interner, target.1)
+        .map_err(|e| format!("parse error in target '{}': {e:?}", target.0))?;
+
+    let mut functions = vec![Function {
+        qref: target_qref,
+        kind: FnKind::Local(ParsedAst::Script(target_ast)),
+        constraint: FnConstraint {
+            signature: None,
+            output: Constraint::Inferred,
+            effect: None,
+        },
+    }];
+
+    for &(name, source, ref sig) in helpers {
+        let qref = QualifiedRef::root(interner.intern(name));
+        let ast = acvus_ast::parse_script(interner, source)
+            .map_err(|e| format!("parse error in helper '{}': {e:?}", name))?;
+        functions.push(Function {
+            qref,
+            kind: FnKind::Local(ParsedAst::Script(ast)),
+            constraint: FnConstraint {
+                signature: sig.clone(),
+                output: Constraint::Inferred,
+                effect: None,
+            },
+        });
+    }
+
+    let mut type_registry = acvus_mir::ty::TypeRegistry::new();
+    let std_regs = acvus_ext::std_registries(interner, &mut type_registry);
+    for registry in std_regs {
+        let registered = registry.register(interner);
+        functions.extend(registered.functions);
+    }
+    functions.extend_from_slice(extern_fns);
+
+    let graph = CompilationGraph {
+        functions: Freeze::new(functions),
+        contexts: Freeze::new(ctx_vec),
+    };
+
+    let ext = extract::extract(interner, &graph);
+    let inf = infer::infer(
+        interner,
+        &graph,
+        &ext,
+        &FxHashMap::default(),
+        Freeze::new(type_registry),
+        &FxHashMap::default(),
+    );
+
+    let mut errors: Vec<String> = Vec::new();
+    for (qref, errs) in inf.errors() {
+        let fn_name = interner.resolve(qref.name);
+        for e in errs {
+            errors.push(format!("[infer:{}] {}", fn_name, e.display(interner)));
+        }
+    }
+
+    let result = graph_lower::lower(interner, &graph, &ext, &inf, &FxHashMap::default());
+    for e in result.errors.iter().flat_map(|le| le.errors.iter()) {
+        errors.push(format!("[lower] {}", e.display(interner)));
+    }
+    if !errors.is_empty() {
+        return Err(errors.join("\n"));
+    }
+
+    let raw_modules: FxHashMap<QualifiedRef, acvus_mir::ir::MirModule> = result
+        .modules
+        .into_iter()
+        .map(|(qref, (module, _))| (qref, module))
+        .collect();
+
+    let opt_result = acvus_mir::graph::optimize::optimize(
+        raw_modules,
+        &inf.fn_types,
+        &inf.context_types,
+        &FxHashSet::default(),
+    );
+
+    for (qref, errs) in &opt_result.errors {
+        let fn_name = interner.resolve(qref.name);
+        for e in errs {
+            errors.push(format!("[validate:{}] {:?}", fn_name, e));
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors.join("\n"));
+    }
+
+    let module = opt_result
+        .modules
+        .get(&target_qref)
+        .ok_or_else(|| "no module for target".to_string())?;
+    Ok(dump_with(interner, module))
 }

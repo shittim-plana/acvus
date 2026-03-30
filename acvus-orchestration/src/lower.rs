@@ -11,8 +11,8 @@
 
 use acvus_ast::{AstId, Expr, Literal, ObjectExprField, RefKind, Script, Span};
 use acvus_mir::graph::{
-    CompilationGraph, Constraint, Context, FnConstraint, FnKind, Function,
-    ParsedAst, QualifiedRef, Signature,
+    CompilationGraph, Constraint, FnConstraint, FnKind, Function, ParsedAst, QualifiedRef,
+    Signature,
 };
 use acvus_mir::ty::{EffectConstraint, Ty};
 use acvus_utils::{Astr, Freeze, Interner};
@@ -85,7 +85,7 @@ pub fn lower_namespace(
 ) -> LowerOutput {
     let ns_name = interner.intern(&ns.name);
     let mut functions: Vec<Function> = extern_fns.to_vec();
-    let mut contexts = Vec::new();
+    let contexts = Vec::new();
     let mut span_map = SpanMap::default();
     let mut field_errors = Vec::new();
 
@@ -138,7 +138,7 @@ fn str_lit(s: &str) -> Expr {
 fn ident(interner: &Interner, name: &str) -> Expr {
     Expr::Ident {
         id: AstId::alloc(),
-        name: interner.intern(name),
+        name: QualifiedRef::root(interner.intern(name)),
         ref_kind: RefKind::Value,
         span: GLUE_SPAN,
     }
@@ -234,9 +234,9 @@ fn lower_block(interner: &Interner, block: &Block, ns_name: Astr) -> Function {
         BlockMode::Script => ParsedAst::Script(
             acvus_ast::parse_script(interner, &block.source).expect("parse error"),
         ),
-        BlockMode::Template => ParsedAst::Template(
-            acvus_ast::parse(interner, &block.source).expect("parse error"),
-        ),
+        BlockMode::Template => {
+            ParsedAst::Template(acvus_ast::parse(interner, &block.source).expect("parse error"))
+        }
     };
     let output = match block.mode {
         BlockMode::Template => Constraint::Exact(Ty::String),
@@ -317,10 +317,10 @@ fn lower_llm(interner: &Interner, llm: &LlmSpec, ns_name: Astr) -> LlmLowerResul
         };
 
         // { role: "...", content: <expr> }
-        let msg_obj = object(interner, vec![
-            ("role", str_lit(&msg.role)),
-            ("content", content_expr),
-        ]);
+        let msg_obj = object(
+            interner,
+            vec![("role", str_lit(&msg.role)), ("content", content_expr)],
+        );
 
         let stub_name = format!("__s{i}");
         stmts.push(bind(interner, &stub_name, msg_obj));
@@ -433,7 +433,7 @@ fn lower_display(interner: &Interner, display: &DisplaySpec, ns_name: Astr) -> D
             name,
             history,
             live,
-            bind,
+            bind: _,
             template,
         } => {
             let mut functions = Vec::new();
@@ -480,7 +480,8 @@ fn lower_display(interner: &Interner, display: &DisplaySpec, ns_name: Astr) -> D
                         );
                         let ast = script_tail(map_call);
 
-                        let history_qref = QualifiedRef::qualified(ns_name, interner.intern(&history_name));
+                        let history_qref =
+                            QualifiedRef::qualified(ns_name, interner.intern(&history_name));
                         functions.push(Function {
                             qref: history_qref,
                             kind: FnKind::Local(ParsedAst::Script(ast)),
@@ -521,7 +522,8 @@ fn lower_display(interner: &Interner, display: &DisplaySpec, ns_name: Astr) -> D
                         );
                         let ast = script_tail(map_call);
 
-                        let live_qref = QualifiedRef::qualified(ns_name, interner.intern(&live_name));
+                        let live_qref =
+                            QualifiedRef::qualified(ns_name, interner.intern(&live_name));
                         functions.push(Function {
                             qref: live_qref,
                             kind: FnKind::Local(ParsedAst::Script(ast)),
@@ -573,7 +575,10 @@ mod tests {
 
         let func = &output.graph.functions[0];
         assert_eq!(i.resolve(func.qref.name), "greeting");
-        assert!(matches!(func.constraint.output, Constraint::Exact(Ty::String)));
+        assert!(matches!(
+            func.constraint.output,
+            Constraint::Exact(Ty::String)
+        ));
         assert!(!func.constraint.effect.as_ref().unwrap().io);
     }
 
@@ -613,7 +618,10 @@ mod tests {
                         endpoint: "https://api.google.com".into(),
                         api_key: "key".into(),
                         model: "gemini-2.0-flash".into(),
-                        temperature: None, top_p: None, top_k: None, max_tokens: None,
+                        temperature: None,
+                        top_p: None,
+                        top_k: None,
+                        max_tokens: None,
                         system: Some(Content::Ref("sys".into())),
                         messages: vec![GoogleMessage {
                             role: GoogleRole::User,
@@ -647,7 +655,10 @@ mod tests {
                     endpoint: "https://api.google.com".into(),
                     api_key: "key".into(),
                     model: "gemini-2.0-flash".into(),
-                    temperature: None, top_p: None, top_k: None, max_tokens: None,
+                    temperature: None,
+                    top_p: None,
+                    top_k: None,
+                    max_tokens: None,
                     system: Some(Content::Inline("\"You are helpful.\"".into())),
                     messages: vec![GoogleMessage {
                         role: GoogleRole::User,
@@ -677,7 +688,10 @@ mod tests {
                     endpoint: "https://api.google.com".into(),
                     api_key: "key".into(),
                     model: "gemini-2.0-flash".into(),
-                    temperature: None, top_p: None, top_k: None, max_tokens: None,
+                    temperature: None,
+                    top_p: None,
+                    top_k: None,
+                    max_tokens: None,
                     system: None,
                     messages: vec![GoogleMessage {
                         role: GoogleRole::User,
@@ -710,7 +724,10 @@ mod tests {
         assert_eq!(output.graph.functions.len(), 1);
         let func = &output.graph.functions[0];
         assert_eq!(i.resolve(func.qref.name), "output");
-        assert!(matches!(func.constraint.output, Constraint::Exact(Ty::String)));
+        assert!(matches!(
+            func.constraint.output,
+            Constraint::Exact(Ty::String)
+        ));
     }
 
     #[test]
@@ -730,13 +747,28 @@ mod tests {
 
         // template + history + live = 3 functions
         assert_eq!(output.graph.functions.len(), 3);
-        assert_eq!(i.resolve(output.graph.functions[0].qref.name), "__messages_tpl");
-        assert_eq!(i.resolve(output.graph.functions[1].qref.name), "messages_history");
-        assert_eq!(i.resolve(output.graph.functions[2].qref.name), "messages_live");
+        assert_eq!(
+            i.resolve(output.graph.functions[0].qref.name),
+            "__messages_tpl"
+        );
+        assert_eq!(
+            i.resolve(output.graph.functions[1].qref.name),
+            "messages_history"
+        );
+        assert_eq!(
+            i.resolve(output.graph.functions[2].qref.name),
+            "messages_live"
+        );
 
         // history and live are LocalAst
-        assert!(matches!(output.graph.functions[1].kind, FnKind::Local(ParsedAst::Script(_))));
-        assert!(matches!(output.graph.functions[2].kind, FnKind::Local(ParsedAst::Script(_))));
+        assert!(matches!(
+            output.graph.functions[1].kind,
+            FnKind::Local(ParsedAst::Script(_))
+        ));
+        assert!(matches!(
+            output.graph.functions[2].kind,
+            FnKind::Local(ParsedAst::Script(_))
+        ));
     }
 
     #[test]
@@ -794,7 +826,9 @@ mod tests {
         let ns = Namespace {
             name: "test".into(),
             items: vec![Item::Block(Block {
-                name: "a".into(), source: "1".into(), mode: BlockMode::Script,
+                name: "a".into(),
+                source: "1".into(),
+                mode: BlockMode::Script,
             })],
         };
         let output = lower_namespace(&i, &ns, &[extern_fn]);
@@ -821,20 +855,25 @@ mod tests {
                     endpoint: "https://api.google.com".into(),
                     api_key: "key".into(),
                     model: "gemini-2.0-flash".into(),
-                    temperature: None, top_p: None, top_k: None, max_tokens: None,
+                    temperature: None,
+                    top_p: None,
+                    top_k: None,
+                    max_tokens: None,
                     system: Some(Content::Inline("{{bad".into())),
-                    messages: vec![
-                        GoogleMessage {
-                            role: GoogleRole::User,
-                            content: Content::Inline("also {{bad".into()),
-                        },
-                    ],
+                    messages: vec![GoogleMessage {
+                        role: GoogleRole::User,
+                        content: Content::Inline("also {{bad".into()),
+                    }],
                 }),
             })],
         };
         let output = lower_namespace(&i, &ns, &[]);
 
-        assert_eq!(output.field_errors.len(), 2, "both errors should be collected");
+        assert_eq!(
+            output.field_errors.len(),
+            2,
+            "both errors should be collected"
+        );
         assert_eq!(output.field_errors[0].field, "messages[0].content");
         assert_eq!(output.field_errors[1].field, "messages[1].content");
     }
@@ -851,7 +890,10 @@ mod tests {
                     endpoint: "https://api.google.com".into(),
                     api_key: "key".into(),
                     model: "gemini-2.0-flash".into(),
-                    temperature: None, top_p: None, top_k: None, max_tokens: None,
+                    temperature: None,
+                    top_p: None,
+                    top_k: None,
+                    max_tokens: None,
                     system: Some(Content::Inline("\"valid system\"".into())),
                     messages: vec![GoogleMessage {
                         role: GoogleRole::User,
@@ -878,7 +920,10 @@ mod tests {
 
         // Function still produced (with poison for bad content)
         assert_eq!(output.graph.functions.len(), 1);
-        assert!(matches!(output.graph.functions[0].kind, FnKind::Local(ParsedAst::Script(_))));
+        assert!(matches!(
+            output.graph.functions[0].kind,
+            FnKind::Local(ParsedAst::Script(_))
+        ));
     }
 
     /// field_errors carry correct item_name.
@@ -890,8 +935,13 @@ mod tests {
             items: vec![Item::Llm(LlmSpec {
                 name: "my_chat".into(),
                 provider: Provider::Google(GoogleSpec {
-                    endpoint: "e".into(), api_key: "k".into(), model: "m".into(),
-                    temperature: None, top_p: None, top_k: None, max_tokens: None,
+                    endpoint: "e".into(),
+                    api_key: "k".into(),
+                    model: "m".into(),
+                    temperature: None,
+                    top_p: None,
+                    top_k: None,
+                    max_tokens: None,
                     system: None,
                     messages: vec![GoogleMessage {
                         role: GoogleRole::User,
@@ -989,8 +1039,13 @@ mod tests {
             items: vec![Item::Llm(LlmSpec {
                 name: "chat".into(),
                 provider: Provider::Google(GoogleSpec {
-                    endpoint: "e".into(), api_key: "k".into(), model: "m".into(),
-                    temperature: None, top_p: None, top_k: None, max_tokens: None,
+                    endpoint: "e".into(),
+                    api_key: "k".into(),
+                    model: "m".into(),
+                    temperature: None,
+                    top_p: None,
+                    top_k: None,
+                    max_tokens: None,
                     system: Some(Content::Inline("\"sys\"".into())),
                     messages: vec![
                         GoogleMessage {
@@ -1014,13 +1069,23 @@ mod tests {
         // 3 inline contents (system + usr1 + usr2), 1 ref (no entry)
         assert_eq!(output.span_map.entries.len(), 3);
 
-        let fields: Vec<&str> = output.span_map.entries.iter().map(|e| {
-            match &e.origin {
+        let fields: Vec<&str> = output
+            .span_map
+            .entries
+            .iter()
+            .map(|e| match &e.origin {
                 SpecOrigin::LlmField { field, .. } => field.as_str(),
                 _ => panic!("expected LlmField"),
-            }
-        }).collect();
-        assert_eq!(fields, &["messages[0].content", "messages[1].content", "messages[3].content"]);
+            })
+            .collect();
+        assert_eq!(
+            fields,
+            &[
+                "messages[0].content",
+                "messages[1].content",
+                "messages[3].content"
+            ]
+        );
     }
 
     /// Display Iterator: valid source expressions have span entries.
@@ -1041,12 +1106,15 @@ mod tests {
 
         assert_eq!(output.span_map.entries.len(), 2);
 
-        let fields: Vec<&str> = output.span_map.entries.iter().map(|e| {
-            match &e.origin {
+        let fields: Vec<&str> = output
+            .span_map
+            .entries
+            .iter()
+            .map(|e| match &e.origin {
                 SpecOrigin::DisplayField { field, .. } => field.as_str(),
                 _ => panic!("expected DisplayField"),
-            }
-        }).collect();
+            })
+            .collect();
         assert_eq!(fields, &["history", "live"]);
     }
 }

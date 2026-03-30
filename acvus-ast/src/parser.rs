@@ -1,4 +1,4 @@
-use acvus_utils::Interner;
+use acvus_utils::{Interner, QualifiedRef};
 use lalrpop_util::ParseError as LalrpopError;
 
 use crate::ast::*;
@@ -43,7 +43,11 @@ pub fn parse_template(interner: &Interner, source: &str) -> Result<Template, Par
         let last = node_span(body.last().unwrap());
         first.merge(last)
     };
-    Ok(Template { id: AstId::alloc(), body, span })
+    Ok(Template {
+        id: AstId::alloc(),
+        body,
+        span,
+    })
 }
 
 fn node_span(node: &Node) -> Span {
@@ -448,7 +452,7 @@ pub fn expr_to_pattern(expr: &Expr) -> Result<Pattern, ParseError> {
             ..
         } => Ok(Pattern::Binding {
             id: AstId::alloc(),
-            name: *name,
+            name: name.name,
             ref_kind: *ref_kind,
             span: *span,
         }),
@@ -631,7 +635,7 @@ mod tests {
                 matches!(&mb.arms[0].pattern, Pattern::Binding { name, ref_kind: RefKind::Value, .. } if interner.resolve(*name) == "item")
             );
             assert!(
-                matches!(&mb.source, Expr::Ident { name, .. } if interner.resolve(*name) == "list")
+                matches!(&mb.source, Expr::Ident { name, .. } if interner.resolve(name.name) == "list")
             );
         } else {
             panic!("expected MatchBlock");
@@ -978,7 +982,7 @@ mod tests {
         assert!(matches!(&s.stmts[0], Stmt::Bind { name, .. } if interner.resolve(*name) == "x"));
         assert!(matches!(
             s.tail.as_deref(),
-            Some(Expr::Ident { name, ref_kind: RefKind::Value, .. }) if interner.resolve(*name) == "x"
+            Some(Expr::Ident { name, ref_kind: RefKind::Value, .. }) if interner.resolve(name.name) == "x"
         ));
     }
 
@@ -1132,7 +1136,7 @@ mod tests {
             tag: interner.intern("Some"),
             payload: Some(Box::new(Expr::Ident {
                 id: AstId::alloc(),
-                name: interner.intern("x"),
+                name: QualifiedRef::root(interner.intern("x")),
                 ref_kind: RefKind::Value,
                 span: Span::new(0, 1),
             })),

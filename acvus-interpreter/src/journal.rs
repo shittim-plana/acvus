@@ -218,27 +218,23 @@ mod tests {
             (i.intern("name"), Value::string("alice")),
             (i.intern("age"), Value::int(30)),
         ]));
-        let ctx = InMemoryContext::new(
-            HashMap::from([("user".to_string(), obj)]),
-            i,
+        let ctx = InMemoryContext::new(HashMap::from([("user".to_string(), obj)]), i);
+        assert_eq!(
+            ctx.get_field("user", &["name"]),
+            Some(Value::string("alice"))
         );
-        assert_eq!(ctx.get_field("user", &["name"]), Some(Value::string("alice")));
         assert_eq!(ctx.get_field("user", &["age"]), Some(Value::int(30)));
     }
 
     #[test]
     fn get_field_nested() {
         let i = Interner::new();
-        let inner = Value::object(FxHashMap::from_iter([
-            (i.intern("city"), Value::string("seoul")),
-        ]));
-        let outer = Value::object(FxHashMap::from_iter([
-            (i.intern("address"), inner),
-        ]));
-        let ctx = InMemoryContext::new(
-            HashMap::from([("user".to_string(), outer)]),
-            i,
-        );
+        let inner = Value::object(FxHashMap::from_iter([(
+            i.intern("city"),
+            Value::string("seoul"),
+        )]));
+        let outer = Value::object(FxHashMap::from_iter([(i.intern("address"), inner)]));
+        let ctx = InMemoryContext::new(HashMap::from([("user".to_string(), outer)]), i);
         assert_eq!(
             ctx.get_field("user", &["address", "city"]),
             Some(Value::string("seoul"))
@@ -258,10 +254,7 @@ mod tests {
             (i.intern("name"), Value::string("alice")),
             (i.intern("age"), Value::int(30)),
         ]));
-        let ctx = InMemoryContext::new(
-            HashMap::from([("user".to_string(), obj)]),
-            i,
-        );
+        let ctx = InMemoryContext::new(HashMap::from([("user".to_string(), obj)]), i);
         ctx.set_field("user", &["name"], Value::string("bob"));
         assert_eq!(ctx.get_field("user", &["name"]), Some(Value::string("bob")));
         // age unchanged
@@ -271,13 +264,11 @@ mod tests {
     #[test]
     fn set_field_records_field_patch() {
         let i = Interner::new();
-        let obj = Value::object(FxHashMap::from_iter([
-            (i.intern("name"), Value::string("alice")),
-        ]));
-        let ctx = InMemoryContext::new(
-            HashMap::from([("user".to_string(), obj)]),
-            i,
-        );
+        let obj = Value::object(FxHashMap::from_iter([(
+            i.intern("name"),
+            Value::string("alice"),
+        )]));
+        let ctx = InMemoryContext::new(HashMap::from([("user".to_string(), obj)]), i);
         ctx.set_field("user", &["name"], Value::string("bob"));
         let writes = ctx.into_writes();
         assert_eq!(writes.len(), 1);
@@ -291,16 +282,12 @@ mod tests {
     #[test]
     fn set_field_deep_nested() {
         let i = Interner::new();
-        let inner = Value::object(FxHashMap::from_iter([
-            (i.intern("city"), Value::string("seoul")),
-        ]));
-        let outer = Value::object(FxHashMap::from_iter([
-            (i.intern("address"), inner),
-        ]));
-        let ctx = InMemoryContext::new(
-            HashMap::from([("user".to_string(), outer)]),
-            i,
-        );
+        let inner = Value::object(FxHashMap::from_iter([(
+            i.intern("city"),
+            Value::string("seoul"),
+        )]));
+        let outer = Value::object(FxHashMap::from_iter([(i.intern("address"), inner)]));
+        let ctx = InMemoryContext::new(HashMap::from([("user".to_string(), outer)]), i);
         ctx.set_field("user", &["address", "city"], Value::string("busan"));
         assert_eq!(
             ctx.get_field("user", &["address", "city"]),

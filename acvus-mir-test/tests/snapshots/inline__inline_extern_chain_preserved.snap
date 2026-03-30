@@ -6,12 +6,15 @@ expression: ir
   T0 = "hello"
 
 === main ===
-     1 │   r0 = call #0(T0)
-     2 │   r1 = call #1(r0)
-     3 │   return r1
+     1 │   r0 = ref $v1
+     2 │   r1 = load r0
+     3 │   r2 = call #0(r1)
+     4 │   r3 = call #1(r2)
+     5 │   return r3
 
-    ; r0 (len_str(...)) : Int
-    ; r1 (to_string(...)) : String
-    ; r2 (v1) : String
-    ; r3 ($s) : String
-    ; r4 (process(...)) : String
+    ; r0 (v4) : Ref<String>
+    ; r1 ($s) : String
+    ; r2 (len_str(...)) : Int
+    ; r3 (to_string(...)) : String
+    ; r4 (v1) : String
+    ; r5 (process(...)) : String

@@ -3,14 +3,16 @@
 //! Not a public API — will be replaced when the real API is designed.
 
 pub mod compile {
-    use acvus_mir::graph::{extract, infer, lower as graph_lower, CompilationGraph, Function, QualifiedRef};
     use acvus_mir::graph::infer::InferResult;
+    use acvus_mir::graph::{
+        CompilationGraph, Function, QualifiedRef, extract, infer, lower as graph_lower,
+    };
     use acvus_mir::hints::HintTable;
     use acvus_mir::ir::MirModule;
     use acvus_utils::{Freeze, Interner};
     use rustc_hash::FxHashMap;
 
-    use crate::lower::{self, FieldError, LowerOutput, SpanMap};
+    use crate::lower::{self, FieldError, SpanMap};
     use crate::spec::Namespace;
 
     /// End-to-end compilation result.
@@ -42,7 +44,9 @@ pub mod compile {
 
         /// Find function by name.
         pub fn function_id(&self, interner: &Interner, name: &str) -> Option<QualifiedRef> {
-            self.graph.functions.iter()
+            self.graph
+                .functions
+                .iter()
                 .find(|f| interner.resolve(f.qref.name) == name)
                 .map(|f| f.qref)
         }
@@ -56,7 +60,8 @@ pub mod compile {
 
         /// Collect field error fields for a given item name.
         pub fn field_errors_for(&self, item_name: &str) -> Vec<&str> {
-            self.field_errors.iter()
+            self.field_errors
+                .iter()
                 .filter(|e| e.item_name == item_name)
                 .map(|e| e.field.as_str())
                 .collect()
@@ -65,12 +70,17 @@ pub mod compile {
         /// Collect all span map origins as (item_name_or_display, field) tuples.
         pub fn span_origins(&self) -> Vec<(&str, &str)> {
             use crate::lower::SpecOrigin;
-            self.span_map.entries.iter().map(|e| {
-                match &e.origin {
+            self.span_map
+                .entries
+                .iter()
+                .map(|e| match &e.origin {
                     SpecOrigin::LlmField { llm_name, field } => (llm_name.as_str(), field.as_str()),
-                    SpecOrigin::DisplayField { display_name, field } => (display_name.as_str(), field.as_str()),
-                }
-            }).collect()
+                    SpecOrigin::DisplayField {
+                        display_name,
+                        field,
+                    } => (display_name.as_str(), field.as_str()),
+                })
+                .collect()
         }
     }
 
@@ -87,10 +97,18 @@ pub mod compile {
         let ext = extract::extract(interner, &lowered.graph);
 
         // Phase 2: Infer (with check_completeness + effect constraint)
-        let inf = infer::infer(interner, &lowered.graph, &ext, &FxHashMap::default(), Freeze::default(), &FxHashMap::default());
+        let inf = infer::infer(
+            interner,
+            &lowered.graph,
+            &ext,
+            &FxHashMap::default(),
+            Freeze::default(),
+            &FxHashMap::default(),
+        );
 
         // Phase 3: Lower to MIR
-        let mir_result = graph_lower::lower(interner, &lowered.graph, &ext, &inf, &FxHashMap::default());
+        let mir_result =
+            graph_lower::lower(interner, &lowered.graph, &ext, &inf, &FxHashMap::default());
 
         CompileResult {
             modules: mir_result.modules,

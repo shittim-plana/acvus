@@ -69,9 +69,17 @@ pub struct Template {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node {
     /// Literal text outside `{{ }}`.
-    Text { id: AstId, value: String, span: Span },
+    Text {
+        id: AstId,
+        value: String,
+        span: Span,
+    },
     /// A comment `{{-- ... --}}`.
-    Comment { id: AstId, value: String, span: Span },
+    Comment {
+        id: AstId,
+        value: String,
+        span: Span,
+    },
     /// An inline expression `{{ expr }}` with no binding.
     InlineExpr { id: AstId, expr: Expr, span: Span },
     /// A match block `{{ pattern = expr }} ... {{/}}`.
@@ -129,12 +137,16 @@ pub enum Expr {
     /// A reference: `name`, `$name`, or `@name`.
     Ident {
         id: AstId,
-        name: Astr,
+        name: QualifiedRef,
         ref_kind: RefKind,
         span: Span,
     },
     /// A literal value.
-    Literal { id: AstId, value: Literal, span: Span },
+    Literal {
+        id: AstId,
+        value: Literal,
+        span: Span,
+    },
     /// A binary operation: `a + b`.
     BinaryOp {
         id: AstId,
@@ -179,7 +191,11 @@ pub enum Expr {
         span: Span,
     },
     /// Parenthesized expression: `(expr)`.
-    Paren { id: AstId, inner: Box<Expr>, span: Span },
+    Paren {
+        id: AstId,
+        inner: Box<Expr>,
+        span: Span,
+    },
     /// A list: `[a, b, c]`, `[a, b, ..]`, `[.., a, b]`, `[a, .., b]`.
     /// `rest` is `Some` if `..` is present. `head` is before `..`, `tail` is after.
     /// If no `..`, all elements are in `head` and `tail` is empty.
@@ -192,7 +208,11 @@ pub enum Expr {
     },
     /// A group used for lambda parameter lists: `(a, b)`.
     /// This is a temporary node that only appears as the LHS of `->`.
-    Group { id: AstId, elements: Vec<Expr>, span: Span },
+    Group {
+        id: AstId,
+        elements: Vec<Expr>,
+        span: Span,
+    },
     /// An object literal: `{ field1, $field2, field3 }`.
     Object {
         id: AstId,
@@ -222,7 +242,11 @@ pub enum Expr {
         span: Span,
     },
     /// A context reference: `@name`.
-    ContextRef { id: AstId, name: QualifiedRef, span: Span },
+    ContextRef {
+        id: AstId,
+        name: QualifiedRef,
+        span: Span,
+    },
     /// A variant constructor: `Some(expr)`, `None`, or `Color::Red`.
     Variant {
         id: AstId,
@@ -317,9 +341,17 @@ pub enum Pattern {
         span: Span,
     },
     /// A context binding: `@name`.
-    ContextBind { id: AstId, name: QualifiedRef, span: Span },
+    ContextBind {
+        id: AstId,
+        name: QualifiedRef,
+        span: Span,
+    },
     /// A literal pattern that filters: `true`, `"admin"`, `42`.
-    Literal { id: AstId, value: Literal, span: Span },
+    Literal {
+        id: AstId,
+        value: Literal,
+        span: Span,
+    },
     /// A list pattern: `[a, b, c]`, `[a, b, ..]`, `[.., a, b]`, `[a, .., b]`.
     /// Same structure as `Expr::List`: `head` before `..`, `tail` after.
     List {

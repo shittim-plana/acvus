@@ -110,7 +110,10 @@ fn llm_with_ref_messages_compiles() {
                     endpoint: "https://api.google.com".into(),
                     api_key: "key".into(),
                     model: "gemini-2.0-flash".into(),
-                    temperature: None, top_p: None, top_k: None, max_tokens: None,
+                    temperature: None,
+                    top_p: None,
+                    top_k: None,
+                    max_tokens: None,
                     system: Some(Content::Ref("sys".into())),
                     messages: vec![GoogleMessage {
                         role: GoogleRole::User,
@@ -178,7 +181,10 @@ fn block_undeclared_context_is_incomplete() {
     let result = compile_namespace(&i, &ns, &[]);
 
     assert!(!result.has_field_errors(), "valid syntax → no field errors");
-    assert!(!result.is_complete(&i, "greet"), "undeclared context → Incomplete");
+    assert!(
+        !result.is_complete(&i, "greet"),
+        "undeclared context → Incomplete"
+    );
 }
 
 #[test]
@@ -189,8 +195,13 @@ fn llm_inline_parse_error_detected() {
         items: vec![Item::Llm(LlmSpec {
             name: "chat".into(),
             provider: Provider::Google(GoogleSpec {
-                endpoint: "e".into(), api_key: "k".into(), model: "m".into(),
-                temperature: None, top_p: None, top_k: None, max_tokens: None,
+                endpoint: "e".into(),
+                api_key: "k".into(),
+                model: "m".into(),
+                temperature: None,
+                top_p: None,
+                top_k: None,
+                max_tokens: None,
                 system: None,
                 messages: vec![GoogleMessage {
                     role: GoogleRole::User,
@@ -214,8 +225,13 @@ fn llm_multiple_inline_errors_all_collected() {
         items: vec![Item::Llm(LlmSpec {
             name: "chat".into(),
             provider: Provider::Google(GoogleSpec {
-                endpoint: "e".into(), api_key: "k".into(), model: "m".into(),
-                temperature: None, top_p: None, top_k: None, max_tokens: None,
+                endpoint: "e".into(),
+                api_key: "k".into(),
+                model: "m".into(),
+                temperature: None,
+                top_p: None,
+                top_k: None,
+                max_tokens: None,
                 system: Some(Content::Inline("{{bad1".into())),
                 messages: vec![GoogleMessage {
                     role: GoogleRole::User,
@@ -241,8 +257,13 @@ fn llm_ref_to_nonexistent_block_type_error() {
         items: vec![Item::Llm(LlmSpec {
             name: "chat".into(),
             provider: Provider::Google(GoogleSpec {
-                endpoint: "e".into(), api_key: "k".into(), model: "m".into(),
-                temperature: None, top_p: None, top_k: None, max_tokens: None,
+                endpoint: "e".into(),
+                api_key: "k".into(),
+                model: "m".into(),
+                temperature: None,
+                top_p: None,
+                top_k: None,
+                max_tokens: None,
                 system: Some(Content::Ref("nonexistent".into())),
                 messages: vec![],
             }),
@@ -253,7 +274,10 @@ fn llm_ref_to_nonexistent_block_type_error() {
     // No field errors (Ref is glue code, syntax is fine)
     assert!(!result.has_field_errors());
     // But Incomplete — undefined function "nonexistent"
-    assert!(!result.is_complete(&i, "chat"), "ref to nonexistent block → type error → Incomplete");
+    assert!(
+        !result.is_complete(&i, "chat"),
+        "ref to nonexistent block → type error → Incomplete"
+    );
 }
 
 #[test]
@@ -328,8 +352,13 @@ fn llm_inline_span_map_points_to_correct_fields() {
         items: vec![Item::Llm(LlmSpec {
             name: "chat".into(),
             provider: Provider::Google(GoogleSpec {
-                endpoint: "e".into(), api_key: "k".into(), model: "m".into(),
-                temperature: None, top_p: None, top_k: None, max_tokens: None,
+                endpoint: "e".into(),
+                api_key: "k".into(),
+                model: "m".into(),
+                temperature: None,
+                top_p: None,
+                top_k: None,
+                max_tokens: None,
                 system: Some(Content::Inline("\"system msg\"".into())),
                 messages: vec![
                     GoogleMessage {
@@ -361,8 +390,13 @@ fn llm_partial_error_span_map_only_for_valid() {
         items: vec![Item::Llm(LlmSpec {
             name: "chat".into(),
             provider: Provider::Google(GoogleSpec {
-                endpoint: "e".into(), api_key: "k".into(), model: "m".into(),
-                temperature: None, top_p: None, top_k: None, max_tokens: None,
+                endpoint: "e".into(),
+                api_key: "k".into(),
+                model: "m".into(),
+                temperature: None,
+                top_p: None,
+                top_k: None,
+                max_tokens: None,
                 system: Some(Content::Inline("\"valid\"".into())),
                 messages: vec![GoogleMessage {
                     role: GoogleRole::User,
@@ -412,8 +446,13 @@ fn multiple_items_errors_tracked_separately() {
             Item::Llm(LlmSpec {
                 name: "chat1".into(),
                 provider: Provider::Google(GoogleSpec {
-                    endpoint: "e".into(), api_key: "k".into(), model: "m".into(),
-                    temperature: None, top_p: None, top_k: None, max_tokens: None,
+                    endpoint: "e".into(),
+                    api_key: "k".into(),
+                    model: "m".into(),
+                    temperature: None,
+                    top_p: None,
+                    top_k: None,
+                    max_tokens: None,
                     system: None,
                     messages: vec![GoogleMessage {
                         role: GoogleRole::User,
@@ -424,8 +463,13 @@ fn multiple_items_errors_tracked_separately() {
             Item::Llm(LlmSpec {
                 name: "chat2".into(),
                 provider: Provider::Google(GoogleSpec {
-                    endpoint: "e".into(), api_key: "k".into(), model: "m".into(),
-                    temperature: None, top_p: None, top_k: None, max_tokens: None,
+                    endpoint: "e".into(),
+                    api_key: "k".into(),
+                    model: "m".into(),
+                    temperature: None,
+                    top_p: None,
+                    top_k: None,
+                    max_tokens: None,
                     system: Some(Content::Inline("{{also bad".into())),
                     messages: vec![],
                 }),
@@ -467,8 +511,13 @@ fn error_does_not_prevent_other_items_from_compiling() {
             Item::Llm(LlmSpec {
                 name: "broken".into(),
                 provider: Provider::Google(GoogleSpec {
-                    endpoint: "e".into(), api_key: "k".into(), model: "m".into(),
-                    temperature: None, top_p: None, top_k: None, max_tokens: None,
+                    endpoint: "e".into(),
+                    api_key: "k".into(),
+                    model: "m".into(),
+                    temperature: None,
+                    top_p: None,
+                    top_k: None,
+                    max_tokens: None,
                     system: None,
                     messages: vec![GoogleMessage {
                         role: GoogleRole::User,
@@ -481,7 +530,10 @@ fn error_does_not_prevent_other_items_from_compiling() {
     let result = compile_namespace(&i, &ns, &[]);
 
     // The valid block should still compile
-    assert!(result.is_complete(&i, "valid"), "valid block should not be affected by broken LLM");
+    assert!(
+        result.is_complete(&i, "valid"),
+        "valid block should not be affected by broken LLM"
+    );
     // The broken LLM should have field errors
     assert!(!result.field_errors_for("broken").is_empty());
 }

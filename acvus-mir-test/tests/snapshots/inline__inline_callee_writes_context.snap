@@ -3,20 +3,26 @@ source: acvus-mir-test/tests/inline.rs
 expression: ir
 ---
 === main ===
-     0 │   r0 = context_project @count
-     1 │   r1 = context_load r0
-     3 │   r2 = context_project @count
-     4 │   r3 = context_load r2
-     5 │   r4 = context_project @count
-     6 │   ctx_store r4 = 42 (r5)
-     7 │   return 42 (r5)
+     0 │   r0 = ref @count
+     1 │   r1 = load r0
+     3 │   r2 = ref @count
+     4 │   r3 = load r2
+     5 │   r4 = ref $v3
+     6 │   r5 = load r4
+     7 │   r6 = ref @count
+     8 │   store r6 = r5
+     9 │   r7 = ref $v3
+    10 │   r8 = load r7
+    11 │   return r8
 
-    ; r0 (@count) : Int
-    ; r1 (v2) : Int
-    ; r2 (@count) : Int
-    ; r3 (v6) : Int
-    ; r4 (v8) : Int
-    ; r5 (v3) : Int
-    ; r6 ($x) : Int
-    ; r7 ($x) : Int
-    ; r8 (set_count(...)) : Int
+    ; r0 (@count) : Ref<Int>
+    ; r1 (@count) : Int
+    ; r2 (@count) : Ref<Int>
+    ; r3 (@count) : Int
+    ; r4 (v8) : Ref<Int>
+    ; r5 ($x) : Int
+    ; r6 (@count) : Ref<Int>
+    ; r7 (v11) : Ref<Int>
+    ; r8 ($x) : Int
+    ; r9 (v3) : Int
+    ; r10 (set_count(...)) : Int
