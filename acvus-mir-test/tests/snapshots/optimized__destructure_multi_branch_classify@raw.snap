@@ -1,0 +1,108 @@
+---
+source: acvus-mir-test/tests/optimized.rs
+expression: raw
+---
+=== literals ===
+  T0 = "unknown"
+  T1 = "senior"
+  T2 = "adult"
+  T3 = "minor"
+  T4 = " ("
+  T5 = ")"
+
+=== main ===
+     0 │   r0 = ref @output
+     1 │   r1 = load r0
+     2 │   r2 = ref @user
+     3 │   r3 = load r2
+     4 │   r4 = ref @user.age
+     5 │   r5 = load r4
+     6 │   r6 = ref age
+     7 │   store r6 = r5
+     9 │   r7 = ref @output
+    10 │   store r7 = T0
+    11 │   r8 = ref age
+    12 │   r9 = load r8
+    14 │   r10 = r9 >= 65 (r11)
+    15 │   r12 = test r10 == true
+    16 │   jump_if r12 then L0 else L1
+    17 │ L0:
+    19 │   r13 = ref @output
+    20 │   store r13 = T1
+    21 │   jump L1
+    22 │ L1:
+    23 │   r14 = ref age
+    24 │   r15 = load r14
+    26 │   r16 = r15 >= 18 (r17)
+    27 │   r18 = test r16 == true
+    28 │   jump_if r18 then L2 else L3
+    29 │ L2:
+    31 │   r19 = ref @output
+    32 │   store r19 = T2
+    33 │   jump L3
+    34 │ L3:
+    35 │   r20 = ref age
+    36 │   r21 = load r20
+    38 │   r22 = r21 < 18 (r23)
+    39 │   r24 = test r22 == true
+    40 │   jump_if r24 then L4 else L5
+    41 │ L4:
+    43 │   r25 = ref @output
+    44 │   store r25 = T3
+    45 │   jump L5
+    46 │ L5:
+    47 │   r26 = ref @user.name
+    48 │   r27 = load r26
+    50 │   r28 = r27 + T4
+    51 │   r29 = ref @output
+    52 │   r30 = load r29
+    53 │   r31 = r28 + r30
+    55 │   r32 = r31 + T5
+    56 │   r33 = ref @output
+    57 │   store r33 = r32
+    58 │   r34 = ref @output
+    59 │   r35 = load r34
+    60 │   return r35
+
+    ; r0 (@output) : Ref<String>
+    ; r1 (@output) : String
+    ; r2 (@user) : Ref<{age: Int, name: String}>
+    ; r3 (@user) : {age: Int, name: String}
+    ; r4 (@user.age) : Ref<Int>
+    ; r5 (v6) : Int
+    ; r6 (v8) : Ref<Int>
+    ; r7 (@output) : Ref<String>
+    ; r8 (v11) : Ref<Int>
+    ; r9 (age) : Int
+    ; r10 (v14) : Bool
+    ; r11 (v13) : Int
+    ; r12 (v15) : Bool
+    ; r13 (@output) : Ref<String>
+    ; r14 (v18) : Ref<Int>
+    ; r15 (age) : Int
+    ; r16 (v21) : Bool
+    ; r17 (v20) : Int
+    ; r18 (v22) : Bool
+    ; r19 (@output) : Ref<String>
+    ; r20 (v25) : Ref<Int>
+    ; r21 (age) : Int
+    ; r22 (v28) : Bool
+    ; r23 (v27) : Int
+    ; r24 (v29) : Bool
+    ; r25 (@output) : Ref<String>
+    ; r26 (@user.name) : Ref<String>
+    ; r27 (v33) : String
+    ; r28 (v35) : String
+    ; r29 (@output) : Ref<String>
+    ; r30 (v37) : String
+    ; r31 (v38) : String
+    ; r32 (v40) : String
+    ; r33 (@output) : Ref<String>
+    ; r34 (@output) : Ref<String>
+    ; r35 (v43) : String
+    ; r36 (v9) : String
+    ; r37 (v30) : String
+    ; r38 (v34) : String
+    ; r39 (v39) : String
+    ; r40 (v23) : String
+    ; r41 (v16) : String

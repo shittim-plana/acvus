@@ -1032,7 +1032,22 @@ fn run_ssa_builder(
         }
     }
 
-    (ssa.finish(), var_subst, undef_defs)
+    let (phi_insertions, trivial_subst) = ssa.finish();
+
+    // Resolve trivial-phi references in var_subst.
+    // A VarLoad may have been mapped to a pending phi ValueId that was later
+    // eliminated as trivial. Walk the trivial_subst chain to reach the real value.
+    if !trivial_subst.is_empty() {
+        for val in var_subst.values_mut() {
+            let mut resolved = *val;
+            while let Some(&next) = trivial_subst.get(&resolved) {
+                resolved = next;
+            }
+            *val = resolved;
+        }
+    }
+
+    (phi_insertions, var_subst, undef_defs)
 }
 
 // ── Step 3: Patch instructions ──────────────────────────────────────

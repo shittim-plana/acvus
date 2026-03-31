@@ -154,11 +154,14 @@ impl SSABuilder {
         }
     }
 
-    /// Finish SSA construction. Returns all PHI insertions.
+    /// Finish SSA construction. Returns PHI insertions and the trivial-phi substitution map.
     ///
     /// Resolves incoming values through trivial_subst: if a phi operand
     /// references a trivially-eliminated phi, it's replaced with the final value.
-    pub fn finish(mut self) -> Vec<PhiInsertion> {
+    ///
+    /// The trivial_subst map is also returned so callers can resolve any
+    /// ValueIds that reference trivially-eliminated phis (e.g. var_subst entries).
+    pub fn finish(mut self) -> (Vec<PhiInsertion>, FxHashMap<ValueId, ValueId>) {
         if !self.trivial_subst.is_empty() {
             for phi in &mut self.phi_results {
                 for (_, val) in &mut phi.incoming {
@@ -171,7 +174,7 @@ impl SSABuilder {
                 }
             }
         }
-        self.phi_results
+        (self.phi_results, self.trivial_subst)
     }
 
     // ── Internal ────────────────────────────────────────────────────

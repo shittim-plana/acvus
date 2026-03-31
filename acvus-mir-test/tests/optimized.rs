@@ -184,15 +184,14 @@ fn diamond_divergent_context_mutations() {
     );
     let src = r#"
         x = @input;
-        r1 = true = x > 100 {
+        true = x > 100 {
             @high = @high + 1;
-            x * 2
+            @output = x * 2;
         };
-        r2 = true = x <= 100 {
+        true = x <= 100 {
             @low = @low + 1;
-            x + 10
+            @output = x + 10;
         };
-        @output = r1 + r2;
         @output
     "#;
     let (raw, opt) = snap_both(&i, src, &c);
@@ -290,12 +289,12 @@ fn destructure_multi_branch_classify() {
         ],
     );
     let src = r#"
-        name = @user.name;
         age = @user.age;
-        c1 = true = age >= 65 { "senior" };
-        c2 = true = age >= 18 { "adult" };
-        c3 = true = age < 18 { "minor" };
-        @output = name + " (" + c1 + c2 + c3 + ")";
+        @output = "unknown";
+        true = age >= 65 { @output = "senior"; };
+        true = age >= 18 { @output = "adult"; };
+        true = age < 18 { @output = "minor"; };
+        @output = @user.name + " (" + @output + ")";
         @output
     "#;
     let (raw, opt) = snap_both(&i, src, &c);
