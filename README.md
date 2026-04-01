@@ -1,37 +1,37 @@
 # Acvus
 
-A compiled template engine for LLM orchestration. Templates go through a full compiler pipeline — parsing, type checking with variance, MIR lowering, validation, static analysis — before executing as a dependency-resolved DAG. No async runtime dependency. Runs natively in WASM.
+A compiled template and script language for LLM orchestration. Three surface syntaxes — template, expression, script — share a single compiler pipeline: parsing, type inference with variance, SSA-based MIR, optimization passes, and validation. No async runtime dependency. Runs natively in WASM.
 
-## How it works
-
-Templates and scripts are compiled, not interpreted:
+## Pipeline
 
 ```
-Source → AST → Type Check (with variance) → MIR (SSA) → Validation → Analysis Passes → DAG → Execution
+Source → Parse → Extract → Infer (SCC) → Lower → Optimize → Validate → Execute
 ```
 
-Each stage catches a different class of errors before anything runs:
+**Parse** (lalrpop + logos): Three modes — template (`{{ }}`), expression, and script (`let`/`if`/`for`/`while`). All produce AST.
 
-- **Parser** (lalrpop + logos): Syntax errors, malformed patterns, unclosed blocks.
-- **Type checker**: Mismatched operations (`Int + String`), undefined context references, origin conflicts between deques, variance violations in coercions, effect subtyping (`Pure ≤ Effectful`).
-- **MIR lowering**: SSA intermediate representation with structured control flow, closures, iterators, and tagged variants. Explicit `Cast` instructions for all type coercions.
-- **Validation**: Type consistency (every instruction's in/out types match exactly, Cast excluded), move semantics (effectful values consumed at most once).
-- **Analysis passes**: Dead branch pruning, reachable context partitioning (eager vs. lazy), variable mutation tracking. A dependency-aware `PassManager` topologically orders passes by their type-level requirements.
-- **DAG builder**: Infers node dependencies from context references, topologically sorts, detects cycles.
-- **Resolver**: Coroutine-based event loop. Prefetches eager dependencies, defers lazy ones until actually needed. Serializes concurrent writes to the same node state.
+**Extract**: Discovers context references and traces projection chains to determine read vs. write.
 
-## Template language
+**Infer**: Constraint-based type inference. Tarjan's SCC for mutually recursive functions. Resolves function signatures, context types, and effect footprints. Results cached per-SCC with early cutoff — if a function's type didn't change, its callers skip re-inference.
 
-Three reference kinds:
+**Lower**: Typed AST to flat MIR instructions (pre-SSA). Context mutations become `ContextProject`/`ContextStore` pairs. Pattern matching becomes `TestXxx` + `JumpIf` chains.
 
-- `@name` — Context. Externally injected, read-only. Types declared at compile time.
-- `$name` — Variable. Local mutable storage. Type inferred at first assignment.
-- `name` — Value. Local immutable, SSA-resolved at lowering.
+**Optimize**: Two passes.
+- Pass 1 (cross-module): SROA → SSA → DCE → inline (cross-function, closure devirtualization).
+- Pass 2 (per-module): SpawnSplit → CodeMotion → Reorder → SSA → RegColor.
 
-Pattern matching is the only control flow. No if/for/while. All values are immutable (variables are rebindable, not mutable).
+**Validate**: Type check and move check on final MIR, after all optimizations. Catches optimizer bugs, not just user bugs.
+
+## Language
+
+Three surface syntaxes, single MIR.
+
+### Template mode
 
 ```
-{{-- Match block: test a value against patterns --}}
+{{-- Comment --}}
+Hello, {{ @name }}!
+
 {{ "korean" = @language }}
 한국어로 답변합니다.
 {{ "english" = }}
@@ -40,292 +40,256 @@ Responding in English.
 Default case.
 {{ / }}
 
-{{-- Iteration: loop over a collection --}}
 {{ item in @items }}
 - {{ item.name }}: {{ item.value | to_string }}
 {{ / }}
 
-{{-- Inline expression --}}
-{{ @input | trim }}
-
-{{-- Lambda + pipe --}}
 {{ @messages | filter(|m| -> m.role == "user") | len | to_string }}
 ```
 
-String is the only emit type. Explicit `to_string` required for non-string values. `Int + Float` arithmetic is a type error — explicit conversion needed.
+### Script mode
 
-Pipe chains are first-class function application: `a | f(b)` desugars to `f(a, b)`.
+```
+let count = 0;
+for item in @items {
+    if item.active {
+        count = count + 1;
+    }
+}
+let label = if count > 10 { "many" } else { "few" };
+label
+```
 
-Format strings interpolate expressions inline: `"hello {{ name }}, age {{ age | to_string }}"`. The `{{ }}` delimiters open a full expression context — any valid expression works inside, including pipes.
+`let x = expr;` is a new binding. `x = expr;` is reassignment. Shadowing supported. `if`/`if let`/`for`/`while`/`while let` as expected.
 
-### Builtins
+### Expression mode
 
-Iterator (effect-polymorphic): `filter`, `map`, `pmap`, `find`, `reduce`, `fold`, `any`, `all`, `flatten`, `flat_map`, `join`, `contains`, `first`, `last`, `collect`, `take`, `skip`, `chain`, `iter`, `rev_iter`, `next`.
+```
+@items | filter(|x| -> x.active) | map(|x| -> x.name) | join(", ")
+```
 
-List: `len`, `reverse`.
+Same expression language used inside `{{ }}` in templates. No keywords — pipes and pattern matching only.
 
-Deque (origin-preserving): `append`, `extend`, `consume`.
+### References
 
-Sequence (origin-preserving): `take`, `skip`, `chain`, `next`.
+- `@name` — Context. Externally injected. Type inferred from usage or declared by host.
+- `$name` — Extern parameter. Immutable, injected at call site.
+- `name` — Local value. Immutable, SSA-resolved.
 
-Type conversion: `to_string`, `to_float`, `to_int`, `char_to_int`, `int_to_char`.
+### Pipes
 
-String: `contains_str`, `substring`, `len_str`, `trim`, `trim_start`, `trim_end`, `upper`, `lower`, `replace_str`, `split_str`, `starts_with_str`, `ends_with_str`, `repeat_str`.
+`a | f(b)` desugars to `f(a, b)`. Chains left-to-right: `a | b | c` is `c(b(a))`.
 
-Byte: `to_bytes`, `to_utf8`, `to_utf8_lossy`.
+### Format strings
 
-Option: `unwrap`, `unwrap_or`.
+`"hello {{ name }}, count {{ count | to_string }}"` — full expression context inside `{{ }}`.
 
-Extension modules (e.g. `acvus-ext`) register additional extern functions at compile time.
+### Patterns
+
+Irrefutable: `x`, `(a, b)`, `{ name, age, }`.
+Refutable: literals, ranges (`0..10`), list destructuring (`[a, b, ..rest]`), variants (`Some(x)`, `None`), wildcard (`_`).
 
 ## Type system
 
-Static types with variance and effect tracking. The type checker runs before execution and catches errors that other template engines only surface at runtime.
+Static types with variance, identity tracking, and effect inference. The type checker runs before execution.
 
-**Types**: `Int`, `Float`, `String`, `Bool`, `Unit`, `Byte`, `Range`, `List<T>`, `Deque<T, O>`, `Iterator<T, E>`, `Sequence<T, O, E>`, `Option<T>`, `Tuple`, `Object`, `Enum`, `Fn`, `Opaque`.
+**Types**: `Int`, `Float`, `String`, `Bool`, `Unit`, `Byte`, `Range`, `List<T>`, `Deque<T, I>`, `Object`, `Tuple`, `Option<T>`, `Enum`, `Fn`, `Handle<T, E>`, `UserDefined`, `Identity`.
+
+### Inference
+
+Types are inferred from usage, not declared. Write `@data | map(f) | collect` and the compiler works backwards — `@data` must be iterable, `f` must return something, the result is a list of that something. The host provides concrete types for contexts; the compiler checks they satisfy the inferred constraints.
 
 ### Variance
 
-Covariant, contravariant, and invariant positions are tracked during unification.
+Covariant, contravariant, and invariant positions tracked during unification.
 
-- `Deque<T, O>` coerces to `List<T>` (origin erased). Explicit `Cast` instruction.
-- `List<T>` coerces to `Iterator<T, Pure>`. Explicit `Cast` instruction.
-- `Deque<T, O>` coerces to `Sequence<T, O, Pure>`. Explicit `Cast` instruction.
-- Function parameters are contravariant — polarity flips.
-- Generic type parameters are invariant.
+- Function parameters are contravariant. Return types are covariant.
+- Collection elements are invariant.
+- `Deque<T, I>` coerces to `List<T>` (identity erased). Explicit `Cast` instruction in MIR.
+- `Range` coerces to `List<Int>`.
+- Plugin-registered coercions via `ExternCast` rules.
 
-All coercions are mediated by explicit `Cast` instructions in MIR. The interpreter never performs implicit type conversions.
+### Identity
 
-### Origin tracking
+Collection literals receive a unique compile-time identity. Two deques from different `[]` literals have different identities. Mixing them in invariant position is a type error — prevents silently merging data from unrelated sources.
 
-Each `Deque` carries an origin identity. Two deques from different `[]` literals have different origins. Mixing them in invariant position is a compile-time error — prevents silent data corruption from accidentally extending the wrong collection.
+```
+a = [1, 2, 3]       // Deque<Int, Identity(1)>
+b = [4, 5, 6]       // Deque<Int, Identity(2)>
+a | extend(b)        // Type error: different identities
+```
 
-### Effect system
+Identity mismatch at branch merge resolves via LUB — `Deque<T, I1>` and `Deque<T, I2>` become `List<T>` (identity erased). Invariant position remains an error.
 
-Functions and iterators carry an effect annotation: `Pure` or `Effectful`.
+### Effects
 
-- **Pure**: No side effects. Values are freely copyable.
-- **Effectful**: Has side effects (network calls, non-deterministic). Values are move-only — consumed at most once.
+Every function tracks what it reads, writes, whether it does IO, and whether it's self-modifying.
 
-Effect subtyping: `Pure ≤ Effectful` in covariant position. A pure callback is accepted where an effectful callback is expected. Effect variables in builtin signatures bind via lattice join.
+Two kinds of effect targets:
+- **Context** (`@name`) — SSA-compatible. Converted to value flow after SSA. Enables automatic parallelization.
+- **Token** (`TokenId`) — Not SSA-compatible. Represents external shared state. Functions sharing a Token execute sequentially.
+
+Effect subtyping: `Pure ≤ Effectful` in covariant position.
 
 ### Move semantics
 
-Effectful values (`Iterator<T, Effectful>`, `Sequence<T, O, Effectful>`, `Opaque`) are move-only. The compiler's move check pass performs forward dataflow analysis over the CFG:
+Values with `self_modifying` or `io` effects are move-only. The compiler's move check performs forward dataflow over the CFG:
 
-- Using a move-only value after it has been consumed is a compile-time error.
-- `$variable` reassignment revives a moved variable.
-- Conservative join at branch merge points: if any branch moves a value, it's moved after the merge.
-- Closures capturing move-only values become FnOnce (single-call).
+- Use after move is a compile-time error.
+- Reassignment revives a moved variable.
+- Conservative join at branch merge: if any branch moves a value, it's moved after merge.
 
-### Analysis mode
+### Open enums
 
-Unknown context references get fresh type variables instead of errors, enabling incremental type discovery. The frontend uses this to discover what parameters a template needs and what types they should have, before the user has filled them in.
+Writing `Color::Red` auto-declares the variant. No enum declaration needed. Tag-based pattern matching works normally.
+
+### Structural typing
+
+`{ name: String, age: Int }` is a type, not a declaration. Any value with those fields has that type. Identity provides opt-in nominal-like separation when needed.
+
+## ExternFn
+
+External functions are first-class SSA citizens. When registered, they declare their type signature and effect. From that point, SSA treats them as dataflow nodes — values flow in through Uses, out through Defs.
+
+This enables:
+- **Dead code elimination** — unused call results are removed.
+- **Common subexpression elimination** — duplicate pure calls are deduplicated.
+- **Constant folding** — pure ExternFn with constant inputs can be evaluated at compile time.
+- **Fusion** — chains like `filter | map | collect` can be fused into a single call.
+
+No sandbox needed. Rust's `Send + Sync` and the Uses/Defs contract prevent hidden side effects.
+
+## Optimization
+
+### SROA (Scalar Replacement of Aggregates)
+
+`Ref<T>` decomposed into individual SSA values. Removes ref/load/store patterns, letting SSA track all values directly. 62–85% IR reduction in benchmarks.
+
+### SSA
+
+Cranelift-style block parameters, not LLVM-style PHI nodes. `VarLoad`/`VarStore` disappear — values flow through block params. Context mutations inside branches get write-back stores at merge points. Trivial PHI elimination.
+
+### IO parallelization
+
+Independent IO calls are automatically parallelized:
+
+1. **SpawnSplit** — IO `FunctionCall` split into `Spawn` (pure, returns `Handle`) + `Eval` (effectful, forces handle).
+2. **CodeMotion** — `Spawn` hoisted above branches via dominator tree.
+3. **Reorder** — Within each block, Spawn scheduled earliest, Eval deferred to just before first use.
+
+```
+// Source: four IO calls, a→b dependency, c and d independent
+// Optimized MIR:
+r0 = spawn fetch_a()       // 3-way parallel start
+r1 = spawn fetch_c()
+r2 = spawn fetch_d()
+r3 = eval r0               // a ready
+r0 = spawn fetch_b(r3)     // dependent IO starts
+r3 = eval r1               // c ready
+r4 = eval r2               // d ready
+r5 = eval r0               // b ready
+```
+
+### Other passes
+
+- **DCE** — Dead code elimination.
+- **DSE** — Dead store elimination.
+- **Const dedup** — Constant deduplication.
+- **RegColor** — SSA-aware greedy register coloring via backward dataflow liveness.
+- **Inline** — Cross-module inlining with closure devirtualization.
+
+## Standard library
+
+All builtins are ExternFn. Organized into registries:
+
+- **Iterator**: `filter`, `map`, `find`, `reduce`, `fold`, `any`, `all`, `flatten`, `flat_map`, `join`, `contains`, `first`, `last`, `collect`, `take`, `skip`, `chain`, `iter`, `rev_iter`, `next`.
+- **List**: `len`, `reverse`.
+- **Deque**: `append`, `extend`, `consume`.
+- **Sequence**: `take`, `skip`, `chain`, `next`.
+- **String**: `contains_str`, `substring`, `len_str`, `trim`, `trim_start`, `trim_end`, `upper`, `lower`, `replace_str`, `split_str`, `starts_with_str`, `ends_with_str`, `repeat_str`.
+- **Option**: `unwrap`, `unwrap_or`, `map`, `get_or_else`.
+- **Conversion**: `to_string`, `to_float`, `to_int`, `char_to_int`, `int_to_char`.
+- **Encoding**: Base64, URL encoding.
+- **DateTime**: Date/time operations.
+- **Regex**: Pattern matching.
 
 ## Orchestration
 
-A project is a set of node definitions and templates:
+Orchestration compiles spec files (TOML) into the same compilation graph as user code. Specs are declarative — they describe what to run, not how.
 
-```
-my-project/
-  project.toml        # providers, context types, node list
-  chat.toml            # node: LLM call with messages
-  summarizer.toml      # node: another LLM call
-  system.acvus         # template for system message
-  user.acvus           # template for user message
-```
+### Spec items
 
-### Nodes
-
-Each node has a kind, a strategy, and typed context:
-
-```toml
-name = "chat"
-kind = "llm"
-provider = "gemini"
-model = "gemini-2.5-flash"
-
-[execution]
-mode = "once-per-turn"
-
-[persistency]
-kind = "sequence"
-inline_bind = "@self | chain([@raw])"
-
-[[messages]]
-role = "system"
-template = "system.acvus"
-
-[[messages]]
-iterator = "@self"      # iterate stored history
-
-[[messages]]
-role = "user"
-template = "user.acvus"
-```
-
-**Node kinds**:
-- `llm` — API call to a language model. Messages are compiled templates. Provider-specific implementations: OpenAI-compatible, Anthropic, Google (Gemini), Google with context caching.
-- `plain` — Template rendering. No API call.
-- `expr` — Script evaluation. Returns a computed value.
-- `iterator` — Iterates over a source and applies per-item template rendering.
-
-**Execution strategies**:
-- `always` — Runs every invocation.
-- `once-per-turn` — Runs once per turn, result persisted.
-- `if-modified:<key>` — Runs only when the referenced key changes.
-
-**Persistency modes**:
-- `ephemeral` — Not stored.
-- `sequence` — Append-only with bind script. Tracks diffs via origin checksums.
-- `patch` — Object field-level patches with bind script.
-
-**Retry and assert**: Nodes can specify `retry` count and an `assert` script (must return `Bool`). If the assert fails, the node retries up to the limit.
-
-```toml
-retry = 3
-assert = "@self | len_str > 0"
-```
-
-### Function nodes
-
-Nodes can be declared as functions, callable from other nodes' templates:
-
-```toml
-name = "double"
-kind = "expr"
-source = "@x * 2"
-is_function = true
-fn_params = [{ name = "x", type = "Int" }]
-```
-
-Other nodes call them as `@double(5)`. The resolver spawns the function node on demand with typed parameters injected as context.
-
-### Tool calls
-
-Nodes can expose tools to LLM nodes. The LLM decides when to call them:
-
-```toml
-[[tools]]
-name = "get_weather"
-description = "Get current weather for a city"
-node = "get_weather"
-params = { city = "string" }
-```
-
-Tool parameters are type-checked at compile time. When the LLM emits a tool call, the resolver executes the target node with the parameters injected as typed context.
-
-### DAG resolution
-
-The orchestrator builds a dependency graph from context references: if node A's template references `@chat`, and a node named `chat` exists, A depends on `chat`. Dependencies are topologically sorted. Cycles are detected and reported as structured errors.
-
-Context keys are partitioned by static analysis:
-
-- **Eager**: Unconditionally needed — prefetched before the node runs.
-- **Lazy**: Behind unknown branches — resolved on demand via coroutine suspension.
-- **Pruned**: In dead branches — type information preserved, but no runtime fetch.
+- **Block** — Template rendering.
+- **Llm** — LLM API call with compiled message templates.
+- **Display** — Output formatting.
 
 ### Providers
 
-Multiple providers supported per project. Each node picks its provider independently.
+Three LLM provider implementations, each registered as ExternFn:
 
-- OpenAI-compatible APIs
-- Anthropic
-- Google (Gemini), including context caching
+- **OpenAI** (OpenAI-compatible APIs)
+- **Anthropic** (Claude)
+- **Google** (Gemini)
 
-The `Fetch` trait abstracts HTTP transport. The caller provides the implementation — `reqwest` on servers, browser `fetch()` in WASM.
+### Incremental compilation
 
-### Token budgets
+`Session` manages namespaces via `IncrementalGraph`. Spec changes trigger incremental recompilation — only affected SCCs are re-inferred. Field-level error tracking maps type errors back to specific spec fields via `SpanMap`.
 
-Message iterators support token budget constraints:
+## Compile-time macro
 
-```toml
-[[messages]]
-iterator = "@self"
-token_budget = { priority = 0, max = 12000 }
+`acvus_script!` and `acvus_template!` validate syntax at macro expansion time and generate runtime AST:
+
+```rust
+let ast = acvus_script!("@items | filter(%predicate) | map(%transform)");
 ```
 
-Multiple iterators with different priorities fill the budget in priority order.
-
-## Context type registry
-
-Context variables are organized into tiers with conflict detection:
-
-- **extern_fns**: Builtin functions (regex, etc.)
-- **system**: Orchestration-provided (`@turn_index`, node outputs)
-- **scoped**: Node-local (`@self`, `@raw`, function params)
-- **user**: Frontend-injected (`@input`, custom params)
-
-The same key cannot appear in multiple tiers. Construction fails with `RegistryConflictError` on violations.
-
-## History system
-
-Conversation history uses a tree-structured journal backed by content-addressed blob storage.
-
-**Blob store**: Immutable blobs identified by blake3 hash. Named refs with atomic compare-and-swap for concurrent access.
-
-**Tree journal**: Each turn appends a node with `turn_diff` (changes this turn). Full snapshots are taken at intervals. Reconstruction walks up to the nearest snapshot and replays diffs forward.
-
-- **Branch**: Fork from any point to explore alternative paths.
-- **Undo**: Navigate to any previous node in the tree.
-- **Prune**: Remove leaves or subtrees.
-- **Merge**: CAS-based with automatic union on conflict (CRDT-style).
-- **GC**: Mark live blobs from tree metadata, batch-remove garbage.
-
-State updates use copy-on-write: the parent's accumulated state is shared via `Arc`, and each child only records its own diff.
+`%placeholder` for expression parameters, `*splice` for `Vec<Expr>` splicing. Syntax errors are compile-time errors.
 
 ## Error handling
 
 Errors are structured enums at every layer. No string formatting for error construction.
 
-- **Parse errors**: Span-annotated syntax errors.
-- **Type errors**: `TypeMismatchBinOp`, `UnificationFailure`, `OriginMismatch`, `UndefinedContext`, etc. Each variant carries the relevant types for display.
-- **Validation errors**: `UseAfterMove`, `TypeMismatch` at instruction level. Detected by MIR validation passes before execution.
-- **Orchestration errors**: `CycleDetected`, `RegistryConflict`, `ToolParamType`, etc.
-- **Runtime errors**: Propagated as `Result` through the coroutine protocol. No panics, no unwind. WASM-safe with `panic=abort`.
+- **Parse errors**: Span-annotated.
+- **Type errors**: `TypeMismatch`, `UnificationFailure`, `IdentityMismatch`, `UndefinedContext`, etc.
+- **Validation errors**: `UseAfterMove`, `TypeMismatch` at instruction level. Post-optimization.
+- **Runtime errors**: Propagated as `Result`. No panics. WASM-safe with `panic=abort`.
 
 All error display requires an explicit interner reference — no hidden thread-local state.
 
 ## Architecture
 
 ```
-acvus-ast               Parser (lalrpop + logos)
-acvus-mir               Type checker, MIR lowering, validation, analysis passes, optimization
+acvus-utils             Interner (Astr), Freeze, LocalId, QualifiedRef
+acvus-ast               Parser (lalrpop + logos) — Template, Script, Expr
+acvus-mir               Type system, inference, MIR lowering, analysis, optimization, validation
+acvus-interpreter       Register-based VM, ExternFn registry, sync/async handlers
+acvus-ext               Standard library (10 ExternFn registries)
+acvus-ext-llm           LLM providers (OpenAI, Anthropic, Google)
+acvus-macro             Compile-time syntax validation macros
+acvus-orchestration     Spec → CompilationGraph, incremental Session
+acvus-lsp               Language server — diagnostics, completions, context discovery
 acvus-mir-cli           CLI for MIR inspection
 acvus-mir-test          MIR snapshot tests (insta)
-acvus-interpreter       Runtime values, sync execution, RuntimeError
 acvus-interpreter-test  Interpreter e2e tests
-acvus-utils             Astr (interned strings), TrackedDeque, coroutine primitives
-acvus-ext               Extension modules (regex, builtins)
-acvus-lsp               Language server — diagnostics, completions, hover, context key discovery
-acvus-orchestration     Node compilation, DAG, resolver, blob store, storage traits
-acvus-chat              Chat engine — multi-turn orchestration with tree history
-acvus-chat-cli          CLI — TOML projects, multi-provider HTTP
 pomollu-engine          WASM bindings (wasm-bindgen + tsify)
-pomollu-frontend        Web UI (SvelteKit + Tailwind) — block editor, typed params, grid layout
+pomollu-frontend        Web UI (SvelteKit)
 ```
+
+`acvus-mir` knows nothing about the interpreter. The IR is designed for any backend. `acvus-interpreter` depends on `acvus-mir`, never the reverse.
 
 ## WASM
 
-The core pipeline has no tokio, no reqwest, no OS dependencies. `acvus-ast`, `acvus-mir`, and `acvus-interpreter` compile to `wasm32-unknown-unknown` directly. `acvus-orchestration` produces `BoxFuture` values — the caller supplies the executor and fetch implementation. Runtime errors use `Result`, not panics, so `panic=abort` is safe.
-
-`pomollu-engine` exposes WASM bindings for the browser:
-
-- `evaluate()` — execute a template with given context.
-- `ChatSession` — multi-turn execution with tree history, undo, fork, and branch navigation. Resolver callback supports typed values (`JsConcreteValue`) with backward-compatible string fallback.
-- `LanguageSession` — incremental document analysis: diagnostics, completions, context key discovery, whole-project node type checking (`rebuildNodes`).
-
-All input/output types use tsify for auto-generated TypeScript bindings. No manual JS↔Rust conversion at the API boundary.
+The core pipeline has no tokio, no reqwest, no OS dependencies. `acvus-ast`, `acvus-mir`, and `acvus-interpreter` compile to `wasm32-unknown-unknown` directly. Runtime errors use `Result`, not panics, so `panic=abort` is safe.
 
 ## Examples
 
 The `examples/` directory contains runnable projects:
 
-- **chat** — Basic multi-turn conversation with history.
-- **tool-chat** — LLM with tool calls (weather lookup).
+- **chat** — Basic multi-turn conversation.
+- **tool-chat** — LLM with tool calls.
 - **budget-chat** — Token budget constraints on message history.
-- **diamond-chat** — Diamond DAG: input fans out to translate + sentiment + chat, then merges in output.
-- **format-chat** — Pattern matching on context (`@language`) for conditional system prompts.
+- **diamond-chat** — Diamond DAG: input fans out to multiple nodes, then merges.
+- **format-chat** — Pattern matching on context for conditional system prompts.
 - **inline-chat** — Inline templates (no `.acvus` files).
 - **multi-budget-chat** — Multiple iterators with different budget priorities.
 - **translate-chat** — Translation pipeline.
