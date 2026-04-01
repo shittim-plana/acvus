@@ -15,6 +15,7 @@ use acvus_utils::Interner;
 fn block_template_compiles() {
     let i = Interner::new();
     let ns = Namespace {
+        defaults: vec![],
         name: "test".into(),
         items: vec![Item::Block(Block {
             name: "greeting".into(),
@@ -33,6 +34,7 @@ fn block_template_compiles() {
 fn block_script_compiles() {
     let i = Interner::new();
     let ns = Namespace {
+        defaults: vec![],
         name: "test".into(),
         items: vec![Item::Block(Block {
             name: "compute".into(),
@@ -50,6 +52,7 @@ fn block_script_compiles() {
 fn display_static_compiles() {
     let i = Interner::new();
     let ns = Namespace {
+        defaults: vec![],
         name: "test".into(),
         items: vec![Item::Display(DisplaySpec::Static {
             name: "output".into(),
@@ -69,6 +72,7 @@ fn display_iterator_with_history_and_live_compiles() {
     // But contexts aren't declared → will be Incomplete.
     // This tests that all 3 functions are generated (even if Incomplete).
     let ns = Namespace {
+        defaults: vec![],
         name: "test".into(),
         items: vec![Item::Display(DisplaySpec::Iterator {
             name: "msgs".into(),
@@ -92,6 +96,7 @@ fn display_iterator_with_history_and_live_compiles() {
 fn llm_with_ref_messages_compiles() {
     let i = Interner::new();
     let ns = Namespace {
+        defaults: vec![],
         name: "test".into(),
         items: vec![
             Item::Block(Block {
@@ -137,6 +142,7 @@ fn llm_with_ref_messages_compiles() {
 fn multiple_items_mixed_namespace() {
     let i = Interner::new();
     let ns = Namespace {
+        defaults: vec![],
         name: "test".into(),
         items: vec![
             Item::Block(Block {
@@ -171,6 +177,7 @@ fn multiple_items_mixed_namespace() {
 fn block_undeclared_context_is_incomplete() {
     let i = Interner::new();
     let ns = Namespace {
+        defaults: vec![],
         name: "test".into(),
         items: vec![Item::Block(Block {
             name: "greet".into(),
@@ -191,6 +198,7 @@ fn block_undeclared_context_is_incomplete() {
 fn llm_inline_parse_error_detected() {
     let i = Interner::new();
     let ns = Namespace {
+        defaults: vec![],
         name: "test".into(),
         items: vec![Item::Llm(LlmSpec {
             name: "chat".into(),
@@ -221,6 +229,7 @@ fn llm_inline_parse_error_detected() {
 fn llm_multiple_inline_errors_all_collected() {
     let i = Interner::new();
     let ns = Namespace {
+        defaults: vec![],
         name: "test".into(),
         items: vec![Item::Llm(LlmSpec {
             name: "chat".into(),
@@ -253,6 +262,7 @@ fn llm_ref_to_nonexistent_block_type_error() {
     let i = Interner::new();
     // LlmSpec references "sys" but no such Block exists
     let ns = Namespace {
+        defaults: vec![],
         name: "test".into(),
         items: vec![Item::Llm(LlmSpec {
             name: "chat".into(),
@@ -284,6 +294,7 @@ fn llm_ref_to_nonexistent_block_type_error() {
 fn display_history_parse_error_detected() {
     let i = Interner::new();
     let ns = Namespace {
+        defaults: vec![],
         name: "test".into(),
         items: vec![Item::Display(DisplaySpec::Iterator {
             name: "msgs".into(),
@@ -304,6 +315,7 @@ fn display_history_parse_error_detected() {
 fn display_live_parse_error_detected() {
     let i = Interner::new();
     let ns = Namespace {
+        defaults: vec![],
         name: "test".into(),
         items: vec![Item::Display(DisplaySpec::Iterator {
             name: "msgs".into(),
@@ -323,6 +335,7 @@ fn display_live_parse_error_detected() {
 fn display_both_sources_parse_error() {
     let i = Interner::new();
     let ns = Namespace {
+        defaults: vec![],
         name: "test".into(),
         items: vec![Item::Display(DisplaySpec::Iterator {
             name: "msgs".into(),
@@ -348,6 +361,7 @@ fn display_both_sources_parse_error() {
 fn llm_inline_span_map_points_to_correct_fields() {
     let i = Interner::new();
     let ns = Namespace {
+        defaults: vec![],
         name: "test".into(),
         items: vec![Item::Llm(LlmSpec {
             name: "chat".into(),
@@ -386,6 +400,7 @@ fn llm_inline_span_map_points_to_correct_fields() {
 fn llm_partial_error_span_map_only_for_valid() {
     let i = Interner::new();
     let ns = Namespace {
+        defaults: vec![],
         name: "test".into(),
         items: vec![Item::Llm(LlmSpec {
             name: "chat".into(),
@@ -420,6 +435,7 @@ fn llm_partial_error_span_map_only_for_valid() {
 fn display_span_map_entries_for_history_and_live() {
     let i = Interner::new();
     let ns = Namespace {
+        defaults: vec![],
         name: "test".into(),
         items: vec![Item::Display(DisplaySpec::Iterator {
             name: "msgs".into(),
@@ -441,6 +457,7 @@ fn display_span_map_entries_for_history_and_live() {
 fn multiple_items_errors_tracked_separately() {
     let i = Interner::new();
     let ns = Namespace {
+        defaults: vec![],
         name: "test".into(),
         items: vec![
             Item::Llm(LlmSpec {
@@ -499,6 +516,7 @@ fn multiple_items_errors_tracked_separately() {
 fn error_does_not_prevent_other_items_from_compiling() {
     let i = Interner::new();
     let ns = Namespace {
+        defaults: vec![],
         name: "test".into(),
         items: vec![
             // This block is perfectly valid

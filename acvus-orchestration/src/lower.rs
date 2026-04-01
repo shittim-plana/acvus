@@ -92,7 +92,9 @@ pub fn lower_namespace(
     for item in &ns.items {
         match item {
             Item::Block(block) => {
-                functions.push(lower_block(interner, block, ns_name));
+                let result = lower_block(interner, block, ns_name);
+                functions.push(result.function);
+                field_errors.extend(result.field_errors);
             }
             Item::Llm(llm) => {
                 let result = lower_llm(interner, llm, ns_name);
@@ -229,29 +231,60 @@ fn bind(interner: &Interner, name: &str, expr: Expr) -> acvus_ast::Stmt {
 
 // ── Block lowering ─────────────────────────────────────────────────
 
-fn lower_block(interner: &Interner, block: &Block, ns_name: Astr) -> Function {
+struct BlockLowerResult {
+    function: Function,
+    field_errors: Vec<FieldError>,
+}
+
+fn lower_block(interner: &Interner, block: &Block, ns_name: Astr) -> BlockLowerResult {
+    let mut field_errors = Vec::new();
+
     let parsed_ast = match block.mode {
-        BlockMode::Script => ParsedAst::Script(
-            acvus_ast::parse_script(interner, &block.source).expect("parse error"),
-        ),
-        BlockMode::Template => {
-            ParsedAst::Template(acvus_ast::parse(interner, &block.source).expect("parse error"))
-        }
+        BlockMode::Script => match acvus_ast::parse_script(interner, &block.source) {
+            Ok(ast) => ParsedAst::Script(ast),
+            Err(err) => {
+                field_errors.push(FieldError {
+                    item_name: block.name.clone(),
+                    field: "source".into(),
+                    error: err,
+                });
+                ParsedAst::Script(script_tail(str_lit("")))
+            }
+        },
+        BlockMode::Template => match acvus_ast::parse(interner, &block.source) {
+            Ok(ast) => ParsedAst::Template(ast),
+            Err(err) => {
+                field_errors.push(FieldError {
+                    item_name: block.name.clone(),
+                    field: "source".into(),
+                    error: err,
+                });
+                ParsedAst::Template(acvus_ast::Template {
+                    id: AstId::alloc(),
+                    body: vec![],
+                    span: GLUE_SPAN,
+                })
+            }
+        },
     };
+
     let output = match block.mode {
         BlockMode::Template => Constraint::Exact(Ty::String),
         BlockMode::Script => Constraint::Inferred,
     };
 
     let qref = QualifiedRef::qualified(ns_name, interner.intern(&block.name));
-    Function {
-        qref,
-        kind: FnKind::Local(parsed_ast),
-        constraint: FnConstraint {
-            signature: Some(Signature { params: vec![] }),
-            output,
-            effect: Some(EffectConstraint::read_only()),
+    BlockLowerResult {
+        function: Function {
+            qref,
+            kind: FnKind::Local(parsed_ast),
+            constraint: FnConstraint {
+                signature: Some(Signature { params: vec![] }),
+                output,
+                effect: Some(EffectConstraint::read_only()),
+            },
         },
+        field_errors,
     }
 }
 
@@ -412,11 +445,27 @@ fn lower_display(interner: &Interner, display: &DisplaySpec, ns_name: Astr) -> D
     match display {
         DisplaySpec::Static { name, source } => {
             let qref = QualifiedRef::qualified(ns_name, interner.intern(name));
+            let mut field_errors = Vec::new();
+
+            let parsed = match acvus_ast::parse(interner, source) {
+                Ok(ast) => ParsedAst::Template(ast),
+                Err(err) => {
+                    field_errors.push(FieldError {
+                        item_name: name.clone(),
+                        field: "source".into(),
+                        error: err,
+                    });
+                    ParsedAst::Template(acvus_ast::Template {
+                        id: AstId::alloc(),
+                        body: vec![],
+                        span: GLUE_SPAN,
+                    })
+                }
+            };
+
             let func = Function {
                 qref,
-                kind: FnKind::Local(ParsedAst::Template(
-                    acvus_ast::parse(interner, source).expect("parse error"),
-                )),
+                kind: FnKind::Local(parsed),
                 constraint: FnConstraint {
                     signature: Some(Signature { params: vec![] }),
                     output: Constraint::Exact(Ty::String),
@@ -426,7 +475,7 @@ fn lower_display(interner: &Interner, display: &DisplaySpec, ns_name: Astr) -> D
             DisplayLowerResult {
                 functions: vec![func],
                 span_entries: vec![],
-                field_errors: vec![],
+                field_errors,
             }
         }
         DisplaySpec::Iterator {
@@ -445,11 +494,25 @@ fn lower_display(interner: &Interner, display: &DisplaySpec, ns_name: Astr) -> D
             //    Infer discovers it in analysis_mode and infers its type from usage.
             let tpl_name = format!("__{name}_tpl");
             let tpl_qref = QualifiedRef::qualified(ns_name, interner.intern(&tpl_name));
+            let tpl_parsed = match acvus_ast::parse(interner, template) {
+                Ok(ast) => ParsedAst::Template(ast),
+                Err(err) => {
+                    field_errors.push(FieldError {
+                        item_name: name.clone(),
+                        field: "template".into(),
+                        error: err,
+                    });
+                    ParsedAst::Template(acvus_ast::Template {
+                        id: AstId::alloc(),
+                        body: vec![],
+                        span: GLUE_SPAN,
+                    })
+                }
+            };
+
             let tpl_func = Function {
                 qref: tpl_qref,
-                kind: FnKind::Local(ParsedAst::Template(
-                    acvus_ast::parse(interner, template).expect("parse error"),
-                )),
+                kind: FnKind::Local(tpl_parsed),
                 constraint: FnConstraint {
                     signature: None, // param discovered by Infer via $bind
                     output: Constraint::Exact(Ty::String),
@@ -565,6 +628,7 @@ mod tests {
         let i = Interner::new();
         let ns = Namespace {
             name: "test".into(),
+            defaults: vec![],
             items: vec![Item::Block(Block {
                 name: "greeting".into(),
                 source: "Hello, {{ @name }}!".into(),
@@ -587,6 +651,7 @@ mod tests {
         let i = Interner::new();
         let ns = Namespace {
             name: "test".into(),
+            defaults: vec![],
             items: vec![Item::Block(Block {
                 name: "compute".into(),
                 source: "@x + 1".into(),
@@ -606,6 +671,7 @@ mod tests {
         let i = Interner::new();
         let ns = Namespace {
             name: "test".into(),
+            defaults: vec![],
             items: vec![
                 Item::Block(Block {
                     name: "sys".into(),
@@ -649,6 +715,7 @@ mod tests {
         let i = Interner::new();
         let ns = Namespace {
             name: "test".into(),
+            defaults: vec![],
             items: vec![Item::Llm(LlmSpec {
                 name: "chat".into(),
                 provider: Provider::Google(GoogleSpec {
@@ -682,6 +749,7 @@ mod tests {
         let i = Interner::new();
         let ns = Namespace {
             name: "test".into(),
+            defaults: vec![],
             items: vec![Item::Llm(LlmSpec {
                 name: "chat".into(),
                 provider: Provider::Google(GoogleSpec {
@@ -714,6 +782,7 @@ mod tests {
         let i = Interner::new();
         let ns = Namespace {
             name: "test".into(),
+            defaults: vec![],
             items: vec![Item::Display(DisplaySpec::Static {
                 name: "output".into(),
                 source: "Hello!".into(),
@@ -735,6 +804,7 @@ mod tests {
         let i = Interner::new();
         let ns = Namespace {
             name: "test".into(),
+            defaults: vec![],
             items: vec![Item::Display(DisplaySpec::Iterator {
                 name: "messages".into(),
                 history: Some("@history".into()),
@@ -776,6 +846,7 @@ mod tests {
         let i = Interner::new();
         let ns = Namespace {
             name: "test".into(),
+            defaults: vec![],
             items: vec![Item::Display(DisplaySpec::Iterator {
                 name: "msgs".into(),
                 history: Some("@history".into()),
@@ -795,6 +866,7 @@ mod tests {
         let i = Interner::new();
         let ns = Namespace {
             name: "test".into(),
+            defaults: vec![],
             items: vec![Item::Display(DisplaySpec::Iterator {
                 name: "msgs".into(),
                 history: None,
@@ -825,6 +897,7 @@ mod tests {
         };
         let ns = Namespace {
             name: "test".into(),
+            defaults: vec![],
             items: vec![Item::Block(Block {
                 name: "a".into(),
                 source: "1".into(),
@@ -849,6 +922,7 @@ mod tests {
         let i = Interner::new();
         let ns = Namespace {
             name: "test".into(),
+            defaults: vec![],
             items: vec![Item::Llm(LlmSpec {
                 name: "chat".into(),
                 provider: Provider::Google(GoogleSpec {
@@ -884,6 +958,7 @@ mod tests {
         let i = Interner::new();
         let ns = Namespace {
             name: "test".into(),
+            defaults: vec![],
             items: vec![Item::Llm(LlmSpec {
                 name: "chat".into(),
                 provider: Provider::Google(GoogleSpec {
@@ -932,6 +1007,7 @@ mod tests {
         let i = Interner::new();
         let ns = Namespace {
             name: "test".into(),
+            defaults: vec![],
             items: vec![Item::Llm(LlmSpec {
                 name: "my_chat".into(),
                 provider: Provider::Google(GoogleSpec {
@@ -963,6 +1039,7 @@ mod tests {
         let i = Interner::new();
         let ns = Namespace {
             name: "test".into(),
+            defaults: vec![],
             items: vec![Item::Display(DisplaySpec::Iterator {
                 name: "msgs".into(),
                 history: Some("{{bad expr".into()),
@@ -987,6 +1064,7 @@ mod tests {
         let i = Interner::new();
         let ns = Namespace {
             name: "test".into(),
+            defaults: vec![],
             items: vec![Item::Display(DisplaySpec::Iterator {
                 name: "msgs".into(),
                 history: Some("@history".into()),
@@ -1010,6 +1088,7 @@ mod tests {
         let i = Interner::new();
         let ns = Namespace {
             name: "test".into(),
+            defaults: vec![],
             items: vec![Item::Display(DisplaySpec::Iterator {
                 name: "msgs".into(),
                 history: Some("{{bad1".into()),
@@ -1036,6 +1115,7 @@ mod tests {
         let i = Interner::new();
         let ns = Namespace {
             name: "test".into(),
+            defaults: vec![],
             items: vec![Item::Llm(LlmSpec {
                 name: "chat".into(),
                 provider: Provider::Google(GoogleSpec {
@@ -1094,6 +1174,7 @@ mod tests {
         let i = Interner::new();
         let ns = Namespace {
             name: "test".into(),
+            defaults: vec![],
             items: vec![Item::Display(DisplaySpec::Iterator {
                 name: "msgs".into(),
                 history: Some("@history".into()),

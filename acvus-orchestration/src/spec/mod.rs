@@ -1,9 +1,11 @@
 mod block;
+mod defaults;
 mod display;
 mod llm;
 mod namespace;
 
 pub use block::{Block, BlockMode};
+pub use defaults::{DefaultField, Defaults};
 pub use display::DisplaySpec;
 pub use llm::{
     AnthropicSpec, Content, GoogleMessage, GoogleRole, GoogleSpec, LlmSpec, OpenAISpec, Provider,

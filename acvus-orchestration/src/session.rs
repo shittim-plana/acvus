@@ -153,6 +153,7 @@ mod tests {
     fn session_compiles_incrementally() {
         let mut session = Session::new();
         session.add_namespace(&Namespace {
+            defaults: vec![],
             name: "test".into(),
             items: vec![Item::Block(Block {
                 name: "hello".into(),
@@ -169,6 +170,7 @@ mod tests {
     fn session_detects_field_errors() {
         let mut session = Session::new();
         session.add_namespace(&Namespace {
+            defaults: vec![],
             name: "test".into(),
             items: vec![Item::Llm(LlmSpec {
                 name: "chat".into(),
@@ -197,6 +199,7 @@ mod tests {
     fn session_multiple_namespaces() {
         let mut session = Session::new();
         session.add_namespace(&Namespace {
+            defaults: vec![],
             name: "ns1".into(),
             items: vec![Item::Block(Block {
                 name: "a".into(),
@@ -205,6 +208,7 @@ mod tests {
             })],
         });
         session.add_namespace(&Namespace {
+            defaults: vec![],
             name: "ns2".into(),
             items: vec![Item::Block(Block {
                 name: "b".into(),
@@ -222,6 +226,7 @@ mod tests {
     fn session_diagnostics_for_function() {
         let mut session = Session::new();
         session.add_namespace(&Namespace {
+            defaults: vec![],
             name: "test".into(),
             items: vec![Item::Block(Block {
                 name: "good".into(),
