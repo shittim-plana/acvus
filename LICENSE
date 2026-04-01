@@ -9,28 +9,50 @@ to the following conditions:
 NO-SELL RESTRICTION
 
 The rights granted above do not include the right to Sell the Software.
-"Sell" means offering the Software, or a product or service whose primary
-value derives from the Software, to third parties for monetary compensation
-of any kind, including but not limited to:
+"Sell" means offering the Software, or a product or service that
+incorporates or is substantially built upon the Software, to third
+parties in exchange for or in connection with monetary compensation of
+any kind — whether direct or indirect — including but not limited to:
 
   (a) licensing or sublicensing the Software as a product;
   (b) providing the Software as a hosted or managed service;
-  (c) receiving donations, sponsorships, or crowdfunding contributions
+  (c) incorporating the Software into a product or service in
+      connection with which any monetary inflow is received —
+      regardless of whether the operation is profitable — including
+      but not limited to fees, subscriptions, advertising revenue,
+      data monetization, grants, or any other form of payment;
+  (d) receiving donations, sponsorships, or crowdfunding contributions
       whose primary purpose is to fund development or distribution of
       the Software or a derivative work.
 
 Use of the Software as a library or tool to produce output (such as
-rendered templates) — where the Software itself is not the product being
-offered — is explicitly permitted, including in commercial contexts.
+rendered templates, compiled scripts, or orchestration results) — where
+the Software itself is not incorporated into the product or service
+being offered — is explicitly permitted, including in commercial
+contexts.
+
+NETWORK USE IS DISTRIBUTION
+
+If you modify the Software and make the functionality of the modified
+version available to third parties over a computer network — whether as
+a service, an API, or any other form of remote interaction — you must
+also make the complete corresponding source code of the modified version
+available under this same license.
+
+This obligation applies solely to modifications of the Software itself.
+Source code authored by users of the Software — including but not limited
+to templates, scripts, configuration files, and orchestration specs
+processed by the Software — is not subject to this requirement.
 
 SHARE-ALIKE RESTRICTION
 
 Any derivative work — including but not limited to forks, modifications,
-and works that incorporate a substantial portion of the Software — must be
-distributed under this same license, including the No-Sell Restriction and
-this Share-Alike Restriction. You may not apply additional restrictions or
-alternative license terms to derivative works that would remove or weaken
-the conditions stated herein.
+and works that incorporate a substantial portion of the Software — must
+be distributed under this same license, including the No-Sell
+Restriction, the Network Use Is Distribution clause, and this
+Share-Alike Restriction. You may not apply additional restrictions or
+alternative license terms to derivative works that would remove or
+weaken the conditions stated herein.
 
 The above copyright notice and this permission notice shall be included in
 all copies or substantial portions of the Software.
