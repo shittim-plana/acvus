@@ -1,8 +1,8 @@
 pub mod analysis;
+pub mod extern_fn;
 pub mod cfg;
 pub mod error;
 pub mod graph;
-pub mod hints;
 pub mod ir;
 pub mod lower;
 pub mod optimize;
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn script_single_expr() {
         let i = Interner::new();
-        let (module, _) = compile_script(&i, "@data", &[("data", Ty::String)]).unwrap();
+        let module = compile_script(&i, "@data", &[("data", Ty::String)]).unwrap();
         assert!(
             module
                 .main
@@ -177,7 +177,7 @@ mod tests {
     #[test]
     fn script_bind_and_tail() {
         let i = Interner::new();
-        let (module, _) = compile_script(&i, "x = @data; x", &[("data", Ty::String)]).unwrap();
+        let module = compile_script(&i, "x = @data; x", &[("data", Ty::String)]).unwrap();
         assert!(
             module
                 .main
@@ -197,7 +197,7 @@ mod tests {
     #[test]
     fn script_trailing_semicolon_no_yield() {
         let i = Interner::new();
-        let (module, _) = compile_script(&i, "x = @data;", &[("data", Ty::String)]).unwrap();
+        let module = compile_script(&i, "x = @data;", &[("data", Ty::String)]).unwrap();
         assert!(
             !module
                 .main
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn context_store_produces_context_store_instruction() {
         let i = Interner::new();
-        let (module, _) = compile_script(&i, "@x = 42; @x", &[("x", Ty::Int)]).unwrap();
+        let module = compile_script(&i, "@x = 42; @x", &[("x", Ty::Int)]).unwrap();
         assert!(
             module
                 .main
@@ -312,7 +312,7 @@ mod tests {
     #[test]
     fn projection_bare_context_read() {
         let i = Interner::new();
-        let (module, _) = compile_script(&i, "@x", &[("x", Ty::Int)]).unwrap();
+        let module = compile_script(&i, "@x", &[("x", Ty::Int)]).unwrap();
         let kinds = inst_kinds(&module);
         let ref_idx = kinds.iter().position(|k| matches!(k, InstKind::Ref { .. }));
         let load_idx = kinds
@@ -326,7 +326,7 @@ mod tests {
     fn projection_field_access() {
         let i = Interner::new();
         let obj_ty = Ty::Object(FxHashMap::from_iter([(i.intern("name"), Ty::String)]));
-        let (module, _) = compile_script(&i, "@obj.name", &[("obj", obj_ty)]).unwrap();
+        let module = compile_script(&i, "@obj.name", &[("obj", obj_ty)]).unwrap();
         let kinds = inst_kinds(&module);
         // After SROA + SSA: field Ref is decomposed, then SSA promotes.
         // Result should have FieldGet (from SROA decomposition) or be fully promoted.
@@ -340,7 +340,7 @@ mod tests {
     fn projection_loaded_before_binop() {
         let i = Interner::new();
         let obj_ty = Ty::Object(FxHashMap::from_iter([(i.intern("val"), Ty::Int)]));
-        let (module, _) = compile_script(&i, "@obj.val + 1", &[("obj", obj_ty)]).unwrap();
+        let module = compile_script(&i, "@obj.val + 1", &[("obj", obj_ty)]).unwrap();
         let kinds = inst_kinds(&module);
         let load = kinds
             .iter()
@@ -356,7 +356,7 @@ mod tests {
     #[test]
     fn projection_context_store() {
         let i = Interner::new();
-        let (module, _) = compile_script(&i, "@x = 42; @x", &[("x", Ty::Int)]).unwrap();
+        let module = compile_script(&i, "@x = 42; @x", &[("x", Ty::Int)]).unwrap();
         let kinds = inst_kinds(&module);
         let store_i = kinds
             .iter()
@@ -368,7 +368,7 @@ mod tests {
     #[test]
     fn projection_copy_to_local() {
         let i = Interner::new();
-        let (module, _) = compile_script(&i, "x = @data; x", &[("data", Ty::String)]).unwrap();
+        let module = compile_script(&i, "x = @data; x", &[("data", Ty::String)]).unwrap();
         let kinds = inst_kinds(&module);
         // After SSA promotion, Ref/Load/Store for non-volatile vars are eliminated.
         // The result should just be a Return of the SSA value.
@@ -378,7 +378,7 @@ mod tests {
     #[test]
     fn projection_multiple_contexts() {
         let i = Interner::new();
-        let (module, _) = compile_script(&i, "@a + @b", &[("a", Ty::Int), ("b", Ty::Int)]).unwrap();
+        let module = compile_script(&i, "@a + @b", &[("a", Ty::Int), ("b", Ty::Int)]).unwrap();
         let kinds = inst_kinds(&module);
         assert_eq!(
             kinds
@@ -399,7 +399,7 @@ mod tests {
     #[test]
     fn projection_no_leak_simple() {
         let i = Interner::new();
-        let (module, _) = compile_script(&i, "@x + 1", &[("x", Ty::Int)]).unwrap();
+        let module = compile_script(&i, "@x + 1", &[("x", Ty::Int)]).unwrap();
         let mut ref_dsts = FxHashSet::default();
         let mut consumed = FxHashSet::default();
         for inst in &module.main.insts {
@@ -428,7 +428,7 @@ mod tests {
     fn projection_no_leak_field_access() {
         let i = Interner::new();
         let obj_ty = Ty::Object(FxHashMap::from_iter([(i.intern("name"), Ty::String)]));
-        let (module, _) = compile_script(&i, "@obj.name", &[("obj", obj_ty)]).unwrap();
+        let module = compile_script(&i, "@obj.name", &[("obj", obj_ty)]).unwrap();
         let mut ref_dsts = FxHashSet::default();
         let mut consumed = FxHashSet::default();
         for inst in &module.main.insts {

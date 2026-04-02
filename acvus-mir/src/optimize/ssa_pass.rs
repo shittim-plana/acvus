@@ -1329,7 +1329,7 @@ mod tests {
     #[test]
     fn match_one_arm_write_phi() {
         let i = Interner::new();
-        let (module, _) = compile_template(
+        let module = compile_template(
             &i,
             r#"{{ true = @name == "test" }}{{ @x = 42 }}{{ _ }}noop{{/}}"#,
             &[("x", Ty::Int), ("name", Ty::String)],
@@ -1350,7 +1350,7 @@ mod tests {
     #[test]
     fn match_both_arms_write_phi() {
         let i = Interner::new();
-        let (module, _) = compile_template(
+        let module = compile_template(
             &i,
             r#"{{ true = @name == "test" }}{{ @x = 1 }}{{ _ }}{{ @x = 2 }}{{/}}"#,
             &[("x", Ty::Int), ("name", Ty::String)],
@@ -1364,7 +1364,7 @@ mod tests {
     #[test]
     fn iter_context_write_phi() {
         let i = Interner::new();
-        let (module, _) = compile_template(
+        let module = compile_template(
             &i,
             r#"{{ x in @items }}{{ @sum = @sum + x }}{{/}}"#,
             &[("items", Ty::List(Box::new(Ty::Int))), ("sum", Ty::Int)],
@@ -1383,7 +1383,7 @@ mod tests {
     #[test]
     fn match_no_write_no_phi() {
         let i = Interner::new();
-        let (module, _) = compile_template(
+        let module = compile_template(
             &i,
             r#"{{ true = @name == "test" }}yes{{ _ }}no{{/}}"#,
             &[("name", Ty::String)],
@@ -1398,7 +1398,7 @@ mod tests {
     #[test]
     fn straight_line_write_preserved() {
         let i = Interner::new();
-        let (module, _) = compile_script(&i, "@x = 42; @x", &[("x", Ty::Int)]).unwrap();
+        let module = compile_script(&i, "@x = 42; @x", &[("x", Ty::Int)]).unwrap();
         let mut cfg_body = cfg::promote(module.main);
         let stores_before = count_context_stores(&cfg_body);
         run(&mut cfg_body, &no_fn_types());
@@ -1411,7 +1411,7 @@ mod tests {
     fn script_entry_loads_all_contexts() {
         // All contexts must have Ref + Load in entry block.
         let i = Interner::new();
-        let (module, _) = compile_script(
+        let module = compile_script(
             &i,
             "x in @items { @sum = @sum + x; }; @sum",
             &[("items", Ty::List(Box::new(Ty::Int))), ("sum", Ty::Int)],
@@ -1446,7 +1446,7 @@ mod tests {
     fn script_nested_loop_phi() {
         // Nested loop must not panic in SSA pass (regression: ListStep CFG terminator).
         let i = Interner::new();
-        let (module, _) = compile_script(
+        let module = compile_script(
             &i,
             "row in @matrix { x in row { @sum = @sum + x; }; }; @sum",
             &[
@@ -1467,7 +1467,7 @@ mod tests {
     fn script_loop_with_branch_phi() {
         // Loop body with conditional context write — needs PHI.
         let i = Interner::new();
-        let (module, _) = compile_script(
+        let module = compile_script(
             &i,
             "x in @items { 0 = x { @count = @count + 1; }; }; @count",
             &[("items", Ty::List(Box::new(Ty::Int))), ("count", Ty::Int)],
@@ -1762,7 +1762,7 @@ mod tests {
     fn script_sequential_loops_no_panic() {
         // Two sequential loops writing same context must not panic.
         let i = Interner::new();
-        let (module, _) = compile_script(
+        let module = compile_script(
             &i,
             "x in @a { @sum = @sum + x; }; y in @b { @sum = @sum + y; }; @sum",
             &[

@@ -7,7 +7,6 @@ pub mod compile {
     use acvus_mir::graph::{
         CompilationGraph, Function, QualifiedRef, extract, infer, lower as graph_lower,
     };
-    use acvus_mir::hints::HintTable;
     use acvus_mir::ir::MirModule;
     use acvus_utils::{Freeze, Interner};
     use rustc_hash::FxHashMap;
@@ -18,7 +17,7 @@ pub mod compile {
     /// End-to-end compilation result.
     pub struct CompileResult {
         /// Per-function MIR modules (only for Complete functions).
-        pub modules: FxHashMap<QualifiedRef, (MirModule, HintTable)>,
+        pub modules: FxHashMap<QualifiedRef, MirModule>,
         /// Spec-level field errors (parse errors from inline content).
         pub field_errors: Vec<FieldError>,
         /// Span mapping for type error → spec field resolution.
@@ -39,7 +38,7 @@ pub mod compile {
         }
 
         pub fn module(&self, id: QualifiedRef) -> Option<&MirModule> {
-            self.modules.get(&id).map(|(m, _)| m)
+            self.modules.get(&id)
         }
 
         /// Find function by name.

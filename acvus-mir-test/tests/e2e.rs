@@ -13,7 +13,7 @@ fn compile_analysis(
     interner: &Interner,
     source: &str,
     ctx: &[(&str, Ty)],
-) -> Result<(acvus_mir::ir::MirModule, acvus_mir::hints::HintTable), String> {
+) -> Result<acvus_mir::ir::MirModule, String> {
     use acvus_mir::graph::{
         CompilationGraph, Constraint, Context, FnConstraint, FnKind, Function, ParsedAst,
         QualifiedRef,
@@ -112,7 +112,7 @@ fn compile_analysis(
         .modules
         .into_iter()
         .find(|(id, _)| *id == test_qref)
-        .map(|(_, pair)| pair)
+        .map(|(_, module)| module)
         .ok_or_else(|| "no module produced for target".to_string())
 }
 
@@ -1594,7 +1594,7 @@ fn variant_none_pattern() {
 #[test]
 fn structural_enum_variant_merge() {
     let i = Interner::new();
-    let (module, _) =
+    let module =
         compile_analysis(&i, "{{ A::B = @a }}hi{{/}}{{ A::C = @a }}bye{{/}}", &[]).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     assert!(ir.contains("B"), "variant B missing from IR:\n{ir}");
@@ -1606,7 +1606,7 @@ fn structural_enum_variant_merge() {
 #[test]
 fn structural_enum_single_variant() {
     let i = Interner::new();
-    let (module, _) = compile_analysis(&i, "{{ A::B = @a }}yes{{_}}no{{/}}", &[]).unwrap();
+    let module = compile_analysis(&i, "{{ A::B = @a }}yes{{_}}no{{/}}", &[]).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     assert!(ir.contains("B"), "variant B missing from IR:\n{ir}");
 }
@@ -1615,7 +1615,7 @@ fn structural_enum_single_variant() {
 fn structural_enum_three_variants_merge() {
     let i = Interner::new();
     let src = "{{ S::X = @v }}x{{/}}{{ S::Y = @v }}y{{/}}{{ S::Z = @v }}z{{/}}";
-    let (module, _) = compile_analysis(&i, src, &[]).unwrap();
+    let module = compile_analysis(&i, src, &[]).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     assert!(ir.contains("X"), "variant X missing:\n{ir}");
     assert!(ir.contains("Y"), "variant Y missing:\n{ir}");
@@ -1626,7 +1626,7 @@ fn structural_enum_three_variants_merge() {
 fn structural_enum_with_payload() {
     let i = Interner::new();
     let src = r#"{{ R::Ok(v) = @r }}{{ v | to_string }}{{_}}err{{/}}"#;
-    let (module, _) = compile_analysis(&i, src, &[]).unwrap();
+    let module = compile_analysis(&i, src, &[]).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     assert!(ir.contains("Ok"), "variant Ok missing:\n{ir}");
 }
@@ -1635,7 +1635,7 @@ fn structural_enum_with_payload() {
 fn structural_enum_mixed_payload_and_unit() {
     let i = Interner::new();
     let src = r#"{{ R::Ok(v) = @r }}{{ v | to_string }}{{ R::Err = }}fail{{_}}??{{/}}"#;
-    let (module, _) = compile_analysis(&i, src, &[]).unwrap();
+    let module = compile_analysis(&i, src, &[]).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     assert!(ir.contains("Ok"), "variant Ok missing:\n{ir}");
     assert!(ir.contains("Err"), "variant Err missing:\n{ir}");
@@ -1646,7 +1646,7 @@ fn structural_enum_same_var_different_blocks_merge() {
     // Key regression test: separate match blocks on the same context var must merge.
     let i = Interner::new();
     let src = "{{ A::B = @a }}b{{/}}{{ A::C = @a }}c{{/}}";
-    let (module, _) = compile_analysis(&i, src, &[]).unwrap();
+    let module = compile_analysis(&i, src, &[]).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     assert!(ir.contains("B"), "variant B missing:\n{ir}");
     assert!(ir.contains("C"), "variant C missing:\n{ir}");
@@ -1656,7 +1656,7 @@ fn structural_enum_same_var_different_blocks_merge() {
 fn structural_enum_different_enums_different_vars() {
     let i = Interner::new();
     let src = "{{ X::A = @x }}xa{{/}}{{ Y::B = @y }}yb{{/}}";
-    let (module, _) = compile_analysis(&i, src, &[]).unwrap();
+    let module = compile_analysis(&i, src, &[]).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     assert!(ir.contains("A"), "variant A missing:\n{ir}");
     assert!(ir.contains("B"), "variant B missing:\n{ir}");
@@ -1679,7 +1679,7 @@ fn structural_enum_payload_unifies_with_inner_match() {
     // Payload variable must unify with patterns inside the arm body.
     let i = Interner::new();
     let src = r#"{{ A::X(x) = @a }}{{ 0 = x }}zero{{_}}other{{/}}{{_}}none{{/}}"#;
-    let (module, _) = compile_analysis(&i, src, &[]).unwrap();
+    let module = compile_analysis(&i, src, &[]).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     assert!(ir.contains("X"), "variant X missing:\n{ir}");
 }
@@ -1689,7 +1689,7 @@ fn structural_enum_payload_unifies_with_emit() {
     // Payload bound by variant pattern can be used in expressions (emit).
     let i = Interner::new();
     let src = r#"{{ A::Val(v) = @a }}{{ v + 1 | to_string }}{{_}}n/a{{/}}"#;
-    let (module, _) = compile_analysis(&i, src, &[]).unwrap();
+    let module = compile_analysis(&i, src, &[]).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     assert!(ir.contains("Val"), "variant Val missing:\n{ir}");
 }
@@ -1702,7 +1702,7 @@ fn structural_enum_payload_type_propagates_through_context() {
     variants.insert(i.intern("Ok"), Some(Box::new(Ty::Int)));
     variants.insert(i.intern("Err"), None);
     let src = r#"{{ R::Ok(v) = @r }}{{ v + 1 | to_string }}{{ R::Err = }}err{{_}}??{{/}}"#;
-    let (module, _) = compile_analysis(
+    let module = compile_analysis(
         &i,
         src,
         &[(
@@ -1729,7 +1729,7 @@ fn variant_merge_inside_tuple_pattern() {
     // Both A and B must appear in the final merged Enum type.
     let i = Interner::new();
     let src = r#"{{ (S::A, x) = @t }}{{ x }}{{ (S::B, y) = }}{{ y }}{{_}}??{{/}}"#;
-    let (module, _) = compile_analysis(&i, src, &[]).unwrap();
+    let module = compile_analysis(&i, src, &[]).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     eprintln!("=== TUPLE VARIANT IR ===\n{ir}\n=== END ===");
     assert!(ir.contains("A"), "variant A missing from IR:\n{ir}");
@@ -1740,7 +1740,7 @@ fn variant_merge_inside_tuple_pattern() {
 fn variant_merge_inside_tuple_three_arms() {
     let i = Interner::new();
     let src = r#"{{ (S::X, _) = @t }}x{{ (S::Y, _) = }}y{{ (S::Z, _) = }}z{{_}}??{{/}}"#;
-    let (module, _) = compile_analysis(&i, src, &[]).unwrap();
+    let module = compile_analysis(&i, src, &[]).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     assert!(ir.contains("X"), "variant X missing:\n{ir}");
     assert!(ir.contains("Y"), "variant Y missing:\n{ir}");
@@ -1752,7 +1752,7 @@ fn variant_merge_inside_list_pattern() {
     // Variant inside list head pattern should merge across arms.
     let i = Interner::new();
     let src = r#"{{ [S::A, ..] = @lst }}a{{ [S::B, ..] = }}b{{_}}??{{/}}"#;
-    let (module, _) = compile_analysis(&i, src, &[]).unwrap();
+    let module = compile_analysis(&i, src, &[]).unwrap();
     let ir = acvus_mir::printer::dump_with(&i, &module);
     assert!(ir.contains("A"), "variant A missing:\n{ir}");
     assert!(ir.contains("B"), "variant B missing:\n{ir}");
@@ -1769,7 +1769,7 @@ fn pruned_context_keys_in_dead_catch_all() {
 
     let i = Interner::new();
     let src = r#"{-{ Impersonation::NoPersona = @Impersonation }}{-{_}}{-{ Pov::User = @Pov }}user{-{ Pov::Char = }}char{-{_}}other{-{ / }}{-{ / }}"#;
-    let (module, _) = compile_analysis(&i, src, &[]).unwrap();
+    let module = compile_analysis(&i, src, &[]).unwrap();
 
     let ir = acvus_mir::printer::dump_with(&i, &module);
     eprintln!("=== PRUNED TEST IR ===\n{ir}\n=== END ===");

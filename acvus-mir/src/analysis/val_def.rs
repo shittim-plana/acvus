@@ -1,10 +1,9 @@
-use crate::hints::InstIdx;
 use crate::ir::{InstKind, MirModule, ValueId};
 use rustc_hash::FxHashMap;
 
 /// Maps each Val to the instruction index that defines it.
 #[derive(Debug, Clone)]
-pub struct ValDefMap(pub FxHashMap<ValueId, InstIdx>);
+pub struct ValDefMap(pub FxHashMap<ValueId, usize>);
 
 pub fn build(module: &MirModule) -> ValDefMap {
     let mut map = FxHashMap::default();

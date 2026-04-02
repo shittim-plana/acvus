@@ -666,7 +666,7 @@ mod tests {
     #[test]
     fn cross_block_nested_loop_conditional() {
         let i = Interner::new();
-        let (module, _) = crate::test::compile_script(
+        let module = crate::test::compile_script(
             &i,
             r#"
                 row in @matrix {

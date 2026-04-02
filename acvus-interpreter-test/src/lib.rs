@@ -140,15 +140,8 @@ pub fn compile_source_with_externs(
         panic!("compile failed:\n  {}", all_errors.join("\n  "));
     }
 
-    // Separate modules from hints for optimization.
-    let raw_modules: FxHashMap<QualifiedRef, acvus_mir::ir::MirModule> = result
-        .modules
-        .iter()
-        .map(|(qref, (module, _hints))| (*qref, module.clone()))
-        .collect();
-
     // Run full optimization pipeline: SSA → Inline → SpawnSplit → Reorder → SSA → RegColor → Validate.
-    let opt_result = graph_optimize::optimize(raw_modules, &fn_types, &inf.context_types, &FxHashSet::default());
+    let opt_result = graph_optimize::optimize(result.modules.clone(), &fn_types, &inf.context_types, &FxHashSet::default());
 
     // Report validation errors from optimization.
     for (qref, errs) in &opt_result.errors {

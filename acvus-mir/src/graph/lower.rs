@@ -7,7 +7,6 @@ use acvus_utils::Interner;
 use rustc_hash::FxHashMap;
 
 use crate::error::MirError;
-use crate::hints::HintTable;
 use crate::ir::MirModule;
 
 use super::extract::{ExtractResult, ParsedSource};
@@ -24,17 +23,13 @@ pub struct LowerError {
 
 #[derive(Debug)]
 pub struct LowerResult {
-    pub modules: FxHashMap<QualifiedRef, (MirModule, HintTable)>,
+    pub modules: FxHashMap<QualifiedRef, MirModule>,
     pub errors: Vec<LowerError>,
 }
 
 impl LowerResult {
     pub fn module(&self, id: QualifiedRef) -> Option<&MirModule> {
-        self.modules.get(&id).map(|(m, _)| m)
-    }
-
-    pub fn hints(&self, id: QualifiedRef) -> Option<&HintTable> {
-        self.modules.get(&id).map(|(_, h)| h)
+        self.modules.get(&id)
     }
 
     pub fn has_errors(&self) -> bool {
@@ -81,14 +76,14 @@ pub fn lower(
             policies.clone(),
             resolution_clone.extern_params,
         );
-        let (module, hints) = match parsed {
+        let module = match parsed {
             ParsedSource::Script(script) => lowerer.lower_script(script),
             ParsedSource::Template(template) => lowerer.lower_template(template),
         };
 
         // SSA + validate are handled by the optimize pipeline (graph/optimize.rs).
         // Lower outputs pre-SSA MIR.
-        modules.insert(func.qref, (module, hints));
+        modules.insert(func.qref, module);
     }
 
     LowerResult { modules, errors }

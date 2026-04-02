@@ -305,7 +305,7 @@ CompilationGraph { functions, contexts }
     |    Typed AST → flat MIR instructions (pre-SSA).
     |    Context mutations → ContextProject/ContextStore pairs.
     |    Pattern matching → TestXxx + JumpIf chains.
-    |    Output: Map<QualifiedRef, (MirModule, HintTable)>
+    |    Output: Map<QualifiedRef, MirModule>
     v
 [Phase 3: Optimize]  graph/optimize.rs
     |

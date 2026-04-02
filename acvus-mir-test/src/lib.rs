@@ -455,14 +455,8 @@ pub fn compile_script_optimized(
         return Err(errors.join("\n"));
     }
 
-    let raw_modules: FxHashMap<QualifiedRef, acvus_mir::ir::MirModule> = result
-        .modules
-        .into_iter()
-        .map(|(qref, (module, _hints))| (qref, module))
-        .collect();
-
     let opt_result = acvus_mir::graph::optimize::optimize(
-        raw_modules,
+        result.modules,
         &inf.fn_types,
         &inf.context_types,
         &FxHashSet::default(),
@@ -598,15 +592,8 @@ pub fn compile_inline_ir_with(
         return Err(errors.join("\n"));
     }
 
-    // Extract MirModules for inlining.
-    let modules: FxHashMap<QualifiedRef, MirModule> = result
-        .modules
-        .into_iter()
-        .map(|(qref, (module, _))| (qref, module))
-        .collect();
-
     // Inline (no recursive functions in tests — pass empty set).
-    let inlined = acvus_mir::graph::inliner::inline(&modules, &FxHashSet::default());
+    let inlined = acvus_mir::graph::inliner::inline(&result.modules, &FxHashSet::default());
 
     inlined
         .modules
@@ -705,7 +692,7 @@ pub fn compile_multi_fn_raw(
     let mut entries: Vec<_> = result.modules.iter().collect();
     entries.sort_by_key(|(qref, _)| interner.resolve(qref.name).to_string());
 
-    for (qref, (module, _)) in entries {
+    for (qref, module) in entries {
         let fn_name = interner.resolve(qref.name);
         // Skip extern functions (no meaningful body).
         if module.main.insts.is_empty() {
@@ -809,14 +796,8 @@ pub fn compile_multi_fn_optimized(
         return Err(errors.join("\n"));
     }
 
-    let raw_modules: FxHashMap<QualifiedRef, acvus_mir::ir::MirModule> = result
-        .modules
-        .into_iter()
-        .map(|(qref, (module, _))| (qref, module))
-        .collect();
-
     let opt_result = acvus_mir::graph::optimize::optimize(
-        raw_modules,
+        result.modules,
         &inf.fn_types,
         &inf.context_types,
         &FxHashSet::default(),

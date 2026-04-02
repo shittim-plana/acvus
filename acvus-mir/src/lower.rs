@@ -7,7 +7,6 @@ use acvus_utils::{Astr, Freeze, Interner};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::graph::{ContextPolicy, QualifiedRef};
-use crate::hints::HintTable;
 use crate::ir::{
     Callee, CastKind, Inst, InstKind, Label, MirBody, MirModule, RefTarget, ValOrigin, ValueId,
 };
@@ -32,8 +31,6 @@ pub struct Lowerer<'a> {
     /// Global closure label counter — shared across nesting levels to prevent
     /// label collisions when nested closures each allocate from a sub-body.
     closure_label_count: u32,
-    /// Hint table.
-    hints: HintTable,
     /// Context QualifiedRef → Ty.
     context_types: Freeze<FxHashMap<QualifiedRef, Ty>>,
     /// Function QualifiedRef → Ty. From InferResult.fn_types.
@@ -155,7 +152,6 @@ impl<'a> Lowerer<'a> {
             coercion_lookup,
             closures: FxHashMap::default(),
             closure_label_count: 0,
-            hints: HintTable::new(),
             context_types,
             fn_types,
             policies,
@@ -180,14 +176,14 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    pub fn lower_template(mut self, template: &Template) -> (MirModule, HintTable) {
+    pub fn lower_template(mut self, template: &Template) -> MirModule {
         self.emit_entry_context_loads(template.span);
         let result = self.lower_nodes(&template.body, template.span);
         self.emit_inst(template.span, InstKind::Return(result));
         self.build_module()
     }
 
-    pub fn lower_script(mut self, script: &Script) -> (MirModule, HintTable) {
+    pub fn lower_script(mut self, script: &Script) -> MirModule {
         self.emit_entry_context_loads(script.span);
         for stmt in &script.stmts {
             self.lower_stmt(stmt);
@@ -844,12 +840,11 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn build_module(self) -> (MirModule, HintTable) {
-        let module = MirModule {
+    fn build_module(self) -> MirModule {
+        MirModule {
             main: self.body,
             closures: self.closures,
-        };
-        (module, self.hints)
+        }
     }
 
     /// If `val` is a Ref<T>, emit Load to materialize it into T.
@@ -3037,7 +3032,7 @@ mod tests {
             .iter()
             .map(|(name, ty)| (interner.resolve(*name), ty.clone()))
             .collect();
-        let (module, _) =
+        let module =
             crate::test::compile_template(interner, source, &ctx).expect("compile failed");
         module
     }

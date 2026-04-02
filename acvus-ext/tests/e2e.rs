@@ -101,7 +101,7 @@ async fn run_ext_with_registry(
     let mut exec_fns: FxHashMap<QualifiedRef, Executable> = result
         .modules
         .into_iter()
-        .map(|(qref, (module, _))| (qref, Executable::Module(module)))
+        .map(|(qref, module)| (qref, Executable::Module(module)))
         .collect();
 
     let builtin_ids: FxHashMap<Astr, QualifiedRef> = graph
@@ -550,7 +550,7 @@ async fn extern_cast_auto_coercion() {
     let mut exec_fns: FxHashMap<QualifiedRef, Executable> = compile_result
         .modules
         .into_iter()
-        .map(|(qref, (module, _))| (qref, Executable::Module(module)))
+        .map(|(qref, module)| (qref, Executable::Module(module)))
         .collect();
 
     let builtin_ids: FxHashMap<Astr, QualifiedRef> = graph

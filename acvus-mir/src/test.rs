@@ -8,7 +8,6 @@ use rustc_hash::FxHashMap;
 
 use crate::graph::*;
 use crate::graph::{extract, infer, lower as graph_lower};
-use crate::hints::HintTable;
 use crate::ir::{MirBody, MirModule};
 use crate::ty::Ty;
 
@@ -53,7 +52,7 @@ fn run_pipeline(
     interner: &Interner,
     graph: &CompilationGraph,
     target: QualifiedRef,
-) -> Result<(MirModule, HintTable), String> {
+) -> Result<MirModule, String> {
     let ext = extract::extract(interner, graph);
     let inf = infer::infer(
         interner,
@@ -99,32 +98,32 @@ fn run_pipeline(
     let fn_types = &inf.fn_types;
 
     // Run SROA + SSA + validate (lower outputs pre-SSA MIR).
-    let mut pair = result
+    let mut module = result
         .modules
         .into_iter()
         .find(|(id, _)| *id == target)
-        .map(|(_, pair)| pair)
+        .map(|(_, m)| m)
         .ok_or_else(|| "no module produced for target".to_string())?;
 
     // SROA → SSA → DCE.
-    crate::optimize::sroa::run_body(&mut pair.0.main, &inf.context_types);
-    for closure in pair.0.closures.values_mut() {
+    crate::optimize::sroa::run_body(&mut module.main, &inf.context_types);
+    for closure in module.closures.values_mut() {
         crate::optimize::sroa::run_body(closure, &inf.context_types);
     }
     {
-        let mut cfg_body = crate::cfg::promote(std::mem::replace(&mut pair.0.main, MirBody::new()));
+        let mut cfg_body = crate::cfg::promote(std::mem::replace(&mut module.main, MirBody::new()));
         crate::optimize::ssa_pass::run(&mut cfg_body, fn_types);
         crate::optimize::dce::run(&mut cfg_body, fn_types);
-        pair.0.main = crate::cfg::demote(cfg_body);
+        module.main = crate::cfg::demote(cfg_body);
     }
-    for closure in pair.0.closures.values_mut() {
+    for closure in module.closures.values_mut() {
         let mut cfg_body = crate::cfg::promote(std::mem::replace(closure, MirBody::new()));
         crate::optimize::ssa_pass::run(&mut cfg_body, fn_types);
         crate::optimize::dce::run(&mut cfg_body, fn_types);
         *closure = crate::cfg::demote(cfg_body);
     }
 
-    let validation_errors = crate::validate::validate(&pair.0, fn_types, &FxHashMap::default());
+    let validation_errors = crate::validate::validate(&module, fn_types, &FxHashMap::default());
     if !validation_errors.is_empty() {
         let msgs: Vec<String> = validation_errors
             .iter()
@@ -133,7 +132,7 @@ fn run_pipeline(
         return Err(msgs.join("\n"));
     }
 
-    Ok(pair)
+    Ok(module)
 }
 
 /// Compile a template source string through the full graph pipeline.
@@ -141,7 +140,7 @@ pub fn compile_template(
     interner: &Interner,
     source: &str,
     ctx: &[(&str, Ty)],
-) -> Result<(MirModule, HintTable), String> {
+) -> Result<MirModule, String> {
     let (graph, target) = make_graph(interner, source, true, ctx);
     run_pipeline(interner, &graph, target)
 }
@@ -151,14 +150,14 @@ pub fn compile_script(
     interner: &Interner,
     source: &str,
     ctx: &[(&str, Ty)],
-) -> Result<(MirModule, HintTable), String> {
+) -> Result<MirModule, String> {
     let (graph, target) = make_graph(interner, source, false, ctx);
     run_pipeline(interner, &graph, target)
 }
 
 /// Compile a template and return the printed IR. Panics with full error on failure.
 pub fn compile_and_dump(interner: &Interner, source: &str, ctx: &[(&str, Ty)]) -> String {
-    let (module, _) =
+    let module =
         compile_template(interner, source, ctx).unwrap_or_else(|e| panic!("compile failed:\n{e}"));
     crate::printer::dump(interner, &module)
 }
