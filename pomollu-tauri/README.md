@@ -68,10 +68,13 @@ tauri android init       # 1회 — gen/ 생성
 
 ## 검증 상태 (이 환경에서 관찰된 범위)
 
-- `cargo test -p acvus-ext-llm` — 30 passed (mistral/vertex registry 포함)
-- `cargo test -p pomollu-core` — crypto/oauth/persistence/providers 단위 테스트
-- `cargo check --target aarch64-linux-android` — Tauri 레이어 타입 체크
-- APK 실기기 검증은 미수행 (이 환경에 Android SDK 없음) — residual
+- `cargo test -p acvus-ext-llm` — 30 passed (mistral/vertex registry 포함) ✓
+- `cargo test -p pomollu-core` — 30 passed (crypto/oauth/persistence/providers/store) ✓
+- `cargo check --target aarch64-linux-android` (Tauri 레이어) — **이 환경에서 미검증.**
+  ring/blake3의 cc-rs `detect_compiler_family.c` 프로브가 커스텀 NDK clang에서
+  hang (반복 재현). pomollu-core 로직은 검증됨; Tauri 커맨드 레이어(GCA + stream_id
+  + generate_handler!)의 Android 컴파일은 **정상 툴체인 서버에서 확인 필요** — residual.
+- APK 실기기 빌드 미수행 (이 환경에 Android SDK 없음) — residual
 
 알려진 핀: `time = 0.3.44`, `serde_with = 3.12`, `plist = 1.7` (time 0.3.47+가
 tauri-utils 2.9.2 블랭킷 impl과 E0119 코히어런스 충돌).
