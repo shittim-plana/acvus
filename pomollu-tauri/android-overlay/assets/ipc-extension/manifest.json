@@ -1,0 +1,17 @@
+{
+  "manifest_version": 2,
+  "name": "Tauri IPC Bridge",
+  "version": "1.0",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "permissions": [
+    "nativeMessaging",
+    "nativeMessagingFromContent"
+  ]
+}

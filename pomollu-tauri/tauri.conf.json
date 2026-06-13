@@ -1,0 +1,26 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Pomollu",
+  "version": "0.1.0",
+  "identifier": "com.shittimplana.pomollu",
+  "build": {
+    "frontendDist": "./dist",
+    "beforeBuildCommand": "",
+    "beforeDevCommand": ""
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Pomollu",
+        "width": 420,
+        "height": 860
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}
