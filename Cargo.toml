@@ -16,6 +16,10 @@ members = [
     "acvus-macro",
     "kovac-interpreter"
 , "acvus-mir-host", "acvus-mir-host-macro"]
+# pomollu-tauri is its own workspace: Tauri's dependency tree (wry, JNI glue,
+# reqwest/rustls) should not unify versions with the wasm-targeted crates here,
+# and desktop `cargo check --workspace` must not require webkit2gtk.
+exclude = ["pomollu-tauri"]
 
 [workspace.dependencies]
 rustc-hash = "2"

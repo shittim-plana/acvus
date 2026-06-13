@@ -1,3 +1,11 @@
-/target
+target/
 .theoria
 .claude
+node_modules/
+
+# pomollu-tauri: generated Android project (tauri android init) and
+# frontend build output copied into dist/ by build-apk.sh.
+# dist/index.html placeholder is tracked via the negation below.
+pomollu-tauri/gen/
+pomollu-tauri/dist/*
+!pomollu-tauri/dist/index.html
