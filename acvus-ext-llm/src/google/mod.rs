@@ -1,4 +1,4 @@
-mod schema;
+pub(crate) mod schema;
 
 use std::sync::Arc;
 
@@ -12,7 +12,7 @@ use crate::message::*;
 
 // ── Message conversion ──────────────────────────────────────────────
 
-fn convert_message(m: &Message) -> schema::Content {
+pub(crate) fn convert_message(m: &Message) -> schema::Content {
     match m {
         Message::Content { role, content } => {
             let role = if role == "assistant" { "model" } else { role };
@@ -61,7 +61,7 @@ fn convert_message(m: &Message) -> schema::Content {
 
 // ── Response parsing ────────────────────────────────────────────────
 
-fn parse_response(json: serde_json::Value) -> Result<(ModelResponse, Usage), RequestError> {
+pub(crate) fn parse_response(json: serde_json::Value) -> Result<(ModelResponse, Usage), RequestError> {
     let resp: schema::Response =
         serde_json::from_value(json).map_err(|e| RequestError::ResponseParse {
             detail: e.to_string(),

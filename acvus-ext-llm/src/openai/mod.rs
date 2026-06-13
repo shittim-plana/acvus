@@ -15,7 +15,7 @@ use crate::message::{Content, ContentItem, Message, ModelResponse, ToolCall, Usa
 
 // ── Message conversion ──────────────────────────────────────────────
 
-fn convert_message(m: &Message) -> schema::RequestMessage {
+pub(crate) fn convert_message(m: &Message) -> schema::RequestMessage {
     match m {
         Message::Content { role, content } => match content {
             Content::Text(text) => schema::RequestMessage::Content {
@@ -55,7 +55,7 @@ fn convert_message(m: &Message) -> schema::RequestMessage {
 
 // ── Response parsing ────────────────────────────────────────────────
 
-fn parse_response(json: serde_json::Value) -> Result<(ModelResponse, Usage), RequestError> {
+pub(crate) fn parse_response(json: serde_json::Value) -> Result<(ModelResponse, Usage), RequestError> {
     let resp: schema::Response =
         serde_json::from_value(json).map_err(|e| RequestError::ResponseParse {
             detail: e.to_string(),
@@ -134,7 +134,7 @@ fn usage_to_value(usage: &Usage, input_tokens_key: Astr, output_tokens_key: Astr
 }
 
 /// Convert a ModelResponse + Usage into a Value::Object.
-fn response_to_value(resp: &ModelResponse, usage: &Usage, interner: &Interner) -> Value {
+pub(crate) fn response_to_value(resp: &ModelResponse, usage: &Usage, interner: &Interner) -> Value {
     let role_key = interner.intern("role");
     let content_key = interner.intern("content");
     let content_type_key = interner.intern("content_type");
