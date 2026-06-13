@@ -28,6 +28,7 @@
 		"vitest": "^4.0.18"
 	},
 	"dependencies": {
+		"@tauri-apps/api": "^2",
 		"@dnd-kit-svelte/sortable": "^0.0.11",
 		"@dnd-kit-svelte/svelte": "^0.1.6",
 		"@dnd-kit-svelte/utilities": "^0.0.11",
